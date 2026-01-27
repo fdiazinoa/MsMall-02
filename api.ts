@@ -27,7 +27,7 @@ export const ApiService = {
   async getImportConfigs(): Promise<ImportConfig[]> {
     const stored = localStorage.getItem(IMPORTS_STORAGE_KEY);
     if (stored) return JSON.parse(stored);
-    
+
     const defaults: ImportConfig[] = [
       {
         id: '1',
@@ -37,6 +37,9 @@ export const ApiService = {
         puerto: 22,
         usuario: 'audit_msmall',
         ruta_remota: '/ventas/diarias/',
+        tipo_archivo: 'CSV',
+        frecuencia: 'manual',
+        accion_post_procesado: 'ninguna',
         estado: 'activo',
         ultima_ejecucion: '2024-01-27 08:00',
         resultado_ultimo: 'exito',
@@ -74,29 +77,29 @@ export const ApiService = {
   async syncImportConnection(id: string): Promise<{ success: boolean, processed: number, message: string }> {
     // Simulación de latencia de red y procesamiento
     await new Promise(resolve => setTimeout(resolve, 2500));
-    
+
     const configs = await this.getImportConfigs();
     const config = configs.find(c => c.id === id);
-    
+
     if (!config) throw new Error("Configuración no encontrada");
 
     // Simulamos un éxito del 90%
     const isSuccess = Math.random() > 0.1;
     const processed = isSuccess ? Math.floor(Math.random() * 50) + 10 : 0;
-    
+
     const updatedConfigs = configs.map(c => c.id === id ? {
       ...c,
       ultima_ejecucion: new Date().toLocaleString(),
       resultado_ultimo: isSuccess ? 'exito' : 'error' as any
     } : c);
-    
+
     localStorage.setItem(IMPORTS_STORAGE_KEY, JSON.stringify(updatedConfigs));
 
     return {
       success: isSuccess,
       processed,
-      message: isSuccess 
-        ? `Sincronización exitosa: ${processed} archivos procesados aplicando el mapeo.` 
+      message: isSuccess
+        ? `Sincronización exitosa: ${processed} archivos procesados aplicando el mapeo.`
         : "Error de conexión: El servidor remoto rechazó la clave SSH o el directorio no existe."
     };
   },
@@ -104,6 +107,17 @@ export const ApiService = {
   async testConnection(config: Partial<ImportConfig>): Promise<boolean> {
     await new Promise(resolve => setTimeout(resolve, 1500));
     return config.host !== '' && config.usuario !== '';
+  },
+
+  async exploreDirectory(path: string): Promise<{ ruta_actual: string, items: { nombre: string, ruta: string, es_dir: boolean }[] }> {
+    try {
+      const response = await fetch(`${BASE_URL}/explorar-directorio?ruta=${encodeURIComponent(path)}`);
+      if (!response.ok) throw new Error("Error al explorar directorio");
+      return await response.json();
+    } catch (error) {
+      console.error(error);
+      return { ruta_actual: path, items: [] };
+    }
   },
 
   // --- OTROS MÉTODOS ---

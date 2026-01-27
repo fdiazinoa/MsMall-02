@@ -48,7 +48,10 @@ export interface RoleConfig {
   permisos: string[];
 }
 
-export type ImportProtocol = 'FTP' | 'SFTP';
+export type ImportProtocol = 'FTP' | 'SFTP' | 'LOCAL';
+export type FileType = 'CSV' | 'TXT' | 'JSON' | 'XML';
+export type ImportFrequency = 'cada_hora' | 'cada_2_horas' | 'hora_especifica' | 'manual';
+export type PostProcessAction = 'ninguna' | 'eliminar' | 'renombrar';
 
 export interface ImportConfig {
   id: string;
@@ -58,6 +61,11 @@ export interface ImportConfig {
   puerto: number;
   usuario: string;
   ruta_remota: string;
+  tipo_archivo: FileType;
+  frecuencia: ImportFrequency;
+  hora_especifica?: string;
+  accion_post_procesado: PostProcessAction;
+  prefijo_renombrado?: string;
   estado: 'activo' | 'pausado';
   ultima_ejecucion?: string;
   resultado_ultimo?: 'exito' | 'error';

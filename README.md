@@ -1,32 +1,53 @@
+# MSMALL Audit Systems
 
-# MSMALL - Documentación de API de Consumo
+Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, priorizando la integridad de los datos de ventas y la automatización de procesos de auditoría.
 
-Esta plataforma permite a los locales de los centros comerciales automatizar el envío de sus ventas para auditoría.
+**Estado del Proyecto:** MVP Funcional (v1.0.2)
+**Arquitectura:** React SPA + Backend FastAPI + PostgreSQL
 
-## Endpoint de Ingesta
-`POST /api/v1/ingesta`
+## 1. Stack Tecnológico
+- **Frontend:** React 19 con TypeScript.
+- **Estilos:** Tailwind CSS.
+- **Visualización de Datos:** Recharts.
+- **Iconografía:** Lucide React.
+- **Backend:** FastAPI (Python 3.10+).
+- **Base de Datos:** PostgreSQL.
 
-### Cabeceras (Headers)
-| Header | Valor | Descripción |
-|--------|-------|-------------|
-| `X-API-Key` | `tu-api-key-secreta` | Clave de autenticación proporcionada por la administración del mall. |
-| `Content-Type` | `multipart/form-data` | El archivo debe enviarse como un formulario binario. |
+## 2. Módulos Funcionales
+### A. Dashboard BI (Business Intelligence)
+- KPIs en Tiempo Real: Ventas Brutas, Netas, Transacciones y Ticket Promedio.
+- Gráficos Interactivos: Tendencia diaria y comparativa de Top 5 locales.
 
-### Cuerpo de la Petición (Body)
-- `file`: Archivo `.csv` con las ventas del día.
+### B. Módulo de Importación Automatizada (FTP/SFTP)
+- Protocolos Soportados: SFTP (SSH) y FTP estándar.
+- Motor de Mapeo Dinámico: Vinculación de columnas externas con campos del sistema.
+- Test de Conexión y Simulación de Sync.
 
-### Ejemplo de consumo con cURL
-```bash
-curl -X POST "http://localhost:8000/api/v1/ingesta" \
-     -H "X-API-Key: demo-key-123" \
-     -F "file=@ventas_hoy.csv"
-```
+### C. Auditoría y Reportabilidad de Ventas
+- Tablero de Control: Vista detallada de transacciones auditadas.
+- Cálculo Automático: Desglose de impuestos y neto.
 
-### Formato de CSV Requerido
-El archivo debe contener al menos las siguientes columnas:
-`factura_numero, fecha_venta, local_codigo, total_bruto, total_impuestos, total_neto`
+### D. Mantenimiento de Locales y Contratos
+- Gestión Contractual: Registro de m², responsables, % de Renta Variable.
+- Inventario Físico: Clasificación por rubro, piso y Mall.
 
-### Respuestas
-- **201 Created**: El archivo fue procesado con éxito.
-- **403 Forbidden**: API Key inválida.
-- **422 Unprocessable Entity**: El CSV no tiene el formato correcto.
+### E. Gestión de Usuarios y RBAC
+- Roles: `admin`, `auditor`, `mall_manager`.
+- Seguridad: Panel de activación/desactivación y trazabilidad.
+
+## 3. Arquitectura de Datos
+Esquema relacional optimizado (`init.sql`):
+- `malls`: Soporte multi-tenant con api_key únicas.
+- `locales`: Relación 1:N con Malls.
+- `ventas`: Tabla transaccional con índices en fecha.
+- `import_configs`: Configuración de mapeo y conexión.
+
+## 4. Seguridad e Integración
+- **Autenticación por X-API-Key:** Para integración con sistemas POS externos.
+- **Validación de Esquema:** Validación de encabezados CSV.
+- **Cifrado:** Diseño para cifrado RSA-4096 de credenciales.
+
+## 5. Roadmap
+- Webhooks de Notificación (Slack/Email).
+- Exportación PDF/Excel de informes firmados.
+- Módulo de Conciliación automática.

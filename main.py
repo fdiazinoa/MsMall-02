@@ -124,6 +124,45 @@ async def ingesta_ventas(
         logger.error(f"Error procesando ingesta: {str(e)}")
         raise HTTPException(status_code=500, detail="Error interno al procesar el archivo")
 
+# --- EXPLORACIÓN DE DIRECTORIOS LOCALES ---
+@app.get("/api/v1/explorar-directorio")
+async def explorar_directorio(path: str = Query("/", alias="ruta")):
+    """
+    Endpoint para listar directorios locales. 
+    Permite al usuario navegar por carpetas para configurar la importación.
+    """
+    import os
+    try:
+        # Normalizar ruta para el OS actual
+        target_path = os.path.abspath(path)
+        
+        if not os.path.exists(target_path):
+            # Si no existe, intentar con el home del usuario o raíz
+            target_path = os.path.expanduser("~")
+            
+        items = []
+        # Añadir opción para subir de nivel
+        parent = os.path.dirname(target_path)
+        if parent != target_path:
+            items.append({"nombre": "..", "ruta": parent, "es_dir": True})
+
+        for item in os.listdir(target_path):
+            full_path = os.path.join(target_path, item)
+            if os.path.isdir(full_path) and not item.startswith('.'):
+                items.append({
+                    "nombre": item,
+                    "ruta": full_path,
+                    "es_dir": True
+                })
+        
+        return {
+            "ruta_actual": target_path,
+            "items": sorted(items, key=lambda x: x["nombre"].lower())
+        }
+    except Exception as e:
+        logger.error(f"Error explorando directorio {path}: {str(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo acceder al directorio")
+
 # --- Mantenimiento de Usuarios y Locales (Mantenidos para funcionalidad UI) ---
 @app.get("/api/v1/usuarios", response_model=List[UserSchema])
 async def get_users():

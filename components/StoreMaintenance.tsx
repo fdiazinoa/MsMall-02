@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { Store, ApiService } from '../api';
-import { 
-  Store as StoreIcon, Plus, Search, Building2, 
+import {
+  Store as StoreIcon, Plus, Search, Building2,
   User, FileText, MapPin, Tag, Maximize2, Percent, X
 } from 'lucide-react';
 
@@ -10,7 +10,33 @@ export const StoreMaintenance: React.FC = () => {
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  
+  const [isResetting, setIsResetting] = useState(false);
+
+  const handleResetSales = async () => {
+    if (!confirm("⚠️ ALERTA CRÍTICA ⚠️\n\nEstá a punto de BORRAR TODAS LAS VENTAS de la base de datos.\n\nEsta acción es irreversible y dejará los reportes vacíos.\n¿Desea continuar?")) {
+      return;
+    }
+
+    // Doble confirmación
+    if (!confirm("Confirmación Final:\n\n¿Realmente desea eliminar permanentemente el historial de ventas completo?")) {
+      return;
+    }
+
+    setIsResetting(true);
+    try {
+      const result = await ApiService.resetAllSales();
+      if (result.success) {
+        alert("✅ Operación Exitosa:\nLa tabla de ventas ha sido vaciada.");
+      } else {
+        alert("❌ Error:\n" + result.message);
+      }
+    } catch (e: any) {
+      alert("❌ Error de comunicación:\n" + (e.message || String(e)));
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   const [newStore, setNewStore] = useState<Partial<Store>>({
     nombre: '',
     codigo_interno: '',
@@ -39,7 +65,11 @@ export const StoreMaintenance: React.FC = () => {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await ApiService.createStore(newStore);
+      if (newStore.id) {
+        await ApiService.updateStore(newStore.id, newStore);
+      } else {
+        await ApiService.createStore(newStore);
+      }
       setShowForm(false);
       setNewStore({
         nombre: '',
@@ -54,9 +84,26 @@ export const StoreMaintenance: React.FC = () => {
         rubro: ''
       });
       loadStores();
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      alert("Error al guardar: " + (e.message || e));
     }
+  };
+
+  const handleDelete = async (id: string, nombre: string) => {
+    if (!confirm(`¿Está seguro de que desea eliminar el local "${nombre}"?\nEsta acción no se puede deshacer.`)) return;
+    try {
+      await ApiService.deleteStore(id);
+      loadStores();
+    } catch (e: any) {
+      console.error(e);
+      alert("Error al eliminar: " + (e.message || e));
+    }
+  };
+
+  const handleEdit = (store: Store) => {
+    setNewStore({ ...store });
+    setShowForm(true);
   };
 
   useEffect(() => {
@@ -70,7 +117,7 @@ export const StoreMaintenance: React.FC = () => {
           <h2 className="text-2xl font-bold text-slate-800">Mantenimiento de Locales</h2>
           <p className="text-slate-500">Gestione la configuración contractual y física de las tiendas.</p>
         </div>
-        <button 
+        <button
           onClick={() => setShowForm(!showForm)}
           className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-md active:scale-95 font-medium"
         >
@@ -92,30 +139,30 @@ export const StoreMaintenance: React.FC = () => {
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Básico</h4>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Nombre Comercial</label>
-                  <input 
+                  <input
                     type="text" required
                     value={newStore.nombre}
-                    onChange={(e) => setNewStore({...newStore, nombre: e.target.value})}
+                    onChange={(e) => setNewStore({ ...newStore, nombre: e.target.value })}
                     className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
                     placeholder="Ej. Adidas Store"
                   />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Código Interno</label>
-                  <input 
+                  <input
                     type="text" required
                     value={newStore.codigo_interno}
-                    onChange={(e) => setNewStore({...newStore, codigo_interno: e.target.value})}
+                    onChange={(e) => setNewStore({ ...newStore, codigo_interno: e.target.value })}
                     className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
                     placeholder="L001"
                   />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Tipo de Negocio</label>
-                  <input 
+                  <input
                     type="text"
                     value={newStore.tipo_negocio}
-                    onChange={(e) => setNewStore({...newStore, tipo_negocio: e.target.value})}
+                    onChange={(e) => setNewStore({ ...newStore, tipo_negocio: e.target.value })}
                     className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
                     placeholder="Ropa, Restaurante..."
                   />
@@ -127,20 +174,20 @@ export const StoreMaintenance: React.FC = () => {
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Contractual</h4>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Responsable</label>
-                  <input 
+                  <input
                     type="text"
                     value={newStore.responsable}
-                    onChange={(e) => setNewStore({...newStore, responsable: e.target.value})}
+                    onChange={(e) => setNewStore({ ...newStore, responsable: e.target.value })}
                     className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
                     placeholder="Nombre del encargado"
                   />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Nº Contrato</label>
-                  <input 
+                  <input
                     type="text"
                     value={newStore.contrato_no}
-                    onChange={(e) => setNewStore({...newStore, contrato_no: e.target.value})}
+                    onChange={(e) => setNewStore({ ...newStore, contrato_no: e.target.value })}
                     className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
                     placeholder="99-88-11"
                   />
@@ -148,10 +195,10 @@ export const StoreMaintenance: React.FC = () => {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">% Renta Variable</label>
                   <div className="relative">
-                    <input 
+                    <input
                       type="number" step="0.01"
                       value={newStore.porciento_renta}
-                      onChange={(e) => setNewStore({...newStore, porciento_renta: e.target.value})}
+                      onChange={(e) => setNewStore({ ...newStore, porciento_renta: e.target.value })}
                       className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none pr-8"
                       placeholder="5.00"
                     />
@@ -165,10 +212,10 @@ export const StoreMaintenance: React.FC = () => {
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Ubicación y Espacio</h4>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Piso / Ubicación</label>
-                  <input 
+                  <input
                     type="text"
                     value={newStore.piso}
-                    onChange={(e) => setNewStore({...newStore, piso: e.target.value})}
+                    onChange={(e) => setNewStore({ ...newStore, piso: e.target.value })}
                     className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
                     placeholder="P2-L01"
                   />
@@ -176,10 +223,10 @@ export const StoreMaintenance: React.FC = () => {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Metros Cuadrados (Mts2)</label>
                   <div className="relative">
-                    <input 
+                    <input
                       type="number" step="0.01"
                       value={newStore.mts}
-                      onChange={(e) => setNewStore({...newStore, mts: e.target.value})}
+                      onChange={(e) => setNewStore({ ...newStore, mts: e.target.value })}
                       className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none pr-10"
                       placeholder="100.00"
                     />
@@ -188,17 +235,32 @@ export const StoreMaintenance: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Rubro General</label>
-                  <input 
+                  <input
                     type="text"
                     value={newStore.rubro || ''}
-                    onChange={(e) => setNewStore({...newStore, rubro: e.target.value})}
+                    onChange={(e) => setNewStore({ ...newStore, rubro: e.target.value })}
                     className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
                     placeholder="Vestuario, Comida..."
                   />
                 </div>
+                <div className="pt-2">
+                  <label className="flex items-center gap-3 cursor-pointer group">
+                    <div className="relative">
+                      <input
+                        type="checkbox"
+                        checked={newStore.upsert_activo}
+                        onChange={(e) => setNewStore({ ...newStore, upsert_activo: e.target.checked })}
+                        className="sr-only peer"
+                      />
+                      <div className="w-10 h-5 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+                    </div>
+                    <span className="text-sm font-medium text-slate-700 group-hover:text-indigo-600 transition-colors">Activar Sobrescritura (Upsert)</span>
+                  </label>
+                  <p className="text-[10px] text-slate-400 mt-1 ml-13">Permite corregir facturas del mismo día sobrescribiendo datos existentes.</p>
+                </div>
               </div>
             </div>
-            
+
             <div className="pt-6 border-t border-slate-100 flex justify-end gap-3">
               <button type="button" onClick={() => setShowForm(false)} className="px-6 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Cancelar</button>
               <button type="submit" className="px-10 py-2.5 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-600/20 active:scale-95 transition-all">Guardar Local</button>
@@ -287,11 +349,19 @@ export const StoreMaintenance: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all" title="Editar">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                        <button
+                          onClick={() => handleEdit(store)}
+                          className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                          title="Editar"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
                         </button>
-                        <button className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all" title="Eliminar">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                        <button
+                          onClick={() => handleDelete(store.id, store.nombre)}
+                          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                          title="Eliminar"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /><line x1="10" x2="10" y1="11" y2="17" /><line x1="14" x2="14" y1="11" y2="17" /></svg>
                         </button>
                       </div>
                     </td>
@@ -309,6 +379,34 @@ export const StoreMaintenance: React.FC = () => {
               )}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Danger Zone */}
+      <div className="mt-8 border-t border-red-200 pt-8 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-150">
+        <h3 className="text-lg font-bold text-red-700 flex items-center gap-2 mb-4">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+          Zona de Peligro (Admin)
+        </h3>
+        <div className="bg-red-50 border border-red-200 rounded-xl p-6 flex flex-col md:flex-row items-center justify-between gap-6 hover:shadow-lg transition-shadow">
+          <div>
+            <h4 className="font-bold text-red-800 text-sm">Reiniciar Base de Datos de Ventas</h4>
+            <p className="text-red-600/80 text-xs mt-1 max-w-lg leading-relaxed">
+              Esta acción eliminará <strong>TODOS</strong> los registros de la tabla de ventas de forma permanente.
+              Utilice esta función solo para limpiar datos de prueba una vez concluidas las validaciones.
+            </p>
+          </div>
+          <button
+            onClick={handleResetSales}
+            disabled={isResetting}
+            className={`px-6 py-3 rounded-xl bg-red-600 text-white font-bold text-sm shadow-lg shadow-red-600/20 hover:bg-red-700 active:scale-95 transition-all flex items-center gap-2 border border-red-500 hover:border-red-400 ${isResetting ? 'opacity-70 cursor-not-allowed' : ''}`}
+          >
+            {isResetting ? (
+              <><div className="animate-spin h-4 w-4 border-2 border-white/30 border-t-white rounded-full"></div> Limpiando Base de Datos...</>
+            ) : (
+              <><span className="text-lg">🗑️</span> Borrar Todas las Ventas</>
+            )}
+          </button>
         </div>
       </div>
     </div>

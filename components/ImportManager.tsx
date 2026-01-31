@@ -3,10 +3,12 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '../api';
 // Fix: Import types from '../types' instead of '../api'
 import { ImportConfig, ImportProtocol } from '../types';
+import { SmartMappingModal } from './SmartMappingModal';
+import MappingModal from './MappingModal';
 import {
   Server, Plus, Play, Trash2, Settings2,
   ArrowRightLeft, CheckCircle2, XCircle, Clock,
-  Key, Globe, FolderOpen, Database, RefreshCw, AlertCircle
+  Key, Globe, FolderOpen, Database, RefreshCw, AlertCircle, FileSearch, FileText, Wand2
 } from 'lucide-react';
 
 const STANDARD_FIELDS = [
@@ -15,7 +17,9 @@ const STANDARD_FIELDS = [
   { key: 'local_codigo', label: 'Código Local', required: true },
   { key: 'total_bruto', label: 'Total Bruto', required: true },
   { key: 'total_impuestos', label: 'Impuestos', required: false },
-  { key: 'total_neto', label: 'Total Neto', required: false }
+  { key: 'total_neto', label: 'Total Neto', required: false },
+  { key: 'comprobante', label: 'Comprobante', required: false },
+  { key: 'hora_transaccion', label: 'Hora Transacción', required: false }
 ];
 
 export const ImportManager: React.FC = () => {
@@ -25,12 +29,36 @@ export const ImportManager: React.FC = () => {
   const [testingConnection, setTestingConnection] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [activeStep, setActiveStep] = useState(1);
+  const [tempPassword, setTempPassword] = useState('');
 
   // Explorer State
   const [showExplorer, setShowExplorer] = useState(false);
-  const [explorerPath, setExplorerPath] = useState('/');
+  const [explorerPath, setExplorerPath] = useState('.');
   const [explorerItems, setExplorerItems] = useState<{ nombre: string, ruta: string, es_dir: boolean }[]>([]);
   const [explorerLoading, setExplorerLoading] = useState(false);
+
+  // Mapping Helper State
+  const [remoteHeaders, setRemoteHeaders] = useState<string[]>([]);
+  const [fetchingHeaders, setFetchingHeaders] = useState(false);
+  const [showSmartMapping, setShowSmartMapping] = useState(false);
+
+  // Manual Execution Modal State
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualFiles, setManualFiles] = useState<{ nombre: string, fecha: string, tamano: number }[]>([]);
+  const [manualLoading, setManualLoading] = useState(false);
+  const [executingFile, setExecutingFile] = useState<string | null>(null);
+  const [activeConfigId, setActiveConfigId] = useState<string | null>(null);
+  const [fileStatuses, setFileStatuses] = useState<Record<string, 'success' | 'error' | 'idle'>>({});
+
+  // Mapping Modal State
+  const [showMappingModal, setShowMappingModal] = useState(false);
+  const [mappingData, setMappingData] = useState<{
+    fileHeaders: string[],
+    suggestedMapping: Record<string, any>,
+    currentMapping: Record<string, string>,
+    sampleRow: Record<string, any>,
+    filename: string
+  } | null>(null);
 
   const [editingConfig, setEditingConfig] = useState<ImportConfig>({
     id: '',
@@ -39,7 +67,7 @@ export const ImportManager: React.FC = () => {
     host: '',
     puerto: 22,
     usuario: '',
-    ruta_remota: '/',
+    ruta_remota: '.',
     tipo_archivo: 'CSV',
     frecuencia: 'manual',
     accion_post_procesado: 'ninguna',
@@ -50,9 +78,14 @@ export const ImportManager: React.FC = () => {
       local_codigo: '',
       total_bruto: '',
       total_impuestos: '',
-      total_neto: ''
-    }
+      total_neto: '',
+      comprobante: '',
+      hora_transaccion: ''
+    },
+    constants: {}
   });
+
+  const [availableStores, setAvailableStores] = useState<any[]>([]);
 
   const loadConfigs = async () => {
     setLoading(true);
@@ -61,46 +94,191 @@ export const ImportManager: React.FC = () => {
     setLoading(false);
   };
 
-  useEffect(() => { loadConfigs(); }, []);
+  const loadStores = async () => {
+    const stores = await ApiService.getStores();
+    setAvailableStores(stores);
+  };
+
+  useEffect(() => {
+    loadConfigs();
+    loadStores();
+  }, []);
 
   const handleTestConnection = async () => {
+    if (testingConnection) return;
+    console.log("Iniciando prueba de conexión...");
     setTestingConnection(true);
-    const success = await ApiService.testConnection(editingConfig);
-    setTestingConnection(false);
-    alert(success ? "Conexión exitosa con el servidor remoto." : "Error: No se pudo establecer la conexión. Verifique Host y Usuario.");
+    try {
+      const result = await ApiService.testConnection(editingConfig, tempPassword);
+      console.log("Resultado prueba recibida:", result);
+      alert(result.message);
+    } catch (error: any) {
+      console.error("Error en handleTestConnection:", error);
+      alert("Error inesperado en prueba de conexión: " + (error.message || error));
+    } finally {
+      console.log("Finalizando estado de prueba.");
+      setTestingConnection(false);
+    }
   };
 
   const handleSave = async () => {
     // Validar mapeo mínimo
-    const missing = STANDARD_FIELDS.filter(f => f.required && !editingConfig.mapping[f.key]);
+
+    const missing = STANDARD_FIELDS.filter(f => f.required && !editingConfig.mapping[f.key] && !editingConfig.constants?.[f.key]);
     if (missing.length > 0) {
       alert(`Faltan campos obligatorios en el mapeo: ${missing.map(m => m.label).join(', ')}`);
       return;
     }
 
-    await ApiService.saveImportConfig(editingConfig);
-    setShowForm(false);
-    setActiveStep(1);
-    setEditingConfig({
-      id: '', nombre: '', protocolo: 'SFTP', host: '', puerto: 22, usuario: '', ruta_remota: '/', tipo_archivo: 'CSV',
-      frecuencia: 'manual', accion_post_procesado: 'ninguna', estado: 'activo',
-      mapping: { factura_numero: '', fecha_venta: '', local_codigo: '', total_bruto: '', total_impuestos: '', total_neto: '' }
-    });
-    loadConfigs();
+    // Logic Check: If frequency is automated (not manual), path should likely be a folder, not a file
+    const isAutomated = editingConfig.frecuencia !== 'manual';
+    const looksLikeFile = editingConfig.ruta_remota.match(/\.[a-zA-Z0-9]+$/);
+
+    if (isAutomated && looksLikeFile) {
+      if (!confirm(`Advertencia: Has configurado una frecuencia automática (${editingConfig.frecuencia}) pero la ruta parece ser un archivo específico (${editingConfig.ruta_remota}).\n\nPara automatización, generalmente se debe apuntar a la CARPETA donde llegarán los nuevos archivos.\n\n¿Deseas continuar de todos modos?`)) {
+        return;
+      }
+    }
+
+    const configToSave = { ...editingConfig, password: tempPassword || editingConfig.password };
+    try {
+      await ApiService.saveImportConfig(configToSave);
+      setShowForm(false);
+      setActiveStep(1);
+      setTempPassword('');
+      setEditingConfig({
+        id: '', nombre: '', protocolo: 'SFTP', host: '', puerto: 22, usuario: '', ruta_remota: '.', tipo_archivo: 'CSV',
+        frecuencia: 'manual', accion_post_procesado: 'ninguna', estado: 'activo',
+        mapping: { factura_numero: '', fecha_venta: '', local_codigo: '', total_bruto: '', total_impuestos: '', total_neto: '', comprobante: '', hora_transaccion: '' },
+        constants: {},
+        password: ''
+      });
+      loadConfigs();
+    } catch (error: any) {
+      console.error("Error saving config:", error);
+      alert(`Error al guardar configuración: ${error.message || error}`);
+    }
   };
 
-  const handleSyncNow = async (id: string) => {
-    setSyncingId(id);
+  const handleSyncNow = async (id: string, name: string) => {
+    setActiveConfigId(id);
+    const config = configs.find(c => c.id === id);
+    if (!config) {
+      alert("Configuración no encontrada.");
+      return;
+    }
+
+    setShowManualModal(true);
+    setManualLoading(true);
     try {
-      const result = await ApiService.syncImportConnection(id);
-      if (result.success) {
-        alert(result.message);
-      } else {
-        alert("Error en la sincronización: " + result.message);
-      }
+      const files = await ApiService.listRemoteFiles(config);
+      setManualFiles(files);
+    } catch (error: any) {
+      console.error(error);
+      alert("Error al listar archivos remotos: " + (error.message || error));
     } finally {
-      setSyncingId(null);
-      loadConfigs();
+      setManualLoading(false);
+    }
+  };
+
+  const handleExecuteManualFile = async (filename: string) => {
+    if (!activeConfigId) return;
+    const config = configs.find(c => c.id === activeConfigId);
+    if (!config) return;
+
+    setExecutingFile(filename);
+    try {
+      // Step 1: Analyze file structure
+      console.log("Analizando estructura del archivo:", filename);
+      const analysis = await ApiService.analyzeSingleFile(config, filename);
+
+      // Step 2: Check if mapping is complete
+      const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
+      const currentMapping = analysis.current_mapping || {};
+      const missingFields = requiredFields.filter(f => !currentMapping[f]);
+
+      if (missingFields.length > 0 || analysis.csv_headers.length === 0) {
+        // Show mapping modal and close manual modal
+        console.log("Mapeo incompleto o sin headers, mostrando modal");
+        setMappingData({
+          fileHeaders: analysis.csv_headers,
+          suggestedMapping: analysis.suggested_mapping,
+          currentMapping: analysis.current_mapping,
+          sampleRow: analysis.sample_row,
+          filename: filename
+        });
+        setShowManualModal(false); // Close the manual files modal
+        setShowMappingModal(true);
+        setExecutingFile(null);
+        return;
+      }
+
+      // Step 3: If mapping is OK, process directly
+      console.log("Mapeo completo, procesando directamente");
+      const result = await ApiService.executeManualImport(config, filename);
+      alert(result.message);
+      // setManualFiles(prev => prev.filter(f => f.nombre !== filename)); // Don't remove, show status
+      setFileStatuses(prev => ({ ...prev, [filename]: 'success' }));
+    } catch (error: any) {
+      console.error(error);
+      alert("Error en ejecución: " + (error.message || error));
+      setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
+    } finally {
+      setExecutingFile(null);
+    }
+  };
+
+  const handleMappingConfirm = async (mapping: Record<string, string>, constants: Record<string, string>) => {
+    if (!activeConfigId || !mappingData) return;
+    const config = configs.find(c => c.id === activeConfigId);
+    if (!config) return;
+
+    setShowMappingModal(false);
+    setExecutingFile(mappingData.filename);
+
+    try {
+      // Combine mapping and constants into final mapping
+      // Constants override mapping where they exist
+      const finalMapping: Record<string, string> = { ...mapping };
+
+      console.log("Mapping recibido del modal:", mapping);
+      console.log("Constants recibidos del modal:", constants);
+
+      // Update config with new mapping and constants
+      const updatedConfig = {
+        ...config,
+        mapping: finalMapping,
+        constants: constants
+      };
+
+      console.log("Configuración actualizada a enviar:", updatedConfig);
+
+      // Execute import with updated mapping
+      const result = await ApiService.executeManualImport(updatedConfig, mappingData.filename);
+
+      // Show detailed message with errors if any
+      let alertMessage = result.message;
+      if (result.errors && result.errors.length > 0) {
+        alertMessage += "\n\nErrores encontrados:\n";
+        result.errors.forEach((err: any) => {
+          alertMessage += `\nLínea ${err.linea}: ${err.error}`;
+        });
+      }
+
+      console.log("Resultado completo:", result);
+      console.log("Resultado completo:", result);
+      alert(alertMessage);
+      // setManualFiles(prev => prev.filter(f => f.nombre !== mappingData.filename)); // Don't remove
+      setMappingData(null);
+      setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'success' }));
+      setShowManualModal(true); // Re-open list to show result
+      setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'success' }));
+    } catch (error: any) {
+      console.error(error);
+      alert("Error procesando archivo: " + (error.message || error));
+      setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'error' }));
+    } finally {
+      setExecutingFile(null);
     }
   };
 
@@ -112,19 +290,50 @@ export const ImportManager: React.FC = () => {
   };
 
   const handleOpenExplorer = async (initialPath: string) => {
+    console.log("Opening explorer with path:", initialPath);
+    console.log("Config:", editingConfig.host, editingConfig.usuario, "Pass len:", tempPassword.length);
     setShowExplorer(true);
     setExplorerLoading(true);
-    const data = await ApiService.exploreDirectory(initialPath || '/');
-    setExplorerPath(data.ruta_actual);
-    setExplorerItems(data.items);
+
+    try {
+      console.log("Calling ApiService.exploreDirectory...");
+      const data = await ApiService.exploreDirectory(
+        initialPath || '.',
+        editingConfig.protocolo,
+        editingConfig.host,
+        editingConfig.puerto,
+        editingConfig.usuario,
+        tempPassword
+      );
+      console.log("Explorer data received:", data);
+      setExplorerPath(data.ruta_actual);
+      setExplorerItems(data.items);
+    } catch (error: any) {
+      console.error(error);
+      alert("Error al abrir explorador: " + (error.message || error));
+      setExplorerItems([]);
+    }
     setExplorerLoading(false);
   };
 
   const handleNavigateExplorer = async (path: string) => {
     setExplorerLoading(true);
-    const data = await ApiService.exploreDirectory(path);
-    setExplorerPath(data.ruta_actual);
-    setExplorerItems(data.items);
+    try {
+      const data = await ApiService.exploreDirectory(
+        path,
+        editingConfig.protocolo,
+        editingConfig.host,
+        editingConfig.puerto,
+        editingConfig.usuario,
+        tempPassword
+      );
+      setExplorerPath(data.ruta_actual);
+      setExplorerItems(data.items);
+    } catch (error: any) {
+      console.error(error);
+      alert("Error al navegar: " + (error.message || error));
+      setExplorerItems([]);
+    }
     setExplorerLoading(false);
   };
 
@@ -141,7 +350,18 @@ export const ImportManager: React.FC = () => {
           <p className="text-slate-500 text-sm">Configure conexiones directas vía FTP/SFTP para auditoría automática.</p>
         </div>
         <button
-          onClick={() => setShowForm(true)}
+          onClick={() => {
+            setEditingConfig({
+              id: '', nombre: '', protocolo: 'SFTP', host: '', puerto: 22, usuario: '', ruta_remota: '.', tipo_archivo: 'CSV',
+              frecuencia: 'manual', accion_post_procesado: 'ninguna', estado: 'activo',
+              mapping: { factura_numero: '', fecha_venta: '', local_codigo: '', total_bruto: '', total_impuestos: '', total_neto: '', comprobante: '', hora_transaccion: '' },
+              constants: {},
+              password: ''
+            });
+            setTempPassword('');
+            setActiveStep(1);
+            setShowForm(true);
+          }}
           className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 active:scale-95 font-medium"
         >
           <Plus size={18} />
@@ -161,17 +381,67 @@ export const ImportManager: React.FC = () => {
                 2. Mapeo de Campos
               </div>
             </div>
-            <button onClick={() => setShowForm(false)} className="text-slate-400 hover:text-slate-600"><XCircle size={20} /></button>
+            <button onClick={() => {
+              setShowForm(false);
+              setTempPassword('');
+              setEditingConfig({
+                id: '', nombre: '', protocolo: 'SFTP', host: '', puerto: 22, usuario: '', ruta_remota: '.', tipo_archivo: 'CSV',
+                frecuencia: 'manual', accion_post_procesado: 'ninguna', estado: 'activo',
+                mapping: { factura_numero: '', fecha_venta: '', local_codigo: '', total_bruto: '', total_impuestos: '', total_neto: '', comprobante: '', hora_transaccion: '' },
+                constants: {},
+                password: ''
+              });
+            }} className="text-slate-400 hover:text-slate-600"><XCircle size={20} /></button>
           </div>
 
           <div className="p-8">
             {activeStep === 1 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="space-y-5">
+                  <div className="bg-indigo-50/50 p-4 rounded-2xl border border-indigo-100 mb-6">
+                    <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest mb-1.5 flex items-center gap-2">
+                      <Database size={12} /> Asociar a Local Existente
+                    </label>
+                    <select
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-indigo-500 transition-all"
+                      value={editingConfig.id || ''}
+                      onChange={e => {
+                        const selectedId = e.target.value;
+                        if (!selectedId) {
+                          setEditingConfig({ ...editingConfig, id: '', nombre: '' });
+                          return;
+                        }
+                        const store = availableStores.find(s => s.id === selectedId);
+                        if (store) {
+                          const existingConfig = configs.find(c => c.id === selectedId);
+                          if (existingConfig) {
+                            setEditingConfig({ ...existingConfig });
+                          } else {
+                            setEditingConfig({
+                              ...editingConfig,
+                              id: store.id,
+                              nombre: store.nombre,
+                              mapping: { ...editingConfig.mapping, local_codigo: store.codigo_interno }
+                            });
+                          }
+                        }
+                      }}
+                    >
+                      <option value="">-- Nuevo Local (Crear al guardar) --</option>
+                      {availableStores.map(s => (
+                        <option key={s.id} value={s.id}>{s.nombre} ({s.codigo_interno})</option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-slate-400 mt-2 italic">Recomendado: Seleccione un local ya registrado para evitar duplicados.</p>
+                  </div>
+
                   <div>
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Nombre de la Fuente</label>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 flex justify-between items-center">
+                      <span>Nombre de la Fuente / Conexión</span>
+                      {editingConfig.id && <span className="text-[9px] bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded">Vinculado a ID: {editingConfig.id.substring(0, 8)}...</span>}
+                    </label>
                     <input
-                      type="text" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
+                      type="text" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none font-medium"
                       placeholder="Ej: Nike Store - SFTP Principal"
                       value={editingConfig.nombre}
                       onChange={e => setEditingConfig({ ...editingConfig, nombre: e.target.value })}
@@ -194,9 +464,15 @@ export const ImportManager: React.FC = () => {
                       <div className="w-28">
                         <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Puerto</label>
                         <input
-                          type="number" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none"
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none"
                           value={editingConfig.puerto}
-                          onChange={e => setEditingConfig({ ...editingConfig, puerto: parseInt(e.target.value) })}
+                          onChange={e => {
+                            const val = e.target.value.replace(/\D/g, '');
+                            setEditingConfig({ ...editingConfig, puerto: val === '' ? 0 : parseInt(val) });
+                          }}
                         />
                       </div>
                     )}
@@ -238,15 +514,19 @@ export const ImportManager: React.FC = () => {
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Frecuencia de Sincronización</label>
                     <div className="grid grid-cols-2 gap-3">
                       {[
-                        { id: 'manual', label: 'Manual' },
-                        { id: 'cada_hora', label: 'Cada Hora' },
-                        { id: 'cada_2_horas', label: 'Cada 2 Horas' },
-                        { id: 'hora_especifica', label: 'Hora Específica' }
+                        { id: 'manual', label: 'Manual', mode: 'MANUAL' },
+                        { id: 'cada_hora', label: 'Cada Hora', mode: 'AUTOMATICO' },
+                        { id: 'cada_2_horas', label: 'Cada 2 Horas', mode: 'AUTOMATICO' },
+                        { id: 'hora_especifica', label: 'Hora Específica', mode: 'AUTOMATICO' }
                       ].map((freq) => (
                         <button
                           key={freq.id}
                           type="button"
-                          onClick={() => setEditingConfig({ ...editingConfig, frecuencia: freq.id as any })}
+                          onClick={() => setEditingConfig({
+                            ...editingConfig,
+                            frecuencia: freq.id as any,
+                            tipo_ejecucion: freq.mode as any
+                          })}
                           className={`py-2 px-3 rounded-xl border-2 font-bold text-[11px] transition-all text-left flex items-center gap-2 ${editingConfig.frecuencia === freq.id
                             ? 'border-indigo-600 bg-indigo-50 text-indigo-600'
                             : 'border-slate-100 bg-slate-50 text-slate-400 hover:bg-slate-100'
@@ -288,6 +568,8 @@ export const ImportManager: React.FC = () => {
                           <input
                             type="password" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
                             placeholder="Contraseña o Frase de paso SSH"
+                            value={tempPassword}
+                            onChange={e => setTempPassword(e.target.value)}
                           />
                         </div>
                       </div>
@@ -312,146 +594,375 @@ export const ImportManager: React.FC = () => {
                         value={editingConfig.ruta_remota}
                         onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
                       />
-
-                      {showExplorer && (
-                        <div className="absolute z-50 mt-2 w-full max-w-md left-0 bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in slide-in-from-top-2 duration-200">
-                          <div className="bg-slate-50 p-3 border-b border-slate-100 flex justify-between items-center">
-                            <span className="text-[10px] font-bold text-slate-500 truncate max-w-[80%]">{explorerPath}</span>
-                            <button onClick={() => setShowExplorer(false)} className="text-slate-400 hover:text-slate-600"><XCircle size={14} /></button>
-                          </div>
-                          <div className="max-h-60 overflow-y-auto p-2 space-y-1">
-                            {explorerLoading ? (
-                              <div className="py-8 text-center"><RefreshCw className="animate-spin mx-auto text-indigo-400" size={20} /></div>
-                            ) : (
-                              <>
-                                {explorerItems.map((item, idx) => (
-                                  <div
-                                    key={idx}
-                                    className="flex items-center justify-between p-2 hover:bg-indigo-50 rounded-lg cursor-pointer group transition-colors"
-                                    onClick={() => item.nombre === '..' ? handleNavigateExplorer(item.ruta) : handleNavigateExplorer(item.ruta)}
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <FolderOpen size={16} className="text-indigo-400" />
-                                      <span className="text-sm text-slate-700 font-medium">{item.nombre}</span>
-                                    </div>
-                                    {item.nombre !== '..' && (
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); handleSelectDirectory(item.ruta); }}
-                                        className="opacity-0 group-hover:opacity-100 bg-indigo-600 text-white text-[10px] px-2 py-1 rounded-md font-bold"
-                                      >
-                                        Seleccionar
-                                      </button>
-                                    )}
-                                  </div>
-                                ))}
-                                {explorerItems.length === 0 && (
-                                  <div className="py-4 text-center text-xs text-slate-400">No se encontraron carpetas</div>
-                                )}
-                              </>
-                            )}
-                          </div>
-                          <div className="p-3 bg-slate-50 border-t border-slate-100 flex justify-end">
-                            <button
-                              onClick={() => handleSelectDirectory(explorerPath)}
-                              className="bg-indigo-600 text-white text-xs px-4 py-1.5 rounded-lg font-bold hover:bg-indigo-700"
-                            >
-                              Seleccionar Actual
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   </div>
 
-                  <div className="pt-4 border-t border-slate-100">
+                  <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Acción Post-Procesado</label>
                     <div className="space-y-2">
                       {[
-                        { id: 'ninguna', label: 'Ninguna (Mantener archivo)' },
-                        { id: 'eliminar', label: 'Eliminar archivo después de procesar' },
-                        { id: 'renombrar', label: 'Renombrar archivo (Backup)' }
+                        { id: 'NINGUNA', label: 'Ninguna (Mantener archivo)', icon: 'Clock' },
+                        { id: 'ELIMINAR', label: 'Eliminar archivo después de procesar', icon: 'Trash2' },
+                        { id: 'RENOMBRAR_PROCESADO', label: 'Renombrar archivo (Backup)', icon: 'RefreshCw' }
                       ].map((action) => (
-                        <button
-                          key={action.id}
-                          type="button"
-                          onClick={() => setEditingConfig({ ...editingConfig, accion_post_procesado: action.id as any })}
-                          className={`w-full py-2.5 px-4 rounded-xl border-2 font-bold text-[11px] transition-all text-left flex items-center gap-3 ${editingConfig.accion_post_procesado === action.id
-                            ? 'border-indigo-600 bg-indigo-50 text-indigo-600'
-                            : 'border-slate-100 bg-slate-50 text-slate-400 hover:bg-slate-100'
-                            }`}
-                        >
-                          <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${editingConfig.accion_post_procesado === action.id ? 'border-indigo-600' : 'border-slate-300'}`}>
-                            {editingConfig.accion_post_procesado === action.id && <div className="w-2 h-2 rounded-full bg-indigo-600" />}
-                          </div>
-                          {action.label}
-                        </button>
+                        <div key={action.id} className="space-y-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditingConfig({ ...editingConfig, accion_post_procesado: action.id as any })}
+                            className={`w-full py-3 px-4 rounded-xl border-2 font-bold text-xs transition-all text-left flex items-center gap-3 ${editingConfig.accion_post_procesado === action.id
+                              ? 'border-indigo-600 bg-indigo-50 text-indigo-600'
+                              : 'border-slate-100 bg-slate-50 text-slate-400 hover:bg-slate-100'
+                              }`}
+                          >
+                            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${editingConfig.accion_post_procesado === action.id ? 'border-indigo-600' : 'border-slate-300'}`}>
+                              {editingConfig.accion_post_procesado === action.id && <div className="w-2 h-2 rounded-full bg-indigo-600" />}
+                            </div>
+                            {action.label}
+                          </button>
+                          {action.id === 'RENOMBRAR_PROCESADO' && editingConfig.accion_post_procesado === 'RENOMBRAR_PROCESADO' && (
+                            <div className="mt-2 ml-7 animate-in fade-in slide-in-from-top-1">
+                              <input
+                                type="text"
+                                placeholder="Prefijo (ej: procesado_)"
+                                className="w-full px-4 py-2 rounded-xl border border-slate-200 outline-none font-medium text-slate-600 text-xs shadow-inner bg-white/50"
+                                value={editingConfig.prefijo_renombrado || ''}
+                                onChange={e => setEditingConfig({ ...editingConfig, prefijo_renombrado: e.target.value })}
+                              />
+                            </div>
+                          )}
+                        </div>
                       ))}
                     </div>
-                    {editingConfig.accion_post_procesado === 'renombrar' && (
-                      <div className="mt-3 animate-in fade-in slide-in-from-top-1">
-                        <input
-                          type="text"
-                          placeholder="Prefijo (ej: procesado_)"
-                          className="w-full px-4 py-2 rounded-xl border border-slate-200 outline-none font-medium text-slate-600"
-                          value={editingConfig.prefijo_renombrado || ''}
-                          onChange={e => setEditingConfig({ ...editingConfig, prefijo_renombrado: e.target.value })}
-                        />
-                      </div>
-                    )}
                   </div>
 
+                  {showExplorer && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                      <div className="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-300 flex flex-col max-h-[80vh]">
+                        <div className="bg-slate-50 p-3 border-b border-slate-100 flex justify-between items-center">
+                          <span className="text-[10px] font-bold text-slate-500 truncate max-w-[80%]">{explorerPath}</span>
+                          <button onClick={() => setShowExplorer(false)} className="text-slate-400 hover:text-slate-600"><XCircle size={14} /></button>
+                        </div>
+                        <div className="max-h-60 overflow-y-auto p-2 space-y-1">
+                          {explorerLoading ? (
+                            <div className="py-8 text-center"><RefreshCw className="animate-spin mx-auto text-indigo-400" size={20} /></div>
+                          ) : (
+                            <>
+                              {explorerItems.map((item, idx) => (
+                                <div
+                                  key={idx}
+                                  className="flex items-center justify-between p-2 hover:bg-indigo-50 rounded-lg cursor-pointer group transition-colors"
+                                  onClick={() => {
+                                    if (item.nombre === '..') {
+                                      handleNavigateExplorer(item.ruta);
+                                      return;
+                                    }
+
+                                    if (item.es_dir) {
+                                      handleNavigateExplorer(item.ruta);
+                                    } else {
+                                      setShowExplorer(false);
+                                      setFetchingHeaders(true);
+
+                                      let detectedType = editingConfig.tipo_archivo;
+                                      const lowerName = item.nombre.toLowerCase();
+                                      if (lowerName.endsWith('.json')) detectedType = 'JSON';
+                                      else if (lowerName.endsWith('.xml')) detectedType = 'XML';
+                                      else if (lowerName.endsWith('.txt')) detectedType = 'TXT';
+                                      else if (lowerName.endsWith('.csv')) detectedType = 'CSV';
+
+                                      const newConfig = { ...editingConfig, ruta_remota: item.ruta, tipo_archivo: detectedType };
+                                      setEditingConfig(newConfig);
+
+                                      ApiService.analyzeRemoteMapping(newConfig, tempPassword, item.ruta)
+                                        .then(result => {
+                                          setRemoteHeaders(result.csv_headers || []);
+
+                                          // Extract just the header names from the suggested mapping
+                                          const newMapping: Record<string, string> = { ...editingConfig.mapping };
+                                          if (result.suggested_mapping) {
+                                            Object.entries(result.suggested_mapping).forEach(([field, suggestion]: [string, any]) => {
+                                              newMapping[field] = suggestion.csv_header;
+                                            });
+                                          }
+
+                                          setEditingConfig(prev => ({ ...prev, mapping: newMapping }));
+
+                                          // Auto-advance to mapping step if we are in step 1
+                                          if (activeStep === 1) setActiveStep(2);
+                                        })
+                                        .catch(err => {
+                                          console.error(err);
+                                          alert("Error analizando archivo: " + err.message);
+                                        })
+                                        .finally(() => setFetchingHeaders(false));
+                                    }
+                                  }}
+                                >
+                                  <div className="flex items-center gap-2">
+                                    {item.es_dir ? <FolderOpen size={16} className="text-indigo-400" /> : <FileText size={16} className="text-slate-400" />}
+                                    <span className="text-sm text-slate-700 font-medium">{item.nombre}</span>
+                                  </div>
+                                  {item.nombre !== '..' && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (item.es_dir) {
+                                          handleSelectDirectory(item.ruta);
+                                        } else {
+                                          // Logic duplicated in row click, effectively triggering the same
+                                          // But we can trigger the row click programmatically or just leave it
+                                          // Let's call the click logic by bubbling? No, stopPropagation is here.
+                                          // We need to duplicate or extract function.
+                                          // For simplicity in this replacement, I'll duplicate the logic for the button too
+                                          // strictly to match the behavior we just added to the row.
+
+                                          setShowExplorer(false);
+                                          setFetchingHeaders(true);
+
+                                          let detectedType = editingConfig.tipo_archivo;
+                                          const lowerName = item.nombre.toLowerCase();
+                                          if (lowerName.endsWith('.json')) detectedType = 'JSON';
+                                          else if (lowerName.endsWith('.xml')) detectedType = 'XML';
+                                          else if (lowerName.endsWith('.txt')) detectedType = 'TXT';
+                                          else if (lowerName.endsWith('.csv')) detectedType = 'CSV';
+
+                                          const newConfig = { ...editingConfig, ruta_remota: item.ruta, tipo_archivo: detectedType };
+                                          setEditingConfig(newConfig);
+
+                                          ApiService.analyzeRemoteMapping(newConfig, tempPassword, item.ruta)
+                                            .then(result => {
+                                              setRemoteHeaders(result.csv_headers || []);
+                                              const newMapping: Record<string, string> = { ...editingConfig.mapping };
+                                              if (result.suggested_mapping) {
+                                                Object.entries(result.suggested_mapping).forEach(([field, suggestion]: [string, any]) => {
+                                                  newMapping[field] = suggestion.csv_header;
+                                                });
+                                              }
+                                              setEditingConfig(prev => ({ ...prev, mapping: newMapping }));
+                                              if (activeStep === 1) setActiveStep(2);
+                                            })
+                                            .catch(err => {
+                                              console.error(err);
+                                              alert("Error analizando archivo: " + err.message);
+                                            })
+                                            .finally(() => setFetchingHeaders(false));
+                                        }
+                                      }}
+                                      className="bg-indigo-600 text-white text-[10px] px-2 py-1 rounded-md font-bold hover:bg-indigo-700 transition-colors"
+                                    >
+                                      {item.es_dir ? 'Seleccionar Carpeta' : 'Usar para Mapeo'}
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                              {explorerItems.length === 0 && (
+                                <div className="py-4 text-center text-xs text-slate-400">No se encontraron carpetas</div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                        <div className="p-3 bg-slate-50 border-t border-slate-100 flex justify-end">
+                          <button
+                            onClick={() => handleSelectDirectory(explorerPath)}
+                            className="bg-indigo-600 text-white text-xs px-4 py-1.5 rounded-lg font-bold hover:bg-indigo-700"
+                          >
+                            Seleccionar Actual (Dir)
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {editingConfig.protocolo !== 'LOCAL' && (
-                    <button
-                      type="button"
-                      onClick={handleTestConnection}
-                      disabled={testingConnection || !editingConfig.host}
-                      className="w-full py-2.5 border-2 border-indigo-50 text-indigo-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors disabled:opacity-50"
-                    >
-                      {testingConnection ? <RefreshCw className="animate-spin" size={18} /> : <Play size={16} fill="currentColor" />}
-                      {testingConnection ? 'Verificando red...' : 'Probar Conexión'}
-                    </button>
+                    <div className="flex flex-col gap-3">
+                      <button
+                        type="button"
+                        onClick={handleTestConnection}
+                        disabled={testingConnection || !editingConfig.host}
+                        className="w-full py-2.5 border-2 border-indigo-50 text-indigo-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors disabled:opacity-50 shadow-sm"
+                      >
+                        {testingConnection ? <RefreshCw className="animate-spin" size={18} /> : <Play size={16} fill="currentColor" />}
+                        {testingConnection ? 'Verificando red...' : 'Probar Conexión'}
+                      </button>
+
+                      {editingConfig.frecuencia === 'manual' && editingConfig.id && (
+                        <button
+                          type="button"
+                          onClick={() => handleSyncNow(editingConfig.id, editingConfig.nombre)}
+                          className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-600 transition-all shadow-lg active:scale-95 group"
+                        >
+                          <Database size={18} className="text-indigo-400 group-hover:text-white transition-colors" />
+                          Listar y Procesar Archivos
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
             ) : (
               <div className="space-y-6">
-                <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100 flex gap-4 text-indigo-700 items-start">
-                  <div className="p-2 bg-indigo-600 rounded-lg text-white">
-                    <Database size={20} />
+                <div className="flex justify-between items-center mb-6">
+                  <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100 flex gap-4 text-indigo-700 items-start flex-1">
+                    <div className="p-2 bg-indigo-600 rounded-lg text-white">
+                      <Database size={20} />
+                    </div>
+                    <div>
+                      <h5 className="font-bold text-sm">Motor de Transformación</h5>
+                      <p className="text-xs mt-1 leading-relaxed">
+                        El sistema buscará los nombres de columna definidos aquí en el archivo CSV remoto y los convertirá a nuestra estructura estándar de auditoría.
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <h5 className="font-bold text-sm">Motor de Transformación</h5>
-                    <p className="text-xs mt-1 leading-relaxed">
-                      El sistema buscará los nombres de columna definidos aquí en el archivo CSV remoto y los convertirá a nuestra estructura estándar de auditoría.
-                    </p>
-                  </div>
+
+                  <button
+                    onClick={() => {
+                      console.log("Button 'Seleccionar Archivo Ejemplo' clicked");
+                      handleOpenExplorer(editingConfig.ruta_remota);
+                    }}
+                    className="ml-4 px-4 py-3 bg-slate-900 text-white rounded-xl text-xs font-bold shadow-lg hover:bg-slate-800 transition-all flex items-center gap-2"
+                    disabled={fetchingHeaders}
+                  >
+                    {fetchingHeaders ? <RefreshCw className="animate-spin" size={16} /> : <FileSearch size={16} />}
+                    {fetchingHeaders ? 'Leyendo...' : 'Seleccionar Archivo'}
+                  </button>
+
+                  <button
+                    onClick={() => setShowSmartMapping(true)}
+                    className="ml-2 px-4 py-3 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all flex items-center gap-2 animate-pulse hover:animate-none"
+                  >
+                    <Wand2 size={16} /> Auto-Mapeo Mágico ✨
+                  </button>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-6 pt-4">
-                  {STANDARD_FIELDS.map(field => (
-                    <div key={field.key} className="relative group">
-                      <div className="flex justify-between items-center mb-1.5">
-                        <label className="text-[11px] font-bold text-slate-500 uppercase flex items-center gap-1">
-                          {field.label}
-                          {field.required && <span className="text-rose-500" title="Requerido">*</span>}
-                        </label>
-                        <span className="text-[10px] font-mono text-slate-400">Interno: {field.key}</span>
+                <SmartMappingModal
+                  isOpen={showSmartMapping}
+                  onClose={() => setShowSmartMapping(false)}
+                  onConfirm={(newMapping, sampleData) => {
+                    setEditingConfig({ ...editingConfig, mapping: { ...editingConfig.mapping, ...newMapping } });
+                    // Could optionally set sample data to show previews in the main form too if we wanted
+                  }}
+                  systemFields={STANDARD_FIELDS}
+                />
+
+                {remoteHeaders.length > 0 && (
+                  <div className="mb-6 p-3 bg-green-50 border border-green-100 rounded-xl flex items-center gap-2 text-green-700 text-xs font-bold animate-in fade-in">
+                    <CheckCircle2 size={16} />
+                    Se detectaron {remoteHeaders.length} columnas en el archivo remoto.
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 gap-y-6 pt-4">
+                  {STANDARD_FIELDS.map(field => {
+                    const isConstant = editingConfig.constants && field.key in editingConfig.constants;
+                    const currentValue = isConstant ? editingConfig.constants?.[field.key] : editingConfig.mapping[field.key];
+
+                    return (
+                      <div key={field.key} className="relative group bg-slate-50 p-4 rounded-xl border border-slate-200">
+                        <div className="flex justify-between items-center mb-3">
+                          <label className="text-xs font-bold text-slate-700 uppercase flex items-center gap-1">
+                            {field.label}
+                            {field.required && <span className="text-rose-500" title="Requerido">*</span>}
+                          </label>
+                          <span className="text-[10px] font-mono text-slate-400 bg-white px-2 py-0.5 rounded border border-slate-100">
+                            Interno: {field.key}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-col md:flex-row gap-3">
+                          <div className="md:w-1/3">
+                            <select
+                              className={`w-full px-3 py-2.5 rounded-xl border outline-none text-sm font-medium transition-colors ${isConstant ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600'
+                                }`}
+                              value={isConstant ? 'CONSTANT' : 'VARIABLE'}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                if (value === 'CONSTANT') {
+                                  // Switch to constant, clear mapping, set default empty constant
+                                  const newMapping = { ...editingConfig.mapping };
+                                  delete newMapping[field.key];
+
+                                  setEditingConfig({
+                                    ...editingConfig,
+                                    mapping: newMapping,
+                                    constants: { ...editingConfig.constants, [field.key]: '' }
+                                  });
+                                } else {
+                                  // Switch to variable, clear constant
+                                  const newConstants = { ...editingConfig.constants };
+                                  delete newConstants[field.key];
+                                  setEditingConfig({
+                                    ...editingConfig,
+                                    constants: newConstants
+                                  });
+                                }
+                              }}
+                            >
+                              <option value="VARIABLE">Columna CSV</option>
+                              <option value="CONSTANT">Valor Constante</option>
+                            </select>
+                          </div>
+
+                          <div className="flex-1 relative">
+                            {isConstant ? (
+                              <div className="relative group/input">
+                                <input
+                                  type="text"
+                                  className="w-full px-4 py-2.5 rounded-xl border border-indigo-400 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white text-indigo-900 placeholder:text-slate-300 font-bold shadow-sm transition-all"
+                                  placeholder={`Ingrese el valor fijo (ej: 001) ...`}
+                                  value={editingConfig.constants?.[field.key] || ''}
+                                  onChange={e => {
+                                    setEditingConfig({
+                                      ...editingConfig,
+                                      constants: { ...editingConfig.constants, [field.key]: e.target.value }
+                                    });
+                                  }}
+                                />
+                                <div className="absolute right-3 top-3 text-[10px] font-bold text-indigo-300 uppercase pointer-events-none group-focus-within/input:text-indigo-500 transition-colors">
+                                  Valor Fijo
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="relative">
+                                {remoteHeaders.length > 0 ? (
+                                  <select
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none pr-10 bg-white appearance-none"
+                                    value={currentValue || ''}
+                                    onChange={e => {
+                                      setEditingConfig({
+                                        ...editingConfig,
+                                        mapping: { ...editingConfig.mapping, [field.key]: e.target.value }
+                                      });
+                                    }}
+                                  >
+                                    <option value="">-- Seleccionar Columna Remota --</option>
+                                    {remoteHeaders.map(h => (
+                                      <option key={h} value={h}>{h}</option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input
+                                    type="text"
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none pr-10 bg-white placeholder:text-slate-400"
+                                    placeholder={`Nombre de la columna en el archivo CSV...`}
+                                    value={currentValue || ''}
+                                    onChange={e => {
+                                      setEditingConfig({
+                                        ...editingConfig,
+                                        mapping: { ...editingConfig.mapping, [field.key]: e.target.value }
+                                      });
+                                    }}
+                                  />
+                                )}
+                                <div className="absolute right-3.5 top-3 text-slate-300 pointer-events-none">
+                                  {remoteHeaders.length > 0 ? <ArrowRightLeft size={14} className="rotate-90" /> : <ArrowRightLeft size={14} />}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none pr-10 bg-slate-50 group-hover:bg-white transition-colors"
-                          placeholder={`Nombre columna en CSV...`}
-                          value={editingConfig.mapping[field.key]}
-                          onChange={e => {
-                            const newMapping = { ...editingConfig.mapping, [field.key]: e.target.value };
-                            setEditingConfig({ ...editingConfig, mapping: newMapping });
-                          }}
-                        />
-                        <ArrowRightLeft size={14} className="absolute right-3.5 top-3 text-slate-300" />
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 flex gap-3 text-amber-700 mt-4">
@@ -462,36 +973,35 @@ export const ImportManager: React.FC = () => {
                 </div>
               </div>
             )}
+          </div>
 
-            <div className="mt-10 pt-6 border-t border-slate-100 flex justify-end gap-3">
-              <button onClick={() => { setShowForm(false); setActiveStep(1); }} className="px-6 py-2.5 text-slate-500 font-medium hover:text-slate-800 transition-colors">Cerrar</button>
-              {activeStep === 1 ? (
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleSave}
-                    className="px-8 py-2.5 border-2 border-indigo-600 text-indigo-600 rounded-xl font-bold hover:bg-indigo-50 active:scale-95 transition-all"
-                  >
-                    Guardar
-                  </button>
-                  <button
-                    onClick={() => setActiveStep(2)}
-                    className="bg-indigo-600 text-white px-8 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-600/20 flex items-center gap-2 hover:bg-indigo-700 active:scale-95 transition-all"
-                  >
-                    Configurar Mapeo <ArrowRightLeft size={18} />
-                  </button>
-                </div>
-              ) : (
-                <div className="flex gap-2">
-                  <button onClick={() => setActiveStep(1)} className="px-6 py-2.5 border border-slate-200 rounded-xl text-slate-600 font-medium hover:bg-slate-50">Atrás</button>
-                  <button onClick={handleSave} className="bg-indigo-600 text-white px-10 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 active:scale-95 transition-all">Guardar y Activar</button>
-                </div>
-              )}
-            </div>
+          <div className="mt-10 pt-6 border-t border-slate-100 flex justify-end gap-3 px-8 pb-8">
+            <button onClick={() => { setShowForm(false); setActiveStep(1); }} className="px-6 py-2.5 text-slate-500 font-medium hover:text-slate-800 transition-colors">Cerrar</button>
+            {activeStep === 1 ? (
+              <div className="flex gap-2">
+                <button
+                  onClick={handleSave}
+                  className="px-8 py-2.5 border-2 border-indigo-600 text-indigo-600 rounded-xl font-bold hover:bg-indigo-50 active:scale-95 transition-all"
+                >
+                  Guardar
+                </button>
+                <button
+                  onClick={() => setActiveStep(2)}
+                  className="bg-indigo-600 text-white px-8 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-600/20 flex items-center gap-2 hover:bg-indigo-700 active:scale-95 transition-all"
+                >
+                  Configurar Mapeo <ArrowRightLeft size={18} />
+                </button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <button onClick={() => setActiveStep(1)} className="px-6 py-2.5 border border-slate-200 rounded-xl text-slate-600 font-medium hover:bg-slate-50">Atrás</button>
+                <button onClick={handleSave} className="bg-indigo-600 text-white px-10 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 active:scale-95 transition-all">Guardar y Activar</button>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Connection List Grid */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {loading ? (
           <div className="col-span-full py-20 text-center">
@@ -563,7 +1073,11 @@ export const ImportManager: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => { setEditingConfig(config); setShowForm(true); }}
+                  onClick={() => {
+                    setEditingConfig(config);
+                    setTempPassword(config.password || '');
+                    setShowForm(true);
+                  }}
                   className="p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
                   title="Editar Mapeo"
                 >
@@ -577,12 +1091,12 @@ export const ImportManager: React.FC = () => {
                   <Trash2 size={20} />
                 </button>
                 <button
-                  onClick={() => handleSyncNow(config.id)}
+                  onClick={() => handleSyncNow(config.id, config.nombre)}
                   disabled={syncingId === config.id}
                   className="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-xs font-bold hover:bg-indigo-600 transition-all flex items-center gap-2 shadow-lg shadow-slate-200 active:scale-95 disabled:opacity-50"
                 >
                   {syncingId === config.id ? <RefreshCw className="animate-spin" size={14} /> : <Play size={14} fill="white" />}
-                  {syncingId === config.id ? 'Sincronizando...' : 'Ejecutar Ahora'}
+                  Ejecutar Ahora
                 </button>
               </div>
             </div>
@@ -600,6 +1114,118 @@ export const ImportManager: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Manual Execution Modal */}
+      {showManualModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-4xl bg-white rounded-[2rem] border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col max-h-[85vh]">
+            <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-center">
+              <div>
+                <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                  <Play size={20} className="text-indigo-600" fill="currentColor" />
+                  Ejecución de Importación Manual
+                </h3>
+                <p className="text-slate-400 text-xs mt-0.5">Seleccione un archivo del servidor remoto para procesar inmediatamente.</p>
+              </div>
+              <button
+                onClick={() => setShowManualModal(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
+              >
+                <XCircle size={24} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6">
+              {manualLoading ? (
+                <div className="py-20 text-center">
+                  <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
+                  <p className="text-slate-500 font-medium">Buscando archivos en el servidor...</p>
+                </div>
+              ) : manualFiles.length > 0 ? (
+                <div className="overflow-hidden rounded-2xl border border-slate-100">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-100">
+                        <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nombre del Archivo</th>
+                        <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Fecha Modificación</th>
+                        <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Tamaño</th>
+                        <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Acción</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {manualFiles.map((file) => (
+                        <tr key={file.nombre} className="hover:bg-indigo-50/30 transition-colors group">
+                          <td className="px-5 py-4">
+                            <div className="flex items-center gap-3">
+                              <div className="p-2 bg-slate-100 rounded-lg group-hover:bg-indigo-100 group-hover:text-indigo-600 transition-colors">
+                                <FileText size={16} />
+                              </div>
+                              <span className="text-sm font-bold text-slate-700">{file.nombre}</span>
+                            </div>
+                          </td>
+                          <td className="px-5 py-4 text-xs text-slate-500">
+                            {new Date(file.fecha).toLocaleString()}
+                          </td>
+                          <td className="px-5 py-4 text-xs font-mono text-slate-500 text-right">
+                            {(file.tamano / 1024).toFixed(1)} KB
+                          </td>
+                          <td className="px-5 py-4 text-center">
+                            <button
+                              onClick={() => handleExecuteManualFile(file.nombre)}
+                              disabled={executingFile === file.nombre || fileStatuses[file.nombre] === 'success'}
+                              className={`px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all shadow-lg flex items-center gap-2 mx-auto disabled:opacity-50
+                                ${fileStatuses[file.nombre] === 'success'
+                                  ? 'bg-green-500 text-white shadow-green-200 cursor-default'
+                                  : fileStatuses[file.nombre] === 'error'
+                                    ? 'bg-rose-500 text-white shadow-rose-200 hover:bg-rose-600'
+                                    : 'bg-indigo-600 text-white shadow-indigo-200 hover:bg-indigo-700'
+                                }`}
+                            >
+                              {executingFile === file.nombre ? <RefreshCw className="animate-spin" size={14} />
+                                : fileStatuses[file.nombre] === 'success' ? <CheckCircle2 size={14} />
+                                  : <Play size={12} fill="white" />}
+                              {fileStatuses[file.nombre] === 'success' ? 'Procesado' : fileStatuses[file.nombre] === 'error' ? 'Reintentar' : 'Procesar Ahora'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="py-20 text-center">
+                  <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <FileSearch size={24} className="text-slate-300" />
+                  </div>
+                  <h4 className="font-bold text-slate-800">No se encontraron archivos</h4>
+                  <p className="text-slate-400 text-sm mt-1">Asegúrese de que el servidor tenga archivos con la extensión configurada.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-slate-50 p-6 border-t border-slate-100 flex justify-end">
+              <button
+                onClick={() => setShowManualModal(false)}
+                className="px-6 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-600 font-bold hover:bg-slate-50 active:scale-95 transition-all text-sm"
+              >
+                Cerrar Ventana
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mapping Modal - Rendered at root level for proper z-index */}
+      <MappingModal
+        isOpen={showMappingModal}
+        onClose={() => setShowMappingModal(false)}
+        onConfirm={handleMappingConfirm}
+        fileHeaders={mappingData?.fileHeaders || []}
+        suggestedMapping={mappingData?.suggestedMapping || {}}
+        currentMapping={mappingData?.currentMapping || {}}
+        sampleRow={mappingData?.sampleRow || {}}
+        filename={mappingData?.filename || ''}
+      />
     </div>
   );
 };

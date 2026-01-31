@@ -7,19 +7,38 @@ import { StoreMaintenance } from './StoreMaintenance';
 import { UserManagement } from './UserManagement';
 import { ImportManager } from './ImportManager';
 
+import { LoadMonitor } from './LoadMonitor';
+import { SmartInsights } from './SmartInsights';
+import { FinancialDashboard } from './FinancialDashboard';
+import { SalesCube } from './SalesCube';
+
 interface DashboardProps {
-  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import';
+  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube';
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
-  return (
-    <div className="space-y-6">
-      {activeTab === 'analytics' && <DashboardKPIs />}
-      {activeTab === 'reports' && <SalesReport />}
-      {activeTab === 'upload' && <UploadForm />}
-      {activeTab === 'stores' && <StoreMaintenance />}
-      {activeTab === 'users' && <UserManagement />}
-      {activeTab === 'auto-import' && <ImportManager />}
-    </div>
-  );
+  switch (activeTab) {
+    case 'analytics':
+      return <DashboardKPIs />;
+    case 'reports':
+      return <SalesReport />;
+    case 'upload':
+      return <UploadForm />;
+    case 'stores':
+      return <StoreMaintenance />;
+    case 'users':
+      return <UserManagement />;
+    case 'auto-import':
+      return <ImportManager />;
+    case 'monitor':
+      return <LoadMonitor />;
+    case 'financial':
+      return <FinancialDashboard />;
+    case 'insights':
+      return <SmartInsights />;
+    case 'cube':
+      return <SalesCube />;
+    default:
+      return <DashboardKPIs />;
+  }
 };

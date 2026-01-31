@@ -6,7 +6,7 @@ import { useAuth } from './context/AuthProvider';
 import { supabase } from './api';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights'>('analytics');
+  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls'>('analytics');
   const { session, loading } = useAuth();
 
   // Estados para el login

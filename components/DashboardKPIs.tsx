@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { KPIData, DateRange } from '../types';
 import { ApiService } from '../api';
+import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
 const COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
 
@@ -39,7 +40,11 @@ const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
   </div>
 );
 
+import { useAuth } from '../context/AuthProvider';
+
 export const DashboardKPIs: React.FC = () => {
+  const { currentMall, session } = useAuth();
+  const { format } = useFormatCurrency();
   const [data, setData] = useState<KPIData | null>(null);
   const [loading, setLoading] = useState(true);
   const [dates, setDates] = useState<DateRange>(() => {
@@ -52,9 +57,10 @@ export const DashboardKPIs: React.FC = () => {
   });
 
   const loadKPIs = async () => {
+    if (!currentMall?.id || !session?.access_token) return;
     setLoading(true);
     try {
-      const kpis = await ApiService.getKPIs(dates);
+      const kpis = await ApiService.getKPIs({ ...dates, mallId: currentMall.id }, session.access_token);
       setData(kpis);
     } catch (e) {
       console.error(e);
@@ -65,7 +71,7 @@ export const DashboardKPIs: React.FC = () => {
 
   useEffect(() => {
     loadKPIs();
-  }, [dates]);
+  }, [dates, currentMall]);
 
   if (loading || !data) return (
     <div className="flex items-center justify-center h-96">
@@ -101,7 +107,7 @@ export const DashboardKPIs: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <KPICard
           title="Ventas Brutas"
-          value={`$${(data.ventas_totales_neto || 0).toLocaleString()}`}
+          value={format(data.ventas_totales_neto || 0)}
           icon={DollarSign}
           trend={data.variacion_ventas}
           color="bg-indigo-500"
@@ -117,7 +123,7 @@ export const DashboardKPIs: React.FC = () => {
         />
         <KPICard
           title="Ticket Promedio"
-          value={`$${(data.ticket_promedio || 0).toFixed(2)}`}
+          value={format(data.ticket_promedio || 0)}
           icon={ShoppingBag}
           trend={-1.2}
           color="bg-amber-500"
@@ -125,7 +131,7 @@ export const DashboardKPIs: React.FC = () => {
         />
         <KPICard
           title="Ventas Netas"
-          value={`$${(data.ventas_totales_bruto || 0).toLocaleString()}`}
+          value={format(data.ventas_totales_bruto || 0)}
           icon={BarChart3}
           color="bg-rose-500"
           tooltip="Total de ingresos finales incluyendo impuestos (anteriormente Brutas)."
@@ -179,7 +185,7 @@ export const DashboardKPIs: React.FC = () => {
                   <div key={index} className="flex flex-col gap-1">
                     <div className="flex justify-between text-sm">
                       <span className="font-medium text-slate-700">{locale.name}</span>
-                      <span className="text-slate-500 font-mono">${locale.total.toLocaleString()}</span>
+                      <span className="text-slate-500 font-mono">{format(locale.total)}</span>
                     </div>
                     <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
                       <div

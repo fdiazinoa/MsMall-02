@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 import {
     CheckCircle2, XCircle, AlertCircle, Clock,
@@ -30,6 +31,7 @@ const StatCard = ({ title, count, icon: Icon, color, bgColor }: any) => (
 );
 
 export const LoadMonitor: React.FC = () => {
+    const { currentMall } = useAuth();
     const [logs, setLogs] = useState<LoadLog[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -38,9 +40,10 @@ export const LoadMonitor: React.FC = () => {
     const [statusFilter, setStatusFilter] = useState<'all' | 'exito' | 'parcial' | 'error'>('all');
 
     const loadData = async () => {
+        if (!currentMall?.id) return;
         setLoading(true);
         try {
-            const data = await ApiService.getLoadLogs();
+            const data = await ApiService.getLoadLogs(currentMall.id);
             setLogs(data);
         } catch (e) {
             console.error(e);
@@ -62,11 +65,13 @@ export const LoadMonitor: React.FC = () => {
     };
 
     useEffect(() => {
-        loadData();
-        // Refresh every 30 seconds
-        const interval = setInterval(loadData, 30000);
-        return () => clearInterval(interval);
-    }, []);
+        if (currentMall) {
+            loadData();
+            // Refresh every 30 seconds
+            const interval = setInterval(loadData, 30000);
+            return () => clearInterval(interval);
+        }
+    }, [currentMall]);
 
     const stats = {
         exito: logs.filter(l => l.estado === 'exito' && (!l.detalles || l.detalles.length === 0)).length,

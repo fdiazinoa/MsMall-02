@@ -11,7 +11,10 @@ import {
     Tooltip, ResponsiveContainer, Cell, LineChart, Line
 } from 'recharts';
 
+import { useAuth } from '../context/AuthProvider';
+
 export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initialLocalId }) => {
+    const { currentMall } = useAuth();
     const [selectedLocalId, setSelectedLocalId] = useState<string>(initialLocalId || '');
     const [availableStores, setAvailableStores] = useState<any[]>([]);
     const [alerts, setAlerts] = useState<any[]>([]);
@@ -27,14 +30,15 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
 
     useEffect(() => {
         const fetchStores = async () => {
-            const stores = await ApiService.getStores();
+            if (!currentMall?.id) return;
+            const stores = await ApiService.getStores(currentMall.id);
             setAvailableStores(stores);
             if (!selectedLocalId && stores.length > 0) {
                 setSelectedLocalId(stores[0].id);
             }
         };
         fetchStores();
-    }, []);
+    }, [currentMall]);
 
     useEffect(() => {
         if (!selectedLocalId) return;

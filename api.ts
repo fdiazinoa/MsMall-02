@@ -39,15 +39,21 @@ export interface Store {
 
 export const ApiService = {
   // --- MÉTODOS DE IMPORTACIÓN AUTOMATIZADA ---
-  async getImportConfigs(): Promise<ImportConfig[]> {
+  async getImportConfigs(mallId?: string): Promise<ImportConfig[]> {
     if (!supabase) return [];
 
     // Fetch only locals with configured SFTP host
-    const { data, error } = await supabase
+    let query = supabase
       .from('locales')
       .select('*')
       .not('sftp_host', 'is', null)
       .neq('sftp_host', ''); // Also exclude empty strings
+
+    if (mallId) {
+      query = query.eq('mall_id', mallId);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       console.error("Error fetching configs:", error);
@@ -379,14 +385,35 @@ export const ApiService = {
   },
 
   // --- MÉTODOS DE AUDITORÍA DE CARGA ---
-  async getLoadLogs(): Promise<any[]> {
+  async getLoadLogs(mallId?: string): Promise<any[]> {
     if (!supabase) return [];
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('logs_carga')
         .select('*')
         .order('fecha_hora', { ascending: false })
         .limit(50);
+
+      // Filter by mall if provided
+      if (mallId) {
+        // 1. Get store names for this mall
+        const { data: stores } = await supabase
+          .from('locales')
+          .select('nombre')
+          .eq('mall_id', mallId);
+
+        const storeNames = (stores || []).map((s: any) => s.nombre);
+
+        if (storeNames.length > 0) {
+          query = query.in('local_nombre', storeNames);
+        } else {
+          // If mall has no stores, return empty or filter by empty list (which returns 0)
+          // But query.in with empty list usually throws or returns all. Safety check:
+          return [];
+        }
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
       return data;
     } catch (error) {
@@ -431,7 +458,7 @@ export const ApiService = {
   },
 
   // --- OTROS MÉTODOS ---
-  async getSalesReport(dates: DateRange): Promise<SaleReport[]> {
+  async getSalesReport(dates: DateRange & { mallId?: string }, localId?: string): Promise<SaleReport[]> {
     if (!supabase) return [];
 
     try {
@@ -440,12 +467,21 @@ export const ApiService = {
       const pageSize = 1000;
 
       while (true) {
-        const { data: salesChunk, error } = await supabase
+        let query = supabase
           .from('ventas')
           .select('*')
           .gte('fecha', dates.startDate)
-          .lte('fecha', dates.endDate)
-          .range(page * pageSize, (page + 1) * pageSize - 1);
+          .lte('fecha', dates.endDate);
+
+        if (dates.mallId) {
+          query = query.eq('mall_id', dates.mallId);
+        }
+
+        if (localId) {
+          query = query.eq('local_id', localId);
+        }
+
+        const { data: salesChunk, error } = await query.range(page * pageSize, (page + 1) * pageSize - 1);
 
         if (error) throw error;
 
@@ -495,7 +531,7 @@ export const ApiService = {
     }
   },
 
-  async getSaleDetails(localId: string, dates: DateRange): Promise<SaleDetail[]> {
+  async getSaleDetails(localId: string, dates: DateRange & { mallId?: string }): Promise<SaleDetail[]> {
     if (!supabase) return [];
     if (!localId || localId === 'null') return [];
 
@@ -536,7 +572,8 @@ export const ApiService = {
     }
   },
 
-  async getKPIs(dates: DateRange): Promise<KPIData> {
+
+  async getKPIs(dates: DateRange & { mallId?: string }, token: string): Promise<KPIData> {
     try {
       // Call Backend API to assume Service Role access (Bypassing RLS)
       const params = new URLSearchParams({
@@ -544,7 +581,14 @@ export const ApiService = {
         end_date: dates.endDate
       });
 
-      const response = await fetch(`${BASE_URL}/analytics/dashboard?${params.toString()}`);
+      const headers: any = {
+        'Authorization': `Bearer ${token}`
+      };
+      if (dates.mallId) {
+        headers['X-Mall-Id'] = dates.mallId;
+      }
+
+      const response = await fetch(`${BASE_URL}/analytics/dashboard?${params.toString()}`, { headers });
       if (!response.ok) {
         throw new Error(`Failed to fetch dashboard data: ${response.statusText}`);
       }
@@ -569,13 +613,17 @@ export const ApiService = {
     }
   },
 
-  async getStores(): Promise<Store[]> {
+  async getStores(mallId?: string): Promise<Store[]> {
     if (!supabase) return [];
 
     try {
-      const { data, error } = await supabase
-        .from('locales')
-        .select('*');
+      let query = supabase.from('locales').select('*');
+
+      if (mallId) {
+        query = query.eq('mall_id', mallId);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
       return data as Store[];
@@ -808,16 +856,24 @@ export const ApiService = {
     });
   },
 
-  async getUsers(): Promise<User[]> {
-    const stored = localStorage.getItem(USERS_STORAGE_KEY);
-    return stored ? JSON.parse(stored) : [];
+  async getUsers(token: string): Promise<User[]> {
+    const response = await fetch(`${BASE_URL}/admin/users`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) throw new Error("Error fetching users");
+    return await response.json();
   },
 
-  async createUser(user: Partial<User>): Promise<User> {
-    const users = await this.getUsers();
-    const newUser = { ...user, id: crypto.randomUUID(), estado: 'activo', created_at: new Date().toISOString() } as User;
-    localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify([...users, newUser]));
-    return newUser;
+  async assignUserMalls(userId: string, mallIds: string[], role: string, token: string): Promise<void> {
+    const response = await fetch(`${BASE_URL}/admin/users/${userId}/malls`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ mall_ids: mallIds, rol: role })
+    });
+    if (!response.ok) throw new Error("Error assigning malls");
   },
 
   async toggleUserStatus(userId: string): Promise<void> {
@@ -883,13 +939,15 @@ export const ApiService = {
     }
   },
 
-  async getSalesCube(params: any): Promise<any> {
+
+  async getSalesCube(params: any, token: string): Promise<any> {
     try {
       const response = await fetch(`${BASE_URL}/analytics/cubo`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          // "X-API-Key": "demo-key-123" // Header global?
+          "Authorization": `Bearer ${token}`,
+          ...(params.mallId ? { "X-Mall-Id": params.mallId } : {})
         },
         body: JSON.stringify(params),
       });
@@ -919,6 +977,65 @@ export const ApiService = {
     } catch (error: any) {
       console.error("Analyze mapping error:", error);
       throw error.message || error;
+    }
+  },
+
+  // --- MALL MANAGEMENT (ADMIN) ---
+  async getMalls(token: string): Promise<any[]> {
+    try {
+      const response = await fetch(`${BASE_URL}/malls/all`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error("Error fetching malls");
+      return await response.json();
+    } catch (e) {
+      console.error(e);
+      return [];
+    }
+  },
+
+  async createMall(mallData: { nombre: string, conf_locale?: string, conf_moneda?: string, metadata?: any }, token: string): Promise<any> {
+    const response = await fetch(`${BASE_URL}/malls`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(mallData)
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Error creating mall");
+    }
+    return await response.json();
+  },
+
+  async updateMall(id: string, mallData: { nombre?: string, conf_locale?: string, conf_moneda?: string, metadata?: any }, token: string): Promise<any> {
+    const response = await fetch(`${BASE_URL}/malls/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(mallData)
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Error updating mall");
+    }
+    return await response.json();
+  },
+
+  async deleteMall(id: string, token: string): Promise<void> {
+    const response = await fetch(`${BASE_URL}/malls/${id}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Error deleting mall");
     }
   }
 };

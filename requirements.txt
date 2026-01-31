@@ -12,3 +12,5 @@ thefuzz==0.22.1
 pandas
 paramiko
 xmltodict
+openpyxl
+reportlab

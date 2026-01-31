@@ -92,10 +92,18 @@ def process_file_logic(config, filename, content):
             
         reader = csv.DictReader(io.StringIO(content))
         
-        # Get store ID
+        # Get store ID and Mall ID (Inferencia Backend)
         local_id = config.get('id')
+        mall_id = config.get('mall_id') # Assumes config comes with mall_id from select(*)
+        
         if not local_id:
             return 0, [{"linea": 0, "error": "No se pudo determinar el local_id"}]
+            
+        if not mall_id:
+             # Try to fetch if missing? For worker it should be in config as we verify select *
+             # But just in case
+             logger.warning(f"Mall ID missing for local {config['nombre']}")
+             # Optionally fetch it here, but optimal is to have it in config.
         
         # Get mapping
         mapping = config.get('mapping_config') or {}
@@ -119,14 +127,19 @@ def process_file_logic(config, filename, content):
                     detalles.append({"linea": i, "error": "Datos incompletos"})
                     continue
                 
-                # Insert to database
-                supabase.table("ventas").insert({
+                # Insert to database with Tenant ID
+                payload = {
                     "local_id": local_id,
                     "fecha": fecha_venta,
                     "total_bruto": total_bruto,
                     "total_impuestos": total_impuestos,
                     "total_neto": total_neto
-                }).execute()
+                }
+                
+                if mall_id:
+                    payload["mall_id"] = mall_id
+                
+                supabase.table("ventas").insert(payload).execute()
                 
                 registros_exito += 1
                 

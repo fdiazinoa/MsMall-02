@@ -1,13 +1,26 @@
 
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthProvider';
 import { SaleReport, DateRange, SaleDetail } from '../types';
 import { ApiService } from '../api';
-import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
+import { MissingDaysAlert } from './MissingDaysAlert';
+import { FileSpreadsheet, FileText, ChevronRight, ChevronDown, Loader2 } from 'lucide-react';
+import { formatCurrency, formatNumber } from '../utils/formatters';
+import { useFormatCurrency } from '../hooks/useFormatCurrency';
+import { ReporteAuditoriaTable } from './ReporteAuditoriaTable';
 
 export const SalesReport: React.FC = () => {
+  const { currentMall, session } = useAuth();
+  const { format } = useFormatCurrency();
+
   const [data, setData] = useState<SaleReport[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Export Modal State
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'excel' | 'pdf' | null>(null);
 
   // Drill-down states
   const [expandedLocalId, setExpandedLocalId] = useState<string | null>(null);
@@ -23,23 +36,84 @@ export const SalesReport: React.FC = () => {
     };
   });
 
+  // Stores state
+  const [stores, setStores] = useState<any[]>([]);
+  const [selectedLocal, setSelectedLocal] = useState<string>('');
+
   const fetchData = async () => {
+    if (!currentMall) return;
     setIsLoading(true);
     setError(null);
-    setExpandedLocalId(null); // Reset expansion on refresh
-    setDetailsData({}); // Clear details cache on refresh to ensure new dates are respected
+    setExpandedLocalId(null);
+    setDetailsData({});
     try {
-      const result = await ApiService.getSalesReport(dates);
+      const result = await ApiService.getSalesReport({ ...dates, mallId: currentMall.id }, selectedLocal || undefined);
       setData(result);
     } catch (err) {
       console.error(err);
-      setError('Error al cargar datos. Mostrando demo local.');
+      setError('Error al cargar datos.');
     } finally {
       setIsLoading(false);
     }
   };
 
+  const openExportModal = (format: 'excel' | 'pdf') => {
+    setExportFormat(format);
+    setShowExportModal(true);
+  };
+
+  const handleExport = async (type: 'detailed' | 'summary') => {
+    if (!exportFormat || !currentMall) return;
+    setIsExporting(true);
+    setShowExportModal(false);
+    try {
+      const endpoint = exportFormat === 'excel' ? 'excel' : 'pdf';
+      const ext = exportFormat === 'excel' ? 'xlsx' : 'pdf';
+
+      const paramsObj: any = {
+        fecha_inicio: dates.startDate,
+        fecha_fin: dates.endDate,
+        type: type
+      };
+
+      if (selectedLocal) {
+        paramsObj.local_id = selectedLocal;
+      }
+
+      const params = new URLSearchParams(paramsObj);
+
+      const token = session?.access_token;
+      const headers: HeadersInit = {
+        'X-Mall-Id': currentMall.id
+      };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/export/sales-report/${endpoint}?${params.toString()}`, {
+        headers
+      });
+
+      if (!response.ok) throw new Error("Export failed");
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `reporte_ventas_${type}_${dates.startDate}_${dates.endDate}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (e) {
+      console.error('Export error:', e);
+      alert('Error al exportar.');
+    } finally {
+      setIsExporting(false);
+      setExportFormat(null);
+    }
+  };
+
   const toggleRow = async (localId: string) => {
+    // ... existing toggleRow implementation ...
     if (expandedLocalId === localId) {
       setExpandedLocalId(null);
       return;
@@ -51,7 +125,7 @@ export const SalesReport: React.FC = () => {
     if (!detailsData[localId]) {
       setLoadingDetails(prev => ({ ...prev, [localId]: true }));
       try {
-        const details = await ApiService.getSaleDetails(localId, dates);
+        const details = await ApiService.getSaleDetails(localId, { ...dates, mallId: currentMall?.id });
         setDetailsData(prev => ({ ...prev, [localId]: details }));
       } catch (err) {
         console.error('Error fetching details:', err);
@@ -62,13 +136,70 @@ export const SalesReport: React.FC = () => {
   };
 
   useEffect(() => {
+    const loadStores = async () => {
+      try {
+        if (currentMall) {
+          const locals = await ApiService.getStores(currentMall.id);
+          setStores(locals);
+        }
+      } catch (e) {
+        console.error("Error loading stores", e);
+      }
+    };
+    loadStores();
+  }, [currentMall]);
+
+  useEffect(() => {
     fetchData();
-  }, []);
+  }, [dates, selectedLocal, currentMall]); // Refetch when dates or local changes
 
   const totalSales = data.reduce((sum, item) => sum + item.total_bruto, 0);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {/* Export Modal */}
+      {showExportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 transform transition-all scale-100">
+            <h3 className="text-lg font-bold text-slate-800 mb-2">Seleccionar Tipo de Reporte</h3>
+            <p className="text-slate-500 text-sm mb-6">
+              ¿Desea descargar un resumen consolidado o incluir el detalle de todas las facturas? {exportFormat?.toUpperCase()}
+            </p>
+
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => handleExport('summary')}
+                className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 hover:border-indigo-500 hover:bg-indigo-50 transition-colors group"
+              >
+                <div className="text-left">
+                  <span className="block font-bold text-slate-700 group-hover:text-indigo-700">Resumido</span>
+                  <span className="text-xs text-slate-400">Solo totales por local</span>
+                </div>
+                <div className="h-2 w-2 rounded-full bg-slate-300 group-hover:bg-indigo-500"></div>
+              </button>
+
+              <button
+                onClick={() => handleExport('detailed')}
+                className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 hover:border-indigo-500 hover:bg-indigo-50 transition-colors group"
+              >
+                <div className="text-left">
+                  <span className="block font-bold text-slate-700 group-hover:text-indigo-700">Detallado</span>
+                  <span className="text-xs text-slate-400">Totales + Lista de Facturas</span>
+                </div>
+                <div className="h-2 w-2 rounded-full bg-slate-300 group-hover:bg-indigo-500"></div>
+              </button>
+            </div>
+
+            <button
+              onClick={() => setShowExportModal(false)}
+              className="mt-6 w-full py-2 text-sm font-medium text-slate-400 hover:text-slate-600 transition-colors"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Filters Header */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col md:flex-row items-center justify-between gap-4">
         <div>
@@ -95,20 +226,65 @@ export const SalesReport: React.FC = () => {
               className="px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
             />
           </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-slate-400">Local:</span>
+            <select
+              value={selectedLocal}
+              onChange={(e) => setSelectedLocal(e.target.value)}
+              className="px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none min-w-[150px]"
+            >
+              <option value="">Todos los Locales</option>
+              {stores.map((store) => (
+                <option key={store.id} value={store.id}>
+                  {store.nombre}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <button
             onClick={fetchData}
             className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
           >
             Actualizar
           </button>
+
+          <div className="h-6 w-px bg-slate-200 mx-1"></div>
+
+          <button
+            onClick={() => openExportModal('excel')}
+            disabled={isExporting}
+            className="flex items-center gap-2 px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50"
+            title="Exportar Excel"
+          >
+            {isExporting ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}
+          </button>
+
+          <button
+            onClick={() => openExportModal('pdf')}
+            disabled={isExporting}
+            className="flex items-center gap-2 px-3 py-2 bg-rose-600 text-white rounded-lg text-sm font-medium hover:bg-rose-700 transition-colors disabled:opacity-50"
+            title="Exportar PDF"
+          >
+            {isExporting ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
+          </button>
         </div>
       </div>
+
+      {/* Global & Local Gap Analysis Alert */}
+      <MissingDaysAlert
+        localId={selectedLocal || null}
+        startDate={dates.startDate}
+        endDate={dates.endDate}
+        onSelectLocal={setSelectedLocal}
+      />
 
       {/* Stats Overview */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-indigo-600 rounded-2xl p-6 text-white shadow-md">
           <p className="text-indigo-100 text-sm font-medium">Ventas Totales (Neto)</p>
-          <p className="text-3xl font-bold mt-2">${totalSales.toLocaleString('es-CL', { minimumFractionDigits: 2 })}</p>
+          <p className="text-3xl font-bold mt-2">{format(totalSales)}</p>
         </div>
         <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
           <p className="text-slate-400 text-sm font-medium">Locales Auditados</p>
@@ -128,124 +304,14 @@ export const SalesReport: React.FC = () => {
           </div>
         )}
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>
-                <th className="w-10 px-4 py-4"></th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Local</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Centro Comercial</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Bruto</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Impuestos</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Neto</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {isLoading ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-20 text-center text-slate-400">Cargando datos...</td>
-                </tr>
-              ) : data.length > 0 ? (
-                data.map((row, idx) => {
-                  const details = detailsData[row.local_id] || [];
-                  const subTotalBruto = details.reduce((sum, d) => sum + d.total_bruto, 0);
-                  const subTotalImpuestos = details.reduce((sum, d) => sum + d.total_impuestos, 0);
-                  const subTotalNeto = details.reduce((sum, d) => sum + d.total_neto, 0);
-
-                  return (
-                    <React.Fragment key={row.local_id}>
-                      <tr
-                        className={`hover:bg-slate-50 transition-colors cursor-pointer ${expandedLocalId === row.local_id ? 'bg-slate-50/80' : ''}`}
-                        onClick={() => toggleRow(row.local_id)}
-                      >
-                        <td className="px-4 py-4 text-center">
-                          {expandedLocalId === row.local_id ? (
-                            <ChevronDown size={18} className="text-indigo-600" />
-                          ) : (
-                            <ChevronRight size={18} className="text-slate-400" />
-                          )}
-                        </td>
-                        <td className="px-6 py-4 font-medium text-slate-800">{row.local_nombre}</td>
-                        <td className="px-6 py-4 text-slate-500">{row.mall_nombre}</td>
-                        <td className="px-6 py-4 text-right font-mono font-medium text-slate-700">${row.total_neto.toLocaleString('es-CL', { minimumFractionDigits: 2 })}</td>
-                        <td className="px-6 py-4 text-right font-mono text-slate-400">${row.total_impuestos.toLocaleString('es-CL', { minimumFractionDigits: 2 })}</td>
-                        <td className="px-6 py-4 text-right font-mono font-bold text-indigo-600">${row.total_bruto.toLocaleString('es-CL', { minimumFractionDigits: 2 })}</td>
-                      </tr>
-
-                      {/* Expandable Detail Row */}
-                      {expandedLocalId === row.local_id && (
-                        <tr>
-                          <td colSpan={6} className="px-0 py-0 bg-slate-50/50">
-                            <div className="p-6 border-l-4 border-indigo-500 animate-in slide-in-from-top-2 duration-200">
-                              <h4 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
-                                Detalle de Facturas - {row.local_nombre}
-                                {loadingDetails[row.local_id] && <Loader2 size={14} className="animate-spin text-indigo-500" />}
-                              </h4>
-
-                              <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                                <table className="w-full text-left text-xs">
-                                  <thead className="bg-slate-100/80 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-tighter">
-                                    <tr>
-                                      <th className="px-4 py-3">Fecha</th>
-                                      <th className="px-4 py-3">Hora</th>
-                                      <th className="px-4 py-3">Nro Factura</th>
-                                      <th className="px-4 py-3 text-right">Neto</th>
-                                      <th className="px-4 py-3 text-right">Impuesto</th>
-                                      <th className="px-4 py-3 text-right">Bruto</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-slate-100">
-                                    {loadingDetails[row.local_id] ? (
-                                      <tr>
-                                        <td colSpan={6} className="px-4 py-8 text-center text-slate-400 italic">
-                                          Cargando boletas...
-                                        </td>
-                                      </tr>
-                                    ) : details.length > 0 ? (
-                                      <>
-                                        {details.map((detail) => (
-                                          <tr key={detail.id} className="hover:bg-slate-50/80 transition-colors">
-                                            <td className="px-4 py-2.5 text-slate-600">{detail.fecha}</td>
-                                            <td className="px-4 py-2.5 text-slate-500">{detail.hora}</td>
-                                            <td className="px-4 py-2.5 font-medium text-slate-700">{detail.factura_no}</td>
-                                            <td className="px-4 py-2.5 text-right font-mono">${detail.total_bruto.toLocaleString('es-CL', { minimumFractionDigits: 2 })}</td>
-                                            <td className="px-4 py-2.5 text-right font-mono text-slate-400">${detail.total_impuestos.toLocaleString('es-CL', { minimumFractionDigits: 2 })}</td>
-                                            <td className="px-4 py-2.5 text-right font-mono font-bold text-slate-700">${detail.total_neto.toLocaleString('es-CL', { minimumFractionDigits: 2 })}</td>
-                                          </tr>
-                                        ))}
-                                        {/* Summary Row */}
-                                        <tr className="bg-slate-50 font-bold border-t-2 border-slate-200">
-                                          <td colSpan={3} className="px-4 py-3 text-right text-slate-500 uppercase tracking-wider">Totales Detalle:</td>
-                                          <td className="px-4 py-3 text-right font-mono text-slate-800">${subTotalBruto.toLocaleString('es-CL', { minimumFractionDigits: 2 })}</td>
-                                          <td className="px-4 py-3 text-right font-mono text-slate-500">${subTotalImpuestos.toLocaleString('es-CL', { minimumFractionDigits: 2 })}</td>
-                                          <td className="px-4 py-3 text-right font-mono text-indigo-600">${subTotalNeto.toLocaleString('es-CL', { minimumFractionDigits: 2 })}</td>
-                                        </tr>
-                                      </>
-                                    ) : (
-                                      <tr>
-                                        <td colSpan={6} className="px-4 py-8 text-center text-slate-400 italic">
-                                          No se encontraron facturas detalladas.
-                                        </td>
-                                      </tr>
-                                    )}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })
-              ) : (
-                <tr>
-                  <td colSpan={6} className="px-6 py-20 text-center text-slate-400">No hay ventas registradas en este periodo.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <ReporteAuditoriaTable
+          data={data}
+          isLoading={isLoading}
+          detailsData={detailsData}
+          loadingDetails={loadingDetails}
+          toggleRow={toggleRow}
+          expandedLocalId={expandedLocalId}
+        />
       </div>
     </div>
   );

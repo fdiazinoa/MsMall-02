@@ -11,9 +11,10 @@ import { LoadMonitor } from './LoadMonitor';
 import { SmartInsights } from './SmartInsights';
 import { FinancialDashboard } from './FinancialDashboard';
 import { SalesCube } from './SalesCube';
+import { MallManager } from './MallManager';
 
 interface DashboardProps {
-  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube';
+  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls';
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
@@ -38,6 +39,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
       return <SmartInsights />;
     case 'cube':
       return <SalesCube />;
+    case 'malls':
+      return <MallManager />;
     default:
       return <DashboardKPIs />;
   }

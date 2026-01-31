@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 // Fix: Import types from '../types' instead of '../api'
 import { ImportConfig, ImportProtocol } from '../types';
@@ -23,6 +24,7 @@ const STANDARD_FIELDS = [
 ];
 
 export const ImportManager: React.FC = () => {
+  const { currentMall } = useAuth();
   const [configs, setConfigs] = useState<ImportConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncingId, setSyncingId] = useState<string | null>(null);
@@ -88,8 +90,9 @@ export const ImportManager: React.FC = () => {
   const [availableStores, setAvailableStores] = useState<any[]>([]);
 
   const loadConfigs = async () => {
+    if (!currentMall?.id) return;
     setLoading(true);
-    const data = await ApiService.getImportConfigs();
+    const data = await ApiService.getImportConfigs(currentMall.id);
     setConfigs(data);
     setLoading(false);
   };
@@ -100,9 +103,11 @@ export const ImportManager: React.FC = () => {
   };
 
   useEffect(() => {
-    loadConfigs();
-    loadStores();
-  }, []);
+    if (currentMall) {
+      loadConfigs();
+      loadStores();
+    }
+  }, [currentMall]);
 
   const handleTestConnection = async () => {
     if (testingConnection) return;

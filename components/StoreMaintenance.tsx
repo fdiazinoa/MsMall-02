@@ -1,12 +1,14 @@
 
 import React, { useState, useEffect } from 'react';
 import { Store, ApiService } from '../api';
+import { useAuth } from '../context/AuthProvider';
 import {
   Store as StoreIcon, Plus, Search, Building2,
   User, FileText, MapPin, Tag, Maximize2, Percent, X
 } from 'lucide-react';
 
 export const StoreMaintenance: React.FC = () => {
+  const { currentMall } = useAuth();
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -40,7 +42,7 @@ export const StoreMaintenance: React.FC = () => {
   const [newStore, setNewStore] = useState<Partial<Store>>({
     nombre: '',
     codigo_interno: '',
-    mall_id: 'c23e99b6-8feb-4be8-8842-86c263bc5cad',
+    mall_id: '',
     responsable: '',
     contrato_no: '',
     piso: '',
@@ -51,9 +53,10 @@ export const StoreMaintenance: React.FC = () => {
   });
 
   const loadStores = async () => {
+    if (!currentMall?.id) return;
     setLoading(true);
     try {
-      const data = await ApiService.getStores();
+      const data = await ApiService.getStores(currentMall.id);
       setStores(data);
     } catch (e) {
       console.error(e);
@@ -64,17 +67,25 @@ export const StoreMaintenance: React.FC = () => {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentMall?.id) {
+      alert("Error: No se ha seleccionado un Mall.");
+      return;
+    }
+
+    // Ensure mall_id is set
+    const storeToSave = { ...newStore, mall_id: currentMall.id };
+
     try {
-      if (newStore.id) {
-        await ApiService.updateStore(newStore.id, newStore);
+      if (storeToSave.id) {
+        await ApiService.updateStore(storeToSave.id, storeToSave);
       } else {
-        await ApiService.createStore(newStore);
+        await ApiService.createStore(storeToSave);
       }
       setShowForm(false);
       setNewStore({
         nombre: '',
         codigo_interno: '',
-        mall_id: 'c23e99b6-8feb-4be8-8842-86c263bc5cad',
+        mall_id: currentMall.id,
         responsable: '',
         contrato_no: '',
         piso: '',
@@ -108,7 +119,7 @@ export const StoreMaintenance: React.FC = () => {
 
   useEffect(() => {
     loadStores();
-  }, []);
+  }, [currentMall]);
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">

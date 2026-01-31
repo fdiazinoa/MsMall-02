@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthProvider';
 import {
     ScatterChart, Scatter, XAxis, YAxis, ZAxis,
     CartesianGrid, Tooltip, ResponsiveContainer,
@@ -6,88 +7,164 @@ import {
 } from 'recharts';
 import {
     TrendingUp, AlertCircle, DollarSign,
-    ArrowUpRight, PieChart, Users, Info
+    ArrowUpRight, PieChart, Users, Info,
+    FileSpreadsheet, FileText, Loader2, Calendar, ArrowRight
 } from 'lucide-react';
 import { ApiService } from '../api';
+import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
 export const FinancialDashboard: React.FC = () => {
+    const { currentMall, session } = useAuth();
+    const { format } = useFormatCurrency();
     const [data, setData] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
+    const [isExporting, setIsExporting] = useState(false);
+
+    // Date state
+    const [dates, setDates] = useState<{ startDate: string, endDate: string }>(() => {
+        const now = new Date();
+        const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+        const end = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+        return { startDate: start, endDate: end };
+    });
+
+    const fetchFinancialData = async () => {
+        if (!currentMall || !session?.access_token) return;
+        setLoading(true);
+        try {
+            const stores = await ApiService.getStores(currentMall.id);
+            const kpiData = await ApiService.getKPIs({ startDate: dates.startDate, endDate: dates.endDate, mallId: currentMall.id }, session.access_token);
+            const salesMap = kpiData.ventas_por_tienda_completo || {};
+
+            const processed = stores.map(s => {
+                const ventaActual = salesMap[s.nombre] || 0;
+
+                // Simple projection (keep as is for now, or improve)
+                const proyeccion = ventaActual;
+                const rentaFija = Number(s.renta_fija) || 0;
+                const ocr = ventaActual > 0 ? (rentaFija / ventaActual) * 100 : 0;
+                const breakpoint = Number(s.breakpoint_venta) || 0;
+                const pctVar = Number(s.porcentaje_variable || s.porciento_renta) || 0;
+
+                let rentaVariable = 0;
+                if (proyeccion > breakpoint && breakpoint > 0) {
+                    rentaVariable = Math.max(0, (proyeccion * pctVar / 100) - rentaFija);
+                }
+
+                return {
+                    id: s.id,
+                    name: s.nombre,
+                    venta: ventaActual,
+                    proyeccion,
+                    ocr,
+                    rentaVariable,
+                    m2: Number(s.mts) || 1
+                };
+            });
+            setData(processed);
+        } catch (error) {
+            console.error("Error loading financial data:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     useEffect(() => {
-        const fetchFinancialData = async () => {
-            setLoading(true);
-            try {
-                // Mocking the behavior of analytics.py integration
-                // In a real scenario, this would call a new backend endpoint
-                const stores = await ApiService.getStores();
-
-                // Fetch real sales data for the current month
-                const now = new Date();
-                const startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-                const endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
-
-                const kpiData = await ApiService.getKPIs({ startDate, endDate });
-                const salesMap = kpiData.ventas_por_tienda_completo || {};
-
-                const processed = stores.map(s => {
-                    const ventaActual = salesMap[s.nombre] || 0; // Use real data or 0
-
-                    // Simple projection: If we are not at end of month, extrapolate
-                    // const dayOfMonth = now.getDate();
-                    // const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-                    // const factor = dayOfMonth > 0 ? (daysInMonth / dayOfMonth) : 1;
-                    // For now, let's keep it simple: Sale * 1.0 (assuming import is full month or simple view)
-                    // Or keep the 1.2 projection if desired by user, but based on REAL data.
-                    const proyeccion = ventaActual;
-
-                    const rentaFija = Number(s.renta_fija) || 0; // Default to 0 if not set, to avoid NaN
-
-                    // Avoid division by zero
-                    const ocr = ventaActual > 0 ? (rentaFija / ventaActual) * 100 : 0;
-
-                    const breakpoint = Number(s.breakpoint_venta) || 0;
-                    const pctVar = Number(s.porcentaje_variable || s.porciento_renta) || 0;
-
-                    let rentaVariable = 0;
-                    if (proyeccion > breakpoint && breakpoint > 0) {
-                        rentaVariable = Math.max(0, (proyeccion * pctVar / 100) - rentaFija);
-                    }
-
-                    return {
-                        id: s.id,
-                        name: s.nombre,
-                        venta: ventaActual,
-                        proyeccion,
-                        ocr,
-                        rentaVariable,
-                        m2: Number(s.mts) || 1 // Avoid division by zero in Avg Calc
-                    };
-                });
-                setData(processed.filter(d => d.venta > 0 || d.name === 'Skechers')); // Optional: filter out 0 sales if desired, but user likely wants to see all. Let's keep all.
-                // Actually, let's keep all stores so they see who has 0 sales (like Pollo Victorina)
-                setData(processed);
-            } catch (error) {
-                console.error("Error loading financial data:", error);
-            } finally {
-                setLoading(false);
-            }
-        };
         fetchFinancialData();
-    }, []);
+    }, [dates, currentMall]); // Refetch when dates change
 
-    if (loading) return <div className="h-64 flex items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>;
+    const handleExport = async (type: 'excel' | 'pdf') => {
+        if (!currentMall) return;
+        setIsExporting(true);
+        try {
+            const endpoint = type === 'excel' ? 'excel' : 'pdf';
+            const ext = type === 'excel' ? 'xlsx' : 'pdf';
+            const params = new URLSearchParams({
+                fecha_inicio: dates.startDate,
+                fecha_fin: dates.endDate
+            });
+
+            const token = session?.access_token;
+            const headers: HeadersInit = {
+                'X-Mall-Id': currentMall.id
+            };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+
+            const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/export/financial-dashboard/${endpoint}?${params.toString()}`, {
+                headers
+            });
+
+            if (!response.ok) throw new Error("Export failed");
+
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `salud_cartera_${dates.startDate}_${dates.endDate}.${ext}`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        } catch (e) {
+            console.error(e);
+            alert("Error al exportar");
+        } finally {
+            setIsExporting(false);
+        }
+    };
+
+    if (loading && !data.length) return <div className="h-64 flex items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>;
 
     const avgSalesM2 = data.length > 0
         ? data.reduce((acc, curr) => acc + (curr.venta / curr.m2), 0) / data.length
         : 0;
     const storesAtRisk = data.filter(s => s.ocr > 20).length;
 
-    console.log("Financial Data Sample:", data.length > 0 ? JSON.stringify(data[0]) : "No data");
-    console.log("Avg Sales M2:", avgSalesM2);
-
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
+            {/* Header with Filters & Exports */}
+            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
+                <div>
+                    <h2 className="text-xl font-bold text-slate-800">Salud Financiera</h2>
+                    <p className="text-slate-500 text-sm">Análisis de OCR y Proyecciones</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200">
+                        <Calendar size={16} className="text-slate-400" />
+                        <input
+                            type="date"
+                            className="bg-transparent border-none text-sm outline-none w-32 text-slate-600"
+                            value={dates.startDate}
+                            onChange={(e) => setDates({ ...dates, startDate: e.target.value })}
+                        />
+                        <ArrowRight size={14} className="text-slate-300" />
+                        <input
+                            type="date"
+                            className="bg-transparent border-none text-sm outline-none w-32 text-slate-600"
+                            value={dates.endDate}
+                            onChange={(e) => setDates({ ...dates, endDate: e.target.value })}
+                        />
+                    </div>
+
+                    <button
+                        onClick={() => handleExport('excel')}
+                        disabled={isExporting}
+                        className="flex items-center gap-2 px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                        title="Exportar Excel"
+                    >
+                        {isExporting ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}
+                    </button>
+                    <button
+                        onClick={() => handleExport('pdf')}
+                        disabled={isExporting}
+                        className="flex items-center gap-2 px-3 py-2 bg-rose-600 text-white rounded-lg text-sm font-medium hover:bg-rose-700 transition-colors disabled:opacity-50"
+                        title="Exportar PDF"
+                    >
+                        {isExporting ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
+                    </button>
+                </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm relative group">
                     <div className="absolute top-6 right-6 text-slate-300 hover:text-indigo-500 transition-colors cursor-help">
@@ -98,7 +175,7 @@ export const FinancialDashboard: React.FC = () => {
                     </div>
                     <div className="p-2 bg-indigo-50 text-indigo-600 w-fit rounded-xl mb-4"><DollarSign size={20} /></div>
                     <p className="text-slate-500 text-sm font-medium">Venta Prom m² Mall</p>
-                    <h3 className="text-2xl font-bold text-slate-900 mt-1">${avgSalesM2.toFixed(2)}</h3>
+                    <h3 className="text-2xl font-bold text-slate-900 mt-1">{format(avgSalesM2)}</h3>
                 </div>
                 <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm relative group">
                     <div className="absolute top-6 right-6 text-slate-300 hover:text-red-500 transition-colors cursor-help">
@@ -158,10 +235,10 @@ export const FinancialDashboard: React.FC = () => {
                                 {data.filter(s => s.rentaVariable > 0).map((row) => (
                                     <tr key={row.id} className="text-sm hover:bg-slate-50/50 transition-colors">
                                         <td className="py-4 font-semibold text-slate-700">{row.name}</td>
-                                        <td className="py-4 text-slate-500">${row.venta.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                                        <td className="py-4 text-slate-500">${row.proyeccion.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                                        <td className="py-4 text-slate-500">{format(row.venta)}</td>
+                                        <td className="py-4 text-slate-500">{format(row.proyeccion)}</td>
                                         <td className="py-4 text-right text-indigo-600 font-bold">
-                                            ${row.rentaVariable.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                            {format(row.rentaVariable)}
                                         </td>
                                     </tr>
                                 ))}

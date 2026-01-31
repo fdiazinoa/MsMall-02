@@ -1,14 +1,19 @@
 import React, { useState } from 'react';
+import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 import {
     Calendar, Filter, TrendingUp, DollarSign,
-    ArrowRight, Loader2, Download, Archive
+    ArrowRight, Loader2, Download, Archive, FileSpreadsheet
 } from 'lucide-react';
 import { DateRange } from '../types';
+import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
 export const SalesCube: React.FC = () => {
+    const { currentMall, session } = useAuth();
+    const { format } = useFormatCurrency();
     const [loading, setLoading] = useState(false);
     const [cubeData, setCubeData] = useState<any>(null);
+    const [isExporting, setIsExporting] = useState(false);
     const [dates, setDates] = useState<DateRange>(() => {
         const now = new Date();
         const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -23,6 +28,7 @@ export const SalesCube: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
 
     const generateCube = async () => {
+        if (!currentMall?.id || !session?.access_token) return;
         setLoading(true);
         setError(null);
         try {
@@ -30,8 +36,9 @@ export const SalesCube: React.FC = () => {
                 fecha_inicio: dates.startDate,
                 fecha_fin: dates.endDate,
                 agrupacion: grouping,
-                metrica: metric
-            });
+                metrica: metric,
+                mallId: currentMall.id
+            }, session.access_token);
             setCubeData(data);
         } catch (err: any) {
             console.error("Error generating cube:", err);
@@ -41,9 +48,49 @@ export const SalesCube: React.FC = () => {
         }
     };
 
+    const handleExportExcel = async () => {
+        if (!currentMall) return;
+        setIsExporting(true);
+        try {
+            const params = new URLSearchParams({
+                fecha_inicio: dates.startDate,
+                fecha_fin: dates.endDate,
+                agrupacion: grouping.toLowerCase(),
+                metrica: metric
+            });
+
+            const token = session?.access_token;
+            const headers: HeadersInit = {
+                'X-Mall-Id': currentMall.id
+            };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+
+            const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/export/sales-cube/excel?${params.toString()}`, {
+                headers
+            });
+
+            if (!response.ok) throw new Error("Export failed");
+
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `matriz_ventas_${dates.startDate}_${dates.endDate}.xlsx`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        } catch (e) {
+            console.error(e);
+            alert("Error al exportar");
+        } finally {
+            setIsExporting(false);
+        }
+    };
+
     const formatValue = (val: number) => {
         if (metric === 'transacciones') return val.toLocaleString();
-        return `$ ${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        return format(val);
     };
 
     return (
@@ -51,6 +98,7 @@ export const SalesCube: React.FC = () => {
             {/* Control Bar */}
             <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-wrap gap-6 items-end">
                 <div>
+                    {/* ... existing date inputs ... */}
                     <label className="block text-xs font-bold text-slate-400 mb-2 uppercase">Rango de Fechas</label>
                     <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200">
                         <Calendar size={16} className="text-slate-400" />
@@ -98,14 +146,25 @@ export const SalesCube: React.FC = () => {
                     </select>
                 </div>
 
-                <button
-                    onClick={generateCube}
-                    className="ml-auto bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-xl flex items-center gap-2 transition-colors disabled:opacity-50"
-                    disabled={loading}
-                >
-                    {loading ? <Loader2 className="animate-spin" size={20} /> : <TrendingUp size={20} />}
-                    Generar Cubo
-                </button>
+                <div className="ml-auto flex gap-2">
+                    <button
+                        onClick={handleExportExcel}
+                        disabled={isExporting}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-4 rounded-xl flex items-center gap-2 transition-colors disabled:opacity-50"
+                        title="Exportar Excel"
+                    >
+                        {isExporting ? <Loader2 className="animate-spin" size={20} /> : <FileSpreadsheet size={20} />}
+                    </button>
+
+                    <button
+                        onClick={generateCube}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-xl flex items-center gap-2 transition-colors disabled:opacity-50"
+                        disabled={loading}
+                    >
+                        {loading ? <Loader2 className="animate-spin" size={20} /> : <TrendingUp size={20} />}
+                        Generar Cubo
+                    </button>
+                </div>
             </div>
 
             {error && (

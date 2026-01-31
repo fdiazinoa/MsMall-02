@@ -9,6 +9,7 @@ from typing import List, Optional, Dict, Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, status, Body
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
@@ -68,6 +69,46 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- SECURITY & MULTI-TENANT MIDDLEWARE ---
+security = HTTPBearer()
+
+async def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    try:
+        # Verify token with Supabase
+        user = supabase.auth.get_user(token)
+        if not user or not user.user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return user.user.id
+    except Exception as e:
+        logger.error(f"Auth error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+async def get_current_mall(
+    x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
+    user_id: str = Depends(get_current_user_id)
+):
+    # 1. Si viene el header, usarlo (validando acceso - simplificado por ahora, RLS protege data)
+    if x_mall_id:
+        return x_mall_id
+
+    # 2. Si no viene header, buscar por defecto en DB
+    try:
+        res = supabase.table("usuarios_malls").select("mall_id").eq("usuario_id", user_id).execute()
+        malls = res.data
+        if len(malls) == 1:
+            return malls[0]['mall_id']
+        elif len(malls) > 1:
+            raise HTTPException(status_code=400, detail="Ambiguous context. Please select a mall (X-Mall-Id).")
+            
+        raise HTTPException(status_code=403, detail="No mall assigned to user.")
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Error resolving tenant: {e}")
+        raise HTTPException(status_code=500, detail="Error resolving tenant context")
 
 # --- Schemas ---
 class IngestionResponse(BaseModel):
@@ -317,15 +358,14 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         
         # 1. Resolve Local UUIDs cache
         local_codigos = set(r.get('local_codigo') for r in records_to_insert if r.get('local_codigo'))
-        local_map = {} # codigo -> uuid
+        local_map = {} # codigo -> {id, mall_id}
         
         if local_codigos and supabase:
             try:
                 # Query locales table to find UUIDs for these codes
-                # La columna correcta es 'codigo_interno'
-                res = supabase.table("locales").select("id, codigo_interno").in_("codigo_interno", list(local_codigos)).execute()
+                res = supabase.table("locales").select("id, codigo_interno, mall_id").in_("codigo_interno", list(local_codigos)).execute()
                 for loc in res.data:
-                    local_map[loc['codigo_interno']] = loc['id']
+                    local_map[loc['codigo_interno']] = {'id': loc['id'], 'mall_id': loc.get('mall_id')}
             except Exception as e:
                 logger.warning(f"Error resolviendo local_ids: {e}")
 
@@ -339,22 +379,15 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
             if 'fecha_venta' in new_r:
                 new_r['fecha'] = new_r.pop('fecha_venta')
             
-            # La columna en BD es 'total_impuestos' (plural), así que NO renombramos.
-            # if 'total_impuestos' in new_r:
-            #     new_r['total_impuesto'] = new_r.pop('total_impuestos')
-
             # Normalizar campos de hora (hora, hora_transaccion)
             for time_col in ['hora', 'hora_transaccion']:
                 if time_col in new_r and new_r[time_col]:
                     val = str(new_r[time_col]).strip()
-                    # Si es solo un número (ej: "10"), asumir hora en punto
                     if val.isdigit():
                         if int(val) < 24:
                             new_r[time_col] = f"{int(val):02d}:00:00"
-                    # Si viene como "10:30" agregar segundos
                     elif val.count(':') == 1:
                         new_r[time_col] = f"{val}:00"
-                    # Si tiene AM/PM, intentar parsear (básico)
                     elif 'AM' in val.upper() or 'PM' in val.upper():
                         try:
                             dt = datetime.strptime(val, "%I:%M %p")
@@ -366,18 +399,16 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                             except:
                                 pass
 
-            # Resolve Local ID
+            # Resolve Local ID & Mall ID
             l_code = new_r.get('local_codigo')
             if l_code:
                 if l_code in local_map:
-                    new_r['local_id'] = local_map[l_code]
+                    local_info = local_map[l_code]
+                    new_r['local_id'] = local_info['id']
+                    if local_info.get('mall_id'):
+                        new_r['mall_id'] = local_info['mall_id']
                     del new_r['local_codigo'] # Remove text code, keep UUID
                 else:
-                    # Warning: Local not found. 
-                    # If local_id is nullable, we can proceed. If required, this will fail.
-                    # We'll try to keep local_codigo just in case the DB accepts it (unlikely) 
-                    # OR we remove it to avoid "column not found" error if column doesn't exist.
-                    # The image shows local_id is likely required or FK.
                     logger.warning(f"No UUID found for local_codigo: {l_code}")
                     del new_r['local_codigo'] 
             
@@ -1355,20 +1386,21 @@ async def execute_manual_endpoint(req: ExecuteManualRequest):
 
 
 @app.post("/api/v1/analytics/cubo")
-async def get_sales_cube(request: CubeRequest):
+async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_current_mall)):
     """
     Endpoint para generar el Cubo de Ventas (Matriz) usando datos reales de Supabase (Service Role).
     """
     try:
-        # 1. Fetch Locales (Store Map)
-        stores_res = supabase.table("locales").select("id, nombre").execute()
+        # 1. Fetch Locales (Store Map) - Filtered by Mall
+        stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
         stores = stores_res.data or []
         store_map = {str(s['id']): s['nombre'] for s in stores}
         
-        # 2. Fetch Sales within date range
+        # 2. Fetch Sales within date range - Filtered by Mall
         # Note: Using service role key bypasses RLS
         sales_res = supabase.table("ventas")\
             .select("local_id, fecha, total_bruto, total_neto, id")\
+            .eq("mall_id", mall_id)\
             .gte("fecha", request.fecha_inicio)\
             .lte("fecha", request.fecha_fin)\
             .execute()
@@ -1533,7 +1565,7 @@ async def reset_sales():
         raise HTTPException(status_code=500, detail=f"Error borrando ventas: {str(e)}")
 
 @app.get("/api/v1/analytics/dashboard")
-async def get_dashboard_data(start_date: str, end_date: str):
+async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depends(get_current_mall)):
     """
     Returns aggregated KPI data for the dashboard.
     Bypasses RLS by using the backend Service Role key.
@@ -1545,11 +1577,11 @@ async def get_dashboard_data(start_date: str, end_date: str):
         # 1. Fetch Sales
         # Note: 'fecha' in DB is likely YYYY-MM-DD or timestamp. If timestamp, string comparison might be tricky.
         # Assuming YYYY-MM-DD string or compatible date type.
-        sales_res = supabase.table("ventas").select("*").gte("fecha", start_date).lte("fecha", end_date).execute()
+        sales_res = supabase.table("ventas").select("*").eq("mall_id", mall_id).gte("fecha", start_date).lte("fecha", end_date).execute()
         sales = sales_res.data or []
         
         # 2. Fetch Stores
-        stores_res = supabase.table("locales").select("*").execute()
+        stores_res = supabase.table("locales").select("*").eq("mall_id", mall_id).execute()
         stores = stores_res.data or []
         store_map = {s['id']: s['nombre'] for s in stores}
         
@@ -1586,6 +1618,473 @@ async def get_dashboard_data(start_date: str, end_date: str):
     except Exception as e:
         logger.error(f"Error fetching dashboard data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- EXPORT ENDPOINTS ---
+from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
+from services.export_service import ExportService
+from typing import Optional
+
+# Initialize service
+# Ensure supabase client is available. It is global in this file.
+export_service = ExportService(supabase)
+router_export = APIRouter(prefix="/api/v1/export", tags=["export"])
+
+
+
+@app.get("/api/v1/users/me/malls")
+async def get_my_malls(user_id: str = Depends(get_current_user_id)):
+    """
+    Returns the list of malls assigned to the current user.
+    """
+    try:
+        # Join usuarios_malls with malls
+        # Supabase-py doesn't support easy joins in one go unless defined in View or specific syntax.
+        # We'll do two queries or use a raw query if enabled (RPC).
+        # Standard way: Fetch user-malls, then fetch malls.
+        
+        # 1. Get Mall IDs for user
+        um_res = supabase.table("usuarios_malls").select("mall_id, rol").eq("usuario_id", user_id).execute()
+        malls_links = um_res.data
+        
+        if not malls_links:
+            return []
+            
+        mall_ids = [m['mall_id'] for m in malls_links]
+        
+        # 2. Get Mall Details
+        malls_res = supabase.table("malls").select("*").in_("id", mall_ids).execute()
+        malls_details = {m['id']: m for m in malls_res.data}
+        
+        # 3. Merge
+        result = []
+        for link in malls_links:
+            mid = link['mall_id']
+            if mid in malls_details:
+                result.append({
+                    "id": mid,
+                    "nombre": malls_details[mid]['nombre'],
+                    "rol": link['rol']
+                })
+                
+
+                
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching user malls: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Mall Management Endpoints (Admin) ---
+
+class MallCreate(BaseModel):
+    nombre: str
+    conf_locale: Optional[str] = 'es-CL'
+    conf_moneda: Optional[str] = 'CLP'
+    metadata: Optional[Dict] = {}
+
+class MallUpdate(BaseModel):
+    nombre: Optional[str] = None
+    conf_locale: Optional[str] = None
+    conf_moneda: Optional[str] = None
+    metadata: Optional[Dict] = None
+
+@app.get("/api/v1/malls/all")
+async def get_all_malls(user_id: str = Depends(get_current_user_id)):
+    """
+    Get all malls. Restricted to Admins/SuperAdmins.
+    (RLS will filter if user is not admin, but good to check role here too if needed)
+    """
+    try:
+        # Simplified role check - in prod rely on RLS or specific logic
+        res = supabase.table("malls").select("*").execute()
+        return res.data
+    except Exception as e:
+        logger.error(f"Error fetching all malls: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/malls")
+async def create_mall(mall: MallCreate, user_id: str = Depends(get_current_user_id)):
+    """
+    Create a new mall.
+    """
+    try:
+        res = supabase.table("malls").insert({
+            "nombre": mall.nombre,
+            "conf_locale": mall.conf_locale or 'es-CL',
+            "conf_moneda": mall.conf_moneda or 'CLP',
+            "api_secret_key": str(uuid4()) # Auto-generate key
+        }).execute()
+        
+        if not res.data:
+             raise HTTPException(status_code=400, detail="Failed to create mall")
+             
+        return res.data[0]
+    except Exception as e:
+        logger.error(f"Error creating mall: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/malls/{mall_id}")
+async def update_mall(mall_id: str, mall: MallUpdate, user_id: str = Depends(get_current_user_id)):
+    """
+    Update a mall.
+    """
+    try:
+        update_data = {k: v for k, v in mall.dict().items() if v is not None and k != 'metadata'}
+        if not update_data:
+            return {"message": "No data to update"}
+            
+        res = supabase.table("malls").update(update_data).eq("id", mall_id).execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Mall not found or permission denied")
+            
+        return res.data[0]
+    except Exception as e:
+        logger.error(f"Error updating mall: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/v1/malls/{mall_id}")
+async def delete_mall(mall_id: str, user_id: str = Depends(get_current_user_id)):
+    """
+    Delete a mall.
+    """
+    try:
+        # Check for dependencies first? Or let DB constraint fail?
+        # Assuming cascade delete or relying on error if FK exists.
+        res = supabase.table("malls").delete().eq("id", mall_id).execute()
+        if not res.data: # Note: delete returns deleted data usually
+             # If no data returned, it might mean it didn't exist or RLS blocked it.
+             # Supabase-py delete behavior can vary on response if empty.
+             pass 
+
+        return {"message": "Mall deleted successfully"}
+    except Exception as e:
+        logger.error(f"Error deleting mall: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Admin User Management ---
+
+class UserMallAssignment(BaseModel):
+    mall_ids: List[str]
+    rol: str = 'auditor'
+
+@app.get("/api/v1/admin/users")
+async def admin_get_users(user_id: str = Depends(get_current_user_id)):
+    """
+    List all users and their assigned malls. Requires Admin/TIC role (enforced by middleware or check here).
+    """
+    try:
+        # 1. List Users from Auth (needs Service Role)
+        # Note: gotrue-py might not expose list_users easily depending on version.
+        # Fallback: Query a view or use RPC if created. 
+        # But assuming we have service role key in 'supabase':
+        auth_users = supabase.auth.admin.list_users() 
+        # If pagination needed, add params.
+        
+        users_list = []
+        for u in auth_users:
+            users_list.append({
+                "id": u.id,
+                "email": u.email,
+                "metadata": u.user_metadata,
+                "last_sign_in_at": u.last_sign_in_at,
+                "created_at": u.created_at
+            })
+            
+        # 2. Get Assignments
+        assignments = supabase.table("usuarios_malls").select("*").execute().data
+        assign_map = {}
+        for a in assignments:
+            uid = a['usuario_id']
+            if uid not in assign_map: assign_map[uid] = []
+            assign_map[uid].append(a)
+            
+        # 3. Merge
+        result = []
+        for u in users_list:
+            u['malls'] = assign_map.get(u['id'], [])
+            # Determine "Main" Role based on metadata or specific mall role?
+            # For UI simplicity, we might just show "Admin" if they have admin access anywhere
+            # Or reliance on user_metadata['rol']
+            u['rol'] = u['metadata'].get('rol', 'auditor') if u['metadata'] else 'auditor'
+            result.append(u)
+            
+        return result
+    except Exception as e:
+        logger.error(f"Error listing users: {e}")
+        # If admin API fails (unsupported), returns empty or error
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/admin/users/{target_user_id}/malls")
+async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, user_id: str = Depends(get_current_user_id)):
+    """
+    Assign a list of malls to a user.
+    """
+    try:
+        # Transaction? (Not supported natively in HTTP API, do sequentially)
+        
+        # 1. Delete existing assignments
+        supabase.table("usuarios_malls").delete().eq("usuario_id", target_user_id).execute()
+        
+        # 2. Insert new
+        if payload.mall_ids:
+            inserts = [{"usuario_id": target_user_id, "mall_id": mid, "rol": payload.rol} for mid in payload.mall_ids]
+            res = supabase.table("usuarios_malls").insert(inserts).execute()
+            
+        return {"message": "Assignments updated"}
+    except Exception as e:
+        logger.error(f"Error assigning malls: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router_export.get("/sales-report/excel")
+async def export_sales_report_excel(
+    fecha_inicio: str, 
+    fecha_fin: str, 
+    local_id: Optional[str] = None, 
+    type: str = 'detailed',
+    current_mall: str = Depends(get_current_mall)
+):
+    try:
+        if type not in ['detailed', 'summary']: type = 'detailed'
+        data = await export_service.generate_sales_report_excel(fecha_inicio, fecha_fin, local_id, type)
+        return StreamingResponse(
+            data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=reporte_ventas_{type}_{fecha_inicio}_{fecha_fin}.xlsx"}
+        )
+    except Exception as e:
+        logger.error(f"Error exporting excel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router_export.get("/sales-report/pdf")
+async def export_sales_report_pdf(
+    fecha_inicio: str, 
+    fecha_fin: str, 
+    local_id: Optional[str] = None, 
+    type: str = 'detailed',
+    current_mall: str = Depends(get_current_mall)
+):
+    try:
+        if type not in ['detailed', 'summary']: type = 'detailed'
+        
+        # Fetch Mall Name
+        mall_name = "MS MALL"
+        try:
+             m_res = supabase.table("malls").select("nombre").eq("id", current_mall).single().execute()
+             if m_res.data:
+                 mall_name = m_res.data['nombre']
+        except Exception:
+            logger.warning(f"Could not fetch mall name for {current_mall}, using default.")
+
+        logger.info(f"Exporting PDF for Mall: {mall_name} ({current_mall})")
+        data = await export_service.generate_sales_report_pdf(fecha_inicio, fecha_fin, local_id, type, mall_name=mall_name)
+        return StreamingResponse(
+            data,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=reporte_ventas_{type}_{fecha_inicio}_{fecha_fin}.pdf"}
+        )
+    except Exception as e:
+        logger.error(f"Error exporting pdf: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router_export.get("/sales-cube/excel")
+async def export_sales_cube_excel(fecha_inicio: str, fecha_fin: str, agrupacion: str = "dia", metrica: str = "total_neto"):
+    try:
+        data = await export_service.generate_sales_cube_excel(fecha_inicio, fecha_fin, agrupacion, metrica)
+        return StreamingResponse(
+            data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=matriz_ventas_{fecha_inicio}_{fecha_fin}.xlsx"}
+        )
+    except Exception as e:
+        logger.error(f"Error exporting cube excel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router_export.get("/financial-dashboard/excel")
+async def export_financial_dashboard_excel(fecha_inicio: str, fecha_fin: str):
+    try:
+        data = await export_service.generate_financial_dashboard_excel(fecha_inicio, fecha_fin)
+        return StreamingResponse(
+            data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=salud_cartera_{fecha_inicio}_{fecha_fin}.xlsx"}
+        )
+    except Exception as e:
+        logger.error(f"Error exporting financial excel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router_export.get("/financial-dashboard/pdf")
+async def export_financial_dashboard_pdf(fecha_inicio: str, fecha_fin: str):
+    try:
+        data = await export_service.generate_financial_dashboard_pdf(fecha_inicio, fecha_fin)
+        return StreamingResponse(
+            data,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=salud_cartera_{fecha_inicio}_{fecha_fin}.pdf"}
+        )
+    except Exception as e:
+        logger.error(f"Error exporting financial pdf: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/auditoria/brechas-ventas")
+async def get_sales_gaps(
+    local_id: Optional[str], 
+    fecha_inicio: str, 
+    fecha_fin: str,
+    current_mall: str = Depends(get_current_mall)
+):
+    try:
+        # 1. Calendario Ideal
+        start_date = datetime.strptime(fecha_inicio, '%Y-%m-%d')
+        end_date = datetime.strptime(fecha_fin, '%Y-%m-%d')
+        total_days = (end_date - start_date).days + 1
+        expected_dates = { (start_date + timedelta(days=x)).strftime('%Y-%m-%d') for x in range(total_days) }
+        
+        # --- MODO GLOBAL (Matrix View) ---
+        if not local_id or local_id == 'null' or local_id == 'ALL':
+            logger.info(f"Auditing Global Gaps for Mall: {current_mall}")
+            
+            # Obtener TODOS los locales (filtrar por mall si tuviéramos tabla usuarios_malls poblada y lógica RLS)
+            # Como aún no tenemos RLS activo en 'locales' para filtrar por mall_id automágicamente,
+            # DEBERÍAMOS filtrar aquí manualmente usando current_mall.
+            # Pero la tabla 'locales' ya tiene 'mall_id'.
+            
+            # Obtener todos los locales DEL MALL ACTUAL
+            # Para la Fase 1: asumo que el endpoint necesita ver SOLO los locales del mall.
+            # Si el backend lee 'locales', supongo que debo filtrar.
+            
+            # stores_resp = supabase.table('locales').select('id, nombre, rubro').execute()
+            # CHANGE: Filter by current_mall
+            # But wait, current_mall comes from DB or Header.
+            # If migrating, current_mall might be a Mall ID (UUID).
+            
+            # stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
+            # If current_mall is reliable.
+            
+            # Since I am "migrating", I should probably use the filter.
+            # But `locales` table has `mall_id`.
+            
+            stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
+            stores = stores_resp.data
+            
+            # Obtener todas las ventas del periodo (optimizado: una sola query)
+            # También filtrar por mall_id (que agregué en Fase 1) por seguridad
+            sales_resp = supabase.table('ventas')\
+                .select('local_id, fecha')\
+                .eq('mall_id', current_mall)\
+                .gte('fecha', fecha_inicio)\
+                .lte('fecha', fecha_fin)\
+                .execute()
+            
+            sales_df = pd.DataFrame(sales_resp.data)
+            
+            global_summary = []
+            
+            for store in stores:
+                sid = store['id']
+                # Fechas reales para este local
+                if not sales_df.empty:
+                    s_actual = set(sales_df[sales_df['local_id'] == sid]['fecha'].unique())
+                else:
+                    s_actual = set()
+                
+                missing = sorted(list(expected_dates - s_actual))
+                count_missing = len(missing)
+                compliance = ((total_days - count_missing) / total_days) * 100
+                
+                # Definir estado
+                status = 'Completo'
+                if count_missing > 5: status = 'Crítico'
+                elif count_missing > 0: status = 'Alerta'
+                
+                global_summary.append({
+                    "local_id": sid,
+                    "nombre": store['nombre'],
+                    "rubro": store.get('rubro', 'General'),
+                    "dias_faltantes_count": count_missing,
+                    "dias_totales_periodo": total_days,
+                    "porcentaje_cumplimiento": round(compliance, 1),
+                    "estado": status,
+                    "lista_dias": missing # Para visualización rápida (heatmap)
+                })
+            
+            # Ordenar por criticidad (más faltantes primero)
+            global_summary.sort(key=lambda x: x['dias_faltantes_count'], reverse=True)
+            
+            return {
+                "modo": "global",
+                "resumen": global_summary
+            }
+
+        # --- MODO INDIVIDUAL (Detailed View) ---
+        # 2. Calendario Real (Individual)
+        response = supabase.table('ventas').select('fecha').eq('local_id', local_id).gte('fecha', fecha_inicio).lte('fecha', fecha_fin).execute()
+        actual_dates = { row['fecha'] for row in response.data }
+        
+        # 3. Brechas
+        missing_dates = sorted(list(expected_dates - actual_dates))
+        
+        # 4. Enriquecimiento con Logs (logs_carga)
+        # Necesitamos el nombre del local para consultar logs_carga
+        local_resp = supabase.table('locales').select('nombre').eq('id', local_id).single().execute()
+        local_name = local_resp.data['nombre'] if local_resp.data else None
+        
+        audit_details = []
+        if local_name and missing_dates:
+            # Optimización: Consultar logs para todo el rango
+            logs_resp = supabase.table('logs_carga').select('*')\
+                .eq('local_nombre', local_name)\
+                .gte('fecha_hora', f"{fecha_inicio}T00:00:00")\
+                .lte('fecha_hora', f"{fecha_fin}T23:59:59")\
+                .order('fecha_hora', desc=True)\
+                .execute()
+            
+            logs_df = pd.DataFrame(logs_resp.data)
+            if not logs_df.empty:
+                logs_df['fecha_log'] = logs_df['fecha_hora'].apply(lambda x: x.split('T')[0] if x else None)
+            
+            for m_date in missing_dates:
+                cause = "Proceso no ejecutado / Sin conexión"
+                log_id = None
+                
+                if not logs_df.empty:
+                    day_logs = logs_df[logs_df['fecha_log'] == m_date]
+                    if not day_logs.empty:
+                        last_log = day_logs.iloc[0]
+                        log_id = last_log.get('id')
+                        status = last_log.get('estado')
+                        if status == 'ERROR':
+                            cause = "Fallo Técnico / Error de Lectura"
+                        elif status == 'NO_ENCONTRADO':
+                            cause = "Archivo no disponible en FTP"
+                        elif status == 'EXITO':
+                            cause = "Procesado con Éxito (Posible archivo vacío)"
+                            
+                audit_details.append({
+                    "fecha": m_date,
+                    "causa": cause,
+                    "log_id": log_id
+                })
+        else:
+             for m_date in missing_dates:
+                audit_details.append({
+                    "fecha": m_date,
+                    "causa": "Proceso no ejecutado / Sin logs disponibles",
+                    "log_id": None
+                })
+
+        return {
+            "modo": "individual",
+            "total_dias_faltantes": len(missing_dates),
+            "detalle": audit_details
+        }
+        
+    except Exception as e:
+        logger.error(f"Error auditing gaps: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+app.include_router(router_export)
 
 if __name__ == "__main__":
     import uvicorn

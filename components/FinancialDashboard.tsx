@@ -197,21 +197,75 @@ export const FinancialDashboard: React.FC = () => {
                         <PieChart className="text-indigo-500" size={20} />
                         Salud de Cartera (Ventas vs OCR)
                     </h3>
-                    <div className="w-full flex justify-center">
-                        <ScatterChart width={600} height={300} margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                            <XAxis type="number" dataKey="venta" name="Ventas" unit="$" axisLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} domain={['auto', 'auto']} />
-                            <YAxis type="number" dataKey="ocr" name="OCR" unit="%" axisLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} domain={[0, 100]} />
-                            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-                            <ReferenceLine y={20} stroke="red" strokeDasharray="3 3">
-                                <Label value="Zona de Riesgo (20%)" position="top" fill="red" fontSize={10} />
-                            </ReferenceLine>
-                            <Scatter name="Locales" data={data} fill="#6366f1">
-                                {data.map((entry, index) => (
-                                    <Cell key={`cell-${index}`} fill={entry.ocr > 20 ? '#ef4444' : '#6366f1'} />
-                                ))}
-                            </Scatter>
-                        </ScatterChart>
+                    <div className="bg-slate-50/50 rounded-2xl p-6 border border-slate-100 flex flex-col">
+                        {/* HTML Legend to confirm data is present */}
+                        <div className="flex flex-wrap gap-2 mb-6">
+                            {data.map((d, i) => (
+                                <div key={i} className="flex items-center gap-1.5 bg-white px-3 py-1 rounded-full border border-slate-200 shadow-sm">
+                                    <div className={`w-2 h-2 rounded-full ${d.ocr > 20 ? 'bg-rose-500' : 'bg-indigo-600'}`} />
+                                    <span className="text-[10px] font-bold text-slate-700">{d.name}</span>
+                                    <span className="text-[10px] text-indigo-600 font-bold font-mono ml-1">{d.ocr.toFixed(1)}%</span>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="h-[300px] w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <ScatterChart margin={{ top: 10, right: 30, bottom: 40, left: 10 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                                    <XAxis
+                                        type="number"
+                                        dataKey="venta"
+                                        name="Ventas"
+                                        tickFormatter={(val) => `$${(val / 1000).toFixed(0)}k`}
+                                        domain={['auto', 'auto']}
+                                        axisLine={{ stroke: '#cbd5e1' }}
+                                        tick={{ fontSize: 10, fill: '#475569', fontWeight: 600 }}
+                                        tickLine={{ stroke: '#cbd5e1' }}
+                                    />
+                                    <YAxis
+                                        type="number"
+                                        dataKey="ocr"
+                                        name="OCR"
+                                        unit="%"
+                                        domain={[0, 25]}
+                                        axisLine={{ stroke: '#cbd5e1' }}
+                                        tick={{ fontSize: 10, fill: '#475569', fontWeight: 600 }}
+                                        tickLine={{ stroke: '#cbd5e1' }}
+                                    />
+                                    <ZAxis type="number" range={[100, 100]} />
+                                    <Tooltip
+                                        cursor={{ strokeDasharray: '3 3' }}
+                                        content={({ active, payload }) => {
+                                            if (active && payload && payload.length) {
+                                                const item = payload[0].payload;
+                                                return (
+                                                    <div className="bg-white p-3 border border-slate-200 shadow-xl rounded-xl text-xs">
+                                                        <p className="font-bold text-slate-900 border-b border-slate-100 pb-1 mb-1">{item.name}</p>
+                                                        <p className="text-slate-600">Venta: <span className="font-mono text-indigo-600 font-bold">{format(item.venta)}</span></p>
+                                                        <p className="text-slate-600">OCR: <span className="font-mono text-indigo-600 font-bold">{item.ocr.toFixed(2)}%</span></p>
+                                                    </div>
+                                                );
+                                            }
+                                            return null;
+                                        }}
+                                    />
+                                    <ReferenceLine y={20} stroke="#f43f5e" strokeDasharray="5 5" strokeWidth={2}>
+                                        <Label value="RIESGO 20%" position="insideTopRight" fill="#f43f5e" fontSize={10} fontWeight="bold" />
+                                    </ReferenceLine>
+                                    <Scatter name="Locales" data={data}>
+                                        {data.map((entry, index) => (
+                                            <Cell
+                                                key={`cell-${index}`}
+                                                fill={entry.ocr > 20 ? '#f43f5e' : '#4f46e5'}
+                                                stroke="#fff"
+                                                strokeWidth={2}
+                                            />
+                                        ))}
+                                    </Scatter>
+                                </ScatterChart>
+                            </ResponsiveContainer>
+                        </div>
                     </div>
                 </div>
 

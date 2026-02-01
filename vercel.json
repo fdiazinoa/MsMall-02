@@ -1,6 +1,5 @@
 {
     "version": 2,
-    "description": "Vercel configuration for MSMALL with Python 3.12 runtime",
     "functions": {
         "api/**/*.py": {
             "runtime": "python3.12"

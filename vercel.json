@@ -1,0 +1,10 @@
+{
+    "functions": {
+        "api/**/*.py": {
+            "runtime": "python3.12"
+        },
+        "main.py": {
+            "runtime": "python3.12"
+        }
+    }
+}

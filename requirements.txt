@@ -1,10 +1,10 @@
 
-fastapi==0.109.0
-uvicorn==0.27.0
-python-multipart==0.0.6
-pydantic==2.5.3
-supabase==2.3.7
-python-dotenv==1.0.1
+fastapi
+uvicorn
+python-multipart
+pydantic
+supabase
+python-dotenv
 
 thefuzz==0.22.1
 pandas

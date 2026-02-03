@@ -2,7 +2,7 @@
     "rewrites": [
         {
             "source": "/api/(.*)",
-            "destination": "/main.py"
+            "destination": "https://msmall-02-production.up.railway.app/api/$1"
         },
         {
             "source": "/(.*)",

@@ -8,13 +8,13 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 3002,
       // host: '0.0.0.0',
-      // proxy: {
-      //   '/api/v1': {
-      //     target: 'http://127.0.0.1:8000',
-      //     changeOrigin: true,
-      //     secure: false,
-      //   }
-      // }
+      proxy: {
+        '/api/v1': {
+          target: 'http://127.0.0.1:8000',
+          changeOrigin: true,
+          secure: false,
+        }
+      }
     },
     plugins: [react()],
     define: {

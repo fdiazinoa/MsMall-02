@@ -927,12 +927,16 @@ async def get_heatmap(local_id: str):
         return []
 
 @app.get("/api/v1/insights/ranking")
-async def get_ranking(metric: str):
+async def get_ranking(metric: str, mall_id: Optional[str] = Query(None, alias="mall_id")):
     """Get ranking of all stores for a specific metric based on real database data."""
     if not supabase: return []
     try:
         # 1. Fetch all stores
-        stores_res = supabase.table("locales").select("id, nombre, mts, rubro").execute()
+        query = supabase.table("locales").select("id, nombre, mts, rubro")
+        if mall_id:
+            query = query.eq("mall_id", mall_id)
+        
+        stores_res = query.execute()
         if not stores_res.data: return []
         
         # 2. Fetch all sales

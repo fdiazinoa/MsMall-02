@@ -69,7 +69,7 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
         setLoadingModal(true);
         setModalConfig({ title, metric, data: [] });
         try {
-            const ranking = await ApiService.getRanking(metric);
+            const ranking = await ApiService.getRanking(metric, currentMall?.id);
             setModalConfig(prev => ({ ...prev, data: ranking }));
         } catch (error) {
             console.error("Error loading ranking:", error);

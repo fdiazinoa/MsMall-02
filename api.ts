@@ -928,9 +928,15 @@ export const ApiService = {
     }
   },
 
-  async getRanking(metric: string): Promise<any[]> {
+  async getRanking(metric: string, mallId?: string): Promise<any[]> {
     try {
-      const response = await fetch(`${BASE_URL}/insights/ranking?metric=${metric}`);
+      const url = new URL(`${window.location.origin}${BASE_URL}/insights/ranking`);
+      url.searchParams.append('metric', metric);
+      if (mallId) {
+        url.searchParams.append('mall_id', mallId);
+      }
+
+      const response = await fetch(url.toString());
       if (!response.ok) throw new Error("Error al obtener ranking");
       return await response.json();
     } catch (error) {

@@ -19,7 +19,7 @@ import json
 import xmltodict
 from ftplib import FTP
 import stat
-from worker_importacion import run_worker
+from worker_importacion import run_worker_async
 from analytics import generate_sales_cube
 from supabase import create_client, Client
 import os
@@ -52,7 +52,8 @@ async def scheduler_loop():
     while True:
         logger.info("[Scheduler] Iniciando ciclo de importación automática...")
         try:
-            await asyncio.to_thread(run_worker)
+            # Ahora el worker es nativamente async
+            await run_worker_async()
         except Exception as e:
             logger.error(f"[Scheduler] Error en ciclo: {e}")
         logger.info("[Scheduler] Durmiendo 1 hora...")

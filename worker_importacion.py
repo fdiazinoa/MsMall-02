@@ -2,6 +2,7 @@ import os
 import stat
 import logging
 import uuid
+import asyncio
 from datetime import datetime
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -10,6 +11,7 @@ from ftplib import FTP
 import io
 import csv
 import json
+import posixpath
 
 # Setup Logging
 logging.basicConfig(
@@ -100,10 +102,7 @@ def process_file_logic(config, filename, content):
             return 0, [{"linea": 0, "error": "No se pudo determinar el local_id"}]
             
         if not mall_id:
-             # Try to fetch if missing? For worker it should be in config as we verify select *
-             # But just in case
              logger.warning(f"Mall ID missing for local {config['nombre']}")
-             # Optionally fetch it here, but optimal is to have it in config.
         
         # Get mapping
         mapping = config.get('mapping_config') or {}
@@ -115,7 +114,6 @@ def process_file_logic(config, filename, content):
                 fecha_venta = normalize_date(fecha_venta_raw)
                 
                 if fecha_venta_raw and not fecha_venta:
-                    # Failed to parse provided date
                      detalles.append({"linea": i, "error": f"Formato de fecha inválido: {fecha_venta_raw}"})
                      continue
 
@@ -153,63 +151,6 @@ def process_file_logic(config, filename, content):
             
     return registros_exito, detalles
 
-def run_worker():
-    logger.info("Iniciando Worker de Importación...")
-    
-    try:
-        # Obtener locales con ejecución automática
-        response = supabase.table("locales").select("*").eq("tipo_ejecucion", "AUTOMATICO").execute()
-        locales = response.data or []
-        
-        current_hour = datetime.now().hour
-        logger.info(f"Encontrados {len(locales)} locales con ejecución automática. Hora actual: {current_hour}:00")
-        
-        for local in locales:
-            try:
-                # Lógica de Frecuencia
-                frecuencia = local.get("frecuencia_cron", "manual")
-                if frecuencia == "manual": continue
-                
-                should_run = False
-                if frecuencia == "cada_hora":
-                    should_run = True
-                elif frecuencia == "cada_2_horas":
-                    if current_hour % 2 == 0:
-                        should_run = True
-                elif frecuencia == "hora_especifica":
-                    hora_esp = local.get("hora_especifica") # Formato "HH:MM:SS" o similar
-                    if hora_esp:
-                        try:
-                            esp_hour = int(hora_esp.split(":")[0])
-                            if current_hour == esp_hour:
-                                should_run = True
-                        except:
-                            logger.error(f"Formato de hora inválido para {local['nombre']}: {hora_esp}")
-                
-                if should_run:
-                    logger.info(f"[Worker] Ejecutando programación para {local['nombre']} (Frecuencia: {frecuencia})")
-                    process_local_files(local)
-                    
-                    # Update Last Execution Timestamp
-                    try:
-                        supabase.table("locales").update({
-                            "ultima_ejecucion": datetime.now().isoformat()
-                        }).eq("id", local['id']).execute()
-                        logger.info(f"Actualizada última ejecución para {local['nombre']}")
-                    except Exception as ex_upd:
-                        logger.error(f"Failed to update execution time for {local['nombre']}: {ex_upd}")
-                        
-                else:
-                    logger.info(f"[Worker] Saltando {local['nombre']} (No es su horario: {frecuencia})")
-                    
-            except Exception as e:
-                logger.error(f"Error procesando local {local['nombre']}: {e}")
-                
-    except Exception as e:
-        logger.error(f"Error general en worker: {e}")
-
-import posixpath
-
 def process_local_files(config):
     protocol = config.get("sftp_protocol", "SFTP")
     host = config.get("sftp_host")
@@ -228,10 +169,6 @@ def process_local_files(config):
     
     if protocol == "SFTP":
         try:
-# ... (omitting unchanged lines for brevity in prompt instruction, but in real tool call I should target meticulously)
-# I will use separate chunks if they are far apart, but here they are spread out. I'll do a large chunk replacement or multiple chunks.
-
-# Let's try multiple chunks.
             ssh, sftp = get_sftp_client(host, port, user, password)
         except Exception as ce:
             insert_load_log(config['nombre'], "N/A", "error", f"Fallo conexión SFTP: {str(ce)}")
@@ -339,8 +276,6 @@ def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix=""):
         logger.info(f"Renombrando archivo remoto a: {new_name}")
         sftp.rename(full_path, new_name)
     elif action == "RENOMBRAR_BACKUP":
-        # Rename with prefix (e.g. "PR_")
-        # Logic: PR_filename.csv
         new_filename = f"{prefix}{filename}"
         new_full_path = f"{path}/{new_filename}"
         logger.info(f"Renombrando (Backup) archivo remoto a: {new_full_path}")
@@ -359,5 +294,150 @@ def handle_post_process_ftp(ftp, filename, action, suffix, prefix=""):
         logger.info(f"Renombrando (Backup) archivo remoto FTP a: {new_name}")
         ftp.rename(filename, new_name)
 
+# --- ASYNC LOGIC ---
+
+async def mark_local_status(local_id: str, status: str):
+    """Updates the processing status of a local."""
+    try:
+        payload = {
+            "processing_status": status
+        }
+        if status == 'BUSY':
+            payload["processing_started_at"] = datetime.now().isoformat()
+        elif status == 'IDLE':
+            payload["ultima_ejecucion"] = datetime.now().isoformat()
+            
+        await asyncio.to_thread(
+            lambda: supabase.table("locales").update(payload).eq("id", local_id).execute()
+        )
+    except Exception as e:
+        logger.error(f"Failed to update status {status} for local {local_id}: {e}")
+
+async def process_local_safe(local, semaphore):
+    """
+    Wraps the synchronous process_local_files in a semaphore and async thread,
+    handling DB locking/unlocking.
+    """
+    async with semaphore:
+        local_name = local.get('nombre', 'Unknown')
+        logger.info(f"🔒 [Lock] Locking {local_name} (Status: BUSY)")
+        
+        # 1. LOCK
+        await mark_local_status(local['id'], 'BUSY')
+        
+        try:
+            # 2. EXECUTE (Run sync IO in thread pool)
+            logger.info(f"🚀 [Start] Processing {local_name}...")
+            await asyncio.to_thread(process_local_files, local)
+            logger.info(f"✅ [Done] Finished {local_name}")
+            
+        except Exception as e:
+            logger.error(f"❌ [Error] Processing {local_name}: {e}")
+            insert_load_log(local_name, "SYSTEM", "error", f"Async processing failed: {str(e)}")
+            
+        finally:
+            # 3. RELEASE
+            logger.info(f"🔓 [Release] Unlocking {local_name} (Status: IDLE)")
+            await mark_local_status(local['id'], 'IDLE')
+
+async def cleanup_zombies():
+    """Reset locales that have been stuck in BUSY for more than 2 hours."""
+    try:
+        logger.info("🧟 Checking for Zombie processes...")
+        
+        response = supabase.table("locales").select("*").eq("processing_status", "BUSY").execute()
+        zombies = response.data or []
+        
+        count = 0
+        for z in zombies:
+            started_at_str = z.get('processing_started_at')
+            if not started_at_str:
+                is_zombie = True
+            else:
+                try:
+                    started = datetime.fromisoformat(started_at_str.replace("Z", "+00:00"))
+                    now = datetime.now(started.tzinfo) 
+                    diff = now - started
+                    is_zombie = diff.total_seconds() > 7200 # 2 hours
+                except:
+                   is_zombie = True
+            
+            if is_zombie:
+                 logger.warning(f"🧟 Resetting ZOMBIE local: {z.get('nombre')} (Stuck since {started_at_str})")
+                 supabase.table("locales").update({
+                     "processing_status": "IDLE"
+                 }).eq("id", z['id']).execute()
+                 count += 1
+                 
+        if count > 0:
+            logger.info(f"✨ Cleaned up {count} zombie locks.")
+        else:
+            logger.info("✅ No zombies found.")
+            
+    except Exception as e:
+        logger.error(f"Error cleaning zombies: {e}")
+
+async def run_worker_async():
+    logger.info("🚀 Iniciando Worker de Importación (Async/Concurrent v2)...")
+    
+    # 1. Reset Zombies
+    await cleanup_zombies()
+    
+    try:
+        # 2. Fetch Tasks (IDLE + AUTOMATIC)
+        # Note: We need to filter by IDLE to avoid double execution if previous job is running
+        response = supabase.table("locales")\
+            .select("*")\
+            .eq("tipo_ejecucion", "AUTOMATICO")\
+            .eq("processing_status", "IDLE")\
+            .execute()
+            
+        locales = response.data or []
+        current_hour = datetime.now().hour
+        
+        tasks_to_run = []
+        
+        for local in locales:
+            # Frequency Check Logic
+            frecuencia = local.get("frecuencia_cron", "manual")
+            if frecuencia == "manual": continue
+            
+            should_run = False
+            if frecuencia == "cada_hora":
+                should_run = True
+            elif frecuencia == "cada_2_horas":
+                if current_hour % 2 == 0: should_run = True
+            elif frecuencia == "hora_especifica":
+                hora_esp = local.get("hora_especifica")
+                if hora_esp:
+                    try:
+                        esp_hour = int(hora_esp.split(":")[0])
+                        if current_hour == esp_hour: should_run = True
+                    except: pass
+            
+            if should_run:
+                tasks_to_run.append(local)
+            else:
+                 # Debug check
+                 pass
+
+        if not tasks_to_run:
+            logger.info("😴 No active tasks for this hour.")
+            return
+
+        logger.info(f"📋 Encolados {len(tasks_to_run)} locales para ejecución.")
+        
+        # 3. Execute with Semaphore
+        MAX_CONCURRENT_WORKERS = 5
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_WORKERS)
+        
+        tasks = [process_local_safe(local, semaphore) for local in tasks_to_run]
+        await asyncio.gather(*tasks)
+        
+        logger.info("🏁 Cycle finished.")
+        
+    except Exception as e:
+        logger.error(f"Critical error in main loop: {e}")
+
 if __name__ == "__main__":
-    run_worker()
+    asyncio.run(run_worker_async())

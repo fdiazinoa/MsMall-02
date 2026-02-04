@@ -3,7 +3,7 @@ import stat
 import logging
 import uuid
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import paramiko
@@ -314,14 +314,15 @@ async def mark_local_status(local_id: str, status: str):
         logger.error(f"Failed to update status {status} for local {local_id}: {e}")
 
 async def update_heartbeat():
-    """Updates the system_health table with current timestamp."""
+    """Updates the system_health table with current timestamp (UTC)."""
     try:
-        # Upsert heartbeat
+        # Upsert heartbeat with Timezone Aware UTC
+        now_utc = datetime.now(timezone.utc)
         await asyncio.to_thread(
             lambda: supabase.table("system_health").upsert({
                 "key": "CRON_LAST_RUN",
-                "value": datetime.now().isoformat(),
-                "last_update": datetime.now().isoformat()
+                "value": now_utc.isoformat(),
+                "last_update": now_utc.isoformat()
             }).execute()
         )
     except Exception as e:

@@ -80,23 +80,53 @@ export const LoadMonitor: React.FC = () => {
         total: logs.length
     };
 
-    const filteredLogs = logs.filter(log => {
-        const matchesSearch = log.local_nombre.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            log.archivo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            log.mensaje.toLowerCase().includes(searchTerm.toLowerCase());
+    const filteredLogs = React.useMemo(() => {
+        const result: any[] = [];
+        let lastLog: any = null;
+        let repeatCount = 1;
 
-        const logDate = new Date(log.fecha_hora).toISOString().split('T')[0];
-        const matchesStart = !dateRange.start || logDate >= dateRange.start;
-        const matchesEnd = !dateRange.end || logDate <= dateRange.end;
+        // First filter by search/date
+        const rawFiltered = logs.filter(log => {
+            const matchesSearch = log.local_nombre.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                log.archivo.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                log.mensaje.toLowerCase().includes(searchTerm.toLowerCase());
 
-        const hasErrors = log.detalles && log.detalles.length > 0;
-        let matchesStatus = true;
-        if (statusFilter === 'exito') matchesStatus = log.estado === 'exito' && !hasErrors;
-        else if (statusFilter === 'parcial') matchesStatus = log.estado === 'exito' && hasErrors;
-        else if (statusFilter === 'error') matchesStatus = log.estado === 'error';
+            const logDate = new Date(log.fecha_hora).toISOString().split('T')[0];
+            const matchesStart = !dateRange.start || logDate >= dateRange.start;
+            const matchesEnd = !dateRange.end || logDate <= dateRange.end;
 
-        return matchesSearch && matchesStart && matchesEnd && matchesStatus;
-    });
+            const hasErrors = log.detalles && log.detalles.length > 0;
+            let matchesStatus = true;
+            if (statusFilter === 'exito') matchesStatus = log.estado === 'exito' && !hasErrors;
+            else if (statusFilter === 'parcial') matchesStatus = log.estado === 'exito' && hasErrors;
+            else if (statusFilter === 'error') matchesStatus = log.estado === 'error';
+
+            return matchesSearch && matchesStart && matchesEnd && matchesStatus;
+        });
+
+        // Then Group Repetitive Errors
+        // Assuming logs are sorted by date desc
+        for (const log of rawFiltered) {
+            const isRepetitive = lastLog &&
+                lastLog.local_nombre === log.local_nombre &&
+                lastLog.mensaje === log.mensaje &&
+                lastLog.estado === log.estado &&
+                new Date(lastLog.fecha_hora).toDateString() === new Date(log.fecha_hora).toDateString(); // Same day
+
+            if (isRepetitive) {
+                lastLog.repeatCount = (lastLog.repeatCount || 1) + 1;
+                // Keep the latest timestamp visible? Or range?
+                // lastLog is the newest one if we iterate desc? 
+                // Using API ordering... usually newest first.
+                // If newest first, lastLog is the newer one. 
+                // We just extend the count.
+            } else {
+                result.push({ ...log, repeatCount: 1 });
+                lastLog = result[result.length - 1];
+            }
+        }
+        return result;
+    }, [logs, searchTerm, dateRange, statusFilter]);
 
     const getStatusBadge = (log: LoadLog) => {
         const hasErrors = log.detalles && log.detalles.length > 0;
@@ -249,6 +279,11 @@ export const LoadMonitor: React.FC = () => {
                                             </div>
                                             <div className="text-[10px] text-slate-400">
                                                 {new Date(log.fecha_hora).toLocaleTimeString()}
+                                                {log.repeatCount > 1 && (
+                                                    <span className="ml-2 px-1.5 py-0.5 bg-slate-200 text-slate-600 rounded-md text-[10px] font-bold">
+                                                        x{log.repeatCount}
+                                                    </span>
+                                                )}
                                             </div>
                                         </td>
                                         <td className="px-6 py-4">

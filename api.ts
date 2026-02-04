@@ -29,12 +29,14 @@ export interface Store {
   piso: string;
   tipo_negocio: string;
   mts: string;
-  porciento_renta: string;
-  upsert_activo: boolean;
+  porciento_renta: string | number;
+  upsert_activo?: boolean;
   mall_nombre?: string;
   renta_fija?: number;
   breakpoint_venta?: number;
   porcentaje_variable?: number;
+  processing_status?: 'IDLE' | 'BUSY' | 'SUSPENDED_AUTH_ERROR';
+  consecutive_failures?: number;
 }
 
 export const ApiService = {
@@ -420,6 +422,17 @@ export const ApiService = {
       console.error('Error fetching load logs:', error);
       return [];
     }
+  },
+
+
+
+  async reactivateStore(id: string) {
+    const { error } = await supabase
+      .from('locales')
+      .update({ processing_status: 'IDLE', consecutive_failures: 0 })
+      .eq('id', id);
+    if (error) throw error;
+    return true;
   },
 
   async logLoad(log: any): Promise<void> {

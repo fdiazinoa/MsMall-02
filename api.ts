@@ -79,7 +79,9 @@ export const ApiService = {
       prefijo_renombrado: local.prefijo_backup || 'PR_',
       mapping: local.mapping_config || {},
       constants: local.constants_config || {},
-      tipo_ejecucion: local.tipo_ejecucion || 'MANUAL'
+      tipo_ejecucion: local.tipo_ejecucion || 'MANUAL',
+      ultima_ejecucion: local.ultima_ejecucion,
+      resultado_ultimo: local.resultado_ultimo
     }));
   },
 

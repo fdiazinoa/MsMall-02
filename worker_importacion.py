@@ -184,23 +184,24 @@ def process_local_files(config):
                 pass
 
             items = sftp.listdir_attr(remote_path)
+            files_found = 0
+            matching_files = 0
+            processed_count = 0
+            
             for item in items:
                 if stat.S_ISDIR(item.st_mode):
                     continue
                 
+                files_found += 1
                 filename = item.filename
                 
-                # Debug Check
-                skip_reason = ""
-                if processed_suffix in filename: skip_reason = "processed_suffix"
-                elif filename.startswith(backup_prefix): skip_reason = f"prefix_{backup_prefix}"
-                elif filename.startswith("PR_"): skip_reason = "prefix_PR_"
-                elif filename.startswith("PW_"): skip_reason = "prefix_PW_"
+                # Check for skips
+                is_processed = processed_suffix in filename
+                is_backup = filename.startswith(backup_prefix) or filename.startswith("PR_") or filename.startswith("PW_")
+                is_match = filename.lower().endswith(ext)
                 
-                if skip_reason:
-                     logger.info(f"SKIPPING {filename} due to {skip_reason}")
-                
-                if filename.lower().endswith(ext) and processed_suffix not in filename and not filename.startswith(backup_prefix) and not filename.startswith("PR_") and not filename.startswith("PW_"):
+                if is_match and not is_processed and not is_backup:
+                    matching_files += 1
                     batch_id = str(uuid.uuid4())
                     logger.info(f"Procesando archivo SFTP: {filename}")
                     
@@ -216,9 +217,18 @@ def process_local_files(config):
                         
                         insert_load_log(config['nombre'], filename, estado, mensaje, batch_id, errors)
                         handle_post_process_sftp(sftp, remote_path, filename, post_action, processed_suffix, backup_prefix)
+                        processed_count += 1
                     except Exception as fe:
                         insert_load_log(config['nombre'], filename, "error", str(fe), batch_id)
                         logger.error(f"Error procesando archivo {filename}: {fe}")
+            
+            # Visibility Log: If no matching files were found, log success with 0 files
+            if processed_count == 0:
+                logger.info(f"📍 {config['nombre']}: 0 archivos nuevos encontrados (Total en dir: {files_found}, Coinciden ext: {matching_files})")
+                insert_load_log(config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 archivos nuevos encontrados (Total: {files_found})")
+            else:
+                logger.info(f"✅ {config['nombre']}: Ciclo completado. Procesados {processed_count} archivos.")
+
         finally:
             sftp.close()
             ssh.close()
@@ -241,8 +251,17 @@ def process_local_files(config):
                     pass
 
             files = ftp.nlst()
+            files_found = len(files)
+            processed_count = 0
+            matching_files = 0
+            
             for filename in files:
-                if filename.lower().endswith(ext) and processed_suffix not in filename and not filename.startswith(backup_prefix) and not filename.startswith("PR_") and not filename.startswith("PW_"):
+                is_processed = processed_suffix in filename
+                is_backup = filename.startswith(backup_prefix) or filename.startswith("PR_") or filename.startswith("PW_")
+                is_match = filename.lower().endswith(ext)
+                
+                if is_match and not is_processed and not is_backup:
+                    matching_files += 1
                     batch_id = str(uuid.uuid4())
                     logger.info(f"Procesando archivo FTP: {filename}")
                     
@@ -260,9 +279,17 @@ def process_local_files(config):
                         
                         insert_load_log(config['nombre'], filename, estado, mensaje, batch_id, errors)
                         handle_post_process_ftp(ftp, filename, post_action, processed_suffix, backup_prefix)
+                        processed_count += 1
                     except Exception as fe:
                         insert_load_log(config['nombre'], filename, "error", str(fe), batch_id)
                         logger.error(f"Error procesando archivo {filename}: {fe}")
+            
+            # Visibility Log
+            if processed_count == 0:
+                logger.info(f"📍 {config['nombre']}: 0 archivos nuevos encontrados (Total en dir: {files_found}, Coinciden ext: {matching_files})")
+                insert_load_log(config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 archivos nuevos encontrados (Total: {files_found})")
+            else:
+                logger.info(f"✅ {config['nombre']}: Ciclo completado. Procesados {processed_count} archivos.")
         finally:
             ftp.quit()
 

@@ -1047,7 +1047,9 @@ export const ImportManager: React.FC = () => {
                 <div className="flex items-center gap-2 text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-2">
                   <Clock size={12} /> Última Ejecución
                 </div>
-                <p className="text-xs font-bold text-slate-700">{config.ultima_ejecucion || 'Pendiente'}</p>
+                <p className="text-xs font-bold text-slate-700">
+                  {config.ultima_ejecucion ? new Date(config.ultima_ejecucion).toLocaleString() : 'Pendiente'}
+                </p>
                 {config.resultado_ultimo && (
                   <div className={`inline-flex items-center gap-1 mt-2 text-[10px] font-bold uppercase ${config.resultado_ultimo === 'exito' ? 'text-green-600' : 'text-rose-600'}`}>
                     {config.resultado_ultimo === 'exito' ? <CheckCircle2 size={10} /> : <XCircle size={10} />}

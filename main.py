@@ -21,6 +21,7 @@ from ftplib import FTP
 import stat
 from worker_importacion import run_worker_async
 from analytics import generate_sales_cube
+from routers import recipes
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -46,6 +47,8 @@ if SUPABASE_URL and SUPABASE_KEY:
 
 
 app = FastAPI(title="MSMALL Sales Audit API", version="1.0.0")
+
+app.include_router(recipes.router)
 
 async def scheduler_loop():
     await asyncio.sleep(10) # Initial delay
@@ -223,7 +226,7 @@ def insert_load_log(local_nombre: str, archivo: str, estado: str, mensaje: str, 
         logger.error(f"Error CRÍTICO insertando log en Supabase: {e}")
         logger.error(f"Data intentada: {log_data}")
 
-def process_file_content(content: str, filename: str, config: Dict[str, Any], batch_id: str):
+def process_file_content(content: str, filename: str, config: Dict[str, Any], batch_id: str, mall_id: str = None):
     """
     Parses content based on config mapping and inserts into Supabase 'ventas' table.
     Returns (success_count, errors_list).
@@ -408,10 +411,20 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     new_r['local_id'] = local_info['id']
                     if local_info.get('mall_id'):
                         new_r['mall_id'] = local_info['mall_id']
+                    else:
+                        # Fallback to context mall_id if local doesn't have one
+                        if mall_id:
+                            new_r['mall_id'] = mall_id
+                            logger.info(f"Using context mall_id: {mall_id} for local {l_code}")
                     del new_r['local_codigo'] # Remove text code, keep UUID
                 else:
                     logger.warning(f"No UUID found for local_codigo: {l_code}")
-                    del new_r['local_codigo'] 
+                    del new_r['local_codigo']
+            else:
+                # If no local_codigo provided, use context mall_id
+                if mall_id:
+                    new_r['mall_id'] = mall_id
+                    logger.info(f"Using context mall_id: {mall_id} (no local_codigo provided)") 
             
             final_records.append(new_r)
         
@@ -453,11 +466,15 @@ async def root():
 @app.post("/api/v1/ingesta", response_model=IngestionResponse, status_code=status.HTTP_201_CREATED)
 async def ingesta_ventas(
     file: UploadFile = File(...), 
-    api_key: str = Depends(verify_api_key)
+    user_id: str = Depends(get_current_user_id),
+    mall_id: str = Depends(get_current_mall)
 ):
     """
     Endpoint principal para que los locales envíen sus ventas diarias.
-    Acepta un archivo y procesa según la configuración del local (basado en el API Key o headers).
+    Acepta un archivo y procesa según la configuración del local.
+    
+    El mall_id se detecta automáticamente del contexto del usuario autenticado.
+    No es necesario enviar X-Mall-Id header - se infiere del usuario logueado.
     """
     batch_id = str(uuid4())
     try:
@@ -480,7 +497,7 @@ async def ingesta_ventas(
             }
         }
         
-        count, errors = process_file_content(content, file.filename, config, batch_id)
+        count, errors = process_file_content(content, file.filename, config, batch_id, mall_id)
         
         estado = "exito" if count > 0 and not errors else "parcial" if count > 0 else "error"
         mensaje = f"Procesado: {count} registros."

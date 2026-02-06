@@ -1242,7 +1242,8 @@ async def analyze_mapping(file: UploadFile = File(...)):
     """
     try:
         content = await file.read()
-        decoded = content.decode('utf-8', errors='replace')
+        # Use utf-8-sig to handle BOM which is common in Windows/Excel generated files
+        decoded = content.decode('utf-8-sig', errors='replace')
         return _perform_mapping_analysis(decoded, file.filename) # For upload we usually trust extension or could add more logic
     except Exception as e:
         logger.error(f"Error analyzing mapping: {e}")

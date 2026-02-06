@@ -785,6 +785,7 @@ export const ApiService = {
 
               recordsToInsert.push({
                 local_id: store.id,
+                mall_id: store.mall_id,  // Include mall_id from store
                 fecha: fecha,
                 hora: '12:00:00',
                 total_bruto: bruto,

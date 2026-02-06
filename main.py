@@ -61,7 +61,81 @@ def flatten_json(y):
     flatten(y)
     return out
 
+def diagnosticar_archivo(file_bytes):
+    reporte = []
+    
+    # PASO 1: Decodificación
+    try:
+        content = file_bytes.decode('utf-8-sig') # Vital para quitar el BOM
+        reporte.append("SUCCESS: Decodificación UTF-8-SIG correcta.")
+    except:
+        reporte.append("ERROR: Falló decodificación UTF-8-SIG.")
+        return reporte
+
+    # PASO 2: JSON Parsing
+    try:
+        data = json.loads(content)
+        keys = list(data.keys()) if isinstance(data, dict) else ["<Lista>"]
+        reporte.append(f"SUCCESS: JSON Válido. Claves raíz: {keys}")
+    except Exception as e:
+        reporte.append(f"ERROR: json.loads falló. {str(e)}")
+        return reporte
+
+    # PASO 3: Detección de Lista
+    target_data = data
+    if isinstance(data, dict):
+        if "invoices" in data:
+            target_data = data["invoices"]
+            reporte.append("INFO: Se detectó clave 'invoices' y se entró en ella.")
+        else:
+             # Try smart search
+            found = False
+            for k, v in data.items():
+                if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                    target_data = v
+                    reporte.append(f"INFO: Se detectó lista en clave '{k}'.")
+                    found = True
+                    break
+            if not found:
+                 reporte.append("WARN: No se encontró lista 'invoices' ni otra lista candidata.")
+    
+    if not isinstance(target_data, list):
+        reporte.append(f"ERROR: Los datos no son una lista. Son tipo: {type(target_data)}")
+        # Try wrapping
+        reporte.append("INFO: Intentando envolver en lista...")
+        target_data = [target_data]
+
+    # PASO 4: Pandas Normalize
+    try:
+        df = pd.json_normalize(target_data)
+        cols = list(df.columns)
+        reporte.append(f"SUCCESS: DataFrame creado con {len(df)} filas.")
+        reporte.append(f"COLUMNAS DETECTADAS: {cols}")
+        
+        # Muestra una fila de ejemplo para ver si los datos estan anidados
+        if not df.empty:
+             reporte.append(f"EJEMPLO FILA 1: {df.iloc[0].to_dict()}")
+
+    except Exception as e:
+        reporte.append(f"ERROR: pd.json_normalize falló. {str(e)}")
+
+    return reporte
+
+
+
 app = FastAPI(title="MSMALL Sales Audit API", version="1.0.0")
+
+@app.post("/api/v1/debug/diagnose-file")
+async def diagnose_file_endpoint(file: UploadFile = File(...)):
+    """
+    Diagnostic endpoint to inspect JSON file structure and parsing status.
+    """
+    try:
+        content = await file.read()
+        report = diagnosticar_archivo(content)
+        return {"filename": file.filename, "report": report}
+    except Exception as e:
+        return {"error": str(e)}
 
 app.include_router(recipes.router)
 
@@ -1017,13 +1091,13 @@ class CubeRequest(BaseModel):
 
 # --- INTELLIGENT AUTO-MAPPING ---
 SYSTEM_FIELDS_SYNONYMS = {
-    "factura_numero": ["invoice", "factura", "doc_num", "documento", "folio", "ticket", "recibo", "invoiceNumber"],
+    "factura_numero": ["invoice", "factura", "doc_num", "documento", "folio", "ticket", "recibo", "invoiceNumber", "invoice_id"],
     "fecha_venta": ["date", "fecha", "time", "dia", "issued", "created", "invoiceDate"],
     "local_codigo": ["store", "local", "tienda", "sucursal", "code", "id_local", "storeCode", "terminalCode"],
-    "total_bruto": ["gross", "bruto", "total", "amount", "monto", "venta", "precio", "importe", "totals.grandTotal"],
-    "total_impuestos": ["tax", "impuesto", "iva", "vat", "tributes", "totals.taxTotal"],
-    "total_neto": ["net", "neto", "subtotal", "base", "totals.subTotal"],
-    "comprobante": ["ticket", "vourcher", "comprobante", "recibo", "doc_type", "fiscalData.ncf"],
+    "total_bruto": ["gross", "bruto", "total", "amount", "monto", "venta", "precio", "importe", "grandTotal", "totals.grandTotal", "paymentTotal"],
+    "total_impuestos": ["tax", "impuesto", "iva", "vat", "tributes", "taxTotal", "totals.taxTotal", "taxAmount"],
+    "total_neto": ["net", "neto", "subtotal", "base", "subTotal", "totals.subTotal"],
+    "comprobante": ["ticket", "vourcher", "comprobante", "recibo", "doc_type", "ncf", "fiscalData.ncf"],
     "hora_transaccion": ["time", "hora", "trans_hour", "momento"]
 }
 
@@ -1062,29 +1136,45 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
             
     if current_type == "JSON":
         try:
-            data = json.loads(decoded_content)
+            # Try decoding with utf-8-sig to handle BOM
+            try:
+                if isinstance(decoded_content, str):
+                     data = json.loads(decoded_content)
+                else: 
+                     # Should be string here but safety check 
+                     data = json.loads(decoded_content)
+            except:
+                # If decoded_content wasn't decoded with sig, it might have issues?
+                # But here we receive string. We assume content was read properly in endpoints.
+                # However, for robustness we just proceed.
+                data = json.loads(decoded_content)
             
-            # Logic Update: If root is dict, find the list
+            # Logic Update: If root is dict, find the list (Recursive/Smart Search)
+            target_data = data
             if isinstance(data, dict):
-                # Heuristic: Find first value that is a list of dicts
-                found_list = False
-                for k, v in data.items():
-                    if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                        data = v # Found proper root, e.g. "invoices"
-                        found_list = True
-                        break
-                
-                if not found_list:
-                    # If no list found, treat as single record
-                    data = [data]
+                if "invoices" in data:
+                    target_data = data["invoices"]
+                else:
+                    # Heuristic: Find first value that is a list of dicts
+                    found_list = False
+                    for k, v in data.items():
+                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                            target_data = v 
+                            found_list = True
+                            break
+                    
+                    if not found_list:
+                        # If no list found, treat as single record
+                        target_data = [data]
             elif isinstance(data, list):
-                pass # Already a list
+                target_data = data
+            else:
+                 target_data = [data]
             
-             # Use Pandas for robust flattening as requested
-            df = pd.json_normalize(data)
+             # Use Pandas for robust flattening
+            df = pd.json_normalize(target_data)
             
             # Convert back to list of dicts for header extraction/sample
-            # Check if empty
             if df.empty:
                  headers = []
             else:
@@ -1094,7 +1184,7 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
                      sample_row = df.iloc[0].where(pd.notnull(df.iloc[0]), None).to_dict()
 
         except Exception as e:
-            logger.error(f"Error parsing JSON: {e}")
+            logger.error(f"Error parsing JSON analysis: {e}")
             pass
     
     if not headers:
@@ -1103,16 +1193,33 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
     # 2. Fuzzy Match System Fields
     suggested_mapping = {}
     
+    # Pre-process headers for matching logic
+    # We keep original headers but maybe create a lower version map
+    
     for sys_field, synonyms in SYSTEM_FIELDS_SYNONYMS.items():
         query_list = [sys_field] + synonyms
         best_match = None
         best_score = 0
         
-        for query in query_list:
-            match, score = process.extractOne(query, headers, scorer=fuzz.token_sort_ratio) or (None, 0)
-            if score > best_score:
-                best_score = score
-                best_match = match
+        # EXACT MATCH FIRST (Crucial for dot notation like totals.grandTotal)
+        for h in headers:
+            for q in query_list:
+                if h == q:
+                    best_match = h
+                    best_score = 100
+                    break
+            if best_score == 100: break
+        
+        # If no exact match, try Fuzzy
+        if best_score < 100:
+            for query in query_list:
+                # Use partial_ratio or token_sort based on needs. 
+                # token_sort_ratio handles "Total Bruto" vs "Bruto Total" nicely.
+                # We used extractOne before.
+                match, score = process.extractOne(query, headers, scorer=fuzz.token_sort_ratio) or (None, 0)
+                if score > best_score:
+                    best_score = score
+                    best_match = match
         
         if best_score > 60:
             suggested_mapping[sys_field] = {

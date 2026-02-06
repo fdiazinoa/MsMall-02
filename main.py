@@ -1230,6 +1230,7 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
     
     return {
         "csv_headers": headers,
+        "detected_headers": headers, # Added explicit key as requested
         "suggested_mapping": suggested_mapping,
         "sample_row": sample_row
     }

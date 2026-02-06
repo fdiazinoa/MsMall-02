@@ -174,9 +174,9 @@ export default function MappingModal({
                                                     <option key={header} value={header}>{header}</option>
                                                 ))}
                                             </select>
-                                            {mapping[field.key] && sampleRow[mapping[field.key]] && (
+                                            {mapping[field.key] && sampleRow[mapping[field.key]] !== undefined && sampleRow[mapping[field.key]] !== null && (
                                                 <div className="mt-2 text-sm text-gray-600 bg-white px-3 py-2 rounded border border-gray-200">
-                                                    <span className="font-medium">Vista previa:</span> {sampleRow[mapping[field.key]]}
+                                                    <span className="font-medium">Vista previa:</span> {String(sampleRow[mapping[field.key]])}
                                                 </div>
                                             )}
                                         </>

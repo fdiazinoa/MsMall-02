@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Check, AlertCircle } from 'lucide-react';
+import PreviewCard from './PreviewCard';
 
 interface MappingModalProps {
     isOpen: boolean;
@@ -209,6 +210,13 @@ export default function MappingModal({
                             );
                         })}
                     </div>
+
+                    <PreviewCard
+                        mapping={mapping}
+                        constants={constants}
+                        sampleRow={sampleRow}
+                        systemFields={SYSTEM_FIELDS}
+                    />
 
                     {!validate() && (
                         <div className="mt-6 bg-yellow-50 border border-yellow-200 rounded-xl p-4 flex items-start gap-3">

@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, FileUp, CheckCircle2, AlertTriangle, ArrowRight, X, Wand2, ArrowRightLeft } from 'lucide-react';
 import { ApiService } from '../api';
+import PreviewCard from './PreviewCard';
 
 interface SmartMappingModalProps {
     isOpen: boolean;
@@ -205,6 +206,12 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
                                     </tbody>
                                 </table>
                             </div>
+
+                            <PreviewCard
+                                mapping={mapping}
+                                sampleRow={sampleRow}
+                                systemFields={systemFields.map(f => ({ key: f.key, label: f.label }))}
+                            />
                         </div>
                     )}
                 </div>

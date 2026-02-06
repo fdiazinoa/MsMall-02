@@ -276,8 +276,11 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     if not raw_rows:
                         raw_rows = [data]
                 
-                # Apply flattening
-                raw_rows = [flatten_json(row) for row in raw_rows]
+                # Apply flattening using Pandas
+                if raw_rows:
+                    df = pd.json_normalize(raw_rows)
+                    # Convert NaN to None for SQL safety
+                    raw_rows = df.where(pd.notnull(df), None).to_dict(orient='records')
             except Exception as e:
                 return 0, [{"linea": 0, "error": f"JSON inválido: {str(e)}"}]
         else:
@@ -1014,13 +1017,13 @@ class CubeRequest(BaseModel):
 
 # --- INTELLIGENT AUTO-MAPPING ---
 SYSTEM_FIELDS_SYNONYMS = {
-    "factura_numero": ["invoice", "factura", "doc_num", "documento", "folio", "ticket", "recibo"],
-    "fecha_venta": ["date", "fecha", "time", "dia", "issued", "created"],
-    "local_codigo": ["store", "local", "tienda", "sucursal", "code", "id_local"],
-    "total_bruto": ["gross", "bruto", "total", "amount", "monto", "venta", "precio", "importe"],
-    "total_impuestos": ["tax", "impuesto", "iva", "vat", "tributes"],
-    "total_neto": ["net", "neto", "subtotal", "base"],
-    "comprobante": ["ticket", "vourcher", "comprobante", "recibo", "doc_type"],
+    "factura_numero": ["invoice", "factura", "doc_num", "documento", "folio", "ticket", "recibo", "invoiceNumber"],
+    "fecha_venta": ["date", "fecha", "time", "dia", "issued", "created", "invoiceDate"],
+    "local_codigo": ["store", "local", "tienda", "sucursal", "code", "id_local", "storeCode", "terminalCode"],
+    "total_bruto": ["gross", "bruto", "total", "amount", "monto", "venta", "precio", "importe", "totals.grandTotal"],
+    "total_impuestos": ["tax", "impuesto", "iva", "vat", "tributes", "totals.taxTotal"],
+    "total_neto": ["net", "neto", "subtotal", "base", "totals.subTotal"],
+    "comprobante": ["ticket", "vourcher", "comprobante", "recibo", "doc_type", "fiscalData.ncf"],
     "hora_transaccion": ["time", "hora", "trans_hour", "momento"]
 }
 
@@ -1057,38 +1060,42 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
         except StopIteration:
             return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
             
-    if not headers and (current_type == "JSON" or filename.lower().endswith('.json')):
+    if current_type == "JSON":
         try:
             data = json.loads(decoded_content)
-            if isinstance(data, list) and len(data) > 0:
-                headers = list(data[0].keys())
-                sample_row = data[0]
-            elif isinstance(data, dict):
-                 # Try to find array inside
+            
+            # Logic Update: If root is dict, find the list
+            if isinstance(data, dict):
+                # Heuristic: Find first value that is a list of dicts
                 found_list = False
                 for k, v in data.items():
                     if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                         headers = list(v[0].keys())
-                         sample_row = v[0]
-                         found_list = True
-                         break
+                        data = v # Found proper root, e.g. "invoices"
+                        found_list = True
+                        break
+                
                 if not found_list:
-                    headers = list(data.keys())
-                    sample_row = data
+                    # If no list found, treat as single record
+                    data = [data]
+            elif isinstance(data, list):
+                pass # Already a list
             
-            # FLATTEN STEP
-            if sample_row:
-                 try:
-                     flat_row = flatten_json(sample_row)
-                     headers = list(flat_row.keys())
-                     sample_row = flat_row
-                 except Exception as e:
-                     logger.warning(f"Error flattening JSON sample: {e}")
-                     # Fallback to original if flatten fails (unlikely)
-                     pass
+             # Use Pandas for robust flattening as requested
+            df = pd.json_normalize(data)
+            
+            # Convert back to list of dicts for header extraction/sample
+            # Check if empty
+            if df.empty:
+                 headers = []
+            else:
+                 headers = list(df.columns)
+                 # Get first row as dict, handle NaN
+                 if len(df) > 0:
+                     sample_row = df.iloc[0].where(pd.notnull(df.iloc[0]), None).to_dict()
 
-        except:
-             return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
+        except Exception as e:
+            logger.error(f"Error parsing JSON: {e}")
+            pass
     
     if not headers:
         return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
@@ -1150,11 +1157,11 @@ async def analyze_remote_mapping(req: RemoteRequest):
             if req.protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
                 try:
-                    with sftp.open(req.ruta, 'r') as f:
                         if is_json:
-                            return f.read().decode('utf-8', errors='replace')
+                            # Use utf-8-sig to handle BOM
+                            return f.read().decode('utf-8-sig', errors='replace')
                         else:
-                            return f.read(read_size).decode('utf-8', errors='replace')
+                            return f.read(read_size).decode('utf-8-sig', errors='replace')
                 finally:
                     sftp.close()
                     ssh.close()

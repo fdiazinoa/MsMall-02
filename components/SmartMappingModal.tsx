@@ -28,7 +28,7 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
         try {
             const result = await ApiService.analyzeMapping(file);
 
-            setCsvHeaders(result.csv_headers);
+            setCsvHeaders(result.csv_headers || []);
             setSampleRow(result.sample_row || {});
 
             const newMapping: Record<string, string> = {};
@@ -148,7 +148,7 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
-                                        {systemFields.map((field) => {
+                                        {(systemFields || []).map((field) => {
                                             const match = confidence[field.key];
                                             const selectedHeader = mapping[field.key] || '';
                                             const sampleValue = sampleRow[selectedHeader];
@@ -166,8 +166,8 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
                                                         <div className="relative">
                                                             <select
                                                                 className={`w-full appearance-none pl-3 pr-8 py-2 rounded-lg border text-sm font-medium outline-none transition-all ${selectedHeader
-                                                                        ? (match?.isConfident ? 'border-green-200 bg-green-50 text-green-700' : 'border-slate-300 bg-white text-slate-700')
-                                                                        : 'border-orange-200 bg-orange-50 text-orange-700'
+                                                                    ? (match?.isConfident ? 'border-green-200 bg-green-50 text-green-700' : 'border-slate-300 bg-white text-slate-700')
+                                                                    : 'border-orange-200 bg-orange-50 text-orange-700'
                                                                     }`}
                                                                 value={selectedHeader}
                                                                 onChange={(e) => {
@@ -177,7 +177,7 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
                                                                 }}
                                                             >
                                                                 <option value="">-- Sin asignar --</option>
-                                                                {csvHeaders.map(h => (
+                                                                {(csvHeaders || []).map(h => (
                                                                     <option key={h} value={h}>{h}</option>
                                                                 ))}
                                                             </select>

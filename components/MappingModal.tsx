@@ -12,7 +12,7 @@ interface MappingModalProps {
     filename: string;
 }
 
-const SYSTEM_FIELDS = [
+const SYSTEM_FIELDS: { key: string; label: string; required: boolean }[] = [
     { key: 'factura_numero', label: 'Número de Factura', required: true },
     { key: 'fecha_venta', label: 'Fecha de Venta', required: true },
     { key: 'local_codigo', label: 'Código del Local', required: true },
@@ -121,9 +121,9 @@ export default function MappingModal({
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-6">
                     <div className="space-y-4">
-                        {SYSTEM_FIELDS.map(field => {
+                        {(SYSTEM_FIELDS || []).map(field => {
                             const isRequired = field.required;
-                            const suggestion = suggestedMapping[field.key];
+                            const suggestion = (suggestedMapping || {})[field.key];
                             const isConfident = suggestion?.is_confident;
                             const isUsingConstant = useConstant[field.key];
 
@@ -170,7 +170,7 @@ export default function MappingModal({
                                                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                                             >
                                                 <option value="">-- Seleccionar columna --</option>
-                                                {fileHeaders.map(header => (
+                                                {(fileHeaders || []).map(header => (
                                                     <option key={header} value={header}>{header}</option>
                                                 ))}
                                             </select>

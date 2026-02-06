@@ -36,6 +36,7 @@ export default function MappingModal({
     const [mapping, setMapping] = useState<Record<string, string>>({});
     const [constants, setConstants] = useState<Record<string, string>>({});
     const [useConstant, setUseConstant] = useState<Record<string, boolean>>({});
+    const [dateFormat, setDateFormat] = useState<string>('auto');
 
     useEffect(() => {
         // Initialize with current or suggested mapping
@@ -95,8 +96,11 @@ export default function MappingModal({
 
         console.log("Mapping limpio (sin vacíos):", cleanMapping);
         console.log("Constants:", constants);
+        console.log("Date Format:", dateFormat);
 
-        onConfirm(cleanMapping, constants);
+        // Pass date format as part of constants for backend processing
+        const finalConstants = { ...constants, _date_format: dateFormat };
+        onConfirm(cleanMapping, finalConstants);
     };
 
     if (!isOpen) return null;
@@ -174,6 +178,26 @@ export default function MappingModal({
                                                     <option key={header} value={header}>{header}</option>
                                                 ))}
                                             </select>
+
+                                            {/* Date Format Selector for fecha_venta */}
+                                            {field.key === 'fecha_venta' && mapping[field.key] && (
+                                                <div className="mt-3">
+                                                    <label className="block text-xs font-semibold text-gray-600 mb-1">Formato de Fecha</label>
+                                                    <select
+                                                        value={dateFormat}
+                                                        onChange={(e) => setDateFormat(e.target.value)}
+                                                        className="w-full px-4 py-2 border border-indigo-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-indigo-50 text-sm"
+                                                    >
+                                                        <option value="auto">🔍 Autodetectar (recomendado)</option>
+                                                        <option value="DD/MM/YYYY">📅 DD/MM/YYYY (02/01 = 2 de Enero)</option>
+                                                        <option value="MM/DD/YYYY">🇺🇸 MM/DD/YYYY (02/01 = 1 de Febrero)</option>
+                                                        <option value="YYYY-MM-DD">🌐 YYYY-MM-DD (ISO 8601)</option>
+                                                        <option value="timestamp">⏰ Con hora (ISO timestamp)</option>
+                                                    </select>
+                                                    <p className="text-xs text-gray-500 mt-1">Elige el formato para evitar ambigüedad en fechas como 2/1/2026</p>
+                                                </div>
+                                            )}
+
                                             {mapping[field.key] && sampleRow[mapping[field.key]] !== undefined && sampleRow[mapping[field.key]] !== null && (
                                                 <div className="mt-2 text-sm text-gray-600 bg-white px-3 py-2 rounded border border-gray-200">
                                                     <span className="font-medium">Vista previa:</span> {String(sampleRow[mapping[field.key]])}

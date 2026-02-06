@@ -255,6 +255,7 @@ class ImportConfigSchema(BaseModel):
     tipo_archivo: Optional[str] = "CSV"
     mapping: Dict[str, str] = {}
     constants: Dict[str, str] = {}  # Added for constant field values
+    date_format: Optional[str] = "auto"  # Date format preference for fecha_venta
     # Worker names fallback support is in normalization logic
 
 class ExecuteManualRequest(BaseModel):
@@ -403,27 +404,45 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                      errors.append({"linea": i+2, "error": "Falta fecha_venta"})
                      continue
 
-                # Normalize Date with comprehensive format support
+                # Normalize Date with format-specific or comprehensive support
                 raw_date = str(record['fecha_venta']).strip()
                 parsed_date = None
                 
-                # Ordered by probability: ISO timestamps first, then common regional formats
-                date_formats = [
-                    '%Y-%m-%dT%H:%M:%S.%fZ',  # ISO 8601 with milliseconds and Z (2026-02-01T14:30:00.000Z)
-                    '%Y-%m-%dT%H:%M:%S.%f',   # ISO 8601 with milliseconds (2026-02-01T14:30:00.000)
-                    '%Y-%m-%dT%H:%M:%SZ',     # ISO 8601 with Z (2026-02-01T14:30:00Z)
-                    '%Y-%m-%dT%H:%M:%S',      # ISO 8601 with time (2026-02-01T14:30:00)
-                    '%Y-%m-%d %H:%M:%S',      # SQL datetime (2026-02-01 14:30:00)
-                    '%Y-%m-%d',               # ISO 8601 date only (2026-02-01)
-                    '%d/%m/%Y',               # DD/MM/YYYY (Dominican/Spanish format)
-                    '%m/%d/%Y',               # MM/DD/YYYY (US format)
-                    '%d-%m-%Y',               # DD-MM-YYYY with hyphens
-                    '%m-%d-%Y',               # MM-DD-YYYY with hyphens
-                    '%Y/%m/%d',               # YYYY/MM/DD with slashes
-                    '%Y-%d-%m',               # YYYY-DD-MM (uncommon but requested)
-                    '%d/%m/%Y %H:%M:%S',      # DD/MM/YYYY with time
-                    '%m/%d/%Y %H:%M:%S',      # MM/DD/YYYY with time
-                ]
+                # Check if explicit date_format is specified (from UI selector)
+                explicit_format = config.constants.get('_date_format', 'auto') if hasattr(config, 'constants') else 'auto'
+                
+                # Define format groups based on user selection
+                if explicit_format == 'DD/MM/YYYY':
+                    date_formats = ['%d/%m/%Y', '%d-%m-%Y']
+                elif explicit_format == 'MM/DD/YYYY':
+                    date_formats = ['%m/%d/%Y', '%m-%d-%Y']
+                elif explicit_format == 'YYYY-MM-DD':
+                    date_formats = ['%Y-%m-%d', '%Y/%m/%d']
+                elif explicit_format == 'timestamp':
+                    date_formats = [
+                        '%Y-%m-%dT%H:%M:%S.%fZ',
+                        '%Y-%m-%dT%H:%M:%S.%f',
+                        '%Y-%m-%dT%H:%M:%SZ',
+                        '%Y-%m-%dT%H:%M:%S',
+                        '%Y-%m-%d %H:%M:%S'
+                    ]
+                else:  # 'auto' - try all formats
+                    date_formats = [
+                        '%Y-%m-%dT%H:%M:%S.%fZ',  # ISO 8601 with milliseconds and Z (2026-02-01T14:30:00.000Z)
+                        '%Y-%m-%dT%H:%M:%S.%f',   # ISO 8601 with milliseconds (2026-02-01T14:30:00.000)
+                        '%Y-%m-%dT%H:%M:%SZ',     # ISO 8601 with Z (2026-02-01T14:30:00Z)
+                        '%Y-%m-%dT%H:%M:%S',      # ISO 8601 with time (2026-02-01T14:30:00)
+                        '%Y-%m-%d %H:%M:%S',      # SQL datetime (2026-02-01 14:30:00)
+                        '%Y-%m-%d',               # ISO 8601 date only (2026-02-01)
+                        '%d/%m/%Y',               # DD/MM/YYYY (Dominican/Spanish format)
+                        '%m/%d/%Y',               # MM/DD/YYYY (US format)
+                        '%d-%m-%Y',               # DD-MM-YYYY with hyphens
+                        '%m-%d-%Y',               # MM-DD-YYYY with hyphens
+                        '%Y/%m/%d',               # YYYY/MM/DD with slashes
+                        '%Y-%d-%m',               # YYYY-DD-MM (uncommon but requested)
+                        '%d/%m/%Y %H:%M:%S',      # DD/MM/YYYY with time
+                        '%m/%d/%Y %H:%M:%S',      # MM/DD/YYYY with time
+                    ]
                 
                 for fmt in date_formats:
                     try:

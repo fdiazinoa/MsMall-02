@@ -403,10 +403,29 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                      errors.append({"linea": i+2, "error": "Falta fecha_venta"})
                      continue
 
-                # Normalize Date
+                # Normalize Date with comprehensive format support
                 raw_date = str(record['fecha_venta']).strip()
                 parsed_date = None
-                for fmt in ['%d/%m/%Y', '%Y-%m-%d', '%m/%d/%Y', '%d-%m-%Y', '%Y/%m/%d']:
+                
+                # Ordered by probability: ISO timestamps first, then common regional formats
+                date_formats = [
+                    '%Y-%m-%dT%H:%M:%S.%fZ',  # ISO 8601 with milliseconds and Z (2026-02-01T14:30:00.000Z)
+                    '%Y-%m-%dT%H:%M:%S.%f',   # ISO 8601 with milliseconds (2026-02-01T14:30:00.000)
+                    '%Y-%m-%dT%H:%M:%SZ',     # ISO 8601 with Z (2026-02-01T14:30:00Z)
+                    '%Y-%m-%dT%H:%M:%S',      # ISO 8601 with time (2026-02-01T14:30:00)
+                    '%Y-%m-%d %H:%M:%S',      # SQL datetime (2026-02-01 14:30:00)
+                    '%Y-%m-%d',               # ISO 8601 date only (2026-02-01)
+                    '%d/%m/%Y',               # DD/MM/YYYY (Dominican/Spanish format)
+                    '%m/%d/%Y',               # MM/DD/YYYY (US format)
+                    '%d-%m-%Y',               # DD-MM-YYYY with hyphens
+                    '%m-%d-%Y',               # MM-DD-YYYY with hyphens
+                    '%Y/%m/%d',               # YYYY/MM/DD with slashes
+                    '%Y-%d-%m',               # YYYY-DD-MM (uncommon but requested)
+                    '%d/%m/%Y %H:%M:%S',      # DD/MM/YYYY with time
+                    '%m/%d/%Y %H:%M:%S',      # MM/DD/YYYY with time
+                ]
+                
+                for fmt in date_formats:
                     try:
                         parsed_date = datetime.strptime(raw_date, fmt)
                         break

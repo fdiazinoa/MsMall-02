@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MSMALL Audit Systems - Presentación de Funcionalidades</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f8f9fa;
+            padding: 40px 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 60px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 8px;
+        }
+        
+        h1 {
+            color: #1e40af;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            border-bottom: 4px solid #3b82f6;
+            padding-bottom: 15px;
+        }
+        
+        h2 {
+            color: #1e40af;
+            font-size: 1.8em;
+            margin-top: 40px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+        }
+        
+        h2::before {
+            content: '';
+            width: 6px;
+            height: 30px;
+            background: #3b82f6;
+            margin-right: 15px;
+            border-radius: 3px;
+        }
+        
+        h3 {
+            color: #475569;
+            font-size: 1.3em;
+            margin-top: 25px;
+            margin-bottom: 15px;
+        }
+        
+        .metadata {
+            background: #eff6ff;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0 40px 0;
+            border-left: 4px solid #3b82f6;
+        }
+        
+        .metadata p {
+            margin: 5px 0;
+            color: #334155;
+        }
+        
+        .metadata strong {
+            color: #1e40af;
+        }
+        
+        img {
+            max-width: 100%;
+            height: auto;
+            margin: 25px 0;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+            border: 1px solid #e2e8f0;
+        }
+        
+        ul, ol {
+            margin-left: 25px;
+            margin-bottom: 15px;
+        }
+        
+        li {
+            margin: 8px 0;
+        }
+        
+        strong {
+            color: #1e40af;
+        }
+        
+        hr {
+            border: none;
+            border-top: 2px solid #e2e8f0;
+            margin: 40px 0;
+        }
+        
+        .feature-box {
+            background: #f8fafc;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border-left: 4px solid #10b981;
+        }
+        
+        .section-divider {
+            height: 60px;
+        }
+        
+        footer {
+            text-align: center;
+            margin-top: 60px;
+            padding-top: 30px;
+            border-top: 2px solid #e2e8f0;
+            color: #64748b;
+            font-size: 0.9em;
+        }
+        
+        @media print {
+            body {
+                background: white;
+                padding: 0;
+            }
+            
+            .container {
+                box-shadow: none;
+                padding: 20px;
+            }
+            
+            h2 {
+                page-break-after: avoid;
+            }
+            
+            img {
+                page-break-inside: avoid;
+                max-width: 100%;
+            }
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            background: #3b82f6;
+            color: white;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MSMALL Audit Systems</h1>
+        <h2 style="border: none; margin-top: 0;">Presentación de Funcionalidades del Sistema</h2>
+        
+        <div class="metadata">
+            <p><strong>Versión:</strong> MVP ACTIVO v1.2.0</p>
+            <p><strong>Arquitectura:</strong> React SPA + FastAPI + PostgreSQL</p>
+            <p><strong>Tipo:</strong> Plataforma SaaS de Auditoría y Control de Ventas</p>
+        </div>
+
+        <hr>
+
+        <h2>📊 1. Dashboard BI (Business Intelligence)</h2>
+        
+        <p>El módulo principal del sistema proporciona una vista ejecutiva de los indicadores clave de rendimiento del mall.</p>
+        
+        <img src="file:///Users/felixdiaz/.gemini/antigravity/brain/6c4d91c0-ce92-442e-980d-8b57b603cd02/msmall_dashboard_1770380459787.png" alt="Dashboard BI">
+        
+        <h3>Funcionalidades Principales:</h3>
+        
+        <div class="feature-box">
+            <strong>KPIs en Tiempo Real</strong>
+            <ul>
+                <li><strong>Ventas Brutas:</strong> Ingresos totales del período seleccionado</li>
+                <li><strong>Transacciones:</strong> Número total de operaciones registradas con tendencia porcentual (+2.4%)</li>
+                <li><strong>Ticket Promedio:</strong> Valor promedio por transacción con análisis comparativo (-1.2%)</li>
+                <li><strong>Ventas Netas:</strong> Ingresos después de descuentos e impuestos</li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Análisis Visual</strong>
+            <ul>
+                <li><strong>Tendencia de Ventas Diarias:</strong> Gráfico de líneas mostrando el comportamiento de ventas en los últimos 7 días</li>
+                <li><strong>Top 5 Locales:</strong> Ranking de los establecimientos con mejor desempeño</li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Controles de Filtrado</strong>
+            <ul>
+                <li>Selector de Mall (Ej: Megacentor Mall)</li>
+                <li>Rango de fechas configurable (01/02/2026 - 06/02/2026)</li>
+                <li>Sistema de estado operativo en tiempo real</li>
+            </ul>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <h2>🔄 2. Importación FTP/SFTP Automatizada</h2>
+        
+        <p>Sistema de integración automatizada con servidores externos para la importación de datos de ventas.</p>
+        
+        <img src="file:///Users/felixdiaz/.gemini/antigravity/brain/6c4d91c0-ce92-442e-980d-8b57b603cd02/import_manager_sftp_1770380503120.png" alt="Importación FTP">
+        
+        <h3>Capacidades del Módulo:</h3>
+        
+        <div class="feature-box">
+            <strong>Gestión de Conexiones Múltiples</strong>
+            <ul>
+                <li>Configuración independiente por establecimiento (Skechers, Aldo, American Eagle, Calvin Klein, LC Waikiki, Puma)</li>
+                <li>Soporte para protocolos SFTP (SSH) y FTP estándar</li>
+                <li>Puerto personalizable (configuración por defecto: 2022)</li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Configuración por Conexión</strong>
+            <ul>
+                <li><strong>Servidor:</strong> Hostname y directorio remoto</li>
+                <li><strong>Formato de Archivo:</strong> Especificación de extensión (.txt, .csv)</li>
+                <li><strong>Mapeo Dinámico:</strong> Vinculación de columnas fuente con campos del sistema
+                    <ul>
+                        <li>total neto, comprobante, fecha venta, cajero, referencia</li>
+                    </ul>
+                </li>
+                <li><strong>Programación:</strong> Última ejecución registrada con timestamp</li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Operaciones Disponibles</strong>
+            <ul>
+                <li>Creación de nueva conexión</li>
+                <li>Edición de configuración de mapeo</li>
+                <li>Ejecución manual inmediata ("Ejecutar Ahora")</li>
+                <li>Eliminación de fuentes de datos</li>
+                <li>Estado activo/inactivo</li>
+            </ul>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <h2>📈 3. Auditoría de Ventas (Compliance Matrix)</h2>
+        
+        <p>Módulo de control y seguimiento de cumplimiento en la entrega de información financiera.</p>
+        
+        <img src="file:///Users/felixdiaz/.gemini/antigravity/brain/6c4d91c0-ce92-442e-980d-8b57b603cd02/sales_audit_interface_1770380527252.png" alt="Auditoría de Ventas">
+        
+        <h3>Características Principales:</h3>
+        
+        <div class="feature-box">
+            <strong>Matriz de Cumplimiento</strong>
+            <ul>
+                <li>Visualización tabulada de 10+ locales registrados</li>
+                <li>Clasificación por categoría (FASTFOOD, ZAPATERÍA, VESTUARIO, ROPA, etc.)</li>
+                <li>Estado crítico visual mediante etiquetas de alerta</li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Indicadores de Cumplimiento</strong>
+            <ul>
+                <li><strong>Estado:</strong> Crítico/Aceptable/Óptimo</li>
+                <li><strong>Días Faltantes:</strong> Contador de días sin reportar (Ej: 6 de 6 días)</li>
+                <li><strong>Porcentaje de Cumplimiento:</strong> 0% - 100%</li>
+                <li><strong>Acción:</strong> Botón "Auditar" para revisión detallada</li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Herramientas de Análisis</strong>
+            <ul>
+                <li>Filtros por rango de fechas (Desde/Hasta)</li>
+                <li>Selector multi-local o "Todos los Locales"</li>
+                <li>Exportación en formatos Excel y PDF</li>
+                <li>Actualización manual de datos</li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Resumen Ejecutivo</strong>
+            <ul>
+                <li><strong>Ventas Totales (Neto):</strong> $0.00</li>
+                <li><strong>Locales Auditados:</strong> 0</li>
+                <li><strong>Malls Reportando:</strong> 0</li>
+            </ul>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <h2>🏪 4. Mantenimiento de Locales</h2>
+        
+        <p>Gestión completa de la configuración contractual y física de los establecimientos comerciales.</p>
+        
+        <img src="file:///Users/felixdiaz/.gemini/antigravity/brain/6c4d91c0-ce92-442e-980d-8b57b603cd02/msmall_mantenimiento_locales_1770380556936.png" alt="Mantenimiento de Locales">
+        
+        <h3>Funcionalidades del Módulo:</h3>
+        
+        <div class="feature-box">
+            <strong>Tabla de Gestión de Locales</strong> <span class="badge">10 locales registrados</span>
+            <ul>
+                <li><strong>Información Local:</strong>
+                    <ul>
+                        <li>Nombre comercial e ID único</li>
+                        <li>Icono de categoría visual</li>
+                        <li>Clasificación por rubro (FASTFOOD, RETAIL, ZAPATERÍA, etc.)</li>
+                    </ul>
+                </li>
+                <li><strong>Responsable:</strong>
+                    <ul>
+                        <li>Nombre del encargado del local</li>
+                        <li>Datos de contacto asociados</li>
+                    </ul>
+                </li>
+                <li><strong>Ubicación:</strong>
+                    <ul>
+                        <li>Piso específico (P1, P3)</li>
+                        <li>Asociación con Mall (Mall Plaza)</li>
+                    </ul>
+                </li>
+                <li><strong>Métricas Contractuales:</strong>
+                    <ul>
+                        <li><strong>Mts²:</strong> Superficie del local (rango: 20-150 m²)</li>
+                        <li><strong>Renta %:</strong> Porcentaje de renta variable sobre ventas (2%-5%)</li>
+                    </ul>
+                </li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Operaciones Disponibles</strong>
+            <ul>
+                <li>Búsqueda por nombre, responsable o código</li>
+                <li>Registro de nuevo local</li>
+                <li>Edición de información existente</li>
+                <li>Eliminación de registros</li>
+            </ul>
+        </div>
+        
+        <div class="feature-box" style="border-left-color: #ef4444;">
+            <strong>Zona de Peligro (Administrador)</strong>
+            <ul>
+                <li>Funcionalidad restringida para reiniciar base de datos de ventas</li>
+                <li>Advertencia visual de alta prioridad</li>
+            </ul>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <h2>💰 5. Gestión Financiera (Salud Financiera)</h2>
+        
+        <p>Análisis avanzado de OCR (Occupancy Cost Ratio) y proyecciones de recaudación.</p>
+        
+        <img src="file:///Users/felixdiaz/.gemini/antigravity/brain/6c4d91c0-ce92-442e-980d-8b57b603cd02/financial_dashboard_msmall_1770380586208.png" alt="Gestión Financiera">
+        
+        <h3>Componentes del Dashboard:</h3>
+        
+        <div class="feature-box">
+            <strong>Métricas Clave</strong>
+            <ul>
+                <li><strong>Venta Prom m² Mall:</strong> $0.00 - Ingreso promedio por metro cuadrado</li>
+                <li><strong>Locales en Riesgo (OCR > 20%):</strong> 0 Locales - Identificación de establecimientos con alto costo de ocupación</li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Gráfico de Salud de Cartera</strong>
+            <ul>
+                <li>Análisis comparativo: Ventas vs OCR por establecimiento</li>
+                <li>Línea de referencia visual: "RIESGO 20%" (umbral crítico)</li>
+                <li>Comparativa de 9 locales simultáneos:
+                    <ul>
+                        <li>Pollo Victorina, Sketchers, Aldo, American Eagle, Calvin Klein, LC-Waikiki, Puma, Sportline, Cafe Santo Domingo, Bath & Body</li>
+                    </ul>
+                </li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Proyección de Recaudación (Variable)</strong>
+            <ul>
+                <li>Tabla de estimación mensual de renta variable</li>
+                <li>Columnas: LOCAL | VENTA ACTUAL | PROYECCIÓN | RENTA VAR. EST.</li>
+                <li>Indicador de estado: "No se proyecta cobro de renta variable este mes"</li>
+            </ul>
+        </div>
+        
+        <div class="feature-box">
+            <strong>Controles de Exportación</strong>
+            <ul>
+                <li>Selector de rango de fechas (01/02/2026 - 28/02/2026)</li>
+                <li>Exportación Excel (botón verde)</li>
+                <li>Exportación PDF (botón rojo)</li>
+            </ul>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <h2>🎯 Módulos Adicionales Disponibles</h2>
+        
+        <h3>Inteligencia IA</h3>
+        <p>Análisis predictivo y recomendaciones inteligentes</p>
+        
+        <h3>Cubo de Ventas</h3>
+        <p>Análisis multidimensional de datos de ventas (OLAP)</p>
+        
+        <h3>Monitor de Cargas</h3>
+        <p>Seguimiento de procesos de importación y sincronización</p>
+        
+        <h3>Gestión de Malls</h3>
+        <p>Administración de propiedades y configuraciones multi-tenant</p>
+        
+        <h3>Usuarios y Roles</h3>
+        <p>Sistema RBAC con roles: <code>admin</code>, <code>auditor</code>, <code>mall_manager</code></p>
+        
+        <h3>Ingesta CSV</h3>
+        <p>Carga manual de archivos mediante upload directo</p>
+
+        <div class="section-divider"></div>
+
+        <h2>🔐 Seguridad y Arquitectura</h2>
+        
+        <h3>Autenticación</h3>
+        <ul>
+            <li>Sistema de login basado en Supabase</li>
+            <li>Roles y permisos granulares</li>
+            <li>Sesiones persistentes</li>
+        </ul>
+        
+        <h3>Integración</h3>
+        <ul>
+            <li>API REST basada en FastAPI</li>
+            <li>Autenticación por X-API-Key para sistemas externos</li>
+            <li>Validación de esquemas en tiempo real</li>
+        </ul>
+        
+        <h3>Base de Datos</h3>
+        <ul>
+            <li>PostgreSQL con esquema relacional optimizado</li>
+            <li>Soporte multi-tenant mediante <code>api_key</code> únicas</li>
+            <li>Índices en campos críticos (fecha, local, mall)</li>
+        </ul>
+
+        <div class="section-divider"></div>
+
+        <h2>📱 Experiencia de Usuario</h2>
+        
+        <h3>Diseño</h3>
+        <ul>
+            <li>Interfaz moderna con Tailwind CSS</li>
+            <li>Dark mode en sidebar</li>
+            <li>Cards responsive con información compacta</li>
+            <li>Indicadores visuales de estado (crítico/activo/riesgo)</li>
+        </ul>
+        
+        <h3>Navegación</h3>
+        <p>Sidebar organizado por secciones:</p>
+        <ul>
+            <li><strong>General:</strong> Dashboard, IA, Finanzas, Cubo, Auditoría</li>
+            <li><strong>Auditoría IT:</strong> Monitor</li>
+            <li><strong>Administración:</strong> Mantenimiento, Malls, Usuarios</li>
+            <li><strong>Herramientas:</strong> FTP, CSV</li>
+        </ul>
+        
+        <h3>Iconografía</h3>
+        <ul>
+            <li>Lucide React para consistencia visual</li>
+            <li>Códigos de color semánticos (verde=activo, rojo=crítico, amarillo=alerta)</li>
+        </ul>
+
+        <div class="section-divider"></div>
+
+        <h2>📊 Estado del Sistema</h2>
+        
+        <div class="metadata">
+            <p><strong>Versión Actual:</strong> MVP ACTIVO v1.2.0</p>
+            <p><strong>Estado Operativo:</strong> Sistema funcionando correctamente</p>
+            <p><strong>Última Verificación:</strong> 2026-02-06 08:19:37 AM</p>
+            <p><strong>Usuario de Demo:</strong> Usuario MSMALL (Admin)</p>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <h2>🚀 Próximos Desarrollos (Roadmap)</h2>
+        
+        <ol>
+            <li><strong>Webhooks de Notificación</strong>
+                <ul>
+                    <li>Integración con Slack y Email para alertas críticas</li>
+                </ul>
+            </li>
+            <li><strong>Exportación Avanzada</strong>
+                <ul>
+                    <li>Informes firmados digitalmente en PDF/Excel</li>
+                </ul>
+            </li>
+            <li><strong>Conciliación Automática</strong>
+                <ul>
+                    <li>Módulo de reconciliación entre ventas reportadas vs. facturadas</li>
+                </ul>
+            </li>
+            <li><strong>Cifrado de Credenciales</strong>
+                <ul>
+                    <li>Implementación de RSA-4096 para protección de claves FTP/SFTP</li>
+                </ul>
+            </li>
+        </ol>
+
+        <footer>
+            <p><strong>© 2026 MSMALL Audit Systems - Prototipo MVP</strong></p>
+        </footer>
+    </div>
+</body>
+</html>

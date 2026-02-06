@@ -233,129 +233,117 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
     """
     mapping = config.get("mapping", {})
     constants = config.get("constants", {})
-    tipo_archivo = config.get("tipo_archivo", "CSV")
+    tipo_archivo = config.get("tipo_archivo", "CSV").upper()
     local_nombre = config.get("nombre", "Desconocido")
     
     records_to_insert = []
     errors = []
     
-    # Intento de refrescar caché de esquema haciendo una consulta dummy
+    # Pre-warm Supabase connection / cache (optional)
     try:
         supabase.table("ventas").select("count", count="exact").limit(0).execute()
     except:
         pass
     
     try:
-        if tipo_archivo == "CSV" or tipo_archivo == "TXT":
+        raw_rows = []
+        if tipo_archivo == "JSON":
+            try:
+                data = json.loads(content)
+                if isinstance(data, list):
+                    raw_rows = data
+                elif isinstance(data, dict):
+                    # Try to find list inside
+                    for k, v in data.items():
+                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                            raw_rows = v
+                            break
+                    if not raw_rows:
+                        raw_rows = [data]
+            except Exception as e:
+                return 0, [{"linea": 0, "error": f"JSON inválido: {str(e)}"}]
+        else:
+            # Default CSV/TXT
             f = io.StringIO(content)
-            # Detect delimiter
             sample = content[:4096]
             try:
                 dialect = csv.Sniffer().sniff(sample)
                 delimiter = dialect.delimiter
             except:
                 delimiter = ","
-            
             f.seek(0)
             reader = csv.DictReader(f, delimiter=delimiter)
-            
-            # Log CSV headers for debugging
-            if reader.fieldnames:
-                logger.info(f"Headers del CSV: {reader.fieldnames}")
-            
-            # Validar mapeo básico - un campo puede estar en mapping o constants
-            req_sys_fields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto']
-            missing_mapping = []
-            for field in req_sys_fields:
-                # Field is valid if it exists in mapping (and has a value) OR in constants
-                has_mapping = field in mapping and mapping[field]
-                has_constant = field in constants and constants[field]
-                if not (has_mapping or has_constant):
-                    missing_mapping.append(field)
-            
-            if missing_mapping:
-                logger.error(f"Mapeo incompleto. Faltan: {', '.join(missing_mapping)}")
-                logger.error(f"Mapping recibido: {mapping}")
-                logger.error(f"Constants recibidos: {constants}")
-                return 0, [{"linea": 0, "error": f"Mapeo incompleto. Faltan: {', '.join(missing_mapping)}"}]
+            raw_rows = list(reader)
 
-            for i, row in enumerate(reader):
-                try:
-                    record = {}
-                    # 1. Apply Mapping
-                    for sys_field, csv_header in mapping.items():
-                        if csv_header in row:
-                            record[sys_field] = row[csv_header]
-                    
-                    # 2. Apply Constants
-                    for k, v in constants.items():
-                        record[k] = v
-                    
-                    # Log first record for debugging
-                    if i == 0:
-                        logger.info(f"Primer registro procesado: {record}")
-                    
-                    # 3. Validation & Type Casting
-                    if not record.get('factura_numero') or not record.get('fecha_venta'):
-                        errors.append({"linea": i+2, "error": "Faltan datos obligatorios (Factura o Fecha)"})
-                        continue
+        # Validar mapeo básico
+        req_sys_fields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto']
+        missing_mapping = []
+        for field in req_sys_fields:
+            has_mapping = field in mapping and mapping[field]
+            has_constant = field in constants and constants[field]
+            if not (has_mapping or has_constant):
+                missing_mapping.append(field)
+        
+        if missing_mapping:
+            logger.error(f"Mapeo incompleto. Faltan: {', '.join(missing_mapping)}")
+            return 0, [{"linea": 0, "error": f"Mapeo incompleto. Faltan: {', '.join(missing_mapping)}"}]
 
-                    # Normalize Date Format to YYYY-MM-DD
-                    if record.get('fecha_venta'):
-                        try:
-                            raw_date = str(record['fecha_venta']).strip()
-                            # Try common formats
-                            parsed_date = None
-                            for fmt in ['%d/%m/%Y', '%Y-%m-%d', '%m/%d/%Y', '%d-%m-%Y', '%Y/%m/%d']:
-                                try:
-                                    parsed_date = datetime.strptime(raw_date, fmt)
-                                    break
-                                except ValueError:
-                                    continue
-                            
-                            if parsed_date:
-                                record['fecha_venta'] = parsed_date.strftime('%Y-%m-%d')
-                            else:
-                                # Fallback: try Dateutil if available or keep raw (might error in DB)
-                                pass 
-                        except Exception as e:
-                            logger.warning(f"Error parseando fecha {record['fecha_venta']}: {e}")
-                    
-                    # Ensure numeric types
-                    for num_field in ['total_bruto', 'total_impuestos', 'total_neto']:
-                        if record.get(num_field):
-                            try:
-                                val = str(record[num_field]).replace(',', '')
-                                record[num_field] = float(val)
-                            except:
-                                record[num_field] = 0.0
-                    
-                    records_to_insert.append(record)
-                except Exception as row_e:
-                    errors.append({"linea": i+2, "error": str(row_e)})
-
-                except Exception as row_e:
-                    errors.append({"linea": i+2, "error": str(row_e)})
-
-        elif tipo_archivo == "JSON":
+        for i, row in enumerate(raw_rows):
             try:
-                data = json.loads(content)
-                if not isinstance(data, list):
-                    # Try to find list inside
-                    for k, v in data.items():
-                        if isinstance(v, list):
-                            data = v
-                            break
+                record = {}
+                # 1. Apply Mapping
+                for sys_field, header in mapping.items():
+                    if header in row:
+                        record[sys_field] = row[header]
                 
-                if isinstance(data, list):
-                    for i, item in enumerate(data):
-                        record = {}
-                        for sys_field, json_key in mapping.items():
-                            if json_key in item: record[sys_field] = item[json_key]
-                        for k, v in constants.items(): record[k] = v
-                        records_to_insert.append(record)
-            except Exception as e:
-                errors.append({"linea": 0, "error": f"Invalid JSON: {str(e)}"})
+                # 2. Apply Constants
+                for k, v in constants.items():
+                    record[k] = v
+                
+                if i == 0:
+                    logger.info(f"Muestra mapeo primer registro: {record}")
+                
+                # 3. Validation & Type Casting (Shared for both formats)
+                if not record.get('fecha_venta'):
+                     errors.append({"linea": i+2, "error": "Falta fecha_venta"})
+                     continue
+
+                # Normalize Date
+                raw_date = str(record['fecha_venta']).strip()
+                parsed_date = None
+                for fmt in ['%d/%m/%Y', '%Y-%m-%d', '%m/%d/%Y', '%d-%m-%Y', '%Y/%m/%d']:
+                    try:
+                        parsed_date = datetime.strptime(raw_date, fmt)
+                        break
+                    except ValueError:
+                        continue
+                
+                if parsed_date:
+                    record['fecha_venta'] = parsed_date.strftime('%Y-%m-%d')
+                else:
+                    errors.append({"linea": i+2, "error": f"Formato de fecha inválido: {raw_date}"})
+                    continue
+                
+                # Ensure numeric types
+                for num_field in ['total_bruto', 'total_impuestos', 'total_neto']:
+                    val = record.get(num_field, 0.0)
+                    if val is None: val = 0.0
+                    try:
+                        record[num_field] = float(str(val).replace(',', '').strip())
+                    except:
+                        record[num_field] = 0.0
+                
+                if record.get('total_bruto', 0) == 0:
+                     # Permisivo opcional, pero aquí lo mantenemos como error si es 0 y no hay nada
+                     pass
+
+                records_to_insert.append(record)
+            except Exception as row_e:
+                errors.append({"linea": i+2, "error": str(row_e)})
+
+    except Exception as e:
+        logger.error(f"Error procesando contenido: {e}")
+        return 0, [{"linea": 0, "error": str(e)}]
 
         # --- DB SCHEMA MAPPING & RESOLUTION ---
         final_records = []
@@ -1018,12 +1006,18 @@ SYSTEM_FIELDS_SYNONYMS = {
     "hora_transaccion": ["time", "hora", "trans_hour", "momento"]
 }
 
-def _perform_mapping_analysis(decoded_content, filename):
+def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
     headers = []
     sample_row = {}
     
+    # Normalize tipo_archivo if provided
+    current_type = tipo_archivo.upper() if tipo_archivo else None
+    if not current_type:
+        if filename.lower().endswith('.json'): current_type = "JSON"
+        elif filename.lower().endswith('.csv') or filename.lower().endswith('.txt'): current_type = "CSV"
+    
     # 1. Detect Format and Extract Headers/Sample
-    if filename.lower().endswith('.csv') or filename.lower().endswith('.txt'):
+    if current_type == "CSV" or current_type == "TXT" or not current_type:
         # Simple Sniffer attempt
         sample_str = decoded_content[:4096] # Analyze first 4KB
         try:
@@ -1042,7 +1036,7 @@ def _perform_mapping_analysis(decoded_content, filename):
         except StopIteration:
             return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
             
-    elif filename.lower().endswith('.json'):
+    if not headers and (current_type == "JSON" or filename.lower().endswith('.json')):
         try:
             data = json.loads(decoded_content)
             if isinstance(data, list) and len(data) > 0:
@@ -1101,7 +1095,7 @@ async def analyze_mapping(file: UploadFile = File(...)):
     try:
         content = await file.read()
         decoded = content.decode('utf-8', errors='replace')
-        return _perform_mapping_analysis(decoded, file.filename)
+        return _perform_mapping_analysis(decoded, file.filename) # For upload we usually trust extension or could add more logic
     except Exception as e:
         logger.error(f"Error analyzing mapping: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1148,7 +1142,7 @@ async def analyze_remote_mapping(req: RemoteRequest):
         if not content:
             return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
             
-        return _perform_mapping_analysis(content, req.ruta)
+        return _perform_mapping_analysis(content, req.ruta, req.tipo_archivo)
         
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Timeout analizando archivo remoto (el archivo podría ser demasiado grande o la conexión lenta)")

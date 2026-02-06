@@ -80,55 +80,88 @@ def get_ftp_client(host, port, user, password):
 
 def process_file_logic(config, filename, content):
     """
-    Process file content and insert to database.
+    Process file content (CSV or JSON) and insert to database.
     """
     logger.info(f"Procesando contenido de {filename} para {config['nombre']}")
     detalles = []
     registros_exito = 0
     
     try:
-        # Parse CSV
-        lines = content.splitlines()
-        if len(lines) < 2:
-            return 0, [{"linea": 0, "error": "Archivo vacío o sin datos"}]
-            
-        reader = csv.DictReader(io.StringIO(content))
+        file_type = config.get("file_type", "CSV").upper()
+        raw_records = []
         
-        # Get store ID and Mall ID (Inferencia Backend)
+        # 1. Parse Content
+        if file_type == "JSON":
+            try:
+                data = json.loads(content)
+                if isinstance(data, list):
+                    raw_records = data
+                elif isinstance(data, dict):
+                    # Try to find list inside (common in some exports)
+                    for k, v in data.items():
+                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                            raw_records = v
+                            break
+                    if not raw_records:
+                        raw_records = [data] # Single object
+            except Exception as e:
+                return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}]
+        else:
+            # Default to CSV/TXT
+            reader = csv.DictReader(io.StringIO(content))
+            raw_records = list(reader)
+            
+        if not raw_records:
+            return 0, [{"linea": 0, "error": "Archivo vacío o sin datos válidos"}]
+            
+        # Get store ID and Mall ID
         local_id = config.get('id')
-        mall_id = config.get('mall_id') # Assumes config comes with mall_id from select(*)
+        mall_id = config.get('mall_id')
         
         if not local_id:
             return 0, [{"linea": 0, "error": "No se pudo determinar el local_id"}]
             
-        if not mall_id:
-             logger.warning(f"Mall ID missing for local {config['nombre']}")
-        
         # Get mapping
         mapping = config.get('mapping_config') or {}
         
-        for i, row in enumerate(reader, start=2):  # Start from line 2 (after header)
+        for i, row in enumerate(raw_records, start=2):
             try:
-                # Map fields
-                fecha_venta_raw = row.get(mapping.get('fecha_venta', ''), '')
+                # Map fields using mapping_config
+                # mapping_config usually translates system_field -> file_header
+                fecha_venta_raw = row.get(mapping.get('fecha_venta', 'fecha_venta'), '')
+                factura_no = row.get(mapping.get('factura_numero', 'factura_numero'), '')
+                
+                # Check for direct key matches if mapping fails
+                if not fecha_venta_raw and 'fecha' in row: fecha_venta_raw = row['fecha']
+                if not factura_no and 'factura_no' in row: factura_no = row['factura_no']
+
                 fecha_venta = normalize_date(fecha_venta_raw)
                 
                 if fecha_venta_raw and not fecha_venta:
                      detalles.append({"linea": i, "error": f"Formato de fecha inválido: {fecha_venta_raw}"})
                      continue
 
-                total_bruto = float(row.get(mapping.get('total_bruto', ''), '0'))
-                total_impuestos = float(row.get(mapping.get('total_impuestos', ''), '0'))
-                total_neto = float(row.get(mapping.get('total_neto', ''), '0'))
+                # Normalización Numérica
+                def clean_float(val):
+                    if val is None: return 0.0
+                    try:
+                        return float(str(val).replace(',', '').strip())
+                    except:
+                        return 0.0
+
+                total_bruto = clean_float(row.get(mapping.get('total_bruto', 'total_bruto'), '0'))
+                total_impuestos = clean_float(row.get(mapping.get('total_impuestos', 'total_impuestos'), '0'))
+                total_neto = clean_float(row.get(mapping.get('total_neto', 'total_neto'), '0'))
                 
                 if not fecha_venta or total_bruto == 0:
-                    detalles.append({"linea": i, "error": "Datos incompletos"})
+                    detalles.append({"linea": i, "error": "Datos incompletos (Fecha o Total Bruto faltante/cero)"})
                     continue
                 
-                # Insert to database with Tenant ID
+                # Insert to database
                 payload = {
                     "local_id": local_id,
                     "fecha": fecha_venta,
+                    "factura_no": str(factura_no) if factura_no else None,
                     "total_bruto": total_bruto,
                     "total_impuestos": total_impuestos,
                     "total_neto": total_neto
@@ -138,7 +171,6 @@ def process_file_logic(config, filename, content):
                     payload["mall_id"] = mall_id
                 
                 supabase.table("ventas").insert(payload).execute()
-                
                 registros_exito += 1
                 
             except Exception as e:

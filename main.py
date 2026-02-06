@@ -1143,12 +1143,18 @@ async def analyze_remote_mapping(req: RemoteRequest):
         loop = asyncio.get_event_loop()
         
         def _read_remote_sample():
+            # Determine if we should read all (JSON) or sample (CSV)
+            is_json = req.tipo_archivo == "JSON" or req.ruta.lower().endswith('.json')
+            read_size = -1 if is_json else 32768 # Read all for JSON, 32KB for CSV (increased from 8KB)
+
             if req.protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
                 try:
                     with sftp.open(req.ruta, 'r') as f:
-                        # Read first 8KB for analysis
-                        return f.read(8192).decode('utf-8', errors='replace')
+                        if is_json:
+                            return f.read().decode('utf-8', errors='replace')
+                        else:
+                            return f.read(read_size).decode('utf-8', errors='replace')
                 finally:
                     sftp.close()
                     ssh.close()
@@ -1156,21 +1162,21 @@ async def analyze_remote_mapping(req: RemoteRequest):
                 ftp = get_ftp_client(req.host, req.puerto, req.usuario, req.password)
                 try:
                     bio = io.BytesIO()
-                    # Use a custom rest/retr to only get a part? 
-                    # FTP RETR usually gets the whole file. 
-                    # For simplicity, we'll try to read enough or the whole if small.
-                    # Warning: Big files on FTP might be slow here.
                     ftp.retrbinary(f"RETR {req.ruta.split('/')[-1]}", bio.write)
                     bio.seek(0)
-                    return bio.read(8192).decode('utf-8', errors='replace') 
+                    if is_json:
+                         return bio.read().decode('utf-8', errors='replace')
+                    else:
+                         return bio.read(read_size).decode('utf-8', errors='replace')
                 finally:
                     ftp.quit()
             return ""
 
         # Usar wait_for para evitar hangs si el archivo es gigante o la red falla
+        # Increased timeout for big JSON files
         content = await asyncio.wait_for(
             loop.run_in_executor(executor, _read_remote_sample),
-            timeout=45.0
+            timeout=120.0 
         )
         if not content:
             return {"headers": [], "suggested_mapping": {}, "sample_row": {}}

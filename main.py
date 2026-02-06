@@ -46,6 +46,21 @@ if SUPABASE_URL and SUPABASE_KEY:
         # Dont crash, just continue without supabase
 
 
+def flatten_json(y):
+    out = {}
+
+    def flatten(x, name=''):
+        if isinstance(x, dict):
+            for a in x:
+                flatten(x[a], name + a + '.')
+        elif isinstance(x, list):
+             out[name[:-1]] = json.dumps(x)
+        else:
+            out[name[:-1]] = x
+
+    flatten(y)
+    return out
+
 app = FastAPI(title="MSMALL Sales Audit API", version="1.0.0")
 
 app.include_router(recipes.router)
@@ -260,6 +275,9 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                             break
                     if not raw_rows:
                         raw_rows = [data]
+                
+                # Apply flattening
+                raw_rows = [flatten_json(row) for row in raw_rows]
             except Exception as e:
                 return 0, [{"linea": 0, "error": f"JSON inválido: {str(e)}"}]
         else:
@@ -1006,6 +1024,9 @@ SYSTEM_FIELDS_SYNONYMS = {
     "hora_transaccion": ["time", "hora", "trans_hour", "momento"]
 }
 
+
+
+
 def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
     headers = []
     sample_row = {}
@@ -1054,6 +1075,18 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
                 if not found_list:
                     headers = list(data.keys())
                     sample_row = data
+            
+            # FLATTEN STEP
+            if sample_row:
+                 try:
+                     flat_row = flatten_json(sample_row)
+                     headers = list(flat_row.keys())
+                     sample_row = flat_row
+                 except Exception as e:
+                     logger.warning(f"Error flattening JSON sample: {e}")
+                     # Fallback to original if flatten fails (unlikely)
+                     pass
+
         except:
              return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
     

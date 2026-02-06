@@ -433,7 +433,7 @@ export const ImportManager: React.FC = () => {
                       }}
                     >
                       <option value="">-- Nuevo Local (Crear al guardar) --</option>
-                      {availableStores.map(s => (
+                      {(availableStores || []).map(s => (
                         <option key={s.id} value={s.id}>{s.nombre} ({s.codigo_interno})</option>
                       ))}
                     </select>
@@ -652,7 +652,7 @@ export const ImportManager: React.FC = () => {
                             <div className="py-8 text-center"><RefreshCw className="animate-spin mx-auto text-indigo-400" size={20} /></div>
                           ) : (
                             <>
-                              {explorerItems.map((item, idx) => (
+                              {(explorerItems || []).map((item, idx) => (
                                 <div
                                   key={idx}
                                   className="flex items-center justify-between p-2 hover:bg-indigo-50 rounded-lg cursor-pointer group transition-colors"
@@ -857,9 +857,9 @@ export const ImportManager: React.FC = () => {
                 )}
 
                 <div className="grid grid-cols-1 gap-y-6 pt-4">
-                  {STANDARD_FIELDS.map(field => {
-                    const isConstant = editingConfig.constants && field.key in editingConfig.constants;
-                    const currentValue = isConstant ? editingConfig.constants?.[field.key] : editingConfig.mapping[field.key];
+                  {(STANDARD_FIELDS || []).map(field => {
+                    const isConstant = (editingConfig.constants || {}) && field.key in (editingConfig.constants || {});
+                    const currentValue = isConstant ? editingConfig.constants?.[field.key] : (editingConfig.mapping || {})[field.key];
 
                     return (
                       <div key={field.key} className="relative group bg-slate-50 p-4 rounded-xl border border-slate-200">
@@ -1013,7 +1013,7 @@ export const ImportManager: React.FC = () => {
             <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
             <p className="text-slate-400 font-medium">Cargando servicios de red...</p>
           </div>
-        ) : configs.map(config => (
+        ) : (configs || []).map(config => (
           <div key={config.id} className="bg-white rounded-3xl border border-slate-200 p-6 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
             <div className={`absolute top-0 right-0 px-6 py-2 rounded-bl-3xl text-[10px] font-bold uppercase tracking-widest ${config.protocolo === 'SFTP' ? 'bg-indigo-600 text-white' : config.protocolo === 'LOCAL' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}`}>
               {config.protocolo === 'LOCAL' ? 'Directorio' : config.protocolo}
@@ -1062,11 +1062,11 @@ export const ImportManager: React.FC = () => {
                   <Database size={12} /> Mapeo Activo
                 </div>
                 <div className="flex flex-wrap gap-1">
-                  {Object.keys(config.mapping).filter(k => config.mapping[k]).slice(0, 3).map(k => (
+                  {Object.keys(config.mapping || {}).filter(k => (config.mapping || {})[k]).slice(0, 3).map(k => (
                     <span key={k} className="px-1.5 py-0.5 bg-white border border-slate-200 rounded text-[8px] font-bold text-slate-500 uppercase">{k.replace('_', ' ')}</span>
                   ))}
-                  {Object.keys(config.mapping).filter(k => config.mapping[k]).length > 3 && (
-                    <span className="text-[8px] text-slate-400 font-bold">+{Object.keys(config.mapping).filter(k => config.mapping[k]).length - 3}</span>
+                  {Object.keys(config.mapping || {}).filter(k => (config.mapping || {})[k]).length > 3 && (
+                    <span className="text-[8px] text-slate-400 font-bold">+{Object.keys(config.mapping || {}).filter(k => (config.mapping || {})[k]).length - 3}</span>
                   )}
                 </div>
               </div>
@@ -1160,7 +1160,7 @@ export const ImportManager: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
-                      {manualFiles.map((file) => (
+                      {(manualFiles || []).map((file) => (
                         <tr key={file.nombre} className="hover:bg-indigo-50/30 transition-colors group">
                           <td className="px-5 py-4">
                             <div className="flex items-center gap-3">

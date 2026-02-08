@@ -21,7 +21,7 @@ from ftplib import FTP
 import stat
 from worker_importacion import run_worker_async
 from analytics import generate_sales_cube
-from routers import recipes, comparisons
+from routers import recipes, comparisons, admin_tools
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -139,6 +139,7 @@ async def diagnose_file_endpoint(file: UploadFile = File(...)):
 
 app.include_router(recipes.router)
 app.include_router(comparisons.router)
+app.include_router(admin_tools.router)
 
 async def scheduler_loop():
     await asyncio.sleep(10) # Initial delay

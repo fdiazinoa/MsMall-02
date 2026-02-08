@@ -6,39 +6,13 @@ import {
   Store as StoreIcon, Plus, Search, Building2,
   User, FileText, MapPin, Tag, Maximize2, Percent, X
 } from 'lucide-react';
+import { SalesPurge } from './SalesPurge';
 
 export const StoreMaintenance: React.FC = () => {
   const { currentMall } = useAuth();
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [isResetting, setIsResetting] = useState(false);
-
-  const handleResetSales = async () => {
-    if (!confirm("⚠️ ALERTA CRÍTICA ⚠️\n\nEstá a punto de BORRAR TODAS LAS VENTAS de la base de datos.\n\nEsta acción es irreversible y dejará los reportes vacíos.\n¿Desea continuar?")) {
-      return;
-    }
-
-    // Doble confirmación
-    if (!confirm("Confirmación Final:\n\n¿Realmente desea eliminar permanentemente el historial de ventas completo?")) {
-      return;
-    }
-
-    setIsResetting(true);
-    try {
-      const result = await ApiService.resetAllSales();
-      if (result.success) {
-        alert("✅ Operación Exitosa:\nLa tabla de ventas ha sido vaciada.");
-      } else {
-        alert("❌ Error:\n" + result.message);
-      }
-    } catch (e: any) {
-      alert("❌ Error de comunicación:\n" + (e.message || String(e)));
-    } finally {
-      setIsResetting(false);
-    }
-  };
-
   const [newStore, setNewStore] = useState<Partial<Store>>({
     nombre: '',
     codigo_interno: '',
@@ -419,32 +393,9 @@ export const StoreMaintenance: React.FC = () => {
         </div>
       </div>
 
-      {/* Danger Zone */}
-      <div className="mt-8 border-t border-red-200 pt-8 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-150">
-        <h3 className="text-lg font-bold text-red-700 flex items-center gap-2 mb-4">
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-          Zona de Peligro (Admin)
-        </h3>
-        <div className="bg-red-50 border border-red-200 rounded-xl p-6 flex flex-col md:flex-row items-center justify-between gap-6 hover:shadow-lg transition-shadow">
-          <div>
-            <h4 className="font-bold text-red-800 text-sm">Reiniciar Base de Datos de Ventas</h4>
-            <p className="text-red-600/80 text-xs mt-1 max-w-lg leading-relaxed">
-              Esta acción eliminará <strong>TODOS</strong> los registros de la tabla de ventas de forma permanente.
-              Utilice esta función solo para limpiar datos de prueba una vez concluidas las validaciones.
-            </p>
-          </div>
-          <button
-            onClick={handleResetSales}
-            disabled={isResetting}
-            className={`px-6 py-3 rounded-xl bg-red-600 text-white font-bold text-sm shadow-lg shadow-red-600/20 hover:bg-red-700 active:scale-95 transition-all flex items-center gap-2 border border-red-500 hover:border-red-400 ${isResetting ? 'opacity-70 cursor-not-allowed' : ''}`}
-          >
-            {isResetting ? (
-              <><div className="animate-spin h-4 w-4 border-2 border-white/30 border-t-white rounded-full"></div> Limpiando Base de Datos...</>
-            ) : (
-              <><span className="text-lg">🗑️</span> Borrar Todas las Ventas</>
-            )}
-          </button>
-        </div>
+      {/* Módulo de Depuración de Datos */}
+      <div className="mt-8 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-150">
+        <SalesPurge />
       </div>
     </div>
   );

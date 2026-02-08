@@ -568,25 +568,6 @@ export const ApiService = {
     }
   },
 
-  async resetAllSales(): Promise<{ success: boolean; message: string }> {
-    try {
-      const response = await fetch(`${BASE_URL}/admin/reset-sales`, {
-        method: 'DELETE',
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.detail || "Error al reiniciar ventas");
-      }
-
-      return { success: true, message: data.message };
-    } catch (error: any) {
-      console.error("Error resetting sales:", error);
-      return { success: false, message: error.message || "Error desconocido" };
-    }
-  },
-
 
   async getKPIs(dates: DateRange & { mallId?: string }, token: string): Promise<KPIData> {
     try {
@@ -1059,5 +1040,34 @@ export const ApiService = {
       const error = await response.json();
       throw new Error(error.detail || "Error deleting mall");
     }
-  }
+  },
+  async purgeSales(localId: string, startDate?: string, endDate?: string, confirmation?: string, mallId?: string, token?: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const response = await fetch(`${BASE_URL}/admin/sales/purge`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'X-Mall-Id': mallId || ''
+        },
+        body: JSON.stringify({
+          local_id: localId,
+          fecha_inicio: startDate,
+          fecha_fin: endDate,
+          confirmacion: confirmation
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Error al depurar ventas");
+      }
+
+      return { success: true, message: data.message };
+    } catch (error: any) {
+      console.error("Error purging sales:", error);
+      return { success: false, message: error.message || "Error desconocido" };
+    }
+  },
 };

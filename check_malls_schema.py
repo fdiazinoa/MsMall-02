@@ -17,6 +17,6 @@ try:
     if res.data:
         print("Columns in malls:", res.data[0].keys())
     else:
-        print("No data in malls, cannot determine columns.")
+        print("No data in malls, cannot determine columns easily.")
 except Exception as e:
     print(f"Error: {e}")

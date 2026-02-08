@@ -17,6 +17,7 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
     const [confidence, setConfidence] = useState<Record<string, { score: number; isConfident: boolean }>>({});
     const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
     const [sampleRow, setSampleRow] = useState<Record<string, any>>({});
+    const [dateFormat, setDateFormat] = useState<string>('auto');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     if (!isOpen) return null;
@@ -70,7 +71,11 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
     };
 
     const handleConfirm = () => {
-        onConfirm(mapping, sampleRow);
+        // Pass date format as a special constant in the sampleData or handle it in onConfirm
+        // For consistency with MappingModal, we'll try to pass it so the parent can include it in config
+        const resultMapping = { ...mapping };
+        const resultSample = { ...sampleRow, _date_format: dateFormat };
+        onConfirm(resultMapping, resultSample);
         onClose();
     };
 
@@ -190,6 +195,23 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
                                                                 )}
                                                             </div>
                                                         </div>
+
+                                                        {/* Date Format Selector for fecha_venta */}
+                                                        {field.key === 'fecha_venta' && selectedHeader && (
+                                                            <div className="mt-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                                                                <select
+                                                                    value={dateFormat}
+                                                                    onChange={(e) => setDateFormat(e.target.value)}
+                                                                    className="w-full pl-2 pr-6 py-1 rounded border border-indigo-200 bg-indigo-50/50 text-[10px] font-medium text-indigo-700 outline-none focus:ring-1 focus:ring-indigo-400 transition-all font-sans"
+                                                                >
+                                                                    <option value="auto">🔍 Autodetectar</option>
+                                                                    <option value="DD/MM/YYYY">📅 DD/MM/YYYY</option>
+                                                                    <option value="MM/DD/YYYY">🇺🇸 MM/DD/YYYY</option>
+                                                                    <option value="YYYY-MM-DD">🌐 YYYY-MM-DD</option>
+                                                                    <option value="timestamp">⏰ Con hora</option>
+                                                                </select>
+                                                            </div>
+                                                        )}
                                                     </td>
                                                     <td className="px-5 py-3 bg-slate-50/50">
                                                         {selectedHeader ? (
@@ -234,6 +256,6 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
                     )}
                 </div>
             </div>
-        </div>
+        </div >
     );
 };

@@ -202,7 +202,7 @@ export const ImportManager: React.FC = () => {
       const currentMapping = analysis.current_mapping || {};
       const missingFields = requiredFields.filter(f => !currentMapping[f]);
 
-      if (missingFields.length > 0 || analysis.csv_headers.length === 0) {
+      if (missingFields.length > 0 || (analysis.csv_headers || []).length === 0) {
         // Show mapping modal and close manual modal
         console.log("Mapeo incompleto o sin headers, mostrando modal");
         setMappingData({
@@ -222,8 +222,12 @@ export const ImportManager: React.FC = () => {
       console.log("Mapeo completo, procesando directamente");
       const result = await ApiService.executeManualImport(config, filename);
       alert(result.message);
-      // setManualFiles(prev => prev.filter(f => f.nombre !== filename)); // Don't remove, show status
-      setFileStatuses(prev => ({ ...prev, [filename]: 'success' }));
+
+      if (result.status === 'success' || result.status === 'partial') {
+        setFileStatuses(prev => ({ ...prev, [filename]: 'success' }));
+      } else {
+        setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
+      }
     } catch (error: any) {
       console.error(error);
       alert("Error en ejecución: " + (error.message || error));
@@ -843,8 +847,11 @@ export const ImportManager: React.FC = () => {
                   isOpen={showSmartMapping}
                   onClose={() => setShowSmartMapping(false)}
                   onConfirm={(newMapping, sampleData) => {
-                    setEditingConfig({ ...editingConfig, mapping: { ...editingConfig.mapping, ...newMapping } });
-                    // Could optionally set sample data to show previews in the main form too if we wanted
+                    setEditingConfig(prev => ({
+                      ...prev,
+                      mapping: { ...prev.mapping, ...newMapping },
+                      constants: { ...prev.constants, _date_format: sampleData?._date_format || 'auto' }
+                    }));
                   }}
                   systemFields={STANDARD_FIELDS}
                 />
@@ -965,6 +972,26 @@ export const ImportManager: React.FC = () => {
                             )}
                           </div>
                         </div>
+                        {field.key === 'fecha_venta' && (
+                          <div className="mt-3 pt-3 border-t border-slate-100 animate-in fade-in">
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 flex items-center gap-2">
+                              <Clock size={12} /> Formato de Fecha Esperado
+                            </label>
+                            <select
+                              className="w-full px-4 py-2 rounded-xl border border-slate-200 outline-none text-xs font-medium bg-white"
+                              value={editingConfig.constants?._date_format || 'auto'}
+                              onChange={e => setEditingConfig({
+                                ...editingConfig,
+                                constants: { ...editingConfig.constants, _date_format: e.target.value }
+                              })}
+                            >
+                              <option value="auto">Auto (Intentar detectar)</option>
+                              <option value="DD/MM/YYYY">DD/MM/YYYY (Ej: 31/01/2024)</option>
+                              <option value="MM/DD/YYYY">MM/DD/YYYY (Ej: 01/31/2024)</option>
+                              <option value="YYYY-MM-DD">YYYY-MM-DD (Ej: 2024-01-31)</option>
+                            </select>
+                          </div>
+                        )}
                       </div>
                     );
                   })}

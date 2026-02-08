@@ -21,7 +21,7 @@ from ftplib import FTP
 import stat
 from worker_importacion import run_worker_async
 from analytics import generate_sales_cube
-from routers import recipes
+from routers import recipes, comparisons
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -138,6 +138,7 @@ async def diagnose_file_endpoint(file: UploadFile = File(...)):
         return {"error": str(e)}
 
 app.include_router(recipes.router)
+app.include_router(comparisons.router)
 
 async def scheduler_loop():
     await asyncio.sleep(10) # Initial delay
@@ -478,6 +479,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         logger.error(f"Error procesando contenido: {e}")
         return 0, [{"linea": 0, "error": str(e)}]
 
+    try:
         # --- DB SCHEMA MAPPING & RESOLUTION ---
         final_records = []
         
@@ -600,7 +602,7 @@ async def ingesta_ventas(
     batch_id = str(uuid4())
     try:
         content_bytes = await file.read()
-        content = content_bytes.decode('utf-8', errors='replace')
+        content = content_bytes.decode('utf-8-sig', errors='replace')
         
         # En una app real, buscaríamos la configuración del local asociado a la API Key
         # Por ahora, usamos una configuración genérica o vacía si no tenemos el link.
@@ -684,21 +686,11 @@ from concurrent.futures import ThreadPoolExecutor
 executor = ThreadPoolExecutor(max_workers=20) # Aumentado de 5 a 20 para evitar agotamiento
 
 def get_sftp_client(host, port, user, password):
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    # Aumentar timeouts y deshabilitar búsqueda de llaves locales para mayor velocidad
-    client.connect(
-        host, 
-        port=port, 
-        username=user, 
-        password=password, 
-        timeout=25, 
-        banner_timeout=25, 
-        auth_timeout=25,
-        look_for_keys=False,
-        allow_agent=False
-    )
-    return client, client.open_sftp()
+    # Usar Transport directamente como en el script de diagnóstico que funcionó
+    transport = paramiko.Transport((host, int(port)))
+    transport.connect(username=user, password=password)
+    sftp = paramiko.SFTPClient.from_transport(transport)
+    return transport, sftp
 
 def get_ftp_client(host, port, user, password):
     ftp = FTP()
@@ -1170,7 +1162,7 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
             headers = reader.fieldnames
             sample_row = row1
         except StopIteration:
-            return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
+            return {"csv_headers": [], "headers": [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": []}
             
     if current_type == "JSON":
         try:
@@ -1226,7 +1218,7 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
             pass
     
     if not headers:
-        return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
+        return {"csv_headers": [], "headers": [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": []}
 
     # 2. Fuzzy Match System Fields
     suggested_mapping = {}
@@ -1354,8 +1346,11 @@ def _list_remote_files(config: Dict[str, Any]):
     password = config.get("password") or config.get("sftp_pass")
     ruta = config.get("ruta_remota") or config.get("sftp_path", ".")
     tipo_archivo = config.get("tipo_archivo") or config.get("file_type", "CSV")
+    logger.info(f"[DEBUG_AUTH] User: '{usuario}', PassLen: {len(password) if password else 0}, Host: '{host}', Port: {puerto}, Path: '{ruta}'")
     
-    ext = ".csv" if tipo_archivo == "CSV" else ".txt" if tipo_archivo == "TXT" else ".json"
+    # Allow all supported extensions to be listed, to prevent confusion if config doesn't match file
+    # ext = ".csv" if tipo_archivo == "CSV" else ".txt" if tipo_archivo == "TXT" else ".json"
+    supported_exts = (".csv", ".txt", ".json")
     
     if not host or not usuario:
         logger.error(f"Missing connection parameters: host={host}, user={usuario}")
@@ -1367,20 +1362,34 @@ def _list_remote_files(config: Dict[str, Any]):
         try:
             # Si la ruta es un archivo, listar su directorio contenedor
             try:
+                logger.info(f"Haciendo stat de: {ruta}")
                 st = sftp.stat(ruta)
+                logger.info(f"Stat OK. Mode: {st.st_mode}, IsDir: {stat.S_ISDIR(st.st_mode)}")
                 if not stat.S_ISDIR(st.st_mode):
                     ruta = posixpath.dirname(ruta) or "."
-            except:
-                pass
+                    logger.info(f"Ruta ajustada (era archivo): {ruta}")
+            except Exception as e:
+                 logger.warning(f"Stat falló para {ruta}: {e}")
+                 pass
 
+            try:
+                print(f"[DEBUG] Listando ruta: {ruta}")
+                raw_list = sftp.listdir(ruta)
+                print(f"[DEBUG] Raw listdir output ({len(raw_list)}): {raw_list}")
+            except Exception as e:
+                print(f"[DEBUG] Raw listdir falló: {e}")
             for attr in sftp.listdir_attr(ruta):
+                print(f"[DEBUG] Encontrado: {attr.filename} (Dir: {stat.S_ISDIR(attr.st_mode)})")
                 if not stat.S_ISDIR(attr.st_mode):
-                    if attr.filename.lower().endswith(ext):
+                    if attr.filename.lower().endswith(supported_exts):
+                        print(f"[DEBUG] -> Aceptado: {attr.filename}")
                         files.append({
                             "nombre": attr.filename,
                             "fecha": datetime.fromtimestamp(attr.st_mtime).isoformat(),
                             "tamano": attr.st_size
                         })
+                    else:
+                        print(f"[DEBUG] -> Ignorado (extensión): {attr.filename}")
         finally:
             sftp.close()
             ssh.close()
@@ -1404,7 +1413,7 @@ def _list_remote_files(config: Dict[str, Any]):
                 parts = line.split()
                 if len(parts) >= 4:
                     name = parts[-1]
-                    if name.lower().endswith(ext):
+                    if name.lower().endswith(supported_exts):
                         files.append({
                             "nombre": name,
                             "fecha": datetime.now().isoformat(), # FTP LIST date parsing is complex
@@ -1417,6 +1426,7 @@ def _list_remote_files(config: Dict[str, Any]):
 @app.post("/api/v1/remote/list-files")
 async def list_files_endpoint(config: ImportConfigSchema):
     try:
+        logger.info(f"Recibida solucitud de listado para: {config.host}:{config.puerto} (Protocolo: {config.protocolo})")
         config_dict = config.dict()
         
         # Si tiene ID pero no host, intentar cargar de DB (enriquecer)
@@ -1487,7 +1497,10 @@ async def execute_manual_endpoint(req: ExecuteManualRequest):
                     full_path = posixpath.join(target_dir, req.filename)
                     logger.info(f"Intentando abrir archivo SFTP: {full_path}")
                     with sftp.open(full_path, 'r') as f:
-                        content = f.read().decode('utf-8', errors='replace')
+                        if req.filename.lower().endswith('.json'):
+                            content = f.read().decode('utf-8-sig', errors='replace')
+                        else:
+                            content = f.read().decode('utf-8', errors='replace')
                 finally:
                     sftp.close()
                     ssh.close()
@@ -1507,7 +1520,10 @@ async def execute_manual_endpoint(req: ExecuteManualRequest):
                     bio = io.BytesIO()
                     ftp.retrbinary(f"RETR {req.filename}", bio.write)
                     bio.seek(0)
-                    content = bio.read().decode('utf-8', errors='replace')
+                    if req.filename.lower().endswith('.json'):
+                        content = bio.read().decode('utf-8-sig', errors='replace')
+                    else:
+                        content = bio.read().decode('utf-8', errors='replace')
                 finally:
                     ftp.quit()
         except Exception as ce:
@@ -1588,6 +1604,8 @@ async def execute_manual_endpoint(req: ExecuteManualRequest):
             "errors": detalles_errores
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         logger.error(f"Error en ejecución manual: {e}")
         if 'local_nombre' in locals():
             insert_load_log(local_nombre, req.filename, "error", str(e), batch_id)
@@ -1694,7 +1712,12 @@ async def analyze_remote_file(req: ExecuteManualRequest):
                     
                     full_path = posixpath.join(target_dir, req.filename)
                     with sftp.open(full_path, 'r') as f:
-                        return f.read(8192).decode('utf-8', errors='replace')
+                        # LEER TODO EL ARCHIVO SI ES JSON (necesario para parsear)
+                        if req.filename.lower().endswith('.json'):
+                            logger.info(f"Leyendo archivo COMPLETO (JSON): {req.filename}")
+                            return f.read().decode('utf-8-sig', errors='replace')
+                        else:
+                            return f.read(8192).decode('utf-8', errors='replace')
                 finally:
                     sftp.close()
                     ssh.close()

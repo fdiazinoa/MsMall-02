@@ -5,8 +5,17 @@ import { Header } from './components/Header';
 import { useAuth } from './context/AuthProvider';
 import { supabase } from './api';
 
+// Suppress Recharts deprecation warnings (XAxis, YAxis defaultProps)
+const originalConsoleError = console.error;
+console.error = (...args: any[]) => {
+  if (typeof args[0] === 'string' && /defaultProps/.test(args[0])) {
+    return;
+  }
+  originalConsoleError(...args);
+};
+
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls'>('analytics');
+  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons'>('analytics');
   const { session, loading } = useAuth();
 
   // Estados para el login

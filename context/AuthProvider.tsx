@@ -59,7 +59,7 @@ export const AuthProvider = ({ children }) => {
 
     const fetchUserMalls = async (token) => {
         try {
-            const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/users/me/malls`, {
+            const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/users/me/malls`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (res.ok) {

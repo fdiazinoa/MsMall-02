@@ -61,7 +61,7 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                 else params.local_id = 'ALL';
 
                 const query = new URLSearchParams(params);
-                const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/auditoria/brechas-ventas?${query.toString()}`, {
+                const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/auditoria/brechas-ventas?${query.toString()}`, {
                     headers: {
                         'Authorization': `Bearer ${token}`,
                         'X-Mall-Id': currentMall.id,

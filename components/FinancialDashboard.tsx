@@ -90,7 +90,7 @@ export const FinancialDashboard: React.FC = () => {
             };
             if (token) headers['Authorization'] = `Bearer ${token}`;
 
-            const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/export/financial-dashboard/${endpoint}?${params.toString()}`, {
+            const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/export/financial-dashboard/${endpoint}?${params.toString()}`, {
                 headers
             });
 

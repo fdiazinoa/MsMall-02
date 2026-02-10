@@ -388,6 +388,28 @@ export const ApiService = {
     }
   },
 
+  async unmarkFile(config: ImportConfig, filename: string): Promise<{ status: string, message: string, old_name?: string, new_name?: string }> {
+    try {
+      const response = await fetch(`${BASE_URL}/remote/unmark-file`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config_id: config.id,
+          filename,
+          config
+        })
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: "Error desmarcando archivo" }));
+        throw new Error(errorData.detail || "Error desmarcando archivo");
+      }
+      return await response.json();
+    } catch (error: any) {
+      console.error(error);
+      throw error.message || error;
+    }
+  },
+
   // --- MÉTODOS DE AUDITORÍA DE CARGA ---
   async getLoadLogs(mallId?: string): Promise<any[]> {
     if (!supabase) return [];

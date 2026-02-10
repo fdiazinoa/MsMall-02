@@ -9,7 +9,7 @@ import MappingModal from './MappingModal';
 import {
   Server, Plus, Play, Trash2, Settings2,
   ArrowRightLeft, CheckCircle2, XCircle, Clock,
-  Key, Globe, FolderOpen, Database, RefreshCw, AlertCircle, FileSearch, FileText, Wand2
+  Key, Globe, FolderOpen, Database, RefreshCw, AlertCircle, FileSearch, FileText, Wand2, RotateCcw
 } from 'lucide-react';
 
 const STANDARD_FIELDS = [
@@ -49,6 +49,7 @@ export const ImportManager: React.FC = () => {
   const [manualFiles, setManualFiles] = useState<{ nombre: string, fecha: string, tamano: number }[]>([]);
   const [manualLoading, setManualLoading] = useState(false);
   const [executingFile, setExecutingFile] = useState<string | null>(null);
+  const [unmarkingFile, setUnmarkingFile] = useState<string | null>(null); // Track file being unmarked
   const [activeConfigId, setActiveConfigId] = useState<string | null>(null);
   const [fileStatuses, setFileStatuses] = useState<Record<string, 'success' | 'error' | 'idle'>>({});
 
@@ -297,6 +298,38 @@ export const ImportManager: React.FC = () => {
       loadConfigs();
     }
   };
+
+  const handleUnmarkFile = async (filename: string) => {
+    if (!activeConfigId) return;
+    const config = configs.find(c => c.id === activeConfigId);
+    if (!config) return;
+
+    setUnmarkingFile(filename);
+    try {
+      const result = await ApiService.unmarkFile(config, filename);
+      alert(result.message || 'Archivo desmarcado correctamente');
+
+      // Refresh file list
+      const files = await ApiService.listRemoteFiles(config);
+      setManualFiles(files);
+
+      // Clear status for the old filename
+      const newFilename = result.new_name;
+      if (newFilename) {
+        setFileStatuses(prev => {
+          const updated = { ...prev };
+          delete updated[filename];
+          return updated;
+        });
+      }
+    } catch (error: any) {
+      console.error(error);
+      alert('Error desmarcando archivo: ' + (error.message || error));
+    } finally {
+      setUnmarkingFile(null);
+    }
+  };
+
 
   const handleOpenExplorer = async (initialPath: string) => {
     console.log("Opening explorer with path:", initialPath);
@@ -1204,22 +1237,41 @@ export const ImportManager: React.FC = () => {
                             {(file.tamano / 1024).toFixed(1)} KB
                           </td>
                           <td className="px-5 py-4 text-center">
-                            <button
-                              onClick={() => handleExecuteManualFile(file.nombre)}
-                              disabled={executingFile === file.nombre || fileStatuses[file.nombre] === 'success'}
-                              className={`px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all shadow-lg flex items-center gap-2 mx-auto disabled:opacity-50
-                                ${fileStatuses[file.nombre] === 'success'
-                                  ? 'bg-green-500 text-white shadow-green-200 cursor-default'
-                                  : fileStatuses[file.nombre] === 'error'
-                                    ? 'bg-rose-500 text-white shadow-rose-200 hover:bg-rose-600'
-                                    : 'bg-indigo-600 text-white shadow-indigo-200 hover:bg-indigo-700'
-                                }`}
-                            >
-                              {executingFile === file.nombre ? <RefreshCw className="animate-spin" size={14} />
-                                : fileStatuses[file.nombre] === 'success' ? <CheckCircle2 size={14} />
-                                  : <Play size={12} fill="white" />}
-                              {fileStatuses[file.nombre] === 'success' ? 'Procesado' : fileStatuses[file.nombre] === 'error' ? 'Reintentar' : 'Procesar Ahora'}
-                            </button>
+                            <div className="flex items-center justify-center gap-2">
+                              {/* Unmark button for processed files */}
+                              {file.nombre.startsWith('PR_') && (
+                                <button
+                                  onClick={() => handleUnmarkFile(file.nombre)}
+                                  disabled={unmarkingFile === file.nombre}
+                                  className="p-2 text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-xl transition-all disabled:opacity-50"
+                                  title="Desmarcar archivo para reprocesar"
+                                >
+                                  {unmarkingFile === file.nombre ? (
+                                    <RefreshCw className="animate-spin" size={16} />
+                                  ) : (
+                                    <RotateCcw size={16} />
+                                  )}
+                                </button>
+                              )}
+
+                              {/* Execute button */}
+                              <button
+                                onClick={() => handleExecuteManualFile(file.nombre)}
+                                disabled={executingFile === file.nombre || fileStatuses[file.nombre] === 'success'}
+                                className={`px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all shadow-lg flex items-center gap-2 disabled:opacity-50
+                                  ${fileStatuses[file.nombre] === 'success'
+                                    ? 'bg-green-500 text-white shadow-green-200 cursor-default'
+                                    : fileStatuses[file.nombre] === 'error'
+                                      ? 'bg-rose-500 text-white shadow-rose-200 hover:bg-rose-600'
+                                      : 'bg-indigo-600 text-white shadow-indigo-200 hover:bg-indigo-700'
+                                  }`}
+                              >
+                                {executingFile === file.nombre ? <RefreshCw className="animate-spin" size={14} />
+                                  : fileStatuses[file.nombre] === 'success' ? <CheckCircle2 size={14} />
+                                    : <Play size={12} fill="white" />}
+                                {fileStatuses[file.nombre] === 'success' ? 'Procesado' : fileStatuses[file.nombre] === 'error' ? 'Reintentar' : 'Procesar Ahora'}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}

@@ -394,9 +394,11 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     if header in row:
                         record[sys_field] = row[header]
                 
-                # 2. Apply Constants
+                # 2. Apply Constants (exclude meta-constants that are not DB columns)
+                META_CONSTANTS = ['_date_format']  # These are config-only, not DB fields
                 for k, v in constants.items():
-                    record[k] = v
+                    if k not in META_CONSTANTS:
+                        record[k] = v
                 
                 if i == 0:
                     logger.info(f"Muestra mapeo primer registro: {record}")
@@ -1780,6 +1782,111 @@ async def analyze_remote_file(req: ExecuteManualRequest):
     except Exception as e:
         logger.error(f"Error analyzing remote file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/remote/unmark-file")
+async def unmark_file(req: ExecuteManualRequest):
+    """
+    Removes the 'PR_' prefix from a processed file to allow reprocessing.
+    Renames 'PR_filename.ext' back to 'filename.ext'
+    """
+    try:
+        # Get config
+        config_data = {}
+        if req.config:
+            config_data = req.config.dict()
+        elif supabase:
+            res = supabase.table("locales").select("*").eq("id", req.config_id).single().execute()
+            if res.data:
+                config_data = res.data
+        
+        if not config_data:
+            raise HTTPException(status_code=404, detail="Configuración no encontrada")
+
+        # Normalize configuration
+        host = config_data.get("host") or config_data.get("sftp_host")
+        puerto = config_data.get("puerto") or config_data.get("sftp_port", 22)
+        usuario = config_data.get("usuario") or config_data.get("sftp_user")
+        password = config_data.get("password") or config_data.get("sftp_pass")
+        ruta_remota = config_data.get("ruta_remota") or config_data.get("sftp_path", ".")
+        protocolo = config_data.get("protocolo") or config_data.get("sftp_protocol", "SFTP")
+        
+        # Check if filename has PR_ prefix
+        if not req.filename.startswith("PR_"):
+            return {
+                "status": "info",
+                "message": f"El archivo '{req.filename}' no tiene el prefijo PR_, no requiere desmarcado."
+            }
+        
+        # Calculate new name (remove PR_ prefix)
+        new_filename = req.filename[3:]  # Remove first 3 characters "PR_"
+        
+        loop = asyncio.get_event_loop()
+        
+        def _rename_file():
+            if protocolo == "SFTP":
+                ssh, sftp = get_sftp_client(host, puerto, usuario, password)
+                try:
+                    # Determine directory
+                    target_dir = ruta_remota
+                    try:
+                        st = sftp.stat(ruta_remota)
+                        if not stat.S_ISDIR(st.st_mode):
+                            target_dir = posixpath.dirname(ruta_remota) or "."
+                    except:
+                        pass
+                    
+                    old_path = posixpath.join(target_dir, req.filename)
+                    new_path = posixpath.join(target_dir, new_filename)
+                    
+                    logger.info(f"Unmarking: {old_path} -> {new_path}")
+                    sftp.rename(old_path, new_path)
+                    return new_filename
+                finally:
+                    sftp.close()
+                    ssh.close()
+                    
+            elif protocolo == "FTP":
+                ftp = get_ftp_client(host, puerto, usuario, password)
+                try:
+                    # Navigate to directory
+                    try:
+                        ftp.cwd(ruta_remota)
+                    except:
+                        try:
+                            parent = posixpath.dirname(ruta_remota) or "."
+                            ftp.cwd(parent)
+                        except:
+                            pass
+                    
+                    logger.info(f"Unmarking: {req.filename} -> {new_filename}")
+                    ftp.rename(req.filename, new_filename)
+                    return new_filename
+                finally:
+                    ftp.quit()
+            
+            return None
+        
+        result = await asyncio.wait_for(
+            loop.run_in_executor(executor, _rename_file),
+            timeout=30.0
+        )
+        
+        if result:
+            return {
+                "status": "success",
+                "message": f"Archivo desmarcado exitosamente",
+                "old_name": req.filename,
+                "new_name": result
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Error renombrando archivo")
+            
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Timeout conectando al servidor remoto")
+    except Exception as e:
+        logger.error(f"Error unmarking file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/api/v1/admin/reset-sales")
 async def reset_sales():

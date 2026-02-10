@@ -1064,8 +1064,12 @@ export const ApiService = {
     }
   },
   async purgeSales(localId: string, startDate?: string, endDate?: string, confirmation?: string, mallId?: string, token?: string): Promise<{ success: boolean; message: string }> {
+    console.log("📡 [API] purgeSales CALLED", { localId, startDate, endDate, confirmation, mallId, hasToken: !!token });
     try {
-      const response = await fetch(`${BASE_URL}/admin/sales/purge`, {
+      const url = `${BASE_URL}/admin/sales/purge`;
+      console.log("📡 [API] Sending DELETE to:", url);
+
+      const response = await fetch(url, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -1080,7 +1084,9 @@ export const ApiService = {
         })
       });
 
+      console.log("📡 [API] Response status:", response.status);
       const data = await response.json();
+      console.log("📡 [API] Response data:", data);
 
       if (!response.ok) {
         throw new Error(data.detail || "Error al depurar ventas");
@@ -1088,7 +1094,7 @@ export const ApiService = {
 
       return { success: true, message: data.message };
     } catch (error: any) {
-      console.error("Error purging sales:", error);
+      console.error("📡 [API] Error purging sales:", error);
       return { success: false, message: error.message || "Error desconocido" };
     }
   },

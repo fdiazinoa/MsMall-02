@@ -44,27 +44,32 @@ export const SalesPurge: React.FC = () => {
         s.codigo_interno.toLowerCase().includes(searchTerm.toLowerCase())
     );
 
-    const handlePurgeClick = () => {
+    const selectedStore = stores.find(s => s.id === selectedStoreId);
+
+    const handlePurgeClick = async () => {
         if (!selectedStoreId) {
-            setMessage({ type: 'error', text: 'Por favor selecciona un local de la lista.' });
+            setMessage({ type: 'error', text: 'Por favor selecciona un local.' });
             return;
         }
         if (isRangeEnabled && (!startDate || !endDate)) {
             setMessage({ type: 'error', text: 'Por favor selecciona ambas fechas para el rango.' });
             return;
         }
-        setMessage(null);
-        setShowConfirmModal(true);
-    };
 
-    const handlePurgeConfirm = async () => {
-        if (confirmKeyword.trim() !== 'BORRAR') return;
+        // Use native confirm for reliability
+        const isConfirmed = window.confirm(
+            `PROTOCOLO DE SEGURIDAD\n\nVAS A BORRAR VENTAS DE: ${selectedStore?.nombre}\n\n¿Estás SEGURO? Esto no se puede deshacer.`
+        );
+
+        if (!isConfirmed) return;
+
+        const secondConfirm = window.prompt("Para confirmar, escribe BORRAR:");
+        if (secondConfirm?.trim() !== 'BORRAR') {
+            alert("Operación cancelada. La clave no coincide.");
+            return;
+        }
 
         setLoading(true);
-        // Do NOT close modal yet. Show loading state inside modal.
-        // setShowConfirmModal(false); 
-        // setConfirmKeyword('');
-
         try {
             const res = await ApiService.purgeSales(
                 selectedStoreId,
@@ -76,31 +81,21 @@ export const SalesPurge: React.FC = () => {
             );
 
             if (res.success) {
-                setMessage({ type: 'success', text: res.message });
-                // Reset form and close modal only on success
+                alert(`✅ ÉXITO: ${res.message}`);
                 setStartDate('');
                 setEndDate('');
                 setIsRangeEnabled(false);
-                setShowConfirmModal(false);
                 setConfirmKeyword('');
             } else {
-                // Show error but keep modal open or close it? 
-                // Better to close modal and show error on main screen, OR show error in modal.
-                // Current design shows message on main screen. Let's close modal for error too so user sees the red box.
-                // Or better: show alert? The catch block sets message.
-                setShowConfirmModal(false);
-                setMessage({ type: 'error', text: res.message });
+                alert(`❌ ERROR: ${res.message}`);
             }
         } catch (err: any) {
             console.error(err);
-            setShowConfirmModal(false);
-            setMessage({ type: 'error', text: err.message || 'Error al procesar la solicitud' });
+            alert(`❌ ERROR CRÍTICO: ${err.message}`);
         } finally {
             setLoading(false);
         }
     };
-
-    const selectedStore = stores.find(s => s.id === selectedStoreId);
 
     return (
         <div className="bg-white border border-red-100 rounded-3xl overflow-hidden shadow-xl shadow-red-500/5 group transition-all hover:shadow-red-500/10 active:scale-[0.998]">
@@ -323,95 +318,6 @@ export const SalesPurge: React.FC = () => {
                     </div>
                 )}
             </div>
-
-            {/* Security Modal (Refined) */}
-            {showConfirmModal && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/90 backdrop-blur-xl p-4 animate-in fade-in duration-300">
-                    <div className="bg-white rounded-[40px] shadow-[0_32px_128px_-15px_rgba(220,38,38,0.5)] w-full max-w-lg border border-slate-100 overflow-hidden animate-in zoom-in-95 duration-500">
-                        {/* Modal Top Branding */}
-                        <div className="bg-red-600 p-12 text-white text-center relative overflow-hidden">
-                            {/* SVG Background Pattern */}
-                            <div className="absolute inset-0 opacity-10 pointer-events-none">
-                                <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-                                    <defs>
-                                        <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                                            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="white" strokeWidth="1" />
-                                        </pattern>
-                                    </defs>
-                                    <rect width="100%" height="100%" fill="url(#grid)" />
-                                </svg>
-                            </div>
-
-                            <div className="relative z-10">
-                                <div className="absolute -top-4 -right-4 m-8 text-white/50 hover:text-white transition-colors cursor-pointer" onClick={() => setShowConfirmModal(false)}>
-                                    <X size={32} strokeWidth={3} />
-                                </div>
-                                <div className="w-24 h-24 bg-white rounded-[32px] flex items-center justify-center mx-auto mb-6 shadow-2xl rotate-3">
-                                    <Trash2 size={48} className="text-red-600" />
-                                </div>
-                                <h3 className="text-4xl font-black uppercase tracking-tighter leading-none mb-2">Protocolo de<br />Seguridad</h3>
-                                <p className="text-red-100/60 text-xs font-bold uppercase tracking-widest">Confirmación de Acción Destructiva</p>
-                            </div>
-                        </div>
-
-                        <div className="p-12 space-y-8">
-                            <div className="bg-slate-50 rounded-[32px] p-8 border border-slate-100 relative overflow-hidden">
-                                <div className="relative z-10 items-center justify-center flex flex-col text-center">
-                                    <p className="text-slate-400 text-xs font-black uppercase tracking-widest mb-3">Local Impactado</p>
-                                    <h4 className="text-2xl font-black text-slate-900 leading-tight">"{selectedStore?.nombre}"</h4>
-
-                                    <div className="mt-6 inline-flex items-center gap-3 px-6 py-2.5 bg-red-600 text-white rounded-2xl shadow-lg shadow-red-200">
-                                        <div className="w-2.5 h-2.5 bg-white rounded-full animate-pulse shadow-[0_0_8px_white]" />
-                                        <span className="text-sm font-black uppercase tracking-tighter">
-                                            {isRangeEnabled ? `Del ${startDate} al ${endDate}` : 'Historial Definitivo'}
-                                        </span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="space-y-4">
-                                <label className="block text-[10px] font-black text-red-500 uppercase tracking-[0.4em] text-center">Para proceder, escribe la clave maestra:</label>
-                                <input
-                                    type="text"
-                                    value={confirmKeyword}
-                                    onChange={(e) => setConfirmKeyword(e.target.value.toUpperCase())}
-                                    placeholder="BORRAR"
-                                    className="w-full bg-slate-50 border-4 border-slate-100 rounded-[32px] px-8 py-6 text-center text-5xl font-black tracking-[0.5em] focus:border-red-600 focus:bg-white focus:ring-8 focus:ring-red-600/5 transition-all text-red-600 placeholder:text-slate-200 placeholder:font-black placeholder:tracking-tight placeholder:text-lg"
-                                    autoFocus
-                                />
-                                <p className="text-[10px] text-slate-400 font-bold text-center italic mt-2 opacity-60">Esta acción no se puede deshacer una vez confirmada.</p>
-                            </div>
-
-                            <div className="flex flex-col gap-4 pt-4">
-                                <button
-                                    onClick={handlePurgeConfirm}
-                                    disabled={confirmKeyword.trim() !== 'BORRAR' || loading}
-                                    className={`w-full py-6 rounded-[32px] text-sm font-black tracking-[0.2em] uppercase transition-all shadow-2xl active:scale-95 flex items-center justify-center gap-3 ${confirmKeyword.trim() === 'BORRAR' && !loading
-                                        ? 'bg-red-600 text-white shadow-red-500/40 hover:bg-red-700'
-                                        : 'bg-slate-100 text-slate-300 pointer-events-none'
-                                        }`}
-                                >
-                                    {loading ? (
-                                        <>
-                                            <div className="w-5 h-5 rounded-full border-2 border-slate-300 border-t-red-600 animate-spin" />
-                                            <span>Procesando...</span>
-                                        </>
-                                    ) : (
-                                        "Confirmar Ejecución"
-                                    )}
-                                </button>
-                                <button
-                                    onClick={() => { setShowConfirmModal(false); setConfirmKeyword(''); }}
-                                    disabled={loading}
-                                    className="w-full py-4 text-xs font-black text-slate-400 hover:text-red-500 transition-all uppercase tracking-widest disabled:opacity-50"
-                                >
-                                    Abortar Operación
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
         </div>
     );
 };

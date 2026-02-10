@@ -53,6 +53,12 @@ export const ImportManager: React.FC = () => {
   const [activeConfigId, setActiveConfigId] = useState<string | null>(null);
   const [fileStatuses, setFileStatuses] = useState<Record<string, 'success' | 'error' | 'idle'>>({});
 
+  // Progress Modal State
+  const [showProgressModal, setShowProgressModal] = useState(false);
+  const [progressStep, setProgressStep] = useState<'downloading' | 'processing' | 'inserting' | 'complete' | 'error'>('downloading');
+  const [progressMessage, setProgressMessage] = useState('');
+  const [progressRecords, setProgressRecords] = useState(0);
+
   // Mapping Modal State
   const [showMappingModal, setShowMappingModal] = useState(false);
   const [mappingData, setMappingData] = useState<{
@@ -193,9 +199,17 @@ export const ImportManager: React.FC = () => {
     if (!config) return;
 
     setExecutingFile(filename);
+    setShowProgressModal(true);
+    setProgressStep('downloading');
+    setProgressMessage(`Conectando al servidor y descargando ${filename}...`);
+    setProgressRecords(0);
+
     try {
       // Step 1: Analyze file structure
       console.log("Analizando estructura del archivo:", filename);
+      setProgressStep('processing');
+      setProgressMessage(`Analizando estructura del archivo...`);
+
       const analysis = await ApiService.analyzeSingleFile(config, filename);
 
       // Step 2: Check if mapping is complete
@@ -206,6 +220,7 @@ export const ImportManager: React.FC = () => {
       if (missingFields.length > 0 || (analysis.csv_headers || []).length === 0) {
         // Show mapping modal and close manual modal
         console.log("Mapeo incompleto o sin headers, mostrando modal");
+        setShowProgressModal(false);
         setMappingData({
           fileHeaders: analysis.csv_headers,
           suggestedMapping: analysis.suggested_mapping,
@@ -221,20 +236,33 @@ export const ImportManager: React.FC = () => {
 
       // Step 3: If mapping is OK, process directly
       console.log("Mapeo completo, procesando directamente");
+      setProgressStep('inserting');
+      setProgressMessage(`Procesando e insertando registros en la base de datos...`);
+
       const result = await ApiService.executeManualImport(config, filename);
-      alert(result.message);
+
+      setProgressRecords(result.records_processed || 0);
 
       if (result.status === 'success' || result.status === 'partial') {
+        setProgressStep('complete');
+        setProgressMessage(result.message || `✅ Importación exitosa: ${result.records_processed} registros procesados`);
         setFileStatuses(prev => ({ ...prev, [filename]: 'success' }));
       } else {
+        setProgressStep('error');
+        setProgressMessage(result.message || '❌ Error en la importación');
         setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
       }
     } catch (error: any) {
       console.error(error);
-      alert("Error en ejecución: " + (error.message || error));
+      setProgressStep('error');
+      setProgressMessage("❌ Error en ejecución: " + (error.message || error));
       setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
     } finally {
       setExecutingFile(null);
+      // Keep modal open for a moment to show result, then auto-close after 3 seconds
+      setTimeout(() => {
+        setShowProgressModal(false);
+      }, 3000);
     }
   };
 
@@ -1296,6 +1324,70 @@ export const ImportManager: React.FC = () => {
               >
                 Cerrar Ventana
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Progress Modal */}
+      {showProgressModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white">
+              <h3 className="text-xl font-bold flex items-center gap-2">
+                <Database size={24} />
+                Procesando Importación
+              </h3>
+            </div>
+
+            <div className="p-8">
+              {/* Progress Steps */}
+              <div className="space-y-6">
+                {/* Step 1: Downloading */}
+                <div className={`flex items-center gap-4 ${progressStep === 'downloading' ? 'opacity-100' : progressStep === 'processing' || progressStep === 'inserting' || progressStep === 'complete' ? 'opacity-50' : 'opacity-30'}`}>
+                  <div className={`w-12 h-12 rounded-full flex items-center justify-center ${progressStep === 'downloading' ? 'bg-indigo-100 text-indigo-600' : 'bg-green-100 text-green-600'}`}>
+                    {progressStep === 'downloading' ? <RefreshCw size={24} className="animate-spin" /> : <CheckCircle2 size={24} />}
+                  </div>
+                  <div>
+                    <p className="font-bold text-slate-700">Descargando archivo</p>
+                    <p className="text-xs text-slate-400">Conectando al servidor remoto...</p>
+                  </div>
+                </div>
+
+                {/* Step 2: Processing */}
+                <div className={`flex items-center gap-4 ${progressStep === 'processing' ? 'opacity-100' : progressStep === 'inserting' || progressStep === 'complete' ? 'opacity-50' : 'opacity-30'}`}>
+                  <div className={`w-12 h-12 rounded-full flex items-center justify-center ${progressStep === 'processing' ? 'bg-indigo-100 text-indigo-600' : progressStep === 'inserting' || progressStep === 'complete' ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-400'}`}>
+                    {progressStep === 'processing' ? <RefreshCw size={24} className="animate-spin" /> : progressStep === 'inserting' || progressStep === 'complete' ? <CheckCircle2 size={24} /> : <FileText size={24} />}
+                  </div>
+                  <div>
+                    <p className="font-bold text-slate-700">Analizando estructura</p>
+                    <p className="text-xs text-slate-400">Validando mapeo y formato...</p>
+                  </div>
+                </div>
+
+                {/* Step 3: Inserting */}
+                <div className={`flex items-center gap-4 ${progressStep === 'inserting' ? 'opacity-100' : progressStep === 'complete' ? 'opacity-50' : 'opacity-30'}`}>
+                  <div className={`w-12 h-12 rounded-full flex items-center justify-center ${progressStep === 'inserting' ? 'bg-indigo-100 text-indigo-600' : progressStep === 'complete' ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-400'}`}>
+                    {progressStep === 'inserting' ? <RefreshCw size={24} className="animate-spin" /> : progressStep === 'complete' ? <CheckCircle2 size={24} /> : <Database size={24} />}
+                  </div>
+                  <div>
+                    <p className="font-bold text-slate-700">Insertando registros</p>
+                    <p className="text-xs text-slate-400">Guardando en base de datos...</p>
+                    {progressRecords > 0 && (
+                      <p className="text-xs font-bold text-indigo-600 mt-1">{progressRecords} registros procesados</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Result Message */}
+              {(progressStep === 'complete' || progressStep === 'error') && (
+                <div className={`mt-6 p-4 rounded-xl border-2 ${progressStep === 'complete' ? 'bg-green-50 border-green-200' : 'bg-rose-50 border-rose-200'} animate-in fade-in slide-in-from-bottom-2`}>
+                  <p className={`text-sm font-bold ${progressStep === 'complete' ? 'text-green-700' : 'text-rose-700'}`}>
+                    {progressMessage}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>

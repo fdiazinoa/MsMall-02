@@ -172,6 +172,22 @@ export const ImportManager: React.FC = () => {
     }
   };
 
+  const refreshFileList = async (configId: string) => {
+    const config = configs.find(c => c.id === configId);
+    if (!config) return;
+
+    setManualLoading(true);
+    try {
+      const files = await ApiService.listRemoteFiles(config);
+      setManualFiles(files);
+    } catch (error: any) {
+      console.error(error);
+      // Don't alert on refresh, just log
+    } finally {
+      setManualLoading(false);
+    }
+  };
+
   const handleSyncNow = async (id: string, name: string) => {
     setActiveConfigId(id);
     const config = configs.find(c => c.id === id);
@@ -181,16 +197,7 @@ export const ImportManager: React.FC = () => {
     }
 
     setShowManualModal(true);
-    setManualLoading(true);
-    try {
-      const files = await ApiService.listRemoteFiles(config);
-      setManualFiles(files);
-    } catch (error: any) {
-      console.error(error);
-      alert("Error al listar archivos remotos: " + (error.message || error));
-    } finally {
-      setManualLoading(false);
-    }
+    await refreshFileList(id);
   };
 
   const handleExecuteManualFile = async (filename: string) => {
@@ -262,6 +269,8 @@ export const ImportManager: React.FC = () => {
       // Keep modal open for a moment to show result, then auto-close after 3 seconds
       setTimeout(() => {
         setShowProgressModal(false);
+        // Refresh file list to show new names (PR_ prefix) or removed files
+        if (activeConfigId) refreshFileList(activeConfigId);
       }, 3000);
     }
   };

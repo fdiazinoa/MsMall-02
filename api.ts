@@ -366,7 +366,7 @@ export const ApiService = {
     }
   },
 
-  async executeManualImport(config: ImportConfig, filename: string): Promise<{ status: string, message: string, errors?: any[] }> {
+  async executeManualImport(config: ImportConfig, filename: string): Promise<{ status: string, message: string, errors?: any[], records_processed?: number }> {
     try {
       const response = await fetch(`${BASE_URL}/remote/execute-manual`, {
         method: 'POST',

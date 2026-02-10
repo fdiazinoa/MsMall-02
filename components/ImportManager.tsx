@@ -254,6 +254,12 @@ export const ImportManager: React.FC = () => {
         setProgressStep('complete');
         setProgressMessage(result.message || `✅ Importación exitosa: ${result.records_processed} registros procesados`);
         setFileStatuses(prev => ({ ...prev, [filename]: 'success' }));
+
+        // Auto-close after 3 seconds only on success
+        setTimeout(() => {
+          setShowProgressModal(false);
+          if (activeConfigId) refreshFileList(activeConfigId);
+        }, 3000);
       } else {
         setProgressStep('error');
         setProgressMessage(result.message || '❌ Error en la importación');
@@ -266,12 +272,10 @@ export const ImportManager: React.FC = () => {
       setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
     } finally {
       setExecutingFile(null);
-      // Keep modal open for a moment to show result, then auto-close after 3 seconds
-      setTimeout(() => {
-        setShowProgressModal(false);
-        // Refresh file list to show new names (PR_ prefix) or removed files
-        if (activeConfigId) refreshFileList(activeConfigId);
-      }, 3000);
+      // Only auto-close if successful or partial, NOT on error
+      // Check current progressStep is tricky here due to closure, so we rely on checks above/logic
+      // Actually, we can just check if we are NOT in error state? 
+      // It's safer to remove auto-close here and put it inside the success block above.
     }
   };
 
@@ -283,9 +287,14 @@ export const ImportManager: React.FC = () => {
     setShowMappingModal(false);
     setExecutingFile(mappingData.filename);
 
+    // Show progress modal
+    setShowProgressModal(true);
+    setProgressStep('downloading');
+    setProgressMessage(`Conectando al servidor y descargando ${mappingData.filename}...`);
+    setProgressRecords(0);
+
     try {
       // Combine mapping and constants into final mapping
-      // Constants override mapping where they exist
       const finalMapping: Record<string, string> = { ...mapping };
 
       console.log("Mapping recibido del modal:", mapping);
@@ -300,29 +309,47 @@ export const ImportManager: React.FC = () => {
 
       console.log("Configuración actualizada a enviar:", updatedConfig);
 
+      // Show processing step
+      setProgressStep('processing');
+      setProgressMessage('Aplicando mapeo de campos personalizado...');
+
+      // Show inserting step
+      setProgressStep('inserting');
+      setProgressMessage('Procesando e insertando registros en la base de datos...');
+
       // Execute import with updated mapping
       const result = await ApiService.executeManualImport(updatedConfig, mappingData.filename);
 
-      // Show detailed message with errors if any
-      let alertMessage = result.message;
-      if (result.errors && result.errors.length > 0) {
-        alertMessage += "\n\nErrores encontrados:\n";
-        result.errors.forEach((err: any) => {
-          alertMessage += `\nLínea ${err.linea}: ${err.error}`;
-        });
-      }
+      setProgressRecords(result.records_processed || 0);
 
       console.log("Resultado completo:", result);
-      console.log("Resultado completo:", result);
-      alert(alertMessage);
-      // setManualFiles(prev => prev.filter(f => f.nombre !== mappingData.filename)); // Don't remove
+
+      if (result.status === 'success' || result.status === 'partial') {
+        setProgressStep('complete');
+        let successMessage = result.message || `✅ Importación exitosa: ${result.records_processed} registros procesados`;
+        if (result.errors && result.errors.length > 0) {
+          successMessage += ` (${result.errors.length} errores parciales)`;
+        }
+        setProgressMessage(successMessage);
+        setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'success' }));
+
+        // Auto-close after 3 seconds on success
+        setTimeout(() => {
+          setShowProgressModal(false);
+          setShowManualModal(true); // Re-open file list
+          if (activeConfigId) refreshFileList(activeConfigId);
+        }, 3000);
+      } else {
+        setProgressStep('error');
+        setProgressMessage(result.message || '❌ Error en la importación');
+        setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'error' }));
+      }
+
       setMappingData(null);
-      setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'success' }));
-      setShowManualModal(true); // Re-open list to show result
-      setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'success' }));
     } catch (error: any) {
       console.error(error);
-      alert("Error procesando archivo: " + (error.message || error));
+      setProgressStep('error');
+      setProgressMessage("❌ Error procesando archivo: " + (error.message || error));
       setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'error' }));
     } finally {
       setExecutingFile(null);

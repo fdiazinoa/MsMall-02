@@ -58,11 +58,12 @@ export const SalesPurge: React.FC = () => {
     };
 
     const handlePurgeConfirm = async () => {
-        if (confirmKeyword !== 'BORRAR') return;
+        if (confirmKeyword.trim() !== 'BORRAR') return;
 
         setLoading(true);
-        setShowConfirmModal(false);
-        setConfirmKeyword('');
+        // Do NOT close modal yet. Show loading state inside modal.
+        // setShowConfirmModal(false); 
+        // setConfirmKeyword('');
 
         try {
             const res = await ApiService.purgeSales(
@@ -76,14 +77,23 @@ export const SalesPurge: React.FC = () => {
 
             if (res.success) {
                 setMessage({ type: 'success', text: res.message });
-                // Reset form
+                // Reset form and close modal only on success
                 setStartDate('');
                 setEndDate('');
                 setIsRangeEnabled(false);
+                setShowConfirmModal(false);
+                setConfirmKeyword('');
             } else {
+                // Show error but keep modal open or close it? 
+                // Better to close modal and show error on main screen, OR show error in modal.
+                // Current design shows message on main screen. Let's close modal for error too so user sees the red box.
+                // Or better: show alert? The catch block sets message.
+                setShowConfirmModal(false);
                 setMessage({ type: 'error', text: res.message });
             }
         } catch (err: any) {
+            console.error(err);
+            setShowConfirmModal(false);
             setMessage({ type: 'error', text: err.message || 'Error al procesar la solicitud' });
         } finally {
             setLoading(false);
@@ -164,8 +174,8 @@ export const SalesPurge: React.FC = () => {
                                                 key={store.id}
                                                 onClick={() => setSelectedStoreId(store.id)}
                                                 className={`w-full flex items-center justify-between p-3.5 rounded-xl transition-all group/item ${selectedStoreId === store.id
-                                                        ? 'bg-red-600 text-white shadow-lg shadow-red-200'
-                                                        : 'hover:bg-white hover:shadow-md hover:border-slate-100 text-slate-700'
+                                                    ? 'bg-red-600 text-white shadow-lg shadow-red-200'
+                                                    : 'hover:bg-white hover:shadow-md hover:border-slate-100 text-slate-700'
                                                     }`}
                                             >
                                                 <div className="flex items-center gap-3">
@@ -275,8 +285,8 @@ export const SalesPurge: React.FC = () => {
                                 onClick={handlePurgeClick}
                                 disabled={loading || !selectedStoreId}
                                 className={`w-full group relative overflow-hidden px-8 py-5 rounded-3xl text-sm font-black tracking-widest uppercase transition-all flex items-center justify-center gap-3 shadow-2xl ${loading || !selectedStoreId
-                                        ? 'bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed'
-                                        : 'bg-red-600 text-white shadow-red-500/20 hover:bg-red-700 hover:-translate-y-1 active:scale-95'
+                                    ? 'bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed'
+                                    : 'bg-red-600 text-white shadow-red-500/20 hover:bg-red-700 hover:-translate-y-1 active:scale-95'
                                     }`}
                             >
                                 <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
@@ -296,8 +306,8 @@ export const SalesPurge: React.FC = () => {
                 {/* Status Feedback */}
                 {message && (
                     <div className={`mt-8 p-6 rounded-3xl flex items-start gap-4 border-2 animate-in slide-in-from-bottom-4 duration-500 ${message.type === 'success'
-                            ? 'bg-emerald-50/50 border-emerald-100 text-emerald-800'
-                            : 'bg-red-50 border-red-100 text-red-800'
+                        ? 'bg-emerald-50/50 border-emerald-100 text-emerald-800'
+                        : 'bg-red-50 border-red-100 text-red-800'
                         }`}>
                         <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${message.type === 'success' ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'
                             }`}>
@@ -375,17 +385,25 @@ export const SalesPurge: React.FC = () => {
                             <div className="flex flex-col gap-4 pt-4">
                                 <button
                                     onClick={handlePurgeConfirm}
-                                    disabled={confirmKeyword !== 'BORRAR'}
-                                    className={`w-full py-6 rounded-[32px] text-sm font-black tracking-[0.2em] uppercase transition-all shadow-2xl active:scale-95 flex items-center justify-center gap-3 ${confirmKeyword === 'BORRAR'
-                                            ? 'bg-red-600 text-white shadow-red-500/40 hover:bg-red-700'
-                                            : 'bg-slate-100 text-slate-300 pointer-events-none'
+                                    disabled={confirmKeyword.trim() !== 'BORRAR' || loading}
+                                    className={`w-full py-6 rounded-[32px] text-sm font-black tracking-[0.2em] uppercase transition-all shadow-2xl active:scale-95 flex items-center justify-center gap-3 ${confirmKeyword.trim() === 'BORRAR' && !loading
+                                        ? 'bg-red-600 text-white shadow-red-500/40 hover:bg-red-700'
+                                        : 'bg-slate-100 text-slate-300 pointer-events-none'
                                         }`}
                                 >
-                                    Confirmar Ejecución
+                                    {loading ? (
+                                        <>
+                                            <div className="w-5 h-5 rounded-full border-2 border-slate-300 border-t-red-600 animate-spin" />
+                                            <span>Procesando...</span>
+                                        </>
+                                    ) : (
+                                        "Confirmar Ejecución"
+                                    )}
                                 </button>
                                 <button
                                     onClick={() => { setShowConfirmModal(false); setConfirmKeyword(''); }}
-                                    className="w-full py-4 text-xs font-black text-slate-400 hover:text-red-500 transition-all uppercase tracking-widest"
+                                    disabled={loading}
+                                    className="w-full py-4 text-xs font-black text-slate-400 hover:text-red-500 transition-all uppercase tracking-widest disabled:opacity-50"
                                 >
                                     Abortar Operación
                                 </button>

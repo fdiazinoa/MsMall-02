@@ -516,6 +516,15 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     if val.isdigit():
                         if int(val) < 24:
                             new_r[time_col] = f"{int(val):02d}:00:00"
+                        elif len(val) in [5, 6]:
+                            # HHMMSS -> HH:MM:SS
+                            vh = val.zfill(6)
+                            new_r[time_col] = f"{vh[0:2]}:{vh[2:4]}:{vh[4:6]}"
+                        elif len(val) > 6:
+                            # 1118234 -> 11:18:23 / 7 digits
+                            # Take first 6 as HHMMSS
+                            vh = val.zfill(6)
+                            new_r[time_col] = f"{vh[0:2]}:{vh[2:4]}:{vh[4:6]}"
                     elif val.count(':') == 1:
                         new_r[time_col] = f"{val}:00"
                     elif 'AM' in val.upper() or 'PM' in val.upper():
@@ -1557,7 +1566,9 @@ async def execute_manual_endpoint(req: ExecuteManualRequest):
 
 
         # 5. Renombrar si fue exitoso
-        if registros_exito > 0:
+        logger.info(f"Evaluando renombrado: registros_exito={registros_exito} (Tipo: {type(registros_exito)})")
+        
+        if isinstance(registros_exito, int) and registros_exito > 0:
              try:
                 if protocolo == "SFTP":
                      ssh, sftp = get_sftp_client(host, puerto, usuario, password)

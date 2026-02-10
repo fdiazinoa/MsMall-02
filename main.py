@@ -519,12 +519,19 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         elif len(val) in [5, 6]:
                             # HHMMSS -> HH:MM:SS
                             vh = val.zfill(6)
-                            new_r[time_col] = f"{vh[0:2]}:{vh[2:4]}:{vh[4:6]}"
+                            hh, mm, ss = int(vh[0:2]), int(vh[2:4]), int(vh[4:6])
+                            # Validation: Clamp to valid ranges if needed (user data often has 60s or bad clocks)
+                            mm = min(mm, 59)
+                            ss = min(ss, 59)
+                            new_r[time_col] = f"{hh:02d}:{mm:02d}:{ss:02d}"
                         elif len(val) > 6:
                             # 1118234 -> 11:18:23 / 7 digits
                             # Take first 6 as HHMMSS
                             vh = val.zfill(6)
-                            new_r[time_col] = f"{vh[0:2]}:{vh[2:4]}:{vh[4:6]}"
+                            hh, mm, ss = int(vh[0:2]), int(vh[2:4]), int(vh[4:6])
+                            mm = min(mm, 59)
+                            ss = min(ss, 59)
+                            new_r[time_col] = f"{hh:02d}:{mm:02d}:{ss:02d}"
                     elif val.count(':') == 1:
                         new_r[time_col] = f"{val}:00"
                     elif 'AM' in val.upper() or 'PM' in val.upper():

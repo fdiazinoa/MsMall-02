@@ -257,7 +257,8 @@ def process_local_files(config):
                 
                 try:
                     with sftp.open(f"{remote_path}/{filename}", 'r') as f:
-                        content = f.read().decode('utf-8', errors='replace')
+                        # Use utf-8-sig to handle BOM if present
+                        content = f.read().decode('utf-8-sig', errors='replace')
                     
                     count, errors = process_file_logic(config, filename, content)
                     
@@ -344,7 +345,8 @@ def process_local_files(config):
                     bio = io.BytesIO()
                     ftp.retrbinary(f"RETR {filename}", bio.write)
                     bio.seek(0)
-                    content = bio.read().decode('utf-8', errors='replace')
+                    # Use utf-8-sig to handle BOM if present
+                    content = bio.read().decode('utf-8-sig', errors='replace')
                     
                     count, errors = process_file_logic(config, filename, content)
                     

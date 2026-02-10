@@ -470,8 +470,17 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     except:
                         record[num_field] = 0.0
                 
+                # Auto-correction: Ensure consistency (Total = Net + Tax)
+                if record['total_bruto'] == 0:
+                    if record['total_neto'] > 0 or record['total_impuestos'] > 0:
+                         record['total_bruto'] = record['total_neto'] + record['total_impuestos']
+                         logger.info(f"Auto-calculated total_bruto: {record['total_bruto']} (Net: {record['total_neto']} + Tax: {record['total_impuestos']})")
+
+                if record['total_neto'] == 0 and record['total_bruto'] > 0:
+                     record['total_neto'] = record['total_bruto'] - record['total_impuestos']
+                
                 if record.get('total_bruto', 0) == 0:
-                     # Permisivo opcional, pero aquí lo mantenemos como error si es 0 y no hay nada
+                     # Still 0 after calculation attempt
                      pass
 
                 records_to_insert.append(record)

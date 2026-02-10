@@ -470,17 +470,26 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     except:
                         record[num_field] = 0.0
                 
-                # Auto-correction: Ensure consistency (Total = Net + Tax)
+                # Validation: Reject if Total/Net is 0 but Tax > 0
                 if record['total_bruto'] == 0:
-                    if record['total_neto'] > 0 or record['total_impuestos'] > 0:
-                         record['total_bruto'] = record['total_neto'] + record['total_impuestos']
-                         logger.info(f"Auto-calculated total_bruto: {record['total_bruto']} (Net: {record['total_neto']} + Tax: {record['total_impuestos']})")
+                    if record['total_impuestos'] > 0:
+                        errors.append({"linea": i+2, "error": f"Total Bruto es 0.00 pero tiene impuestos ({record['total_impuestos']}). Verifique el archivo."})
+                        continue
+                    if record['total_neto'] > 0:
+                        errors.append({"linea": i+2, "error": f"Total Bruto es 0.00 pero tiene Neto ({record['total_neto']}). Verifique el archivo."})
+                        continue
 
-                if record['total_neto'] == 0 and record['total_bruto'] > 0:
-                     record['total_neto'] = record['total_bruto'] - record['total_impuestos']
+                if record['total_neto'] == 0 and record['total_bruto'] > 0 and record['total_impuestos'] > 0:
+                     # This might be valid for tax-inclusive pricing where net wasn't calculated, 
+                     # but user asked for alert on zero net.
+                     # Let's be strict: if tax > 0, net should ideally be > 0.
+                     # However, user specifically mentioned "alert if totalbruto or totalneto is zero"
+                     errors.append({"linea": i+2, "error": f"Total Neto es 0.00 pero tiene Impuestos/Total. Verifique el archivo."})
+                     continue
                 
                 if record.get('total_bruto', 0) == 0:
-                     # Still 0 after calculation attempt
+                     # Allow 0 total only if everything else is 0 (cancel/void), or logic elsewhere handles it,
+                     # but broadly warning is good.
                      pass
 
                 records_to_insert.append(record)

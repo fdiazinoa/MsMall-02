@@ -1504,6 +1504,9 @@ async def execute_manual_endpoint(req: ExecuteManualRequest):
                             content = f.read().decode('utf-8-sig', errors='replace')
                         else:
                             content = f.read().decode('utf-8', errors='replace')
+                    
+                    # Log file size and first chars for verification
+                    logger.info(f"✅ Archivo leído: {full_path} | Tamaño: {len(content)} bytes | Primeros 100 chars: {content[:100]}")
                 finally:
                     sftp.close()
                     ssh.close()
@@ -1521,12 +1524,16 @@ async def execute_manual_endpoint(req: ExecuteManualRequest):
                             pass
 
                     bio = io.BytesIO()
+                    logger.info(f"Descargando archivo FTP: {req.filename}")
                     ftp.retrbinary(f"RETR {req.filename}", bio.write)
                     bio.seek(0)
                     if req.filename.lower().endswith('.json'):
                         content = bio.read().decode('utf-8-sig', errors='replace')
                     else:
                         content = bio.read().decode('utf-8', errors='replace')
+                    
+                    # Log file size and first chars for verification
+                    logger.info(f"✅ Archivo FTP leído: {req.filename} | Tamaño: {len(content)} bytes | Primeros 100 chars: {content[:100]}")
                 finally:
                     ftp.quit()
         except Exception as ce:

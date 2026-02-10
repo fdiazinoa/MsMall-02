@@ -78,7 +78,8 @@ async def purge_sales_refined(
         raise HTTPException(status_code=400, detail="Confirmation keyword 'BORRAR' is required.")
 
     # 3. Build Query - STRICT filtering by mall_id and local_id
-    query = supabase.table("ventas").delete().eq("mall_id", x_mall_id).eq("local_id", request.local_id)
+    # Use returning='minimal' to avoid fetching deleted rows (prevents timeout/crash on large datasets)
+    query = supabase.table("ventas").delete(count='exact', returning='minimal').eq("mall_id", x_mall_id).eq("local_id", request.local_id)
     
     if request.fecha_inicio:
         query = query.gte("fecha", request.fecha_inicio)
@@ -87,24 +88,34 @@ async def purge_sales_refined(
 
     # 4. Execute Deletion
     try:
-        res = query.execute()
-        count = len(res.data) if res.data else 0
+        logger.info(f"Executing PURGE for local_id={request.local_id}, mall_id={x_mall_id}")
+        
+        # Use count='exact' and returning='minimal' to avoid fetching thousands of rows
+        # Note: Valid values for returning are 'minimal', 'representation'
+        res = query.execute() 
+        
+        # Determine count from response metadata since we are not returning data
+        count = res.count if res.count is not None else 0
+        logger.info(f"Purge successful. Deleted {count} rows (from metadata).")
         
         # 5. Audit Log
         range_str = f"{request.fecha_inicio or 'BEGIN'} to {request.fecha_fin or 'TODAY'}"
         audit_detail = f"Purge executed for local_id {request.local_id}. Range: {range_str}. Rows affected: {count}"
         
-        supabase.table("system_audit_logs").insert({
-            "usuario_id": user_id,
-            "mall_id": x_mall_id,
-            "accion": "PURGE_DATA",
-            "detalle": audit_detail,
-            "metadata": {
-                "request": request.dict(),
-                "rows_affected": count,
-                "timestamp": datetime.now().isoformat()
-            }
-        }).execute()
+        try:
+            supabase.table("system_audit_logs").insert({
+                "usuario_id": user_id,
+                "mall_id": x_mall_id,
+                "accion": "PURGE_DATA",
+                "detalle": audit_detail,
+                "metadata": {
+                    "request": request.dict(),
+                    "rows_affected": count,
+                    "timestamp": datetime.now().isoformat()
+                }
+            }).execute()
+        except Exception as audit_err:
+             logger.warning(f"Audit log failed (non-critical): {audit_err}")
 
         return {
             "status": "success",

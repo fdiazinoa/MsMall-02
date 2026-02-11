@@ -14,18 +14,34 @@ logger = logging.getLogger("msmall-api")
 # Supabase Client setup
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Optional[Client] = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        logger.error(f"Failed to initialize Supabase client in admin_tools: {e}")
+
+def get_supabase() -> Client:
+    if not supabase:
+        raise HTTPException(
+            status_code=500,
+            detail="Supabase no configurado: define SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY",
+        )
+    return supabase
 
 security = HTTPBearer()
 
 async def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
-        # Note: using the local supabase client
-        user = supabase.auth.get_user(token)
+        db = get_supabase()
+        user = db.auth.get_user(token)
         if not user or not user.user:
             raise HTTPException(status_code=401, detail="Invalid token")
         return user.user.id
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Auth error in admin_tools: {e}")
         raise HTTPException(status_code=401, detail="Authentication failed")
@@ -41,8 +57,9 @@ async def check_admin_access(user_id: str, mall_id: str):
     Checks if the user has ADMIN or TIC role for the specific mall.
     """
     try:
+        db = get_supabase()
         print(f"🕵️ checking admin access for user: {user_id}, mall: {mall_id}")
-        res = supabase.table("usuarios_malls") \
+        res = db.table("usuarios_malls") \
             .select("rol") \
             .eq("usuario_id", user_id) \
             .eq("mall_id", mall_id) \
@@ -56,6 +73,8 @@ async def check_admin_access(user_id: str, mall_id: str):
         print(f"✅ User Role Found: {role}")
 
         return role in ['ADMIN', 'TIC']
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error checking admin access: {e}")
         return False
@@ -67,6 +86,8 @@ async def purge_sales_refined(
     user_id: str = Depends(get_current_user_id)
 ):
     print(f"🔥 [BACKEND] PURGE ENDPOINT HIT! User: {user_id}, Mall: {x_mall_id}")
+    db = get_supabase()
+
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
         
@@ -84,7 +105,7 @@ async def purge_sales_refined(
 
     # 3. Build Query - STRICT filtering by mall_id and local_id
     # Use returning='minimal' to avoid fetching deleted rows (prevents timeout/crash on large datasets)
-    query = supabase.table("ventas").delete(count='exact', returning='minimal').eq("mall_id", x_mall_id).eq("local_id", request.local_id)
+    query = db.table("ventas").delete(count='exact', returning='minimal').eq("mall_id", x_mall_id).eq("local_id", request.local_id)
     
     if request.fecha_inicio:
         query = query.gte("fecha", request.fecha_inicio)
@@ -108,7 +129,7 @@ async def purge_sales_refined(
         audit_detail = f"Purge executed for local_id {request.local_id}. Range: {range_str}. Rows affected: {count}"
         
         try:
-            supabase.table("system_audit_logs").insert({
+            db.table("system_audit_logs").insert({
                 "usuario_id": user_id,
                 "mall_id": x_mall_id,
                 "accion": "PURGE_DATA",

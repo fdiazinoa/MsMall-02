@@ -60,24 +60,46 @@ export const AuthProvider = ({ children }) => {
     const fetchUserMalls = async (token) => {
         try {
             const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/users/me/malls`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/json'
+                },
+                cache: 'no-store'
             });
-            if (res.ok) {
-                const data = await res.json();
-                setMalls(data);
 
-                // Logic to select initial mall
-                if (data.length > 0) {
-                    const savedMallId = localStorage.getItem('msmall_current_mall_id');
-                    const savedMall = data.find(m => m.id === savedMallId);
+            // 304 can appear with intermediary caching; keep previous state.
+            if (res.status === 304) return;
 
-                    if (savedMall) {
-                        setCurrentMall(savedMall);
-                    } else {
-                        // Default to first
-                        setCurrentMall(data[0]);
-                        localStorage.setItem('msmall_current_mall_id', data[0].id);
-                    }
+            const contentType = res.headers.get('content-type') || '';
+
+            if (!res.ok) {
+                const body = contentType.includes('application/json')
+                    ? await res.json().catch(() => ({}))
+                    : await res.text().catch(() => '');
+                console.error("Error fetching malls:", res.status, body);
+                return;
+            }
+
+            if (!contentType.includes('application/json')) {
+                const text = await res.text().catch(() => '');
+                console.error("Error fetching malls: expected JSON, got:", text.slice(0, 120));
+                return;
+            }
+
+            const data = await res.json();
+            setMalls(data);
+
+            // Logic to select initial mall
+            if (data.length > 0) {
+                const savedMallId = localStorage.getItem('msmall_current_mall_id');
+                const savedMall = data.find(m => m.id === savedMallId);
+
+                if (savedMall) {
+                    setCurrentMall(savedMall);
+                } else {
+                    // Default to first
+                    setCurrentMall(data[0]);
+                    localStorage.setItem('msmall_current_mall_id', data[0].id);
                 }
             }
         } catch (error) {

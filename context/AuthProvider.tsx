@@ -101,6 +101,9 @@ export const AuthProvider = ({ children }) => {
                     setCurrentMall(data[0]);
                     localStorage.setItem('msmall_current_mall_id', data[0].id);
                 }
+            } else {
+                setCurrentMall(null);
+                localStorage.removeItem('msmall_current_mall_id');
             }
         } catch (error) {
             console.error("Error fetching malls:", error);
@@ -142,6 +145,7 @@ export const AuthProvider = ({ children }) => {
         role,
         malls,
         currentMall,
+        loading,
         setCurrentMall: handleSetCurrentMall,
         isAdmin: role === 'admin',
         isTic: role === 'tic',

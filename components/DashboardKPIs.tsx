@@ -57,7 +57,11 @@ export const DashboardKPIs: React.FC = () => {
   });
 
   const loadKPIs = async () => {
-    if (!currentMall?.id || !session?.access_token) return;
+    if (!currentMall?.id || !session?.access_token) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const kpis = await ApiService.getKPIs({ ...dates, mallId: currentMall.id }, session.access_token);
@@ -72,6 +76,14 @@ export const DashboardKPIs: React.FC = () => {
   useEffect(() => {
     loadKPIs();
   }, [dates, currentMall?.id, session?.access_token]);
+
+  if (!currentMall?.id) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-2xl p-6 text-slate-700">
+        No hay mall asignado o seleccionado para este usuario.
+      </div>
+    );
+  }
 
   if (loading || !data) return (
     <div className="flex items-center justify-center h-96">

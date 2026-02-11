@@ -35,13 +35,17 @@ export const PeriodComparison: React.FC = () => {
     const [tipo, setTipo] = useState<'MoM' | 'YoY' | 'WoW'>('MoM');
 
     const fetchData = async () => {
-        if (!currentMall?.id) return;
+        if (!currentMall?.id || !session?.access_token) {
+            setLoading(false);
+            setData(null);
+            return;
+        }
         setLoading(true);
         try {
             // Manual fetch to use the new endpoint
             const response = await fetch(`${(import.meta as any).env.VITE_API_URL || ''}/api/v1/comparisons/period-comparison?tipo=${tipo}`, {
                 headers: {
-                    'Authorization': `Bearer ${session?.access_token}`,
+                    'Authorization': `Bearer ${session.access_token}`,
                     'X-Mall-Id': currentMall.id
                 }
             });
@@ -56,7 +60,15 @@ export const PeriodComparison: React.FC = () => {
 
     useEffect(() => {
         fetchData();
-    }, [currentMall, tipo]);
+    }, [currentMall?.id, session?.access_token, tipo]);
+
+    if (!currentMall?.id) {
+        return (
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 text-slate-700">
+                No hay mall asignado o seleccionado para mostrar comparativas.
+            </div>
+        );
+    }
 
     const exportToCSV = () => {
         if (!data) return;

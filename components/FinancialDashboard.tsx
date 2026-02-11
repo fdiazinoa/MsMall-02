@@ -29,7 +29,11 @@ export const FinancialDashboard: React.FC = () => {
     });
 
     const fetchFinancialData = async () => {
-        if (!currentMall || !session?.access_token) return;
+        if (!currentMall || !session?.access_token) {
+            setData([]);
+            setLoading(false);
+            return;
+        }
         setLoading(true);
         try {
             const [stores, kpiData] = await Promise.all([
@@ -74,6 +78,14 @@ export const FinancialDashboard: React.FC = () => {
     useEffect(() => {
         fetchFinancialData();
     }, [dates, currentMall?.id, session?.access_token]); // Refetch when dates/auth context change
+
+    if (!currentMall?.id) {
+        return (
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 text-slate-700">
+                No hay mall asignado o seleccionado para ver salud financiera.
+            </div>
+        );
+    }
 
     const handleExport = async (type: 'excel' | 'pdf') => {
         if (!currentMall) return;

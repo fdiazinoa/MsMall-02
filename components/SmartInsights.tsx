@@ -37,18 +37,29 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
 
     useEffect(() => {
         const fetchStores = async () => {
-            if (!currentMall?.id) return;
+            if (!currentMall?.id) {
+                setAvailableStores([]);
+                setSelectedLocalId('');
+                setLoading(false);
+                return;
+            }
             const stores = await ApiService.getStores(currentMall.id);
             setAvailableStores(stores);
             if (!selectedLocalId && stores.length > 0) {
                 setSelectedLocalId(stores[0].id);
+            }
+            if (stores.length === 0) {
+                setLoading(false);
             }
         };
         fetchStores();
     }, [currentMall]);
 
     useEffect(() => {
-        if (!selectedLocalId) return;
+        if (!selectedLocalId) {
+            setLoading(false);
+            return;
+        }
         const loadData = async () => {
             setLoading(true);
             try {

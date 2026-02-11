@@ -13,6 +13,7 @@ import io
 import csv
 import json
 import posixpath
+from typing import Optional
 
 # Setup Logging
 logging.basicConfig(
@@ -24,16 +25,25 @@ logger = logging.getLogger("import-worker")
 # Load Environment
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
+
+supabase: Optional[Client] = None
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    logger.error("Supabase credentials missing in .env")
-    exit(1)
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    logger.error(
+        "Supabase credentials missing. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY)."
+    )
+else:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        logger.error(f"Failed to initialize Supabase client: {e}")
 
 def insert_load_log(local_nombre: str, archivo: str, estado: str, mensaje: str, batch_id: str = None, detalles: list = None):
     """Inserts a log into Supabase 'logs_carga' table."""
+    if not supabase:
+        logger.warning("Skipping load log insert: Supabase client not initialized.")
+        return
     try:
         log_data = {
             "fecha_hora": datetime.now().isoformat(),
@@ -585,6 +595,11 @@ async def cleanup_zombies():
 
 async def run_worker_async():
     logger.info("🚀 Iniciando Worker de Importación (Async/Concurrent v2)...")
+    if not supabase:
+        logger.error(
+            "Worker skipped: Supabase client not initialized. Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+        )
+        return
     
     # 1. Reset Zombies & Heartbeat
     await cleanup_zombies()

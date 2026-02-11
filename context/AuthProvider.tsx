@@ -33,7 +33,7 @@ export const AuthProvider = ({ children }) => {
             setSession(session);
             if (session) {
                 fetchProfile(session.user.id);
-                fetchUserMalls(session.access_token);
+                fetchUserMalls(session.access_token, session.user.id);
             }
             else setLoading(false);
         });
@@ -43,7 +43,7 @@ export const AuthProvider = ({ children }) => {
             setSession(session);
             if (session) {
                 fetchProfile(session.user.id);
-                fetchUserMalls(session.access_token);
+                fetchUserMalls(session.access_token, session.user.id);
             }
             else {
                 setUser(null);
@@ -58,7 +58,54 @@ export const AuthProvider = ({ children }) => {
         return () => subscription.unsubscribe();
     }, []);
 
-    const fetchUserMalls = async (token) => {
+    const normalizeMallsPayload = (payload) => {
+        if (Array.isArray(payload)) return payload;
+        if (payload && Array.isArray(payload.data)) return payload.data;
+        if (payload && Array.isArray(payload.malls)) return payload.malls;
+        return [];
+    };
+
+    const fetchMallsFromAdminFallback = async (token, userId) => {
+        if (!userId) return [];
+        try {
+            const [usersRes, mallsRes] = await Promise.all([
+                fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/admin/users`, {
+                    headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+                    cache: 'no-store'
+                }),
+                fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/malls/all`, {
+                    headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+                    cache: 'no-store'
+                })
+            ]);
+
+            if (!usersRes.ok || !mallsRes.ok) return [];
+
+            const users = normalizeMallsPayload(await usersRes.json().catch(() => []));
+            const allMalls = normalizeMallsPayload(await mallsRes.json().catch(() => []));
+            const byId = new Map(allMalls.map((m) => [m.id, m]));
+            const me = users.find((u) => u.id === userId);
+            const links = Array.isArray(me?.malls) ? me.malls : [];
+
+            const resolved = links
+                .map((link) => {
+                    const mall = byId.get(link.mall_id);
+                    if (!mall) return null;
+                    return {
+                        id: link.mall_id,
+                        nombre: mall.nombre,
+                        rol: link.rol || 'auditor'
+                    };
+                })
+                .filter(Boolean);
+
+            return resolved;
+        } catch {
+            return [];
+        }
+    };
+
+    const fetchUserMalls = async (token, userId) => {
         try {
             const endpoint = `${import.meta.env.VITE_API_URL || ''}/api/v1/users/me/malls`;
             let res = await fetch(endpoint, {
@@ -100,9 +147,18 @@ export const AuthProvider = ({ children }) => {
                 console.error("Error fetching malls: invalid JSON payload:", raw.slice(0, 120));
                 return;
             }
+            data = normalizeMallsPayload(data);
+
             if (!Array.isArray(data)) {
                 console.error("Error fetching malls: unexpected payload shape", data);
-                return;
+                data = [];
+            }
+
+            if (data.length === 0) {
+                const fallback = await fetchMallsFromAdminFallback(token, userId);
+                if (fallback.length > 0) {
+                    data = fallback;
+                }
             }
 
             setMalls(data);
@@ -182,7 +238,7 @@ export const AuthProvider = ({ children }) => {
         isTic: role === 'tic',
         isAuditor: role === 'auditor',
         signOut: () => supabase?.auth.signOut(),
-        refreshMalls: () => session?.access_token && fetchUserMalls(session.access_token),
+        refreshMalls: () => session?.access_token && fetchUserMalls(session.access_token, session?.user?.id),
     };
 
     return (

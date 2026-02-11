@@ -11,6 +11,7 @@ export const AuthProvider = ({ children }) => {
     // Multi-Tenant States
     const [malls, setMalls] = useState([]);
     const [currentMall, setCurrentMall] = useState(null);
+    const USER_MALLS_STORAGE_KEY = 'msmall_user_malls';
 
     const [loading, setLoading] = useState(true);
 
@@ -59,7 +60,8 @@ export const AuthProvider = ({ children }) => {
 
     const fetchUserMalls = async (token) => {
         try {
-            const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/users/me/malls`, {
+            const endpoint = `${import.meta.env.VITE_API_URL || ''}/api/v1/users/me/malls`;
+            let res = await fetch(endpoint, {
                 headers: {
                     'Authorization': `Bearer ${token}`,
                     'Accept': 'application/json'
@@ -67,8 +69,16 @@ export const AuthProvider = ({ children }) => {
                 cache: 'no-store'
             });
 
-            // 304 can appear with intermediary caching; keep previous state.
-            if (res.status === 304) return;
+            // Some edge caches can still reply 304; retry with cache-busting.
+            if (res.status === 304) {
+                res = await fetch(`${endpoint}?_t=${Date.now()}`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/json'
+                    },
+                    cache: 'no-store'
+                });
+            }
 
             const contentType = res.headers.get('content-type') || '';
 
@@ -77,17 +87,26 @@ export const AuthProvider = ({ children }) => {
                     ? await res.json().catch(() => ({}))
                     : await res.text().catch(() => '');
                 console.error("Error fetching malls:", res.status, body);
+                // Keep previous selector state if request fails.
                 return;
             }
 
-            if (!contentType.includes('application/json')) {
-                const text = await res.text().catch(() => '');
-                console.error("Error fetching malls: expected JSON, got:", text.slice(0, 120));
+            // Parse robustly in case content-type header is missing/misreported.
+            const raw = await res.text();
+            let data = [];
+            try {
+                data = contentType.includes('application/json') ? JSON.parse(raw) : JSON.parse(raw);
+            } catch {
+                console.error("Error fetching malls: invalid JSON payload:", raw.slice(0, 120));
+                return;
+            }
+            if (!Array.isArray(data)) {
+                console.error("Error fetching malls: unexpected payload shape", data);
                 return;
             }
 
-            const data = await res.json();
             setMalls(data);
+            localStorage.setItem(USER_MALLS_STORAGE_KEY, JSON.stringify(data));
 
             // Logic to select initial mall
             if (data.length > 0) {
@@ -107,6 +126,18 @@ export const AuthProvider = ({ children }) => {
             }
         } catch (error) {
             console.error("Error fetching malls:", error);
+            // Fallback to last known malls to avoid losing selector on transient errors.
+            try {
+                const cached = localStorage.getItem(USER_MALLS_STORAGE_KEY);
+                if (cached) {
+                    const parsed = JSON.parse(cached);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        setMalls(parsed);
+                    }
+                }
+            } catch (_) {
+                // ignore cache parse errors
+            }
         }
     };
 

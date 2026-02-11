@@ -12,6 +12,7 @@ export const AuthProvider = ({ children }) => {
     const [malls, setMalls] = useState([]);
     const [currentMall, setCurrentMall] = useState(null);
     const USER_MALLS_STORAGE_KEY = 'msmall_user_malls';
+    const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim();
 
     const [loading, setLoading] = useState(true);
 
@@ -65,24 +66,75 @@ export const AuthProvider = ({ children }) => {
         return [];
     };
 
+    const getApiBaseCandidates = () => {
+        const normalizedEnv = RAW_API_URL
+            .replace(/\/+$/, '')
+            .replace(/\/api\/v1$/i, '')
+            .replace(/\/api$/i, '');
+
+        const candidates = [];
+        if (normalizedEnv) candidates.push(normalizedEnv);
+        // Always include relative fallback (Vercel rewrite: /api/* -> Railway).
+        candidates.push('');
+        return [...new Set(candidates)];
+    };
+
+    const fetchJsonFromCandidates = async (path, token) => {
+        const bases = getApiBaseCandidates();
+
+        for (const base of bases) {
+            const endpoint = `${base}${path}`;
+            try {
+                let res = await fetch(endpoint, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/json'
+                    },
+                    cache: 'no-store'
+                });
+
+                if (res.status === 304) {
+                    res = await fetch(`${endpoint}?_t=${Date.now()}`, {
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Accept': 'application/json'
+                        },
+                        cache: 'no-store'
+                    });
+                }
+
+                if (!res.ok) continue;
+
+                const raw = await res.text();
+                if (!raw || raw.trim().startsWith('<')) {
+                    // HTML payload, try next candidate.
+                    continue;
+                }
+
+                try {
+                    return JSON.parse(raw);
+                } catch {
+                    continue;
+                }
+            } catch {
+                // Try next candidate
+            }
+        }
+
+        return null;
+    };
+
     const fetchMallsFromAdminFallback = async (token, userId) => {
         if (!userId) return [];
         try {
-            const [usersRes, mallsRes] = await Promise.all([
-                fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/admin/users`, {
-                    headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
-                    cache: 'no-store'
-                }),
-                fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/malls/all`, {
-                    headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
-                    cache: 'no-store'
-                })
+            const [usersPayload, mallsPayload] = await Promise.all([
+                fetchJsonFromCandidates('/api/v1/admin/users', token),
+                fetchJsonFromCandidates('/api/v1/malls/all', token)
             ]);
 
-            if (!usersRes.ok || !mallsRes.ok) return [];
-
-            const users = normalizeMallsPayload(await usersRes.json().catch(() => []));
-            const allMalls = normalizeMallsPayload(await mallsRes.json().catch(() => []));
+            const users = normalizeMallsPayload(usersPayload || []);
+            const allMalls = normalizeMallsPayload(mallsPayload || []);
+            if (!users.length || !allMalls.length) return [];
             const byId = new Map(allMalls.map((m) => [m.id, m]));
             const me = users.find((u) => u.id === userId);
             const links = Array.isArray(me?.malls) ? me.malls : [];
@@ -107,47 +159,9 @@ export const AuthProvider = ({ children }) => {
 
     const fetchUserMalls = async (token, userId) => {
         try {
-            const endpoint = `${import.meta.env.VITE_API_URL || ''}/api/v1/users/me/malls`;
-            let res = await fetch(endpoint, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Accept': 'application/json'
-                },
-                cache: 'no-store'
-            });
-
-            // Some edge caches can still reply 304; retry with cache-busting.
-            if (res.status === 304) {
-                res = await fetch(`${endpoint}?_t=${Date.now()}`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Accept': 'application/json'
-                    },
-                    cache: 'no-store'
-                });
-            }
-
-            const contentType = res.headers.get('content-type') || '';
-
-            if (!res.ok) {
-                const body = contentType.includes('application/json')
-                    ? await res.json().catch(() => ({}))
-                    : await res.text().catch(() => '');
-                console.error("Error fetching malls:", res.status, body);
-                // Keep previous selector state if request fails.
-                return;
-            }
-
-            // Parse robustly in case content-type header is missing/misreported.
-            const raw = await res.text();
-            let data = [];
-            try {
-                data = contentType.includes('application/json') ? JSON.parse(raw) : JSON.parse(raw);
-            } catch {
-                console.error("Error fetching malls: invalid JSON payload:", raw.slice(0, 120));
-                return;
-            }
-            data = normalizeMallsPayload(data);
+            let data = normalizeMallsPayload(
+                await fetchJsonFromCandidates('/api/v1/users/me/malls', token)
+            );
 
             if (!Array.isArray(data)) {
                 console.error("Error fetching malls: unexpected payload shape", data);

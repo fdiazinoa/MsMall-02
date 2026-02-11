@@ -1,5 +1,5 @@
 {
   "name": "MSMALL - Sales Audit Platform",
-  "description": "A comprehensive MVP for shopping mall sales auditing, featuring CSV ingestion, real-time reporting, and multi-tenant API key authentication.",
+  "description": "A comprehensive MVP for shopping mall sales auditing, with frontend deployment on Vercel and backend cron/worker processing on Railway. It features CSV ingestion, real-time reporting, and multi-tenant API key authentication.",
   "requestFramePermissions": []
 }

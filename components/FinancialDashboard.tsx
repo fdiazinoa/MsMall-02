@@ -32,8 +32,10 @@ export const FinancialDashboard: React.FC = () => {
         if (!currentMall || !session?.access_token) return;
         setLoading(true);
         try {
-            const stores = await ApiService.getStores(currentMall.id);
-            const kpiData = await ApiService.getKPIs({ startDate: dates.startDate, endDate: dates.endDate, mallId: currentMall.id }, session.access_token);
+            const [stores, kpiData] = await Promise.all([
+                ApiService.getStores(currentMall.id),
+                ApiService.getKPIs({ startDate: dates.startDate, endDate: dates.endDate, mallId: currentMall.id }, session.access_token)
+            ]);
             const salesMap = kpiData.ventas_por_tienda_completo || {};
 
             const processed = stores.map(s => {
@@ -71,7 +73,7 @@ export const FinancialDashboard: React.FC = () => {
 
     useEffect(() => {
         fetchFinancialData();
-    }, [dates, currentMall]); // Refetch when dates change
+    }, [dates, currentMall?.id, session?.access_token]); // Refetch when dates/auth context change
 
     const handleExport = async (type: 'excel' | 'pdf') => {
         if (!currentMall) return;

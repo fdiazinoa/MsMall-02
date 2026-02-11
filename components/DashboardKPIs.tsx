@@ -71,7 +71,7 @@ export const DashboardKPIs: React.FC = () => {
 
   useEffect(() => {
     loadKPIs();
-  }, [dates, currentMall]);
+  }, [dates, currentMall?.id, session?.access_token]);
 
   if (loading || !data) return (
     <div className="flex items-center justify-center h-96">

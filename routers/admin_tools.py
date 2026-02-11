@@ -50,17 +50,15 @@ async def check_admin_access(user_id: str, mall_id: str):
         
         if not res.data:
             print("❌ No role found for user in this mall local database.")
-            # return False # STRICT MODE
-            return True # DEV BYPASS
+            return False
 
-        role = res.data[0]['rol']
+        role = (res.data[0].get('rol') or '').strip().upper()
         print(f"✅ User Role Found: {role}")
-        
-        # return role in ['ADMIN', 'TIC'] # STRICT MODE
-        return True # DEV BYPASS - Allow everyone to purge for now
+
+        return role in ['ADMIN', 'TIC']
     except Exception as e:
         logger.error(f"Error checking admin access: {e}")
-        return True # Fail open for dev
+        return False
 
 @router.delete("/sales/purge")
 async def purge_sales_refined(

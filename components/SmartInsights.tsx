@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { ApiService } from '../api';
 import {
     AlertTriangle, TrendingUp, BarChart3,
@@ -27,6 +27,13 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
     const [showModal, setShowModal] = useState(false);
     const [modalConfig, setModalConfig] = useState<{ title: string, metric: string, data: any[] }>({ title: '', metric: '', data: [] });
     const [loadingModal, setLoadingModal] = useState(false);
+    const heatmapBySlot = useMemo(() => {
+        const map = new Map<string, number>();
+        for (const cell of heatmap) {
+            map.set(`${cell.dia}|${cell.hora}`, Number(cell.valor) || 0);
+        }
+        return map;
+    }, [heatmap]);
 
     useEffect(() => {
         const fetchStores = async () => {
@@ -274,8 +281,8 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                                 <div key={day} className="grid grid-cols-8 gap-2 mb-2">
                                     <div className="text-[10px] font-bold text-slate-600 flex items-center">{day}</div>
                                     {[0, 1, 2, 3, 4, 5, 6].map(i => {
-                                        const hourData = heatmap.find(h => h.dia === day && h.hora.startsWith((10 + i * 2).toString().padStart(2, '0')));
-                                        const val = hourData ? hourData.valor : 0;
+                                        const slot = `${day}|${(10 + i * 2).toString().padStart(2, '0')}:00`;
+                                        const val = heatmapBySlot.get(slot) || 0;
                                         return (
                                             <div
                                                 key={i}

@@ -3,6 +3,7 @@ import stat
 import logging
 import uuid
 import asyncio
+import time
 from datetime import datetime, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -31,7 +32,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def insert_load_log(local_nombre: str, archivo: str, estado: str, mensaje: str, batch_id: str = None, detalles: list = []):
+def insert_load_log(local_nombre: str, archivo: str, estado: str, mensaje: str, batch_id: str = None, detalles: list = None):
     """Inserts a log into Supabase 'logs_carga' table."""
     try:
         log_data = {
@@ -41,7 +42,7 @@ def insert_load_log(local_nombre: str, archivo: str, estado: str, mensaje: str, 
             "estado": estado,
             "mensaje": mensaje,
             "batch_id": batch_id,
-            "detalles": detalles
+            "detalles": detalles or []
         }
         supabase.table("logs_carga").insert(log_data).execute()
         logger.info(f"Log registrado: {mensaje}")
@@ -70,13 +71,31 @@ def get_sftp_client(host, port, user, password):
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect(host, port=port, username=user, password=password, timeout=10)
+    transport = ssh.get_transport()
+    if transport:
+        transport.set_keepalive(30)
     return ssh, ssh.open_sftp()
 
 def get_ftp_client(host, port, user, password):
     ftp = FTP()
     ftp.connect(host, port, timeout=10)
     ftp.login(user, password)
+    ftp.set_pasv(True)
     return ftp
+
+def connect_with_retries(connector, attempts=3, base_delay=2):
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return connector()
+        except Exception as e:
+            last_error = e
+            if attempt >= attempts:
+                break
+            delay = base_delay * attempt
+            logger.warning(f"Conexión fallida (intento {attempt}/{attempts}): {e}. Reintentando en {delay}s...")
+            time.sleep(delay)
+    raise last_error
 
 def process_file_logic(config, filename, content):
     """
@@ -124,6 +143,9 @@ def process_file_logic(config, filename, content):
         # Get mapping
         mapping = config.get('mapping_config') or {}
         
+        valid_rows = []
+        valid_line_numbers = []
+
         for i, row in enumerate(raw_records, start=2):
             try:
                 # Map fields using mapping_config
@@ -157,7 +179,6 @@ def process_file_logic(config, filename, content):
                     detalles.append({"linea": i, "error": "Datos incompletos (Fecha o Total Bruto faltante/cero)"})
                     continue
                 
-                # Insert to database
                 payload = {
                     "local_id": local_id,
                     "fecha": fecha_venta,
@@ -169,13 +190,31 @@ def process_file_logic(config, filename, content):
                 
                 if mall_id:
                     payload["mall_id"] = mall_id
-                
-                supabase.table("ventas").insert(payload).execute()
-                registros_exito += 1
+
+                valid_rows.append(payload)
+                valid_line_numbers.append(i)
                 
             except Exception as e:
                 detalles.append({"linea": i, "error": str(e)})
                 logger.error(f"Error en línea {i}: {e}")
+
+        # Bulk insert for better throughput; fallback to row insert if a chunk fails.
+        BATCH_SIZE = 500
+        for start in range(0, len(valid_rows), BATCH_SIZE):
+            batch = valid_rows[start:start + BATCH_SIZE]
+            lines = valid_line_numbers[start:start + BATCH_SIZE]
+            try:
+                supabase.table("ventas").insert(batch).execute()
+                registros_exito += len(batch)
+            except Exception as batch_error:
+                logger.warning(f"Batch insert failed for {filename} ({len(batch)} rows): {batch_error}. Falling back to row-level inserts.")
+                for payload, line_no in zip(batch, lines):
+                    try:
+                        supabase.table("ventas").insert(payload).execute()
+                        registros_exito += 1
+                    except Exception as row_error:
+                        detalles.append({"linea": line_no, "error": str(row_error)})
+                        logger.error(f"Error insertando línea {line_no}: {row_error}")
                 
     except Exception as e:
         logger.error(f"Error general procesando archivo: {e}")
@@ -202,7 +241,7 @@ def process_local_files(config):
     
     if protocol == "SFTP":
         try:
-            ssh, sftp = get_sftp_client(host, port, user, password)
+            ssh, sftp = connect_with_retries(lambda: get_sftp_client(host, port, user, password))
         except Exception as ce:
             insert_load_log(config['nombre'], "N/A", "error", f"Fallo conexión SFTP: {str(ce)}")
             return
@@ -293,7 +332,7 @@ def process_local_files(config):
             
     elif protocol == "FTP":
         try:
-            ftp = get_ftp_client(host, port, user, password)
+            ftp = connect_with_retries(lambda: get_ftp_client(host, port, user, password))
         except Exception as ce:
             insert_load_log(config['nombre'], "N/A", "error", f"Fallo conexión FTP: {str(ce)}")
             return

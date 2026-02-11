@@ -4,6 +4,7 @@ import csv
 import io
 import logging
 import time
+import threading
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any
 from uuid import uuid4
@@ -44,6 +45,58 @@ if SUPABASE_URL and SUPABASE_KEY:
     except Exception as e:
         logger.error(f"CRITICAL: Failed to initialize Supabase client: {e}")
         # Dont crash, just continue without supabase
+
+
+# --- LIGHTWEIGHT IN-MEMORY CACHE (TTL) ---
+_CACHE: Dict[str, Dict[str, Any]] = {}
+_CACHE_LOCK = threading.Lock()
+_CACHE_MISS = object()
+
+def _env_int(name: str, default: int, min_value: int = 1, max_value: int = 3600) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+        if value < min_value:
+            return min_value
+        if value > max_value:
+            return max_value
+        return value
+    except (TypeError, ValueError):
+        return default
+
+_CACHE_MAX_ITEMS = _env_int("CACHE_MAX_ITEMS", 300, min_value=50, max_value=5000)
+
+# Endpoint-specific TTLs (seconds), configurable via environment variables.
+TTL_DASHBOARD = _env_int("CACHE_TTL_DASHBOARD", 90, min_value=5, max_value=1800)
+TTL_RANKING = _env_int("CACHE_TTL_RANKING", 60, min_value=5, max_value=1800)
+TTL_HEATMAP = _env_int("CACHE_TTL_HEATMAP", 120, min_value=5, max_value=1800)
+
+def _cache_get(key: str):
+    now = time.time()
+    with _CACHE_LOCK:
+        item = _CACHE.get(key)
+        if not item:
+            return _CACHE_MISS
+        if item["expires_at"] <= now:
+            _CACHE.pop(key, None)
+            return _CACHE_MISS
+        return item["value"]
+
+def _cache_set(key: str, value: Any, ttl: int):
+    now = time.time()
+    with _CACHE_LOCK:
+        # Opportunistic cleanup to keep memory bounded.
+        if len(_CACHE) >= _CACHE_MAX_ITEMS:
+            expired = [k for k, v in _CACHE.items() if v["expires_at"] <= now]
+            for k in expired:
+                _CACHE.pop(k, None)
+            # If still full, remove oldest expiration first.
+            if len(_CACHE) >= _CACHE_MAX_ITEMS:
+                oldest_key = min(_CACHE.keys(), key=lambda k: _CACHE[k]["expires_at"])
+                _CACHE.pop(oldest_key, None)
+        _CACHE[key] = {"value": value, "expires_at": now + max(1, ttl)}
 
 
 def flatten_json(y):
@@ -123,7 +176,7 @@ def diagnosticar_archivo(file_bytes):
 
 
 
-app = FastAPI(title="MSMALL Sales Audit API", version="1.0.0")
+app = FastAPI(title="MSMALL Sales Audit API", version="1.0.2")
 
 @app.post("/api/v1/debug/diagnose-file")
 async def diagnose_file_endpoint(file: UploadFile = File(...)):
@@ -726,6 +779,7 @@ def get_sftp_client(host, port, user, password):
     # Usar Transport directamente como en el script de diagnóstico que funcionó
     transport = paramiko.Transport((host, int(port)))
     transport.connect(username=user, password=password)
+    transport.set_keepalive(30)
     sftp = paramiko.SFTPClient.from_transport(transport)
     return transport, sftp
 
@@ -733,6 +787,7 @@ def get_ftp_client(host, port, user, password):
     ftp = FTP()
     ftp.connect(host, port, timeout=25)
     ftp.login(user, password)
+    ftp.set_pasv(True)
     return ftp
 
 def _test_remote_connection_sync(req: RemoteRequest):
@@ -1063,9 +1118,25 @@ async def get_efficiency(local_id: str):
 async def get_heatmap(local_id: str):
     """Generate sales intensity heatmap data from real transaction times."""
     if not supabase: return []
+    cache_key = f"insights:heatmap:{local_id}"
+    cached = _cache_get(cache_key)
+    if cached is not _CACHE_MISS:
+        return cached
+    try:
+        rpc_res = supabase.rpc("get_insights_heatmap", {"local_id_param": local_id}).execute()
+        if rpc_res.data:
+            result = rpc_res.data
+            _cache_set(cache_key, result, TTL_HEATMAP)
+            return result
+        _cache_set(cache_key, [], TTL_HEATMAP)
+        return []
+    except Exception as rpc_err:
+        logger.warning(f"Heatmap RPC unavailable, fallback to python aggregation: {rpc_err}")
     try:
         res = supabase.table("ventas").select("fecha, hora_transaccion").eq("local_id", local_id).limit(2000).execute()
-        if not res.data: return []
+        if not res.data:
+            _cache_set(cache_key, [], TTL_HEATMAP)
+            return []
         
         counts = {}
         days_map = {0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves", 4: "Viernes", 5: "Sábado", 6: "Domingo"}
@@ -1090,6 +1161,7 @@ async def get_heatmap(local_id: str):
             for h in hours:
                 val = (counts.get((d, h), 0) / max_count) * 100
                 result.append({"dia": d, "hora": h, "valor": round(val, 2)})
+        _cache_set(cache_key, result, TTL_HEATMAP)
         return result
     except:
         return []
@@ -1098,6 +1170,31 @@ async def get_heatmap(local_id: str):
 async def get_ranking(metric: str, mall_id: Optional[str] = Query(None, alias="mall_id")):
     """Get ranking of all stores for a specific metric based on real database data."""
     if not supabase: return []
+    cache_key = f"insights:ranking:{metric}:{mall_id or 'all'}"
+    cached = _cache_get(cache_key)
+    if cached is not _CACHE_MISS:
+        return cached
+    try:
+        rpc_res = supabase.rpc("get_insights_ranking", {
+            "metric_param": metric,
+            "mall_id_param": mall_id
+        }).execute()
+        if rpc_res.data:
+            # Ensure JSON-serializable primitive types
+            normalized = []
+            for row in rpc_res.data:
+                normalized.append({
+                    "id": row.get("id"),
+                    "nombre": row.get("nombre"),
+                    "valor": float(row.get("valor") or 0),
+                    "extra": row.get("extra")
+                })
+            _cache_set(cache_key, normalized, TTL_RANKING)
+            return normalized
+        _cache_set(cache_key, [], TTL_RANKING)
+        return []
+    except Exception as rpc_err:
+        logger.warning(f"Ranking RPC unavailable, fallback to python aggregation: {rpc_err}")
     try:
         # 1. Fetch all stores
         query = supabase.table("locales").select("id, nombre, mts, rubro")
@@ -1108,7 +1205,10 @@ async def get_ranking(metric: str, mall_id: Optional[str] = Query(None, alias="m
         if not stores_res.data: return []
         
         # 2. Fetch all sales
-        sales_res = supabase.table("ventas").select("local_id, total_bruto, total_neto").execute()
+        sales_query = supabase.table("ventas").select("local_id, total_bruto, total_neto")
+        if mall_id:
+            sales_query = sales_query.eq("mall_id", mall_id)
+        sales_res = sales_query.execute()
         
         # Aggregate
         sales_data = {} # id -> {bruto, neto, cnt}
@@ -1145,6 +1245,7 @@ async def get_ranking(metric: str, mall_id: Optional[str] = Query(None, alias="m
             
         # Sort desc
         ranking.sort(key=lambda x: x['valor'], reverse=True)
+        _cache_set(cache_key, ranking, TTL_RANKING)
         return ranking
     except Exception as e:
         logger.error(f"Error in ranking: {e}")
@@ -1955,16 +2056,54 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
     """
     if not supabase:
          raise HTTPException(status_code=500, detail="Supabase client not initialized")
+    cache_key = f"analytics:dashboard:{mall_id}:{start_date}:{end_date}"
+    cached = _cache_get(cache_key)
+    if cached is not _CACHE_MISS:
+        return cached
     
+    try:
+        # Fast path: Use DB-side aggregation function (RPC) for better scalability.
+        rpc_res = supabase.rpc("get_dashboard_kpis", {
+            "mall_id_param": mall_id,
+            "start_date_param": start_date,
+            "end_date_param": end_date
+        }).execute()
+
+        if rpc_res.data and len(rpc_res.data) > 0:
+            row = rpc_res.data[0]
+            result = {
+                "ventas_totales_bruto": float(row.get("ventas_totales_bruto") or 0),
+                "ventas_totales_neto": float(row.get("ventas_totales_neto") or 0),
+                "transacciones": int(row.get("transacciones") or 0),
+                "ticket_promedio": float(row.get("ticket_promedio") or 0),
+                "variacion_ventas": float(row.get("variacion_ventas") or 0),
+                "top_locales": row.get("top_locales") or [],
+                "ventas_por_dia": row.get("ventas_por_dia") or [],
+                "ventas_por_rubro": row.get("ventas_por_rubro") or [],
+                "ventas_por_tienda_completo": row.get("ventas_por_tienda_completo") or {}
+            }
+            _cache_set(cache_key, result, TTL_DASHBOARD)
+            return result
+    except Exception as rpc_err:
+        # Fallback path keeps endpoint functional while RPC is being rolled out.
+        logger.warning(f"Dashboard RPC unavailable, fallback to python aggregation: {rpc_err}")
+
     try:
         # 1. Fetch Sales
         # Note: 'fecha' in DB is likely YYYY-MM-DD or timestamp. If timestamp, string comparison might be tricky.
         # Assuming YYYY-MM-DD string or compatible date type.
-        sales_res = supabase.table("ventas").select("*").eq("mall_id", mall_id).gte("fecha", start_date).lte("fecha", end_date).execute()
+        sales_res = (
+            supabase.table("ventas")
+            .select("local_id, fecha, total_bruto, total_neto")
+            .eq("mall_id", mall_id)
+            .gte("fecha", start_date)
+            .lte("fecha", end_date)
+            .execute()
+        )
         sales = sales_res.data or []
         
         # 2. Fetch Stores
-        stores_res = supabase.table("locales").select("*").eq("mall_id", mall_id).execute()
+        stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
         stores = stores_res.data or []
         store_map = {s['id']: s['nombre'] for s in stores}
         
@@ -1988,16 +2127,19 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
             day = s.get('fecha')
             sales_by_day[day] = sales_by_day.get(day, 0) + bruto
             
-        return {
+        result = {
             "ventas_totales_bruto": total_bruto,
             "ventas_totales_neto": total_neto,
             "transacciones": len(sales),
             "ticket_promedio": (total_bruto / len(sales)) if len(sales) > 0 else 0,
+            "variacion_ventas": 0,
             "top_locales": [ {"name": k, "total": v} for k, v in sorted(sales_by_store.items(), key=lambda item: item[1], reverse=True)[:5] ],
             "ventas_por_dia": [ {"fecha": k, "total": v} for k, v in sorted(sales_by_day.items()) ],
             "ventas_por_rubro": [], # Simplified for now
             "ventas_por_tienda_completo": sales_by_store
         }
+        _cache_set(cache_key, result, TTL_DASHBOARD)
+        return result
     except Exception as e:
         logger.error(f"Error fetching dashboard data: {e}")
         raise HTTPException(status_code=500, detail=str(e))

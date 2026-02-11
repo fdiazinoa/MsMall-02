@@ -5,12 +5,17 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
 **Estado del Proyecto:** MVP Funcional (v1.0.2)
 **Arquitectura:** React SPA + Backend FastAPI + PostgreSQL
 
+## 0. Despliegue e Infraestructura
+- **Frontend (SPA):** desplegado en **Vercel**.
+- **Backend API + procesos programados:** ejecutados en **Railway**.
+- **Worker/Cron de importación:** corridos en Railway para tareas horarias de SFTP/FTP.
+
 ## 1. Stack Tecnológico
-- **Frontend:** React 19 con TypeScript.
+- **Frontend:** React 18.3.1 con TypeScript.
 - **Estilos:** Tailwind CSS.
 - **Visualización de Datos:** Recharts.
 - **Iconografía:** Lucide React.
-- **Backend:** FastAPI (Python 3.10+).
+- **Backend:** FastAPI (Python 3.9+ en `runtime.txt`).
 - **Base de Datos:** PostgreSQL.
 
 ## 2. Módulos Funcionales
@@ -32,8 +37,13 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
 - Inventario Físico: Clasificación por rubro, piso y Mall.
 
 ### E. Gestión de Usuarios y RBAC
-- Roles: `admin`, `auditor`, `mall_manager`.
+- Roles activos en app: `admin`, `tic`, `auditor`.
 - Seguridad: Panel de activación/desactivación y trazabilidad.
+
+## 6. Notas de Implementación Actual
+- El backend expone rutas tanto desde `main.py` como desde `routers/` (`recipes`, `comparisons`, `admin_tools`).
+- El script operativo presente para worker es `start_worker.sh` (no existe `run.sh` en este repositorio).
+- La versión declarada de la API en FastAPI es `1.0.0` (`main.py`), aunque el estado funcional del proyecto se documenta como MVP `v1.0.2`.
 
 ## 3. Arquitectura de Datos
 Esquema relacional optimizado (`init.sql`):

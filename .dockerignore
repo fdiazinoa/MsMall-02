@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+node_modules
+dist
+dist-ssr
+__pycache__
+*.pyc
+.vscode
+.idea
+.DS_Store
+nohup.out
+MSMALL_Funcionalidades.pdf
+ventas_generadas.csv

@@ -18,6 +18,7 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
     const [selectedLocalId, setSelectedLocalId] = useState<string>(initialLocalId || '');
     const [availableStores, setAvailableStores] = useState<any[]>([]);
     const [alerts, setAlerts] = useState<any[]>([]);
+    const [alertsStatus, setAlertsStatus] = useState<'ok' | 'error'>('ok');
     const [benchmarking, setBenchmarking] = useState<any>(null);
     const [efficiency, setEfficiency] = useState<any>(null);
     const [heatmap, setHeatmap] = useState<any[]>([]);
@@ -69,12 +70,15 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                     ApiService.getHeatmap(selectedLocalId),
                     ApiService.getEfficiency(selectedLocalId)
                 ]);
-                setAlerts(alertsData);
+                setAlerts(alertsData.alerts || []);
+                setAlertsStatus(alertsData.status);
                 setBenchmarking(benchData);
                 setHeatmap(heatmapData);
                 setEfficiency(efficiencyData);
             } catch (error) {
                 console.error("Error loading insights:", error);
+                setAlerts([]);
+                setAlertsStatus('error');
             } finally {
                 setLoading(false);
             }
@@ -104,7 +108,53 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
         );
     }
 
-    const hasHighRisk = alerts.some(a => a.nivel_riesgo === 'ALTO');
+    const relevantAlerts = alerts.filter(a => a.nivel_riesgo === 'ALTO' || a.nivel_riesgo === 'MEDIO');
+    const hasHighRisk = relevantAlerts.some(a => a.nivel_riesgo === 'ALTO');
+    const hasMediumRisk = !hasHighRisk && relevantAlerts.some(a => a.nivel_riesgo === 'MEDIO');
+    const riskState: 'HIGH' | 'MEDIUM' | 'NORMAL' | 'NO_DATA' =
+        alertsStatus === 'error'
+            ? 'NO_DATA'
+            : hasHighRisk
+                ? 'HIGH'
+                : hasMediumRisk
+                    ? 'MEDIUM'
+                    : 'NORMAL';
+
+    const riskCardStyles =
+        riskState === 'HIGH'
+            ? 'bg-red-50 border-red-200 shadow-lg shadow-red-100'
+            : riskState === 'MEDIUM'
+                ? 'bg-amber-50 border-amber-200 shadow-lg shadow-amber-100'
+                : riskState === 'NO_DATA'
+                    ? 'bg-slate-50 border-slate-200'
+                    : 'bg-green-50 border-green-200';
+
+    const riskIconStyles =
+        riskState === 'HIGH'
+            ? 'bg-red-500 text-white animate-pulse'
+            : riskState === 'MEDIUM'
+                ? 'bg-amber-500 text-white'
+                : riskState === 'NO_DATA'
+                    ? 'bg-slate-400 text-white'
+                    : 'bg-green-500 text-white';
+
+    const riskBadgeStyles =
+        riskState === 'HIGH'
+            ? 'bg-red-100 text-red-600'
+            : riskState === 'MEDIUM'
+                ? 'bg-amber-100 text-amber-700'
+                : riskState === 'NO_DATA'
+                    ? 'bg-slate-200 text-slate-600'
+                    : 'bg-green-100 text-green-600';
+
+    const riskBadgeText =
+        riskState === 'HIGH'
+            ? 'Riesgo Alto'
+            : riskState === 'MEDIUM'
+                ? 'Riesgo Medio'
+                : riskState === 'NO_DATA'
+                    ? 'Sin Datos'
+                    : 'Operación Normal';
 
     return (
         <div className="space-y-6 animate-in fade-in duration-500 pb-12">
@@ -134,19 +184,19 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Risk Traffic Light */}
-                <div className={`p-6 rounded-3xl border-2 transition-all ${hasHighRisk ? 'bg-red-50 border-red-200 shadow-lg shadow-red-100' : 'bg-green-50 border-green-200'}`}>
+                <div className={`p-6 rounded-3xl border-2 transition-all ${riskCardStyles}`}>
                     <div className="flex items-center justify-between mb-4">
-                        <div className={`p-3 rounded-2xl ${hasHighRisk ? 'bg-red-500 text-white animate-pulse' : 'bg-green-500 text-white'}`}>
+                        <div className={`p-3 rounded-2xl ${riskIconStyles}`}>
                             <AlertTriangle size={24} />
                         </div>
-                        <span className={`text-xs font-bold uppercase tracking-widest px-3 py-1 rounded-full ${hasHighRisk ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
-                            {hasHighRisk ? 'Riesgo Detectado' : 'Operación Normal'}
+                        <span className={`text-xs font-bold uppercase tracking-widest px-3 py-1 rounded-full ${riskBadgeStyles}`}>
+                            {riskBadgeText}
                         </span>
                     </div>
                     <h3 className="text-lg font-bold text-slate-800 mb-2">Semáforo de Riesgo</h3>
-                    {hasHighRisk ? (
+                    {(riskState === 'HIGH' || riskState === 'MEDIUM') ? (
                         <div className="space-y-3">
-                            {alerts.filter(a => a.nivel_riesgo === 'ALTO' || a.nivel_riesgo === 'MEDIO').map((alert, idx) => (
+                            {relevantAlerts.map((alert, idx) => (
                                 <div key={idx} className="bg-white/60 p-3 rounded-xl border border-red-100">
                                     <div className="flex items-center gap-2 mb-1">
                                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${alert.tipo_alerta === 'CAJA_APAGADA' ? 'bg-red-600 text-white' : alert.tipo_alerta === 'FACTURA_PLANA' ? 'bg-orange-500 text-white' : 'bg-red-100 text-red-600'}`}>
@@ -160,6 +210,10 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                                 </div>
                             ))}
                         </div>
+                    ) : riskState === 'NO_DATA' ? (
+                        <p className="text-slate-700 text-sm font-medium">
+                            No se pudo validar alertas IA en este momento. Verifica conexión o servicio de alertas.
+                        </p>
                     ) : (
                         <p className="text-green-700 text-sm font-medium">
                             No se han detectado anomalías significativas en los últimos 7 días.

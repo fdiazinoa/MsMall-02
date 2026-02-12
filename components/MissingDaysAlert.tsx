@@ -61,11 +61,22 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                 else params.local_id = 'ALL';
 
                 const query = new URLSearchParams(params);
-                const apiBase = (import.meta.env.VITE_API_URL || window.location.origin).replace(/\/+$/, '');
-                const endpoint = new URL('/api/v1/auditoria/brechas-ventas', `${apiBase}/`);
-                endpoint.search = query.toString();
+                const rawBase = String(import.meta.env.VITE_API_URL || '').trim();
+                let apiBase = rawBase.replace(/\/+$/, '');
+                if (apiBase && !/^https?:\/\//i.test(apiBase) && !apiBase.startsWith('/')) {
+                    apiBase = `https://${apiBase}`;
+                }
 
-                const res = await fetch(endpoint.toString(), {
+                let endpoint = `/api/v1/auditoria/brechas-ventas?${query.toString()}`;
+                if (apiBase) {
+                    const lower = apiBase.toLowerCase();
+                    let path = '/api/v1/auditoria/brechas-ventas';
+                    if (lower.endsWith('/api/v1')) path = '/auditoria/brechas-ventas';
+                    else if (lower.endsWith('/api')) path = '/v1/auditoria/brechas-ventas';
+                    endpoint = `${apiBase}${path}?${query.toString()}`;
+                }
+
+                const res = await fetch(endpoint, {
                     headers: {
                         'Authorization': `Bearer ${token}`,
                         'X-Mall-Id': currentMall.id,

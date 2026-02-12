@@ -1005,15 +1005,16 @@ export const ApiService = {
   },
 
   // --- MÉTODOS DE INTELIGENCIA ARTIFICIAL ---
-  async getAIAlerts(localId?: string): Promise<any[]> {
+  async getAIAlerts(localId?: string): Promise<{ alerts: any[], status: 'ok' | 'error' }> {
     const url = localId ? `${BASE_URL}/insights/alerts?local_id=${localId}` : `${BASE_URL}/insights/alerts`;
     try {
       const response = await fetch(url);
       if (!response.ok) throw new Error("Error al obtener alertas");
-      return await response.json();
+      const data = await response.json();
+      return { alerts: Array.isArray(data) ? data : [], status: 'ok' };
     } catch (error) {
       console.error(error);
-      return [];
+      return { alerts: [], status: 'error' };
     }
   },
 

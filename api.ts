@@ -13,9 +13,31 @@ if (!supabase) {
 }
 
 const BASE_URL = '/api/v1';
+const DIRECT_BACKEND_BASE_URL = import.meta.env.VITE_DIRECT_BACKEND_BASE_URL || '';
 const STORES_STORAGE_KEY = 'msmall_mock_stores';
 const USERS_STORAGE_KEY = 'msmall_mock_users';
 const IMPORTS_STORAGE_KEY = 'msmall_mock_imports';
+
+const getExecuteManualBaseUrls = (): string[] => {
+  const urls: string[] = [BASE_URL];
+
+  if (DIRECT_BACKEND_BASE_URL && DIRECT_BACKEND_BASE_URL !== BASE_URL) {
+    urls.push(DIRECT_BACKEND_BASE_URL);
+  } else if (typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app')) {
+    urls.push('https://msmall-02-production.up.railway.app/api/v1');
+  }
+
+  return Array.from(new Set(urls));
+};
+
+const isNetworkFetchFailure = (error: any): boolean => {
+  const msg = String(error?.message || error || '');
+  return (
+    msg.includes('Failed to fetch') ||
+    msg.includes('ERR_NETWORK_CHANGED') ||
+    msg.includes('NetworkError')
+  );
+};
 
 export interface Store {
   id: string;
@@ -402,25 +424,71 @@ export const ApiService = {
   },
 
   async executeManualImport(config: ImportConfig, filename: string): Promise<{ status: string, message: string, errors?: any[], records_processed?: number }> {
-    try {
-      const response = await fetch(`${BASE_URL}/remote/execute-manual`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          config_id: config.id,
-          filename,
-          config // Pass full config
-        })
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: "Error ejecutando importación" }));
-        throw new Error(errorData.detail || "Error ejecutando importación");
+    const requestId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+      ? crypto.randomUUID()
+      : `req-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+
+    const payload = {
+      config_id: config.id,
+      filename,
+      config,
+      request_id: requestId
+    };
+
+    const baseUrls = getExecuteManualBaseUrls();
+    let lastError: any = null;
+
+    for (let i = 0; i < baseUrls.length; i++) {
+      const baseUrl = baseUrls[i];
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
+
+      try {
+        const response = await fetch(`${baseUrl}/remote/execute-manual`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ detail: "Error ejecutando importación" }));
+          const serverDetail = errorData.detail || "Error ejecutando importación";
+
+          // If proxy route fails with 5xx, try direct backend (if available).
+          if (response.status >= 500 && i < baseUrls.length - 1) {
+            console.warn(`executeManualImport: ${baseUrl} respondió ${response.status}. Intentando fallback...`);
+            continue;
+          }
+          throw new Error(serverDetail);
+        }
+
+        return await response.json();
+      } catch (error: any) {
+        clearTimeout(timeoutId);
+        lastError = error;
+        const msg = String(error?.message || error || '');
+        const isTimeout = error?.name === 'AbortError' || msg.toLowerCase().includes('aborted');
+        const isNetworkFailure = isNetworkFetchFailure(error);
+
+        // On network/proxy failure, attempt direct backend as fallback.
+        if ((isNetworkFailure || isTimeout) && i < baseUrls.length - 1) {
+          console.warn(`executeManualImport: fallo en ${baseUrl} (${msg}). Intentando fallback...`);
+          continue;
+        }
+
+        if (isTimeout) {
+          throw new Error("Timeout ejecutando importación remota. Intenta nuevamente.");
+        }
+        if (isNetworkFailure) {
+          throw new Error("No se pudo confirmar la importación por cambio de red (ERR_NETWORK_CHANGED). Revisa conexión/VPN e intenta de nuevo.");
+        }
+        throw new Error(msg || "Error ejecutando importación");
       }
-      return await response.json();
-    } catch (error: any) {
-      console.error(error);
-      throw error.message || error;
     }
+
+    throw new Error(lastError?.message || "Error ejecutando importación");
   },
 
   async unmarkFile(config: ImportConfig, filename: string): Promise<{ status: string, message: string, old_name?: string, new_name?: string }> {

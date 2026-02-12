@@ -272,7 +272,31 @@ export const ImportManager: React.FC = () => {
         setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
       }
     } catch (error: any) {
+      const errorMsg = String(error?.message || error || '');
       console.error(error);
+
+      if (
+        errorMsg.includes('ERR_NETWORK_CHANGED') ||
+        errorMsg.includes('Failed to fetch') ||
+        errorMsg.includes('No se pudo confirmar la importación')
+      ) {
+        try {
+          const latestFiles = await ApiService.listRemoteFiles(config);
+          const renamedExists = latestFiles.some(f => f.nombre === `PR_${filename}`);
+          const originalExists = latestFiles.some(f => f.nombre === filename);
+
+          if (renamedExists && !originalExists) {
+            setProgressStep('complete');
+            setProgressMessage('Conexión cambiada durante la confirmación, pero el archivo quedó procesado (renombrado con PR_).');
+            setFileStatuses(prev => ({ ...prev, [filename]: 'success' }));
+            setManualFiles(latestFiles);
+            return;
+          }
+        } catch (checkErr) {
+          console.warn("No se pudo verificar estado post error de red:", checkErr);
+        }
+      }
+
       setProgressStep('error');
       setProgressMessage("❌ Error en ejecución: " + (error.message || error));
       setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));

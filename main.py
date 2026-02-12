@@ -51,6 +51,8 @@ if SUPABASE_URL and SUPABASE_KEY:
 _CACHE: Dict[str, Dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MISS = object()
+_INFLIGHT_MANUAL_EXEC: set = set()
+_INFLIGHT_MANUAL_EXEC_LOCK = threading.Lock()
 
 def _env_int(name: str, default: int, min_value: int = 1, max_value: int = 3600) -> int:
     raw = os.getenv(name)
@@ -317,6 +319,7 @@ class ExecuteManualRequest(BaseModel):
     config_id: str
     filename: str
     config: Optional[ImportConfigSchema] = None
+    request_id: Optional[str] = None
 
 class LoadLogSchema(BaseModel):
     id: Optional[str] = None
@@ -1645,8 +1648,31 @@ async def list_files_endpoint(config: ImportConfigSchema):
 async def execute_manual_endpoint(req: ExecuteManualRequest):
     logger.info(f"Ejecutando manual para {req.config_id} - Archivo: {req.filename}")
     batch_id = str(uuid4())
+    request_id = (req.request_id or "").strip() if req.request_id else None
+    request_cache_key = f"manual_exec:{request_id}" if request_id else None
+    manual_exec_lock_acquired = False
     
     try:
+        if request_cache_key:
+            cached_result = _cache_get(request_cache_key)
+            if cached_result is not _CACHE_MISS:
+                logger.info(f"Devolviendo resultado cacheado para request_id={request_id}")
+                return cached_result
+
+            with _INFLIGHT_MANUAL_EXEC_LOCK:
+                if request_id in _INFLIGHT_MANUAL_EXEC:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="La importación para esta solicitud ya está en proceso. Espera unos segundos e intenta de nuevo."
+                    )
+                _INFLIGHT_MANUAL_EXEC.add(request_id)
+                manual_exec_lock_acquired = True
+
+        def _cache_and_return(payload: Dict[str, Any]):
+            if request_cache_key:
+                _cache_set(request_cache_key, payload, ttl=1800)
+            return payload
+
         # Priorizar config enviada en el request para evitar dependencia de DB en configuración activa
         config_data = {}
         if req.config:
@@ -1787,29 +1813,35 @@ async def execute_manual_endpoint(req: ExecuteManualRequest):
                  logger.error(f"Error al renombrar archivo pos-importación: {rename_err}")
                  # Don't fail the request, just log it. The import was successful.
                  mensaje += f" (Advertencia: No se pudo renombrar el archivo: {rename_err})"
-                 return {
+                 return _cache_and_return({
                     "status": "success",
                     "message": mensaje,
                     "records_processed": registros_exito,
                     "batch_id": batch_id,
                     "errors": detalles_errores,
                     "renaming_error": str(rename_err)
-                 }
+                 })
 
-        return {
+        return _cache_and_return({
             "status": "success" if registros_exito > 0 else "error",
             "message": mensaje,
             "records_processed": registros_exito,
             "batch_id": batch_id,
             "errors": detalles_errores
-        }
+        })
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
         import traceback
         traceback.print_exc()
         logger.error(f"Error en ejecución manual: {e}")
         if 'local_nombre' in locals():
             insert_load_log(local_nombre, req.filename, "error", str(e), batch_id)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if request_id and manual_exec_lock_acquired:
+            with _INFLIGHT_MANUAL_EXEC_LOCK:
+                _INFLIGHT_MANUAL_EXEC.discard(request_id)
 
 
 @app.post("/api/v1/analytics/cubo")

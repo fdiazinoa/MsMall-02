@@ -61,19 +61,29 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                 else params.local_id = 'ALL';
 
                 const query = new URLSearchParams(params);
-                const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/auditoria/brechas-ventas?${query.toString()}`, {
+                const apiBase = (import.meta.env.VITE_API_URL || window.location.origin).replace(/\/+$/, '');
+                const endpoint = new URL('/api/v1/auditoria/brechas-ventas', `${apiBase}/`);
+                endpoint.search = query.toString();
+
+                const res = await fetch(endpoint.toString(), {
                     headers: {
                         'Authorization': `Bearer ${token}`,
                         'X-Mall-Id': currentMall.id,
-                        'Content-Type': 'application/json'
+                        'Accept': 'application/json'
                     }
                 });
 
                 if (res.ok) {
+                    const contentType = res.headers.get('content-type') || '';
+                    if (!contentType.includes('application/json')) {
+                        const raw = await res.text();
+                        throw new Error(`Respuesta no JSON en gap analysis (${res.status}). Primeros chars: ${raw.slice(0, 120)}`);
+                    }
                     const data = await res.json();
                     setAnalysis(data);
                 } else {
-                    console.error("Error fetching analysis:", await res.text());
+                    const errorBody = await res.text();
+                    console.error("Error fetching analysis:", errorBody);
                 }
             } catch (err) {
                 console.error("Error fetching gap analysis:", err);

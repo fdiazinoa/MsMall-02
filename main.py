@@ -1805,7 +1805,13 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         
         # 6. Generate Cube using existing logic
         # Assuming generate_sales_cube handles the DataFrame aggregation
-        result = generate_sales_cube(df, request.agrupacion, request.metrica)
+        result = generate_sales_cube(
+            df,
+            request.agrupacion,
+            request.metrica,
+            start_date=request.fecha_inicio,
+            end_date=request.fecha_fin
+        )
         return result
         
     except Exception as e:

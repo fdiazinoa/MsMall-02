@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, date
+from typing import Optional
 
 def calcular_kpis_inmobiliarios(ventas_df, locales_df):
     """
@@ -69,7 +70,13 @@ def detectar_breakpoint(venta_proyectada, renta_fija, breakpoint_venta, porcenta
         return excedente
     return 0
 
-def generate_sales_cube(ventas_df: pd.DataFrame, grouping: str = 'DIA', metric: str = 'total_neto'):
+def generate_sales_cube(
+    ventas_df: pd.DataFrame,
+    grouping: str = 'DIA',
+    metric: str = 'total_neto',
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
     """
     Genera una matriz de ventas (Cubo) pivotando los datos.
     
@@ -89,6 +96,8 @@ def generate_sales_cube(ventas_df: pd.DataFrame, grouping: str = 'DIA', metric: 
     # Asegurar tipo fecha
     df['fecha'] = pd.to_datetime(df['fecha'])
     
+    grouping = (grouping or 'DIA').upper()
+
     # Crear columna dinámica para columnas de la matriz
     if grouping == 'DIA':
         df['periodo'] = df['fecha'].dt.strftime('%d/%m')
@@ -114,6 +123,35 @@ def generate_sales_cube(ventas_df: pd.DataFrame, grouping: str = 'DIA', metric: 
         aggfunc=agg, 
         fill_value=0
     )
+
+    # Build full period range so matrix includes days/weeks/months with zero sales.
+    try:
+        start_ts = pd.to_datetime(start_date) if start_date else df['fecha'].min().normalize()
+        end_ts = pd.to_datetime(end_date) if end_date else df['fecha'].max().normalize()
+
+        if pd.isna(start_ts) or pd.isna(end_ts):
+            full_periods = list(pivot.columns)
+        elif grouping == 'DIA':
+            full_periods = pd.date_range(start=start_ts, end=end_ts, freq='D').strftime('%d/%m').tolist()
+        elif grouping == 'SEMANA':
+            # Keep same label format ("W<week>") as existing UI.
+            full_periods = []
+            seen = set()
+            for d in pd.date_range(start=start_ts, end=end_ts, freq='D'):
+                label = f"W{int(d.isocalendar().week)}"
+                if label not in seen:
+                    seen.add(label)
+                    full_periods.append(label)
+        elif grouping == 'MES':
+            full_periods = pd.period_range(start=start_ts, end=end_ts, freq='M').strftime('%Y-%m').tolist()
+        else:
+            full_periods = list(pivot.columns)
+
+        if full_periods:
+            pivot = pivot.reindex(columns=full_periods, fill_value=0)
+    except Exception:
+        # Non-critical: if range generation fails, keep default pivot columns.
+        pass
     
     # Calcular Totales por Fila
     pivot['TOTAL_FILA'] = pivot.sum(axis=1)

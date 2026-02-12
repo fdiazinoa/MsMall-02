@@ -42,19 +42,37 @@ export const FinancialDashboard: React.FC = () => {
             ]);
             const salesMap = kpiData.ventas_por_tienda_completo || {};
 
+            const parseNum = (value: any): number => {
+                if (value === null || value === undefined) return 0;
+                const normalized = String(value).replace(/\s/g, '').replace(',', '.');
+                const n = Number(normalized);
+                return Number.isFinite(n) ? n : 0;
+            };
+
             const processed = stores.map(s => {
                 const ventaActual = salesMap[s.nombre] || 0;
 
                 // Simple projection (keep as is for now, or improve)
                 const proyeccion = ventaActual;
-                const rentaFija = Number(s.renta_fija) || 0;
-                const ocr = ventaActual > 0 ? (rentaFija / ventaActual) * 100 : 0;
-                const breakpoint = Number(s.breakpoint_venta) || 0;
-                const pctVar = Number(s.porcentaje_variable || s.porciento_renta) || 0;
+                const rentaFija = parseNum(s.renta_fija);
+                const breakpoint = parseNum(s.breakpoint_venta);
+                const pctVar = parseNum(s.porcentaje_variable ?? s.porciento_renta);
+
+                // If fixed rent is missing, estimate occupancy using variable % as proxy.
+                const ocr = ventaActual > 0
+                    ? ((rentaFija > 0 ? rentaFija : (ventaActual * pctVar / 100)) / ventaActual) * 100
+                    : 0;
 
                 let rentaVariable = 0;
-                if (proyeccion > breakpoint && breakpoint > 0) {
-                    rentaVariable = Math.max(0, (proyeccion * pctVar / 100) - rentaFija);
+                if (pctVar > 0) {
+                    const aplicaVariable = breakpoint <= 0 || proyeccion > breakpoint;
+                    if (aplicaVariable) {
+                        const rentaTeorica = (proyeccion * pctVar) / 100;
+                        // If fixed rent exists, variable is the excess. Otherwise show theoretical variable.
+                        rentaVariable = rentaFija > 0
+                            ? Math.max(0, rentaTeorica - rentaFija)
+                            : Math.max(0, rentaTeorica);
+                    }
                 }
 
                 return {

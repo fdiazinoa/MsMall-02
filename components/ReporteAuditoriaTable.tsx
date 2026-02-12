@@ -61,9 +61,9 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                         </td>
                                         <td className="px-6 py-4 font-medium text-slate-800">{row.local_nombre}</td>
                                         <td className="px-6 py-4 text-slate-500">{row.mall_nombre}</td>
-                                        <td className="px-6 py-4 text-right font-mono font-medium text-slate-700">{formatAmount(row.total_neto)}</td>
+                                        <td className="px-6 py-4 text-right font-mono font-medium text-slate-700">{formatAmount(row.total_bruto)}</td>
                                         <td className="px-6 py-4 text-right font-mono text-slate-400">{formatAmount(row.total_impuestos)}</td>
-                                        <td className="px-6 py-4 text-right font-mono font-bold text-indigo-600">{format(row.total_bruto)}</td>
+                                        <td className="px-6 py-4 text-right font-mono font-bold text-indigo-600">{format(row.total_neto)}</td>
                                     </tr>
 
                                     {/* Expandable Detail Row */}
@@ -98,20 +98,20 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                                                 ) : details.length > 0 ? (
                                                                     <>
                                                                         {details.map((detail) => {
-                                                                            const isNegative = detail.total_bruto < 0;
+                                                                            const isNegative = detail.total_neto < 0;
                                                                             return (
                                                                                 <tr key={detail.id} className={`hover:bg-slate-50/80 transition-colors ${isNegative ? 'bg-red-50/50' : ''}`}>
                                                                                     <td className="px-4 py-2.5 text-slate-600">{detail.fecha}</td>
                                                                                     <td className="px-4 py-2.5 text-slate-500">{detail.hora}</td>
                                                                                     <td className="px-4 py-2.5 font-medium text-slate-700">{detail.factura_no}</td>
-                                                                                    <td className={`px-4 py-2.5 text-right font-mono ${detail.total_neto < 0 ? 'text-red-600 font-bold' : 'text-slate-600'}`}>
-                                                                                        {formatAmount(detail.total_neto)}
+                                                                                    <td className={`px-4 py-2.5 text-right font-mono ${detail.total_bruto < 0 ? 'text-red-600 font-bold' : 'text-slate-600'}`}>
+                                                                                        {formatAmount(detail.total_bruto)}
                                                                                     </td>
                                                                                     <td className={`px-4 py-2.5 text-right font-mono ${detail.total_impuestos < 0 ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
                                                                                         {formatAmount(detail.total_impuestos)}
                                                                                     </td>
                                                                                     <td className={`px-4 py-2.5 text-right font-mono font-bold ${isNegative ? 'text-red-600' : 'text-indigo-600'}`}>
-                                                                                        {format(detail.total_bruto)}
+                                                                                        {format(detail.total_neto)}
                                                                                     </td>
                                                                                 </tr>
                                                                             );
@@ -119,9 +119,9 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                                                         {/* Summary Row */}
                                                                         <tr className="bg-slate-50 font-bold border-t-2 border-slate-200">
                                                                             <td colSpan={3} className="px-4 py-3 text-right text-slate-500 uppercase tracking-wider">Totales Detalle:</td>
-                                                                            <td className="px-4 py-3 text-right font-mono text-slate-600">{formatAmount(subTotalNeto)}</td>
+                                                                            <td className="px-4 py-3 text-right font-mono text-slate-600">{formatAmount(subTotalBruto)}</td>
                                                                             <td className="px-4 py-3 text-right font-mono text-slate-500">{formatAmount(subTotalImpuestos)}</td>
-                                                                            <td className="px-4 py-3 text-right font-mono text-indigo-600">{format(subTotalBruto)}</td>
+                                                                            <td className="px-4 py-3 text-right font-mono text-indigo-600">{format(subTotalNeto)}</td>
                                                                         </tr>
                                                                     </>
                                                                 ) : (

@@ -153,7 +153,7 @@ export const SalesReport: React.FC = () => {
     fetchData();
   }, [dates, selectedLocal, currentMall]); // Refetch when dates or local changes
 
-  const totalSales = data.reduce((sum, item) => sum + item.total_bruto, 0);
+  const totalSales = data.reduce((sum, item) => sum + item.total_neto, 0);
 
   return (
     <div className="space-y-6 relative">

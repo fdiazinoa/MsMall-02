@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 import {
@@ -24,8 +24,32 @@ export const SalesCube: React.FC = () => {
     });
     const [grouping, setGrouping] = useState<'DIA' | 'SEMANA' | 'MES'>('DIA');
     const [metric, setMetric] = useState<'total_neto' | 'total_bruto' | 'transacciones'>('total_neto');
+    const [stores, setStores] = useState<any[]>([]);
+    const [selectedLocal, setSelectedLocal] = useState<string>('');
 
     const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        const loadStores = async () => {
+            if (!currentMall?.id) {
+                setStores([]);
+                setSelectedLocal('');
+                return;
+            }
+            try {
+                const locals = await ApiService.getStores(currentMall.id);
+                setStores(locals || []);
+                // Keep selected value only if still present in current mall.
+                if (selectedLocal && !(locals || []).some((s: any) => s.id === selectedLocal)) {
+                    setSelectedLocal('');
+                }
+            } catch (e) {
+                console.error("Error loading stores for SalesCube:", e);
+                setStores([]);
+            }
+        };
+        loadStores();
+    }, [currentMall?.id]);
 
     const generateCube = async () => {
         if (!currentMall?.id || !session?.access_token) return;
@@ -37,6 +61,7 @@ export const SalesCube: React.FC = () => {
                 fecha_fin: dates.endDate,
                 agrupacion: grouping,
                 metrica: metric,
+                local_id: selectedLocal || null,
                 mallId: currentMall.id
             }, session.access_token);
             setCubeData(data);
@@ -58,6 +83,9 @@ export const SalesCube: React.FC = () => {
                 agrupacion: grouping.toLowerCase(),
                 metrica: metric
             });
+            if (selectedLocal) {
+                params.append('local_id', selectedLocal);
+            }
 
             const token = session?.access_token;
             const headers: HeadersInit = {
@@ -143,6 +171,22 @@ export const SalesCube: React.FC = () => {
                         <option value="total_neto">Venta Bruta (Base)</option>
                         <option value="total_bruto">Venta Neta (Total)</option>
                         <option value="transacciones">Transacciones</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-2 uppercase">Cliente</label>
+                    <select
+                        value={selectedLocal}
+                        onChange={(e) => setSelectedLocal(e.target.value)}
+                        className="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full p-2.5 outline-none min-w-[220px]"
+                    >
+                        <option value="">Todos los Clientes</option>
+                        {stores.map((store) => (
+                            <option key={store.id} value={store.id}>
+                                {store.nombre}
+                            </option>
+                        ))}
                     </select>
                 </div>
 

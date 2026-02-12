@@ -1256,6 +1256,7 @@ class CubeRequest(BaseModel):
     fecha_fin: str
     agrupacion: str = "DIA" # DIA, SEMANA, MES
     metrica: str = "total_neto" # total_neto, total_bruto, transacciones
+    local_id: Optional[str] = None
 
 # --- INTELLIGENT AUTO-MAPPING ---
 SYSTEM_FIELDS_SYNONYMS = {
@@ -1769,12 +1770,24 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
         stores = stores_res.data or []
         store_map = {str(s['id']): s['nombre'] for s in stores}
+        allowed_local_ids = list(store_map.keys())
+
+        if request.local_id:
+            if str(request.local_id) not in store_map:
+                # Prevent cross-tenant access and return deterministic empty matrix.
+                return {"columns": ["local_nombre", "TOTAL_FILA"], "data": [], "grand_totals": {}}
+            allowed_local_ids = [str(request.local_id)]
+
+        if not allowed_local_ids:
+            return {"columns": ["local_nombre", "TOTAL_FILA"], "data": [], "grand_totals": {}}
         
         # 2. Fetch Sales within date range - Filtered by Mall
         # Note: Using service role key bypasses RLS
+        # Important: filter by local_id list (derived from mall) instead of ventas.mall_id,
+        # because some legacy rows may have null/incorrect mall_id while local_id is valid.
         sales_res = supabase.table("ventas")\
             .select("local_id, fecha, total_bruto, total_neto, id")\
-            .eq("mall_id", mall_id)\
+            .in_("local_id", allowed_local_ids)\
             .gte("fecha", request.fecha_inicio)\
             .lte("fecha", request.fecha_fin)\
             .execute()
@@ -2419,9 +2432,23 @@ async def export_sales_report_pdf(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router_export.get("/sales-cube/excel")
-async def export_sales_cube_excel(fecha_inicio: str, fecha_fin: str, agrupacion: str = "dia", metrica: str = "total_neto"):
+async def export_sales_cube_excel(
+    fecha_inicio: str,
+    fecha_fin: str,
+    agrupacion: str = "dia",
+    metrica: str = "total_neto",
+    local_id: Optional[str] = None,
+    current_mall: str = Depends(get_current_mall)
+):
     try:
-        data = await export_service.generate_sales_cube_excel(fecha_inicio, fecha_fin, agrupacion, metrica)
+        data = await export_service.generate_sales_cube_excel(
+            fecha_inicio,
+            fecha_fin,
+            agrupacion,
+            metrica,
+            mall_id=current_mall,
+            local_id=local_id
+        )
         return StreamingResponse(
             data,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

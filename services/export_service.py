@@ -205,12 +205,33 @@ class ExportService:
 
     # --- SALES CUBE ---
 
-    async def generate_sales_cube_excel(self, fecha_inicio: str, fecha_fin: str, agrupacion: str, metrica: str) -> io.BytesIO:
+    async def generate_sales_cube_excel(
+        self,
+        fecha_inicio: str,
+        fecha_fin: str,
+        agrupacion: str,
+        metrica: str,
+        mall_id: str = None,
+        local_id: str = None
+    ) -> io.BytesIO:
         # Same logic as get_sales_cube in main.py but exporting
-        stores = self.supabase.table("locales").select("id, nombre").execute().data
+        stores_query = self.supabase.table("locales").select("id, nombre")
+        if mall_id:
+            stores_query = stores_query.eq("mall_id", mall_id)
+        if local_id:
+            stores_query = stores_query.eq("id", local_id)
+        stores = stores_query.execute().data
         store_map = {str(s['id']): s['nombre'] for s in stores}
-        
-        sales = self.supabase.table("ventas").select("*").gte("fecha", fecha_inicio).lte("fecha", fecha_fin).execute().data
+        local_ids = list(store_map.keys())
+
+        sales = []
+        if local_ids:
+            sales_query = self.supabase.table("ventas").select("*").gte("fecha", fecha_inicio).lte("fecha", fecha_fin)
+            if local_id:
+                sales_query = sales_query.eq("local_id", local_id)
+            else:
+                sales_query = sales_query.in_("local_id", local_ids)
+            sales = sales_query.execute().data
         
         wb = Workbook()
         ws = wb.active

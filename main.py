@@ -46,6 +46,14 @@ if SUPABASE_URL and SUPABASE_KEY:
         logger.error(f"CRITICAL: Failed to initialize Supabase client: {e}")
         # Dont crash, just continue without supabase
 
+SYSTEM_ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in (os.getenv("SYSTEM_ADMIN_EMAILS", "fdiaz@mercasend.net")).split(",")
+    if e and e.strip()
+}
+ADMIN_ROLES = {"admin", "superadmin", "super_admin", "administrador"}
+IT_ROLES = {"it", "tic"}
+
 
 # --- LIGHTWEIGHT IN-MEMORY CACHE (TTL) ---
 _CACHE: Dict[str, Dict[str, Any]] = {}
@@ -223,6 +231,48 @@ app.add_middleware(
 # --- SECURITY & MULTI-TENANT MIDDLEWARE ---
 security = HTTPBearer()
 
+def _normalize_role(role: Optional[str]) -> str:
+    return (role or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+def _is_system_admin_email(email: Optional[str]) -> bool:
+    if not email:
+        return False
+    return email.strip().lower() in SYSTEM_ADMIN_EMAILS
+
+def _extract_auth_user(auth_result: Any) -> Optional[Any]:
+    if auth_result is None:
+        return None
+    user = getattr(auth_result, "user", None)
+    if user is not None:
+        return user
+    if isinstance(auth_result, dict):
+        if auth_result.get("user") is not None:
+            return auth_result.get("user")
+        data = auth_result.get("data")
+        if isinstance(data, dict) and data.get("user") is not None:
+            return data.get("user")
+    return auth_result
+
+def _user_field(user: Any, field: str, default: Any = None) -> Any:
+    if user is None:
+        return default
+    if isinstance(user, dict):
+        return user.get(field, default)
+    return getattr(user, field, default)
+
+def _resolve_effective_role(email: Optional[str], role_candidates: List[Optional[str]]) -> str:
+    if _is_system_admin_email(email):
+        return "admin"
+
+    normalized = [_normalize_role(r) for r in role_candidates if r]
+    if any(r in ADMIN_ROLES for r in normalized):
+        return "admin"
+    if any(r in IT_ROLES for r in normalized):
+        return "it"
+    if any(r == "auditor" for r in normalized):
+        return "auditor"
+    return "auditor"
+
 async def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
@@ -234,6 +284,44 @@ async def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depend
     except Exception as e:
         logger.error(f"Auth error: {e}")
         raise HTTPException(status_code=401, detail="Authentication failed")
+
+async def require_admin_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+
+    email = None
+    metadata_role = None
+    profile_role = None
+    mall_roles: List[str] = []
+
+    try:
+        auth_result = supabase.auth.admin.get_user_by_id(user_id)
+        auth_user = _extract_auth_user(auth_result)
+        email = _user_field(auth_user, "email")
+        user_metadata = _user_field(auth_user, "user_metadata", {}) or {}
+        if isinstance(user_metadata, dict):
+            metadata_role = user_metadata.get("rol") or user_metadata.get("role")
+    except Exception as e:
+        logger.warning(f"No se pudo cargar auth user para validar admin: {e}")
+
+    try:
+        prof = supabase.table("profiles").select("role").eq("id", user_id).maybe_single().execute()
+        if prof and prof.data:
+            profile_role = prof.data.get("role")
+    except Exception as e:
+        logger.warning(f"No se pudo cargar role de profiles para {user_id}: {e}")
+
+    try:
+        roles_res = supabase.table("usuarios_malls").select("rol").eq("usuario_id", user_id).execute()
+        mall_roles = [r.get("rol") for r in (roles_res.data or []) if r.get("rol")]
+    except Exception as e:
+        logger.warning(f"No se pudo cargar roles de usuarios_malls para {user_id}: {e}")
+
+    effective_role = _resolve_effective_role(email, [profile_role, metadata_role, *mall_roles])
+    if effective_role != "admin":
+        raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere rol ADMIN.")
+
+    return {"user_id": user_id, "email": email, "role": effective_role}
 
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
@@ -2332,7 +2420,7 @@ class MallUpdate(BaseModel):
     metadata: Optional[Dict] = None
 
 @app.get("/api/v1/malls/all")
-async def get_all_malls(user_id: str = Depends(get_current_user_id)):
+async def get_all_malls(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     """
     Get all malls. Restricted to Admins/SuperAdmins.
     (RLS will filter if user is not admin, but good to check role here too if needed)
@@ -2346,7 +2434,7 @@ async def get_all_malls(user_id: str = Depends(get_current_user_id)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/malls")
-async def create_mall(mall: MallCreate, user_id: str = Depends(get_current_user_id)):
+async def create_mall(mall: MallCreate, admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     """
     Create a new mall.
     """
@@ -2367,7 +2455,7 @@ async def create_mall(mall: MallCreate, user_id: str = Depends(get_current_user_
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/v1/malls/{mall_id}")
-async def update_mall(mall_id: str, mall: MallUpdate, user_id: str = Depends(get_current_user_id)):
+async def update_mall(mall_id: str, mall: MallUpdate, admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     """
     Update a mall.
     """
@@ -2386,7 +2474,7 @@ async def update_mall(mall_id: str, mall: MallUpdate, user_id: str = Depends(get
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/v1/malls/{mall_id}")
-async def delete_mall(mall_id: str, user_id: str = Depends(get_current_user_id)):
+async def delete_mall(mall_id: str, admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     """
     Delete a mall.
     """
@@ -2411,45 +2499,69 @@ class UserMallAssignment(BaseModel):
     mall_ids: List[str]
     rol: str = 'auditor'
 
+class AdminCreateUserRequest(BaseModel):
+    email: str
+    password: str
+    rol: str = 'auditor'
+    mall_ids: List[str] = []
+
 @app.get("/api/v1/admin/users")
-async def admin_get_users(user_id: str = Depends(get_current_user_id)):
+async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     """
-    List all users and their assigned malls. Requires Admin/TIC role (enforced by middleware or check here).
+    List all users and their assigned malls. Requires ADMIN role.
     """
     try:
-        # 1. List Users from Auth (needs Service Role)
-        # Note: gotrue-py might not expose list_users easily depending on version.
-        # Fallback: Query a view or use RPC if created. 
-        # But assuming we have service role key in 'supabase':
-        auth_users = supabase.auth.admin.list_users() 
-        # If pagination needed, add params.
-        
+        auth_users_result = supabase.auth.admin.list_users()
+        auth_users = getattr(auth_users_result, "users", None)
+        if auth_users is None and isinstance(auth_users_result, dict):
+            auth_users = auth_users_result.get("users")
+            if auth_users is None and isinstance(auth_users_result.get("data"), dict):
+                auth_users = auth_users_result["data"].get("users")
+        if auth_users is None:
+            auth_users = []
+
         users_list = []
         for u in auth_users:
+            uid = _user_field(u, "id")
+            email = _user_field(u, "email")
+            metadata = _user_field(u, "user_metadata", {}) or {}
+            metadata_rol = metadata.get("rol") if isinstance(metadata, dict) else None
+            metadata_role = metadata.get("role") if isinstance(metadata, dict) else None
             users_list.append({
-                "id": u.id,
-                "email": u.email,
-                "metadata": u.user_metadata,
-                "last_sign_in_at": u.last_sign_in_at,
-                "created_at": u.created_at
+                "id": uid,
+                "email": email,
+                "metadata": metadata,
+                "last_sign_in_at": _user_field(u, "last_sign_in_at"),
+                "created_at": _user_field(u, "created_at"),
+                "_role_candidates": [metadata_rol, metadata_role]
             })
             
         # 2. Get Assignments
-        assignments = supabase.table("usuarios_malls").select("*").execute().data
+        assignments = supabase.table("usuarios_malls").select("*").execute().data or []
         assign_map = {}
         for a in assignments:
             uid = a['usuario_id']
             if uid not in assign_map: assign_map[uid] = []
             assign_map[uid].append(a)
+
+        # 3. Get profile roles in one query
+        user_ids = [u["id"] for u in users_list if u.get("id")]
+        profile_role_map: Dict[str, str] = {}
+        if user_ids:
+            profiles = supabase.table("profiles").select("id, role").in_("id", user_ids).execute().data or []
+            for p in profiles:
+                profile_role_map[p["id"]] = p.get("role")
             
-        # 3. Merge
+        # 4. Merge
         result = []
         for u in users_list:
             u['malls'] = assign_map.get(u['id'], [])
-            # Determine "Main" Role based on metadata or specific mall role?
-            # For UI simplicity, we might just show "Admin" if they have admin access anywhere
-            # Or reliance on user_metadata['rol']
-            u['rol'] = u['metadata'].get('rol', 'auditor') if u['metadata'] else 'auditor'
+            effective_role = _resolve_effective_role(
+                u.get("email"),
+                [profile_role_map.get(u["id"]), *(u.get("_role_candidates") or [])]
+            )
+            u['rol'] = effective_role
+            u.pop("_role_candidates", None)
             result.append(u)
             
         return result
@@ -2458,12 +2570,70 @@ async def admin_get_users(user_id: str = Depends(get_current_user_id)):
         # If admin API fails (unsupported), returns empty or error
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/v1/admin/users")
+async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+    """
+    Create a new auth user and optionally assign malls.
+    Requires ADMIN role.
+    """
+    try:
+        role = _normalize_role(payload.rol)
+        if role not in {"admin", "it", "auditor"}:
+            raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
+
+        if len(payload.password or "") < 8:
+            raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres.")
+
+        email = (payload.email or "").strip().lower()
+        if not email:
+            raise HTTPException(status_code=400, detail="Email requerido.")
+
+        created = supabase.auth.admin.create_user({
+            "email": email,
+            "password": payload.password,
+            "email_confirm": True,
+            "user_metadata": {"rol": role}
+        })
+        created_user = _extract_auth_user(created)
+        created_user_id = _user_field(created_user, "id")
+        if not created_user_id:
+            raise HTTPException(status_code=500, detail="No se pudo obtener el ID del usuario creado.")
+
+        # Keep global role in profiles for frontend role checks.
+        try:
+            supabase.table("profiles").upsert({"id": created_user_id, "role": role}, on_conflict="id").execute()
+        except Exception as p_err:
+            logger.warning(f"No se pudo upsert profiles para {created_user_id}: {p_err}")
+
+        # Assign malls if requested.
+        supabase.table("usuarios_malls").delete().eq("usuario_id", created_user_id).execute()
+        if payload.mall_ids:
+            inserts = [{"usuario_id": created_user_id, "mall_id": mid, "rol": role} for mid in payload.mall_ids]
+            supabase.table("usuarios_malls").insert(inserts).execute()
+
+        return {
+            "id": created_user_id,
+            "email": email,
+            "rol": role,
+            "mall_ids": payload.mall_ids,
+            "message": "Usuario creado correctamente"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating admin user: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/v1/admin/users/{target_user_id}/malls")
-async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, user_id: str = Depends(get_current_user_id)):
+async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     """
     Assign a list of malls to a user.
     """
     try:
+        role = _normalize_role(payload.rol)
+        if role not in {"admin", "it", "auditor"}:
+            raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
+
         # Transaction? (Not supported natively in HTTP API, do sequentially)
         
         # 1. Delete existing assignments
@@ -2471,10 +2641,18 @@ async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, u
         
         # 2. Insert new
         if payload.mall_ids:
-            inserts = [{"usuario_id": target_user_id, "mall_id": mid, "rol": payload.rol} for mid in payload.mall_ids]
+            inserts = [{"usuario_id": target_user_id, "mall_id": mid, "rol": role} for mid in payload.mall_ids]
             res = supabase.table("usuarios_malls").insert(inserts).execute()
             
+        # Update profile/global role for consistent UI gating.
+        try:
+            supabase.table("profiles").upsert({"id": target_user_id, "role": role}, on_conflict="id").execute()
+        except Exception as p_err:
+            logger.warning(f"No se pudo upsert profiles al asignar malls: {p_err}")
+
         return {"message": "Assignments updated"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error assigning malls: {e}")
         raise HTTPException(status_code=500, detail=str(e))

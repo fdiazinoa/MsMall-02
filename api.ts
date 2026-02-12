@@ -986,6 +986,27 @@ export const ApiService = {
     return await response.json();
   },
 
+  async createUser(email: string, password: string, role: string, mallIds: string[], token: string): Promise<any> {
+    const response = await fetch(`${BASE_URL}/admin/users`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        email,
+        password,
+        rol: role,
+        mall_ids: mallIds
+      })
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ detail: "Error creando usuario" }));
+      throw new Error(errorData.detail || "Error creando usuario");
+    }
+    return await response.json();
+  },
+
   async assignUserMalls(userId: string, mallIds: string[], role: string, token: string): Promise<void> {
     const response = await fetch(`${BASE_URL}/admin/users/${userId}/malls`, {
       method: 'POST',
@@ -1053,13 +1074,10 @@ export const ApiService = {
 
   async getRanking(metric: string, mallId?: string): Promise<any[]> {
     try {
-      const url = new URL(`${window.location.origin}${BASE_URL}/insights/ranking`);
-      url.searchParams.append('metric', metric);
-      if (mallId) {
-        url.searchParams.append('mall_id', mallId);
-      }
-
-      const response = await fetch(url.toString());
+      const params = new URLSearchParams();
+      params.set('metric', metric);
+      if (mallId) params.set('mall_id', mallId);
+      const response = await fetch(`${BASE_URL}/insights/ranking?${params.toString()}`);
       if (!response.ok) throw new Error("Error al obtener ranking");
       return await response.json();
     } catch (error) {

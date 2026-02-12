@@ -44,7 +44,7 @@ export interface KPIData {
   ventas_por_tienda_completo?: Record<string, number>;
 }
 
-export type UserRole = 'admin' | 'auditor' | 'mall_manager';
+export type UserRole = 'admin' | 'it' | 'tic' | 'auditor' | 'mall_manager';
 
 export interface User {
   id: string;

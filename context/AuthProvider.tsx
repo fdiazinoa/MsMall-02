@@ -3,6 +3,9 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../api'; // Asumiendo que supabase client está exportado en api.ts
 
 const AuthContext = createContext();
+const SYSTEM_ADMIN_EMAIL = 'fdiaz@mercasend.net';
+
+const normalizeRole = (roleValue) => (roleValue || '').toString().trim().toLowerCase().replace(/[-\s]+/g, '_');
 
 export const AuthProvider = ({ children }) => {
     const [session, setSession] = useState(null);
@@ -222,7 +225,7 @@ export const AuthProvider = ({ children }) => {
 
             if (data) {
                 setUser(data);
-                setRole(data.role);
+                setRole(normalizeRole(data.role));
             }
         } catch (error) {
             console.error('Error fetching profile:', error);
@@ -240,17 +243,25 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
+    const normalizedRole = normalizeRole(
+        role ||
+        session?.user?.user_metadata?.rol ||
+        session?.user?.user_metadata?.role
+    );
+    const currentEmail = (session?.user?.email || '').toLowerCase();
+    const isSystemAdmin = currentEmail === SYSTEM_ADMIN_EMAIL;
+
     const value = {
         session,
         user,
-        role,
+        role: normalizedRole || role,
         malls,
         currentMall,
         loading,
         setCurrentMall: handleSetCurrentMall,
-        isAdmin: role === 'admin',
-        isTic: role === 'tic',
-        isAuditor: role === 'auditor',
+        isAdmin: isSystemAdmin || ['admin', 'superadmin', 'super_admin', 'administrador'].includes(normalizedRole),
+        isTic: ['tic', 'it'].includes(normalizedRole),
+        isAuditor: normalizedRole === 'auditor',
         signOut: () => supabase?.auth.signOut(),
         refreshMalls: () => session?.access_token && fetchUserMalls(session.access_token, session?.user?.id),
     };

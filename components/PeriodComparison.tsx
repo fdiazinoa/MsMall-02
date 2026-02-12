@@ -32,27 +32,114 @@ export const PeriodComparison: React.FC = () => {
     const { currentMall, session } = useAuth();
     const [loading, setLoading] = useState(true);
     const [data, setData] = useState<any>(null);
+    const [error, setError] = useState<string | null>(null);
     const [tipo, setTipo] = useState<'MoM' | 'YoY' | 'WoW'>('MoM');
+    const API_BASE = (import.meta.env.VITE_API_URL || '').trim();
+
+    const buildEmptyData = () => ({
+        mall_id: currentMall?.id || '',
+        timezone: '',
+        hoy_local: new Date().toISOString(),
+        periodo_actual: {
+            label: 'Periodo Actual',
+            inicio: '-',
+            fin: '-',
+            datos: [],
+            total_neto: 0,
+            total_bruto: 0,
+            transacciones: 0,
+            ticket_promedio: 0
+        },
+        periodo_anterior: {
+            label: 'Periodo Anterior',
+            inicio: '-',
+            fin: '-',
+            datos: [],
+            total_neto: 0,
+            total_bruto: 0,
+            transacciones: 0,
+            ticket_promedio: 0
+        },
+        variacion_neto_porc: 0,
+        tipo_comparativa: tipo
+    });
+
+    const getApiCandidates = () => {
+        const normalized = API_BASE
+            .replace(/\/+$/, '')
+            .replace(/\/api\/v1$/i, '')
+            .replace(/\/api$/i, '');
+        const out = [];
+        if (normalized) out.push(normalized);
+        out.push(''); // relative fallback via Vercel rewrite
+        return [...new Set(out)];
+    };
 
     const fetchData = async () => {
         if (!currentMall?.id || !session?.access_token) {
             setLoading(false);
-            setData(null);
+            setData(buildEmptyData());
+            setError("No hay sesión o mall seleccionado para calcular comparativas.");
             return;
         }
         setLoading(true);
+        setError(null);
         try {
-            // Manual fetch to use the new endpoint
-            const response = await fetch(`${(import.meta as any).env.VITE_API_URL || ''}/api/v1/comparisons/period-comparison?tipo=${tipo}`, {
-                headers: {
-                    'Authorization': `Bearer ${session.access_token}`,
-                    'X-Mall-Id': currentMall.id
+            let loaded = false;
+            let lastError = "No se pudo cargar la comparativa.";
+            for (const base of getApiCandidates()) {
+                const endpoint = `${base}/api/v1/comparisons/period-comparison?tipo=${tipo}`;
+                const response = await fetch(endpoint, {
+                    headers: {
+                        'Authorization': `Bearer ${session.access_token}`,
+                        'X-Mall-Id': currentMall.id,
+                        'Accept': 'application/json'
+                    },
+                    cache: 'no-store'
+                });
+
+                const raw = await response.text();
+                if (!response.ok) {
+                    try {
+                        const payload = JSON.parse(raw);
+                        lastError = payload.detail || `Error ${response.status}`;
+                    } catch {
+                        lastError = `Error ${response.status}`;
+                    }
+                    continue;
                 }
-            });
-            const result = await response.json();
-            setData(result);
+
+                if (!raw || raw.trim().startsWith('<')) {
+                    lastError = "El endpoint devolvió HTML en lugar de JSON.";
+                    continue;
+                }
+
+                let result: any = null;
+                try {
+                    result = JSON.parse(raw);
+                } catch {
+                    lastError = "Respuesta inválida del servidor (JSON malformado).";
+                    continue;
+                }
+
+                if (!result?.periodo_actual || !result?.periodo_anterior) {
+                    lastError = "El backend no devolvió estructura válida de comparativa.";
+                    continue;
+                }
+
+                setData(result);
+                loaded = true;
+                break;
+            }
+
+            if (!loaded) {
+                setData(buildEmptyData());
+                setError(lastError);
+            }
         } catch (error) {
             console.error("Error fetching comparison data:", error);
+            setData(buildEmptyData());
+            setError("No se pudo conectar con el backend de comparativas.");
         } finally {
             setLoading(false);
         }
@@ -150,6 +237,11 @@ export const PeriodComparison: React.FC = () => {
                     </button>
                 </div>
             </div>
+            {error && (
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm font-medium">
+                    {error}
+                </div>
+            )}
 
             {/* Hero Stats */}
             {data && (

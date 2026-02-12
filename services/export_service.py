@@ -226,12 +226,22 @@ class ExportService:
 
         sales = []
         if local_ids:
-            sales_query = self.supabase.table("ventas").select("*").gte("fecha", fecha_inicio).lte("fecha", fecha_fin)
-            if local_id:
-                sales_query = sales_query.eq("local_id", local_id)
-            else:
-                sales_query = sales_query.in_("local_id", local_ids)
-            sales = sales_query.execute().data
+            page_size = 1000
+            page = 0
+            while True:
+                sales_query = self.supabase.table("ventas").select("*").gte("fecha", fecha_inicio).lte("fecha", fecha_fin)
+                if local_id:
+                    sales_query = sales_query.eq("local_id", local_id)
+                else:
+                    sales_query = sales_query.in_("local_id", local_ids)
+                res = sales_query.order("fecha").range(page * page_size, (page + 1) * page_size - 1).execute()
+                chunk = res.data or []
+                if not chunk:
+                    break
+                sales.extend(chunk)
+                if len(chunk) < page_size:
+                    break
+                page += 1
         
         wb = Workbook()
         ws = wb.active

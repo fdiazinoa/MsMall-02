@@ -121,6 +121,17 @@ export const SalesCube: React.FC = () => {
         return format(val);
     };
 
+    const totalPeriodo = (() => {
+        if (!cubeData?.grand_totals) return 0;
+        if (typeof cubeData.grand_totals.TOTAL_FILA === 'number') {
+            return cubeData.grand_totals.TOTAL_FILA;
+        }
+        return Object.entries(cubeData.grand_totals).reduce((acc: number, [key, value]: [string, any]) => {
+            if (key === 'TOTAL_FILA') return acc;
+            return acc + (typeof value === 'number' ? value : 0);
+        }, 0);
+    })();
+
     return (
         <div className="space-y-6 animate-in fade-in duration-500">
             {/* Control Bar */}
@@ -233,7 +244,7 @@ export const SalesCube: React.FC = () => {
                         <div className="flex gap-4 text-sm">
                             <div className="flex flex-col items-end">
                                 <span className="text-slate-400 text-xs uppercase font-bold">Total Periodo</span>
-                                <span className="font-bold text-slate-800 text-lg">{formatValue(Object.values(cubeData.grand_totals).reduce((a: any, b: any) => a + (typeof b === 'number' ? b : 0), 0) as number)}</span>
+                                <span className="font-bold text-slate-800 text-lg">{formatValue(totalPeriodo as number)}</span>
                             </div>
                         </div>
                     </div>

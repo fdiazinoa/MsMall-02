@@ -1785,13 +1785,28 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         # Note: Using service role key bypasses RLS
         # Important: filter by local_id list (derived from mall) instead of ventas.mall_id,
         # because some legacy rows may have null/incorrect mall_id while local_id is valid.
-        sales_res = supabase.table("ventas")\
-            .select("local_id, fecha, total_bruto, total_neto, id")\
-            .in_("local_id", allowed_local_ids)\
-            .gte("fecha", request.fecha_inicio)\
-            .lte("fecha", request.fecha_fin)\
-            .execute()
-        sales_data = sales_res.data or []
+        # Supabase select has page limits; fetch all rows in batches.
+        sales_data = []
+        page_size = 1000
+        page = 0
+        while True:
+            sales_res = (
+                supabase.table("ventas")
+                .select("local_id, fecha, total_bruto, total_neto, id")
+                .in_("local_id", allowed_local_ids)
+                .gte("fecha", request.fecha_inicio)
+                .lte("fecha", request.fecha_fin)
+                .order("fecha")
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            chunk = sales_res.data or []
+            if not chunk:
+                break
+            sales_data.extend(chunk)
+            if len(chunk) < page_size:
+                break
+            page += 1
         
         if not sales_data:
             # Return empty structure if no sales found

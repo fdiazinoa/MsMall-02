@@ -345,25 +345,60 @@ export const ApiService = {
     sample_row: Record<string, any>,
     current_mapping: Record<string, string>
   }> {
-    try {
-      const response = await fetch(`${BASE_URL}/remote/analyze-file`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          config_id: config.id || '',
-          filename: filename,
-          config: config
-        })
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: "Error analizando archivo" }));
-        throw new Error(errorData.detail || "Error analizando archivo");
+    const payload = {
+      config_id: config.id || '',
+      filename,
+      config
+    };
+
+    const maxAttempts = 2;
+    let lastError: any = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000);
+
+      try {
+        const response = await fetch(`${BASE_URL}/remote/analyze-file`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ detail: "Error analizando archivo" }));
+          throw new Error(errorData.detail || "Error analizando archivo");
+        }
+
+        return await response.json();
+      } catch (error: any) {
+        clearTimeout(timeoutId);
+        lastError = error;
+        console.error(`Error in analyzeSingleFile (attempt ${attempt}/${maxAttempts}):`, error);
+
+        const msg = String(error?.message || error || '');
+        const isTimeout = error?.name === 'AbortError' || msg.toLowerCase().includes('aborted');
+        const isNetworkFailure = msg.includes('Failed to fetch') || msg.includes('ERR_NETWORK_CHANGED');
+
+        if (attempt < maxAttempts && isNetworkFailure) {
+          await new Promise(resolve => setTimeout(resolve, 1200 * attempt));
+          continue;
+        }
+
+        if (isTimeout) {
+          throw new Error("Timeout analizando archivo remoto. Intenta nuevamente.");
+        }
+        if (isNetworkFailure) {
+          throw new Error("No se pudo contactar el servicio de análisis remoto (Failed to fetch). Verifica red/VPN e intenta de nuevo.");
+        }
+        throw new Error(msg || "Error analizando archivo");
       }
-      return await response.json();
-    } catch (error: any) {
-      console.error("Error in analyzeSingleFile:", error);
-      throw error.message || error;
     }
+
+    throw new Error(lastError?.message || "Error analizando archivo");
   },
 
   async executeManualImport(config: ImportConfig, filename: string): Promise<{ status: string, message: string, errors?: any[], records_processed?: number }> {

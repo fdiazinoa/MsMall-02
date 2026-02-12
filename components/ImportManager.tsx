@@ -200,6 +200,11 @@ export const ImportManager: React.FC = () => {
     await refreshFileList(id);
   };
 
+  const hasRequiredMapping = (config: ImportConfig) => {
+    const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
+    return requiredFields.every(field => Boolean(config.mapping?.[field] || config.constants?.[field]));
+  };
+
   const handleExecuteManualFile = async (filename: string) => {
     if (!activeConfigId) return;
     const config = configs.find(c => c.id === activeConfigId);
@@ -212,36 +217,37 @@ export const ImportManager: React.FC = () => {
     setProgressRecords(0);
 
     try {
-      // Step 1: Analyze file structure
-      console.log("Analizando estructura del archivo:", filename);
-      setProgressStep('processing');
-      setProgressMessage(`Analizando estructura del archivo...`);
+      // Step 1: Analyze file structure only when required mapping is missing.
+      if (!hasRequiredMapping(config)) {
+        console.log("Analizando estructura del archivo:", filename);
+        setProgressStep('processing');
+        setProgressMessage(`Analizando estructura del archivo...`);
 
-      const analysis = await ApiService.analyzeSingleFile(config, filename);
+        const analysis = await ApiService.analyzeSingleFile(config, filename);
+        const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
+        const currentMapping = analysis.current_mapping || {};
+        const missingFields = requiredFields.filter(f => !currentMapping[f]);
 
-      // Step 2: Check if mapping is complete
-      const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
-      const currentMapping = analysis.current_mapping || {};
-      const missingFields = requiredFields.filter(f => !currentMapping[f]);
-
-      if (missingFields.length > 0 || (analysis.csv_headers || []).length === 0) {
-        // Show mapping modal and close manual modal
-        console.log("Mapeo incompleto o sin headers, mostrando modal");
-        setShowProgressModal(false);
-        setMappingData({
-          fileHeaders: analysis.csv_headers,
-          suggestedMapping: analysis.suggested_mapping,
-          currentMapping: analysis.current_mapping,
-          sampleRow: analysis.sample_row,
-          filename: filename
-        });
-        setShowManualModal(false); // Close the manual files modal
-        setShowMappingModal(true);
-        setExecutingFile(null);
-        return;
+        if (missingFields.length > 0 || (analysis.csv_headers || []).length === 0) {
+          console.log("Mapeo incompleto o sin headers, mostrando modal");
+          setShowProgressModal(false);
+          setMappingData({
+            fileHeaders: analysis.csv_headers,
+            suggestedMapping: analysis.suggested_mapping,
+            currentMapping: analysis.current_mapping,
+            sampleRow: analysis.sample_row,
+            filename: filename
+          });
+          setShowManualModal(false); // Close the manual files modal
+          setShowMappingModal(true);
+          setExecutingFile(null);
+          return;
+        }
+      } else {
+        console.log("Mapeo requerido detectado, omitiendo análisis remoto previo");
       }
 
-      // Step 3: If mapping is OK, process directly
+      // Step 2: If mapping is OK, process directly
       console.log("Mapeo completo, procesando directamente");
       setProgressStep('inserting');
       setProgressMessage(`Procesando e insertando registros en la base de datos...`);

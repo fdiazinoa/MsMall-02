@@ -775,20 +775,65 @@ from concurrent.futures import ThreadPoolExecutor
 
 executor = ThreadPoolExecutor(max_workers=20) # Aumentado de 5 a 20 para evitar agotamiento
 
+def _normalize_remote_host(host: str) -> str:
+    """
+    Normalize host values entered from UI:
+    - trims whitespace
+    - strips protocol prefixes
+    - strips trailing path fragments
+    """
+    normalized = (host or "").strip()
+    if normalized.startswith("sftp://"):
+        normalized = normalized[len("sftp://"):]
+    elif normalized.startswith("ftp://"):
+        normalized = normalized[len("ftp://"):]
+    if "/" in normalized:
+        normalized = normalized.split("/", 1)[0]
+    return normalized
+
+def _candidate_hosts(host: str) -> List[str]:
+    normalized = _normalize_remote_host(host)
+    if not normalized:
+        return []
+    candidates = [normalized]
+    if normalized.startswith("www.") and len(normalized) > 4:
+        candidates.append(normalized[4:])
+    return candidates
+
 def get_sftp_client(host, port, user, password):
-    # Usar Transport directamente como en el script de diagnóstico que funcionó
-    transport = paramiko.Transport((host, int(port)))
-    transport.connect(username=user, password=password)
-    transport.set_keepalive(30)
-    sftp = paramiko.SFTPClient.from_transport(transport)
-    return transport, sftp
+    last_error = None
+    for candidate in _candidate_hosts(host):
+        try:
+            transport = paramiko.Transport((candidate, int(port)))
+            transport.banner_timeout = 20
+            transport.auth_timeout = 25
+            transport.connect(username=user, password=password)
+            transport.set_keepalive(30)
+            sftp = paramiko.SFTPClient.from_transport(transport)
+            return transport, sftp
+        except Exception as e:
+            last_error = e
+            logger.warning(f"SFTP connect failed for host '{candidate}': {e}")
+
+    if last_error:
+        raise last_error
+    raise ValueError("Host remoto inválido o vacío para conexión SFTP")
 
 def get_ftp_client(host, port, user, password):
-    ftp = FTP()
-    ftp.connect(host, port, timeout=25)
-    ftp.login(user, password)
-    ftp.set_pasv(True)
-    return ftp
+    last_error = None
+    for candidate in _candidate_hosts(host):
+        try:
+            ftp = FTP()
+            ftp.connect(candidate, int(port), timeout=25)
+            ftp.login(user, password)
+            ftp.set_pasv(True)
+            return ftp
+        except Exception as e:
+            last_error = e
+            logger.warning(f"FTP connect failed for host '{candidate}': {e}")
+    if last_error:
+        raise last_error
+    raise ValueError("Host remoto inválido o vacío para conexión FTP")
 
 def _test_remote_connection_sync(req: RemoteRequest):
     logger.info(f"Probando conexión remota sync a {req.host}:{req.puerto} ({req.protocolo})")
@@ -1435,6 +1480,12 @@ async def analyze_remote_mapping(req: RemoteRequest):
             if req.protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
                 try:
+                    target_path = req.ruta
+                    # If route points to directory, fail with deterministic message.
+                    st = sftp.stat(target_path)
+                    if stat.S_ISDIR(st.st_mode):
+                        raise FileNotFoundError(f"La ruta '{target_path}' es un directorio. Seleccione un archivo.")
+                    with sftp.open(target_path, 'r') as f:
                         if is_json:
                             # Use utf-8-sig to handle BOM
                             return f.read().decode('utf-8-sig', errors='replace')
@@ -1447,12 +1498,13 @@ async def analyze_remote_mapping(req: RemoteRequest):
                 ftp = get_ftp_client(req.host, req.puerto, req.usuario, req.password)
                 try:
                     bio = io.BytesIO()
-                    ftp.retrbinary(f"RETR {req.ruta.split('/')[-1]}", bio.write)
+                    remote_name = req.ruta.split('/')[-1]
+                    ftp.retrbinary(f"RETR {remote_name}", bio.write)
                     bio.seek(0)
                     if is_json:
-                         return bio.read().decode('utf-8', errors='replace')
+                         return bio.read().decode('utf-8-sig', errors='replace')
                     else:
-                         return bio.read(read_size).decode('utf-8', errors='replace')
+                         return bio.read(read_size).decode('utf-8-sig', errors='replace')
                 finally:
                     ftp.quit()
             return ""
@@ -1942,7 +1994,7 @@ async def analyze_remote_file(req: ExecuteManualRequest):
 
         content = await asyncio.wait_for(
             loop.run_in_executor(executor, _read_file_sample),
-            timeout=45.0
+            timeout=120.0
         )
         
         if not content:

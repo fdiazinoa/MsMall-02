@@ -39,6 +39,11 @@ const isNetworkFetchFailure = (error: any): boolean => {
   );
 };
 
+const withAuthHeaders = (token?: string, headers: Record<string, string> = {}): Record<string, string> => {
+  if (!token) return headers;
+  return { ...headers, Authorization: `Bearer ${token}` };
+};
+
 export interface Store {
   id: string;
   mall_id: string;
@@ -212,7 +217,7 @@ export const ApiService = {
     };
   },
 
-  async testConnection(config: Partial<ImportConfig>, password?: string): Promise<{ success: boolean, message: string }> {
+  async testConnection(config: Partial<ImportConfig>, password?: string, token?: string): Promise<{ success: boolean, message: string }> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       console.warn("ApiService: Disparando abort por timeout de 60s");
@@ -223,7 +228,7 @@ export const ApiService = {
     try {
       const response = await fetch(`${BASE_URL}/remote/test`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           protocolo: config.protocolo,
           host: config.host?.trim(),
@@ -258,13 +263,13 @@ export const ApiService = {
     }
   },
 
-  async exploreDirectory(path: string, protocol?: string, host?: string, port?: number, user?: string, password?: string): Promise<{ ruta_actual: string, items: { nombre: string, ruta: string, es_dir: boolean }[] }> {
+  async exploreDirectory(path: string, protocol?: string, host?: string, port?: number, user?: string, password?: string, token?: string): Promise<{ ruta_actual: string, items: { nombre: string, ruta: string, es_dir: boolean }[] }> {
     try {
       let response;
       if (protocol && protocol !== 'LOCAL') {
         response = await fetch(`${BASE_URL}/remote/list`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             protocolo: protocol,
             host: host?.trim(),
@@ -275,7 +280,9 @@ export const ApiService = {
           })
         });
       } else {
-        response = await fetch(`${BASE_URL}/explorar-directorio?ruta=${encodeURIComponent(path)}`);
+        response = await fetch(`${BASE_URL}/explorar-directorio?ruta=${encodeURIComponent(path)}`, {
+          headers: withAuthHeaders(token)
+        });
       }
 
       if (!response.ok) {
@@ -289,11 +296,11 @@ export const ApiService = {
     }
   },
 
-  async readRemoteHeaders(config: ImportConfig, password?: string): Promise<string[]> {
+  async readRemoteHeaders(config: ImportConfig, password?: string, token?: string): Promise<string[]> {
     try {
       const response = await fetch(`${BASE_URL}/remote/headers`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           protocolo: config.protocolo,
           host: config.host?.trim(),
@@ -317,11 +324,11 @@ export const ApiService = {
     }
   },
 
-  async analyzeRemoteMapping(config: Partial<ImportConfig>, password?: string, testFile?: string): Promise<any> {
+  async analyzeRemoteMapping(config: Partial<ImportConfig>, password?: string, testFile?: string, token?: string): Promise<any> {
     try {
       const response = await fetch(`${BASE_URL}/mapping/analyze-remote`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           protocolo: config.protocolo,
           host: config.host?.trim(),
@@ -343,11 +350,11 @@ export const ApiService = {
     }
   },
 
-  async listRemoteFiles(config: ImportConfig): Promise<{ nombre: string, fecha: string, tamano: number }[]> {
+  async listRemoteFiles(config: ImportConfig, token?: string): Promise<{ nombre: string, fecha: string, tamano: number }[]> {
     try {
       const response = await fetch(`${BASE_URL}/remote/list-files`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
         body: JSON.stringify(config)
       });
       if (!response.ok) {
@@ -361,7 +368,7 @@ export const ApiService = {
     }
   },
 
-  async analyzeSingleFile(config: ImportConfig, filename: string): Promise<{
+  async analyzeSingleFile(config: ImportConfig, filename: string, token?: string): Promise<{
     csv_headers: string[],
     suggested_mapping: Record<string, any>,
     sample_row: Record<string, any>,
@@ -383,7 +390,7 @@ export const ApiService = {
       try {
         const response = await fetch(`${BASE_URL}/remote/analyze-file`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload),
           signal: controller.signal
         });
@@ -423,7 +430,7 @@ export const ApiService = {
     throw new Error(lastError?.message || "Error analizando archivo");
   },
 
-  async executeManualImport(config: ImportConfig, filename: string): Promise<{ status: string, message: string, errors?: any[], records_processed?: number }> {
+  async executeManualImport(config: ImportConfig, filename: string, token?: string): Promise<{ status: string, message: string, errors?: any[], records_processed?: number }> {
     const requestId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
       ? crypto.randomUUID()
       : `req-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
@@ -446,7 +453,7 @@ export const ApiService = {
       try {
         const response = await fetch(`${baseUrl}/remote/execute-manual`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload),
           signal: controller.signal
         });
@@ -491,11 +498,11 @@ export const ApiService = {
     throw new Error(lastError?.message || "Error ejecutando importación");
   },
 
-  async unmarkFile(config: ImportConfig, filename: string): Promise<{ status: string, message: string, old_name?: string, new_name?: string }> {
+  async unmarkFile(config: ImportConfig, filename: string, token?: string): Promise<{ status: string, message: string, old_name?: string, new_name?: string }> {
     try {
       const response = await fetch(`${BASE_URL}/remote/unmark-file`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           config_id: config.id,
           filename,

@@ -9,7 +9,8 @@ import {
 import { SalesPurge } from './SalesPurge';
 
 export const StoreMaintenance: React.FC = () => {
-  const { currentMall } = useAuth();
+  const { currentMall, isAdmin, isTic } = useAuth();
+  const canManageStores = isAdmin || isTic;
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -94,6 +95,14 @@ export const StoreMaintenance: React.FC = () => {
   useEffect(() => {
     loadStores();
   }, [currentMall]);
+
+  if (!canManageStores) {
+    return (
+      <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm font-medium">
+        Solo usuarios con rol IT o ADMIN pueden gestionar locales.
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">

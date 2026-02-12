@@ -24,7 +24,9 @@ const STANDARD_FIELDS = [
 ];
 
 export const ImportManager: React.FC = () => {
-  const { currentMall } = useAuth();
+  const { currentMall, isAdmin, isTic, session } = useAuth();
+  const canManageImports = isAdmin || isTic;
+  const authToken = session?.access_token || '';
   const [configs, setConfigs] = useState<ImportConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncingId, setSyncingId] = useState<string | null>(null);
@@ -121,7 +123,7 @@ export const ImportManager: React.FC = () => {
     console.log("Iniciando prueba de conexión...");
     setTestingConnection(true);
     try {
-      const result = await ApiService.testConnection(editingConfig, tempPassword);
+      const result = await ApiService.testConnection(editingConfig, tempPassword, authToken);
       console.log("Resultado prueba recibida:", result);
       alert(result.message);
     } catch (error: any) {
@@ -178,7 +180,7 @@ export const ImportManager: React.FC = () => {
 
     setManualLoading(true);
     try {
-      const files = await ApiService.listRemoteFiles(config);
+      const files = await ApiService.listRemoteFiles(config, authToken);
       setManualFiles(files);
     } catch (error: any) {
       console.error(error);
@@ -245,7 +247,7 @@ export const ImportManager: React.FC = () => {
         setProgressStep('processing');
         setProgressMessage(`Analizando estructura del archivo...`);
 
-        const analysis = await ApiService.analyzeSingleFile(config, filename);
+        const analysis = await ApiService.analyzeSingleFile(config, filename, authToken);
         const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
         const currentMapping = analysis.current_mapping || {};
         const missingFields = requiredFields.filter(f => !currentMapping[f]);
@@ -274,7 +276,7 @@ export const ImportManager: React.FC = () => {
       setProgressStep('inserting');
       setProgressMessage(`Procesando e insertando registros en la base de datos...`);
 
-      const result = await ApiService.executeManualImport(config, filename);
+      const result = await ApiService.executeManualImport(config, filename, authToken);
 
       setProgressRecords(result.records_processed || 0);
 
@@ -303,7 +305,7 @@ export const ImportManager: React.FC = () => {
         errorMsg.includes('No se pudo confirmar la importación')
       ) {
         try {
-          const latestFiles = await ApiService.listRemoteFiles(config);
+          const latestFiles = await ApiService.listRemoteFiles(config, authToken);
           const renamedExists = latestFiles.some(f => f.nombre === `PR_${filename}`);
           const originalExists = latestFiles.some(f => f.nombre === filename);
 
@@ -378,7 +380,7 @@ export const ImportManager: React.FC = () => {
       setProgressMessage('Procesando e insertando registros en la base de datos...');
 
       // Execute import with updated mapping
-      const result = await ApiService.executeManualImport(updatedConfig, mappingData.filename);
+      const result = await ApiService.executeManualImport(updatedConfig, mappingData.filename, authToken);
 
       setProgressRecords(result.records_processed || 0);
 
@@ -430,11 +432,11 @@ export const ImportManager: React.FC = () => {
 
     setUnmarkingFile(filename);
     try {
-      const result = await ApiService.unmarkFile(config, filename);
+      const result = await ApiService.unmarkFile(config, filename, authToken);
       alert(result.message || 'Archivo desmarcado correctamente');
 
       // Refresh file list
-      const files = await ApiService.listRemoteFiles(config);
+      const files = await ApiService.listRemoteFiles(config, authToken);
       setManualFiles(files);
 
       // Clear status for the old filename
@@ -469,7 +471,8 @@ export const ImportManager: React.FC = () => {
         editingConfig.host,
         editingConfig.puerto,
         editingConfig.usuario,
-        tempPassword
+        tempPassword,
+        authToken
       );
       console.log("Explorer data received:", data);
       setExplorerPath(data.ruta_actual);
@@ -491,7 +494,8 @@ export const ImportManager: React.FC = () => {
         editingConfig.host,
         editingConfig.puerto,
         editingConfig.usuario,
-        tempPassword
+        tempPassword,
+        authToken
       );
       setExplorerPath(data.ruta_actual);
       setExplorerItems(data.items);
@@ -507,6 +511,14 @@ export const ImportManager: React.FC = () => {
     setEditingConfig({ ...editingConfig, ruta_remota: path });
     setShowExplorer(false);
   };
+
+  if (!canManageImports) {
+    return (
+      <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm font-medium">
+        Solo usuarios con rol IT o ADMIN pueden gestionar conexiones e importaciones remotas.
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -839,7 +851,7 @@ export const ImportManager: React.FC = () => {
                                       const newConfig = { ...editingConfig, ruta_remota: item.ruta, tipo_archivo: detectedType };
                                       setEditingConfig(newConfig);
 
-                                      ApiService.analyzeRemoteMapping(newConfig, tempPassword, item.ruta)
+                                      ApiService.analyzeRemoteMapping(newConfig, tempPassword, item.ruta, authToken)
                                         .then(result => {
                                           setRemoteHeaders(result.csv_headers || []);
 
@@ -895,7 +907,7 @@ export const ImportManager: React.FC = () => {
                                           const newConfig = { ...editingConfig, ruta_remota: item.ruta, tipo_archivo: detectedType };
                                           setEditingConfig(newConfig);
 
-                                          ApiService.analyzeRemoteMapping(newConfig, tempPassword, item.ruta)
+                                          ApiService.analyzeRemoteMapping(newConfig, tempPassword, item.ruta, authToken)
                                             .then(result => {
                                               setRemoteHeaders(result.csv_headers || []);
                                               const newMapping: Record<string, string> = { ...editingConfig.mapping };

@@ -10,7 +10,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 router = APIRouter(prefix="/api/v1/admin", tags=["Admin Tools"])
 logger = logging.getLogger("msmall-api")
-PRIVILEGED_ROLES = {"ADMIN", "TIC", "SUPERADMIN", "SUPER_ADMIN", "ADMINISTRADOR"}
+PRIVILEGED_ROLES = {"ADMIN", "IT", "TIC", "SUPERADMIN", "SUPER_ADMIN", "ADMINISTRADOR"}
 
 # Supabase Client setup
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -113,7 +113,7 @@ async def purge_sales_refined(
     # 1. Check Role
     is_admin = await check_admin_access(user_id, x_mall_id)
     if not is_admin:
-        raise HTTPException(status_code=403, detail="Insufficient permissions. Admin or TIC role required.")
+        raise HTTPException(status_code=403, detail="Insufficient permissions. Admin o IT/TIC role required.")
 
     # 2. Check Security Code
     if request.confirmacion != "BORRAR":

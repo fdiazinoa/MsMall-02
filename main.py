@@ -285,7 +285,7 @@ async def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depend
         logger.error(f"Auth error: {e}")
         raise HTTPException(status_code=401, detail="Authentication failed")
 
-async def require_admin_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+async def _get_access_context(user_id: str) -> Dict[str, Any]:
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado")
 
@@ -318,10 +318,19 @@ async def require_admin_access(user_id: str = Depends(get_current_user_id)) -> D
         logger.warning(f"No se pudo cargar roles de usuarios_malls para {user_id}: {e}")
 
     effective_role = _resolve_effective_role(email, [profile_role, metadata_role, *mall_roles])
-    if effective_role != "admin":
-        raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere rol ADMIN.")
-
     return {"user_id": user_id, "email": email, "role": effective_role}
+
+async def require_admin_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    access_ctx = await _get_access_context(user_id)
+    if access_ctx["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere rol ADMIN.")
+    return access_ctx
+
+async def require_it_or_admin_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    access_ctx = await _get_access_context(user_id)
+    if access_ctx["role"] not in {"admin", "it"}:
+        raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere rol IT o ADMIN.")
+    return access_ctx
 
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
@@ -770,7 +779,7 @@ async def root():
 @app.post("/api/v1/ingesta", response_model=IngestionResponse, status_code=status.HTTP_201_CREATED)
 async def ingesta_ventas(
     file: UploadFile = File(...), 
-    user_id: str = Depends(get_current_user_id),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
     mall_id: str = Depends(get_current_mall)
 ):
     """
@@ -822,7 +831,10 @@ async def ingesta_ventas(
 
 # --- EXPLORACIÓN DE DIRECTORIOS LOCALES ---
 @app.get("/api/v1/explorar-directorio")
-async def explorar_directorio(path: str = Query("/", alias="ruta")):
+async def explorar_directorio(
+    path: str = Query("/", alias="ruta"),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
     """
     Endpoint para listar directorios locales. 
     Permite al usuario navegar por carpetas para configurar la importación.
@@ -856,7 +868,7 @@ async def explorar_directorio(path: str = Query("/", alias="ruta")):
             "items": sorted(items, key=lambda x: x["nombre"].lower())
         }
     except Exception as e:
-        logger.error(f"Error explorando directorio {req.ruta}: {str(e)}")
+        logger.error(f"Error explorando directorio {path}: {str(e)}")
         # Return real error for debugging
         raise HTTPException(status_code=500, detail=f"Error remoto: {str(e)}")
 
@@ -946,7 +958,10 @@ def _test_remote_connection_sync(req: RemoteRequest):
         return {"status": "error", "message": f"Error ({duration:.2f}s): {str(e)}"}
 
 @app.post("/api/v1/remote/test")
-async def test_remote_connection(req: RemoteRequest):
+async def test_remote_connection(
+    req: RemoteRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
     loop = asyncio.get_event_loop()
     try:
         # Timeout de 30s para no bloquear el worker de FastAPI indefinidamente
@@ -1028,7 +1043,10 @@ def _list_remote_files_sync(req: RemoteRequest):
         raise e
 
 @app.post("/api/v1/remote/list")
-async def list_remote_files(req: RemoteRequest):
+async def list_remote_files(
+    req: RemoteRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
     try:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(executor, _list_remote_files_sync, req)
@@ -1117,7 +1135,10 @@ def _read_remote_headers_sync(req: RemoteRequest):
     return {"headers": headers}
 
 @app.post("/api/v1/remote/headers")
-async def read_remote_headers(req: RemoteRequest):
+async def read_remote_headers(
+    req: RemoteRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
     try:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(executor, _read_remote_headers_sync, req)
@@ -1555,7 +1576,10 @@ async def analyze_mapping(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/mapping/analyze-remote")
-async def analyze_remote_mapping(req: RemoteRequest):
+async def analyze_remote_mapping(
+    req: RemoteRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
     """
     Connects to SFTP/FTP, reads a sample of the file, and returns mapping suggestions.
     """
@@ -1706,7 +1730,10 @@ def _list_remote_files(config: Dict[str, Any]):
     return sorted(files, key=lambda x: x["fecha"], reverse=True)
 
 @app.post("/api/v1/remote/list-files")
-async def list_files_endpoint(config: ImportConfigSchema):
+async def list_files_endpoint(
+    config: ImportConfigSchema,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
     try:
         logger.info(f"Recibida solucitud de listado para: {config.host}:{config.puerto} (Protocolo: {config.protocolo})")
         config_dict = config.dict()
@@ -1733,7 +1760,10 @@ async def list_files_endpoint(config: ImportConfigSchema):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/remote/execute-manual")
-async def execute_manual_endpoint(req: ExecuteManualRequest):
+async def execute_manual_endpoint(
+    req: ExecuteManualRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
     logger.info(f"Ejecutando manual para {req.config_id} - Archivo: {req.filename}")
     batch_id = str(uuid4())
     request_id = (req.request_id or "").strip() if req.request_id else None
@@ -2022,7 +2052,10 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
 
 
 @app.post("/api/v1/remote/analyze-file")
-async def analyze_remote_file(req: ExecuteManualRequest):
+async def analyze_remote_file(
+    req: ExecuteManualRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
     """
     Analyzes a specific file from the remote server for mapping suggestions.
     Similar to analyze_remote_mapping but uses config+filename instead of direct path.
@@ -2134,7 +2167,10 @@ async def analyze_remote_file(req: ExecuteManualRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/remote/unmark-file")
-async def unmark_file(req: ExecuteManualRequest):
+async def unmark_file(
+    req: ExecuteManualRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
     """
     Removes the 'PR_' prefix from a processed file to allow reprocessing.
     Renames 'PR_filename.ext' back to 'filename.ext'
@@ -2239,7 +2275,7 @@ async def unmark_file(req: ExecuteManualRequest):
 
 
 @app.delete("/api/v1/admin/reset-sales")
-async def reset_sales():
+async def reset_sales(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     """Wipes all sales data to reset testing environment."""
     if not supabase:
          raise HTTPException(status_code=500, detail="Supabase client not initialized")

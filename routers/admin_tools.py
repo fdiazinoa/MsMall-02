@@ -10,6 +10,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 router = APIRouter(prefix="/api/v1/admin", tags=["Admin Tools"])
 logger = logging.getLogger("msmall-api")
+PRIVILEGED_ROLES = {"ADMIN", "TIC", "SUPERADMIN", "SUPER_ADMIN", "ADMINISTRADOR"}
 
 # Supabase Client setup
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -52,27 +53,42 @@ class PurgeRequest(BaseModel):
     fecha_fin: Optional[str] = None
     confirmacion: str
 
+def normalize_role(role: Optional[str]) -> str:
+    return (role or "").strip().upper().replace(" ", "_").replace("-", "_")
+
+def has_privileged_role(role: Optional[str]) -> bool:
+    return normalize_role(role) in PRIVILEGED_ROLES
+
 async def check_admin_access(user_id: str, mall_id: str):
     """
-    Checks if the user has ADMIN or TIC role for the specific mall.
+    Checks if the user has privileged role either:
+    - explicitly for the current mall (usuarios_malls), or
+    - globally in profiles.role (fallback).
     """
     try:
         db = get_supabase()
-        print(f"🕵️ checking admin access for user: {user_id}, mall: {mall_id}")
+        logger.info(f"Checking privileged access for user={user_id}, mall={mall_id}")
         res = db.table("usuarios_malls") \
             .select("rol") \
             .eq("usuario_id", user_id) \
             .eq("mall_id", mall_id) \
             .execute()
-        
-        if not res.data:
-            print("❌ No role found for user in this mall local database.")
-            return False
 
-        role = (res.data[0].get('rol') or '').strip().upper()
-        print(f"✅ User Role Found: {role}")
+        rows = res.data or []
+        if any(has_privileged_role(r.get("rol")) for r in rows):
+            return True
 
-        return role in ['ADMIN', 'TIC']
+        # Fallback: global role in profiles (legacy setups often keep authority there).
+        try:
+            profile = db.table("profiles").select("role").eq("id", user_id).maybe_single().execute()
+            global_role = (profile.data or {}).get("role") if profile else None
+            if has_privileged_role(global_role):
+                return True
+        except Exception as profile_err:
+            logger.warning(f"Could not verify global profile role for user={user_id}: {profile_err}")
+
+        logger.warning(f"Access denied for user={user_id} in mall={mall_id}. Roles found: {[r.get('rol') for r in rows]}")
+        return False
     except HTTPException:
         raise
     except Exception as e:

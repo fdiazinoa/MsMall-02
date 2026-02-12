@@ -205,6 +205,28 @@ export const ImportManager: React.FC = () => {
     return requiredFields.every(field => Boolean(config.mapping?.[field] || config.constants?.[field]));
   };
 
+  const resolveProcessedCountFromLogs = async (config: ImportConfig, filename: string): Promise<number | null> => {
+    try {
+      const logs = await ApiService.getLoadLogs(currentMall?.id);
+      const targetLog = (logs || []).find((log: any) =>
+        log?.archivo === filename &&
+        log?.local_nombre === config.nombre &&
+        (log?.estado === 'exito' || log?.estado === 'parcial')
+      );
+
+      if (!targetLog?.mensaje) return null;
+
+      const match = String(targetLog.mensaje).match(/(\d+)\s+registros/i);
+      if (!match) return null;
+
+      const parsed = Number(match[1]);
+      return Number.isFinite(parsed) ? parsed : null;
+    } catch (error) {
+      console.warn("No se pudo resolver contador desde logs:", error);
+      return null;
+    }
+  };
+
   const handleExecuteManualFile = async (filename: string) => {
     if (!activeConfigId) return;
     const config = configs.find(c => c.id === activeConfigId);
@@ -286,8 +308,16 @@ export const ImportManager: React.FC = () => {
           const originalExists = latestFiles.some(f => f.nombre === filename);
 
           if (renamedExists && !originalExists) {
+            const processedCount = await resolveProcessedCountFromLogs(config, filename);
+            if (processedCount && processedCount > 0) {
+              setProgressRecords(processedCount);
+            }
             setProgressStep('complete');
-            setProgressMessage('Conexión cambiada durante la confirmación, pero el archivo quedó procesado (renombrado con PR_).');
+            setProgressMessage(
+              processedCount && processedCount > 0
+                ? `Conexión cambiada durante la confirmación, pero el archivo se procesó correctamente (${processedCount} registros).`
+                : 'Conexión cambiada durante la confirmación, pero el archivo quedó procesado (renombrado con PR_).'
+            );
             setFileStatuses(prev => ({ ...prev, [filename]: 'success' }));
             setManualFiles(latestFiles);
             return;

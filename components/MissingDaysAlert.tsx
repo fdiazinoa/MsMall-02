@@ -76,13 +76,20 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                     endpoint = `${apiBase}${path}?${query.toString()}`;
                 }
 
-                const res = await fetch(endpoint, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'X-Mall-Id': currentMall.id,
-                        'Accept': 'application/json'
-                    }
-                });
+                const requestHeaders = {
+                    'Authorization': `Bearer ${token}`,
+                    'X-Mall-Id': currentMall.id,
+                    'Accept': 'application/json'
+                };
+
+                let res: Response;
+                try {
+                    res = await fetch(endpoint, { headers: requestHeaders });
+                } catch (firstError) {
+                    console.warn(`Gap analysis primary URL failed (${endpoint}), retrying with relative path`, firstError);
+                    const fallbackEndpoint = `/api/v1/auditoria/brechas-ventas?${query.toString()}`;
+                    res = await fetch(fallbackEndpoint, { headers: requestHeaders });
+                }
 
                 if (res.ok) {
                     const contentType = res.headers.get('content-type') || '';

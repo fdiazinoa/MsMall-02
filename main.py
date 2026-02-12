@@ -273,6 +273,79 @@ def _resolve_effective_role(email: Optional[str], role_candidates: List[Optional
         return "auditor"
     return "auditor"
 
+def _parse_auth_users_result(auth_users_result: Any) -> List[Any]:
+    if auth_users_result is None:
+        return []
+    if isinstance(auth_users_result, list):
+        return auth_users_result
+
+    users = getattr(auth_users_result, "users", None)
+    if isinstance(users, list):
+        return users
+
+    data = getattr(auth_users_result, "data", None)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        maybe_users = data.get("users")
+        if isinstance(maybe_users, list):
+            return maybe_users
+
+    if isinstance(auth_users_result, dict):
+        maybe_users = auth_users_result.get("users")
+        if isinstance(maybe_users, list):
+            return maybe_users
+        nested_data = auth_users_result.get("data")
+        if isinstance(nested_data, list):
+            return nested_data
+        if isinstance(nested_data, dict) and isinstance(nested_data.get("users"), list):
+            return nested_data.get("users")
+
+    return []
+
+def _list_all_auth_users(per_page: int = 100, max_pages: int = 50) -> List[Any]:
+    all_users: List[Any] = []
+
+    # Preferred path: paginated fetch to avoid silently missing older users.
+    try:
+        for page in range(1, max_pages + 1):
+            chunk = _parse_auth_users_result(
+                supabase.auth.admin.list_users(page=page, per_page=per_page)
+            )
+            if not chunk:
+                break
+            all_users.extend(chunk)
+            if len(chunk) < per_page:
+                break
+    except TypeError:
+        # Some client versions may not support pagination kwargs.
+        pass
+    except Exception as e:
+        logger.warning(f"Error paginando usuarios de auth: {e}")
+
+    if not all_users:
+        try:
+            all_users = _parse_auth_users_result(supabase.auth.admin.list_users())
+        except Exception as e:
+            logger.error(f"Error listando usuarios de auth: {e}")
+            return []
+
+    deduped: Dict[str, Any] = {}
+    for u in all_users:
+        uid = _user_field(u, "id")
+        if uid:
+            deduped[uid] = u
+    return list(deduped.values())
+
+def _find_auth_user_by_email(email: str) -> Optional[Any]:
+    target = (email or "").strip().lower()
+    if not target:
+        return None
+    for u in _list_all_auth_users():
+        if (_user_field(u, "email") or "").strip().lower() == target:
+            return u
+    return None
+
 async def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
@@ -2547,14 +2620,7 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_acce
     List all users and their assigned malls. Requires ADMIN role.
     """
     try:
-        auth_users_result = supabase.auth.admin.list_users()
-        auth_users = getattr(auth_users_result, "users", None)
-        if auth_users is None and isinstance(auth_users_result, dict):
-            auth_users = auth_users_result.get("users")
-            if auth_users is None and isinstance(auth_users_result.get("data"), dict):
-                auth_users = auth_users_result["data"].get("users")
-        if auth_users is None:
-            auth_users = []
+        auth_users = _list_all_auth_users()
 
         users_list = []
         for u in auth_users:
@@ -2617,23 +2683,43 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
         if role not in {"admin", "it", "auditor"}:
             raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
 
-        if len(payload.password or "") < 8:
-            raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres.")
-
         email = (payload.email or "").strip().lower()
         if not email:
             raise HTTPException(status_code=400, detail="Email requerido.")
 
-        created = supabase.auth.admin.create_user({
-            "email": email,
-            "password": payload.password,
-            "email_confirm": True,
-            "user_metadata": {"rol": role}
-        })
-        created_user = _extract_auth_user(created)
-        created_user_id = _user_field(created_user, "id")
+        existing_user = _find_auth_user_by_email(email)
+        created_user_id = None
+        user_previously_existed = existing_user is not None
+
+        if existing_user:
+            created_user_id = _user_field(existing_user, "id")
+            existing_meta = _user_field(existing_user, "user_metadata", {}) or {}
+            if not isinstance(existing_meta, dict):
+                existing_meta = {}
+            updated_meta = {**existing_meta, "rol": role, "role": role}
+            try:
+                supabase.auth.admin.update_user_by_id(created_user_id, {
+                    "user_metadata": updated_meta
+                })
+            except Exception as update_err:
+                logger.warning(f"No se pudo actualizar metadata de usuario existente {created_user_id}: {update_err}")
+        else:
+            if len(payload.password or "") < 8:
+                raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres.")
+
+            created = supabase.auth.admin.create_user({
+                "email": email,
+                "password": payload.password,
+                "email_confirm": True,
+                "user_metadata": {"rol": role, "role": role}
+            })
+            created_user = _extract_auth_user(created)
+            created_user_id = _user_field(created_user, "id")
+            if not created_user_id:
+                raise HTTPException(status_code=500, detail="No se pudo obtener el ID del usuario creado.")
+
         if not created_user_id:
-            raise HTTPException(status_code=500, detail="No se pudo obtener el ID del usuario creado.")
+            raise HTTPException(status_code=500, detail="No se pudo resolver el ID del usuario.")
 
         # Keep global role in profiles for frontend role checks.
         try:
@@ -2652,7 +2738,7 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
             "email": email,
             "rol": role,
             "mall_ids": payload.mall_ids,
-            "message": "Usuario creado correctamente"
+            "message": "Usuario ya existía; rol y asignaciones actualizados" if user_previously_existed else "Usuario creado correctamente"
         }
     except HTTPException:
         raise

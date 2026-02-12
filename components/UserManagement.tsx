@@ -90,10 +90,10 @@ export const UserManagement: React.FC = () => {
 
     setCreatingUser(true);
     try {
-      await ApiService.createUser(newEmail.trim(), newPassword, normalizeRole(newRole), newMallIds, session.access_token);
+      const result = await ApiService.createUser(newEmail.trim(), newPassword, normalizeRole(newRole), newMallIds, session.access_token);
       setCreateModalOpen(false);
       await loadUsers();
-      alert("Usuario creado correctamente.");
+      alert(result?.message || "Usuario procesado correctamente.");
     } catch (e: any) {
       alert(`Error creando usuario: ${e.message || e}`);
     } finally {

@@ -205,10 +205,6 @@ export const Header: React.FC = () => {
             </div>
           </div>
 
-          <span className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100 hidden md:flex">
-            <span className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse"></span>
-            MVP ACTIVO
-          </span>
           <span className="text-xs font-medium text-slate-400 hidden md:inline">v1.2.0</span>
         </div>
       </header>

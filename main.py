@@ -2891,6 +2891,29 @@ async def get_sales_gaps(
     current_mall: str = Depends(get_current_mall)
 ):
     try:
+        def _normalize_sales_date(raw_value: Any) -> Optional[str]:
+            """Normalize DB date/timestamp values to YYYY-MM-DD for day-level comparisons."""
+            if raw_value is None:
+                return None
+            if isinstance(raw_value, datetime):
+                return raw_value.strftime('%Y-%m-%d')
+
+            value = str(raw_value).strip()
+            if not value:
+                return None
+
+            # Fast path for ISO-like values: 2026-02-03 or 2026-02-03T...
+            if len(value) >= 10 and value[4] == '-' and value[7] == '-':
+                return value[:10]
+
+            try:
+                parsed = pd.to_datetime(value, errors='coerce')
+                if pd.isna(parsed):
+                    return None
+                return parsed.strftime('%Y-%m-%d')
+            except Exception:
+                return None
+
         # 1. Calendario Ideal
         start_date = datetime.strptime(fecha_inicio, '%Y-%m-%d')
         end_date = datetime.strptime(fecha_fin, '%Y-%m-%d')
@@ -2934,14 +2957,21 @@ async def get_sales_gaps(
                 .execute()
             
             sales_df = pd.DataFrame(sales_resp.data)
+            if not sales_df.empty:
+                sales_df['local_id_norm'] = sales_df['local_id'].astype(str)
+                sales_df['fecha_norm'] = sales_df['fecha'].apply(_normalize_sales_date)
             
             global_summary = []
             
             for store in stores:
-                sid = store['id']
+                sid = str(store['id'])
                 # Fechas reales para este local
                 if not sales_df.empty:
-                    s_actual = set(sales_df[sales_df['local_id'] == sid]['fecha'].unique())
+                    s_actual = set(
+                        sales_df[sales_df['local_id_norm'] == sid]['fecha_norm']
+                        .dropna()
+                        .unique()
+                    )
                 else:
                     s_actual = set()
                 
@@ -2976,7 +3006,11 @@ async def get_sales_gaps(
         # --- MODO INDIVIDUAL (Detailed View) ---
         # 2. Calendario Real (Individual)
         response = supabase.table('ventas').select('fecha').eq('local_id', local_id).gte('fecha', fecha_inicio).lte('fecha', fecha_fin).execute()
-        actual_dates = { row['fecha'] for row in response.data }
+        actual_dates = set()
+        for row in (response.data or []):
+            normalized_date = _normalize_sales_date(row.get('fecha'))
+            if normalized_date:
+                actual_dates.add(normalized_date)
         
         # 3. Brechas
         missing_dates = sorted(list(expected_dates - actual_dates))

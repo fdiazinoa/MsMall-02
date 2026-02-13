@@ -1,7 +1,7 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../context/AuthProvider';
-import { CreditCard, Zap, FileUp, Activity, LayoutDashboard, BarChart3, Users, Store as StoreIcon, Settings, LogOut, Grid } from 'lucide-react';
+import { CreditCard, BarChart3, Store as StoreIcon, Grid, KeyRound } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
@@ -9,10 +9,103 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
-  const { role, user, isAdmin, isTic, signOut } = useAuth();
+  const { role, user, isAdmin, isTic, signOut, changePassword } = useAuth();
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [savingPassword, setSavingPassword] = useState(false);
+
+  const resetPasswordModal = () => {
+    setShowPasswordModal(false);
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setSavingPassword(false);
+  };
+
+  const handlePasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      alert('Complete todos los campos.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      alert('La confirmación no coincide con la nueva contraseña.');
+      return;
+    }
+
+    setSavingPassword(true);
+    try {
+      await changePassword(currentPassword, newPassword);
+      alert('Contraseña actualizada correctamente.');
+      resetPasswordModal();
+    } catch (error: any) {
+      alert(error?.message || 'No se pudo cambiar la contraseña.');
+      setSavingPassword(false);
+    }
+  };
 
   return (
-    <aside className="w-64 bg-slate-900 text-white flex flex-col hidden md:flex h-screen sticky top-0">
+    <>
+      {showPasswordModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-6">
+            <h3 className="text-lg font-bold text-slate-800 mb-1">Cambiar Contraseña</h3>
+            <p className="text-sm text-slate-500 mb-4">Actualiza tu acceso de forma segura.</p>
+
+            <form onSubmit={handlePasswordChange} className="space-y-3">
+              <input
+                type="password"
+                placeholder="Contraseña actual"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-slate-800"
+                autoComplete="current-password"
+                required
+              />
+              <input
+                type="password"
+                placeholder="Nueva contraseña (mínimo 8)"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-slate-800"
+                autoComplete="new-password"
+                required
+              />
+              <input
+                type="password"
+                placeholder="Confirmar nueva contraseña"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-slate-800"
+                autoComplete="new-password"
+                required
+              />
+
+              <div className="pt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={resetPasswordModal}
+                  className="px-4 py-2 text-slate-600"
+                  disabled={savingPassword}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingPassword}
+                  className="px-4 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-50"
+                >
+                  {savingPassword ? 'Guardando...' : 'Guardar'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <aside className="w-64 bg-slate-900 text-white flex flex-col hidden md:flex h-screen sticky top-0">
       <div className="p-6 flex items-center gap-3">
         <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center font-bold shadow-lg shadow-indigo-500/20">M</div>
         <h1 className="text-xl font-bold tracking-tight">MSMALL</h1>
@@ -153,25 +246,34 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
         )}
       </nav>
 
-      <div className="p-6 border-t border-slate-800">
-        <div className="flex items-center gap-3 px-2 mb-4">
-          <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold ring-2 ring-indigo-500/20">
-            {user?.nombre_completo?.substring(0, 2).toUpperCase() || 'US'}
+        <div className="p-6 border-t border-slate-800">
+          <div className="flex items-center gap-3 px-2 mb-4">
+            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold ring-2 ring-indigo-500/20">
+              {user?.nombre_completo?.substring(0, 2).toUpperCase() || 'US'}
+            </div>
+            <div className="overflow-hidden">
+              <p className="text-sm font-medium truncate">{user?.nombre_completo || 'Usuario'}</p>
+              <p className="text-[10px] text-indigo-400 font-bold uppercase tracking-tighter">{role || 'Sin Rol'}</p>
+            </div>
           </div>
-          <div className="overflow-hidden">
-            <p className="text-sm font-medium truncate">{user?.nombre_completo || 'Usuario'}</p>
-            <p className="text-[10px] text-indigo-400 font-bold uppercase tracking-tighter">{role || 'Sin Rol'}</p>
-          </div>
-        </div>
 
-        <button
-          onClick={signOut}
-          className="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-lg bg-slate-800 hover:bg-red-500/10 hover:text-red-400 text-slate-400 text-xs font-bold transition-all border border-slate-700 hover:border-red-500/20"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" x2="9" y1="12" y2="12" /></svg>
-          Cerrar Sesión
-        </button>
-      </div>
-    </aside >
+          <button
+            onClick={() => setShowPasswordModal(true)}
+            className="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-lg bg-slate-800 hover:bg-indigo-500/10 hover:text-indigo-300 text-slate-300 text-xs font-bold transition-all border border-slate-700 hover:border-indigo-500/20 mb-2"
+          >
+            <KeyRound size={14} />
+            Cambiar Contraseña
+          </button>
+
+          <button
+            onClick={signOut}
+            className="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-lg bg-slate-800 hover:bg-red-500/10 hover:text-red-400 text-slate-400 text-xs font-bold transition-all border border-slate-700 hover:border-red-500/20"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" x2="9" y1="12" y2="12" /></svg>
+            Cerrar Sesión
+          </button>
+        </div>
+      </aside >
+    </>
   );
 };

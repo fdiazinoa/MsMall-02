@@ -243,6 +243,47 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
+    const changePassword = async (currentPassword, newPassword) => {
+        if (!supabase) {
+            throw new Error('Supabase no está configurado.');
+        }
+
+        const email = session?.user?.email;
+        if (!email) {
+            throw new Error('No se pudo validar el usuario actual.');
+        }
+
+        if (!currentPassword || !newPassword) {
+            throw new Error('Debe completar ambos campos de contraseña.');
+        }
+
+        if (newPassword.length < 8) {
+            throw new Error('La nueva contraseña debe tener al menos 8 caracteres.');
+        }
+
+        if (currentPassword === newPassword) {
+            throw new Error('La nueva contraseña debe ser distinta a la actual.');
+        }
+
+        // Re-authenticate to ensure the current password is correct before update.
+        const { error: verifyError } = await supabase.auth.signInWithPassword({
+            email,
+            password: currentPassword,
+        });
+        if (verifyError) {
+            throw new Error('La contraseña actual no es correcta.');
+        }
+
+        const { error: updateError } = await supabase.auth.updateUser({
+            password: newPassword,
+        });
+        if (updateError) {
+            throw new Error(updateError.message || 'No se pudo actualizar la contraseña.');
+        }
+
+        return true;
+    };
+
     const normalizedRole = normalizeRole(
         role ||
         session?.user?.user_metadata?.rol ||
@@ -263,6 +304,7 @@ export const AuthProvider = ({ children }) => {
         isTic: ['tic', 'it'].includes(normalizedRole),
         isAuditor: normalizedRole === 'auditor',
         signOut: () => supabase?.auth.signOut(),
+        changePassword,
         refreshMalls: () => session?.access_token && fetchUserMalls(session.access_token, session?.user?.id),
     };
 

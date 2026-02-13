@@ -205,7 +205,7 @@ export const Header: React.FC = () => {
             </div>
           </div>
 
-          <span className="text-xs font-medium text-slate-400 hidden md:inline">v1.2.0</span>
+          <span className="text-xs font-medium text-slate-400 hidden md:inline">v1.2.1</span>
         </div>
       </header>
     </>

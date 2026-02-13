@@ -2945,18 +2945,33 @@ async def get_sales_gaps(
             # But `locales` table has `mall_id`.
             
             stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
-            stores = stores_resp.data
-            
-            # Obtener todas las ventas del periodo (optimizado: una sola query)
-            # También filtrar por mall_id (que agregué en Fase 1) por seguridad
-            sales_resp = supabase.table('ventas')\
-                .select('local_id, fecha')\
-                .eq('mall_id', current_mall)\
-                .gte('fecha', fecha_inicio)\
-                .lte('fecha', fecha_fin)\
-                .execute()
-            
-            sales_df = pd.DataFrame(sales_resp.data)
+            stores = stores_resp.data or []
+            store_ids = [str(s['id']) for s in stores if s.get('id')]
+
+            # Paginar ventas por local_id para no truncar por límites del cliente.
+            sales_rows: List[Dict[str, Any]] = []
+            if store_ids:
+                page_size = 2000
+                page = 0
+                while True:
+                    chunk = (
+                        supabase.table('ventas')
+                        .select('local_id, fecha')
+                        .in_('local_id', store_ids)
+                        .gte('fecha', fecha_inicio)
+                        .lte('fecha', fecha_fin)
+                        .order('fecha')
+                        .range(page * page_size, (page + 1) * page_size - 1)
+                        .execute()
+                    ).data or []
+                    if not chunk:
+                        break
+                    sales_rows.extend(chunk)
+                    if len(chunk) < page_size:
+                        break
+                    page += 1
+
+            sales_df = pd.DataFrame(sales_rows)
             if not sales_df.empty:
                 sales_df['local_id_norm'] = sales_df['local_id'].astype(str)
                 sales_df['fecha_norm'] = sales_df['fecha'].apply(_normalize_sales_date)
@@ -3005,9 +3020,29 @@ async def get_sales_gaps(
 
         # --- MODO INDIVIDUAL (Detailed View) ---
         # 2. Calendario Real (Individual)
-        response = supabase.table('ventas').select('fecha').eq('local_id', local_id).gte('fecha', fecha_inicio).lte('fecha', fecha_fin).execute()
+        individual_sales_rows: List[Dict[str, Any]] = []
+        page_size = 2000
+        page = 0
+        while True:
+            chunk = (
+                supabase.table('ventas')
+                .select('fecha')
+                .eq('local_id', local_id)
+                .gte('fecha', fecha_inicio)
+                .lte('fecha', fecha_fin)
+                .order('fecha')
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            ).data or []
+            if not chunk:
+                break
+            individual_sales_rows.extend(chunk)
+            if len(chunk) < page_size:
+                break
+            page += 1
+
         actual_dates = set()
-        for row in (response.data or []):
+        for row in individual_sales_rows:
             normalized_date = _normalize_sales_date(row.get('fecha'))
             if normalized_date:
                 actual_dates.add(normalized_date)
@@ -3043,12 +3078,12 @@ async def get_sales_gaps(
                     if not day_logs.empty:
                         last_log = day_logs.iloc[0]
                         log_id = last_log.get('id')
-                        status = last_log.get('estado')
-                        if status == 'ERROR':
+                        status = str(last_log.get('estado') or '').strip().lower()
+                        if status == 'error':
                             cause = "Fallo Técnico / Error de Lectura"
-                        elif status == 'NO_ENCONTRADO':
+                        elif status in {'no_encontrado', 'no encontrado'}:
                             cause = "Archivo no disponible en FTP"
-                        elif status == 'EXITO':
+                        elif status in {'exito', 'éxito', 'success', 'parcial'}:
                             cause = "Procesado con Éxito (Posible archivo vacío)"
                             
                 audit_details.append({

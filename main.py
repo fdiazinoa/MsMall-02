@@ -2956,11 +2956,12 @@ async def get_sales_gaps(
                 while True:
                     chunk = (
                         supabase.table('ventas')
-                        .select('local_id, fecha')
+                        .select('id, local_id, fecha')
                         .in_('local_id', store_ids)
                         .gte('fecha', fecha_inicio)
                         .lte('fecha', fecha_fin)
-                        .order('fecha')
+                        # Use a unique deterministic order to avoid pagination gaps/duplicates.
+                        .order('id')
                         .range(page * page_size, (page + 1) * page_size - 1)
                         .execute()
                     ).data or []
@@ -3026,11 +3027,12 @@ async def get_sales_gaps(
         while True:
             chunk = (
                 supabase.table('ventas')
-                .select('fecha')
+                .select('id, fecha')
                 .eq('local_id', local_id)
                 .gte('fecha', fecha_inicio)
                 .lte('fecha', fecha_fin)
-                .order('fecha')
+                # Use a unique deterministic order to avoid pagination gaps/duplicates.
+                .order('id')
                 .range(page * page_size, (page + 1) * page_size - 1)
                 .execute()
             ).data or []

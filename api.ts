@@ -837,6 +837,7 @@ export const ApiService = {
     const stores = await this.getStores();
     // Create map of codigo_interno -> Store object for quick lookup
     const storeMap = new Map<string, Store>(stores.map(s => [s.codigo_interno.toUpperCase(), s]));
+    const storeById = new Map<string, Store>(stores.map(s => [s.id, s]));
 
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -913,39 +914,126 @@ export const ApiService = {
 
           if (onProgress) onProgress(80);
 
-          // Handle Upsert Logic
+          const dedupeKey = (record: any): string | null => {
+            const localId = record?.local_id;
+            const fecha = record?.fecha;
+            const facturaNo = String(record?.factura_no || '').trim();
+            if (!localId || !fecha || !facturaNo) return null;
+            return `${localId}|${fecha}|${facturaNo}`;
+          };
+
+          // De-duplicate rows within the same file (last row wins).
+          const dedupedMap = new Map<string, any>();
+          const recordsWithoutKey: any[] = [];
           for (const record of recordsToInsert) {
-            const store = stores.find(s => s.id === record.local_id) as Store | undefined;
-            if (store?.upsert_activo) {
+            const key = dedupeKey(record);
+            if (key) dedupedMap.set(key, record);
+            else recordsWithoutKey.push(record);
+          }
+          const dedupedRecords = [...dedupedMap.values(), ...recordsWithoutKey];
+
+          let processedCount = 0;
+
+          // Batch upsert into Supabase
+          if (recordsToInsert.length > 0) {
+            // Preserve "upsert_activo" behavior: replace data by local+date for configured stores.
+            const rowsToClear = new Set<string>();
+            for (const record of dedupedRecords) {
+              const store = storeById.get(record.local_id);
+              if (store?.upsert_activo && record.local_id && record.fecha) {
+                rowsToClear.add(`${record.local_id}|${record.fecha}`);
+              }
+            }
+            for (const rowKey of rowsToClear) {
+              const [localId, fecha] = rowKey.split('|');
               await supabase
                 .from('ventas')
                 .delete()
-                .match({ local_id: record.local_id, fecha: record.fecha });
+                .match({ local_id: localId, fecha });
             }
-          }
 
-          // Batch insert into Supabase
-          if (recordsToInsert.length > 0) {
             // Final safety check
-            const validRecords = recordsToInsert.filter(r => r.local_id && r.local_id !== 'null' && r.local_id !== 'undefined');
+            const validRecords = dedupedRecords.filter(r => r.local_id && r.local_id !== 'null' && r.local_id !== 'undefined');
+            processedCount = validRecords.length;
 
-            if (validRecords.length === 0 && recordsToInsert.length > 0) {
+            if (validRecords.length === 0 && dedupedRecords.length > 0) {
               throw new Error("Error crítico: Todos los registros tienen identificadores de local inválidos.");
             }
 
-            const { error } = await supabase
-              .from('ventas')
-              .insert(validRecords);
-            if (error) throw error;
+            try {
+              const { error: upsertError } = await supabase
+                .from('ventas')
+                .upsert(validRecords, { onConflict: 'local_id,fecha,factura_no', ignoreDuplicates: false });
+              if (upsertError) throw upsertError;
+            } catch (upsertErr: any) {
+              const upsertMsg = String(upsertErr?.message || upsertErr || '').toLowerCase();
+              const noUniqueConstraint =
+                upsertMsg.includes('no unique') ||
+                upsertMsg.includes('no unique or exclusion constraint') ||
+                upsertMsg.includes('on conflict');
+
+              if (!noUniqueConstraint) {
+                throw upsertErr;
+              }
+
+              // Fallback path when DB does not have a unique constraint for upsert.
+              const keyedRecords = validRecords.filter((r) => !!dedupeKey(r));
+              const noKeyRecords = validRecords.filter((r) => !dedupeKey(r));
+
+              const existingMap = new Map<string, string>();
+              if (keyedRecords.length > 0) {
+                const localIds = [...new Set(keyedRecords.map((r) => r.local_id))];
+                const fechas = [...new Set(keyedRecords.map((r) => r.fecha))];
+                const { data: existingRows, error: existingError } = await supabase
+                  .from('ventas')
+                  .select('id, local_id, fecha, factura_no')
+                  .in('local_id', localIds)
+                  .in('fecha', fechas);
+                if (existingError) throw existingError;
+
+                for (const ex of (existingRows || [])) {
+                  const k = `${ex.local_id}|${ex.fecha}|${String(ex.factura_no || '').trim()}`;
+                  if (ex.id) existingMap.set(k, ex.id);
+                }
+              }
+
+              const updates: Array<{ id: string; payload: any }> = [];
+              const inserts: any[] = [...noKeyRecords];
+
+              for (const rec of keyedRecords) {
+                const key = dedupeKey(rec)!;
+                const existingId = existingMap.get(key);
+                if (existingId) {
+                  updates.push({ id: existingId, payload: rec });
+                } else {
+                  inserts.push(rec);
+                }
+              }
+
+              for (const upd of updates) {
+                const { error: updateError } = await supabase
+                  .from('ventas')
+                  .update(upd.payload)
+                  .eq('id', upd.id);
+                if (updateError) throw updateError;
+              }
+
+              if (inserts.length > 0) {
+                const { error: insertError } = await supabase
+                  .from('ventas')
+                  .insert(inserts);
+                if (insertError) throw insertError;
+              }
+            }
           }
 
           if (onProgress) onProgress(100);
 
           // Log results
-          const finalStatus = lineErrors.length > 0 ? (recordsToInsert.length > 0 ? 'exito' : 'error') : 'exito';
+          const finalStatus = lineErrors.length > 0 ? (processedCount > 0 ? 'exito' : 'error') : 'exito';
           const finalMsg = lineErrors.length > 0
-            ? `Procesados ${recordsToInsert.length} registros con ${lineErrors.length} errores.`
-            : `Carga exitosa de ${recordsToInsert.length} registros.`;
+            ? `Procesados ${processedCount} registros con ${lineErrors.length} errores.`
+            : `Carga exitosa de ${processedCount} registros.`;
 
           await this.logLoad({
             local_nombre: currentLocalName,
@@ -957,9 +1045,9 @@ export const ApiService = {
           });
 
           resolve({
-            status: lineErrors.length > 0 && recordsToInsert.length === 0 ? 'error' : 'success',
+            status: lineErrors.length > 0 && processedCount === 0 ? 'error' : 'success',
             message: finalMsg,
-            records_processed: recordsToInsert.length
+            records_processed: processedCount
           });
 
         } catch (error: any) {

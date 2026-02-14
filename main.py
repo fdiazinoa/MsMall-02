@@ -6,7 +6,7 @@ import logging
 import time
 import threading
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, status, Body
@@ -752,6 +752,9 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 new_r['factura_no'] = new_r.pop('factura_numero')
             if 'fecha_venta' in new_r:
                 new_r['fecha'] = new_r.pop('fecha_venta')
+            if 'factura_no' in new_r and new_r['factura_no'] is not None:
+                factura_limpia = str(new_r['factura_no']).strip()
+                new_r['factura_no'] = factura_limpia if factura_limpia else None
             
             # Normalizar campos de hora (hora, hora_transaccion)
             for time_col in ['hora', 'hora_transaccion']:
@@ -816,27 +819,99 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         
         records_to_insert = final_records
 
+        def _dedupe_key(row: Dict[str, Any]) -> Optional[str]:
+            local_id = row.get("local_id")
+            fecha = row.get("fecha")
+            factura = str(row.get("factura_no") or "").strip()
+            if not local_id or not fecha or not factura:
+                return None
+            return f"{local_id}|{fecha}|{factura}"
+
+        def _upsert_chunk_without_unique_constraint(chunk_rows: List[Dict[str, Any]]) -> None:
+            keyed_rows: Dict[str, Dict[str, Any]] = {}
+            no_key_rows: List[Dict[str, Any]] = []
+            for row in chunk_rows:
+                key = _dedupe_key(row)
+                if key:
+                    keyed_rows[key] = row
+                else:
+                    no_key_rows.append(row)
+
+            existing_map: Dict[str, str] = {}
+            if keyed_rows:
+                local_ids = list({str(r.get("local_id")) for r in keyed_rows.values() if r.get("local_id")})
+                fechas = list({str(r.get("fecha")) for r in keyed_rows.values() if r.get("fecha")})
+                if local_ids and fechas:
+                    existing_rows = (
+                        supabase.table("ventas")
+                        .select("id, local_id, fecha, factura_no")
+                        .in_("local_id", local_ids)
+                        .in_("fecha", fechas)
+                        .execute()
+                    ).data or []
+
+                    for ex in existing_rows:
+                        ex_key = f"{ex.get('local_id')}|{ex.get('fecha')}|{str(ex.get('factura_no') or '').strip()}"
+                        if ex.get("id"):
+                            existing_map[ex_key] = ex["id"]
+
+            updates: List[Tuple[str, Dict[str, Any]]] = []
+            inserts: List[Dict[str, Any]] = []
+            for key, row in keyed_rows.items():
+                existing_id = existing_map.get(key)
+                if existing_id:
+                    updates.append((existing_id, row))
+                else:
+                    inserts.append(row)
+            inserts.extend(no_key_rows)
+
+            for existing_id, row in updates:
+                payload = {k: v for k, v in row.items() if k != "id"}
+                supabase.table("ventas").update(payload).eq("id", existing_id).execute()
+
+            if inserts:
+                supabase.table("ventas").insert(inserts).execute()
+
         # Insertion into Supabase
         if records_to_insert and supabase:
-            # Batch insert in chunks of 100
+            # Remove duplicates within the same import batch (last row wins) before writing to DB.
+            deduped_records: Dict[str, Dict[str, Any]] = {}
+            no_key_records: List[Dict[str, Any]] = []
+            for row in records_to_insert:
+                row_key = _dedupe_key(row)
+                if row_key:
+                    deduped_records[row_key] = row
+                else:
+                    no_key_records.append(row)
+            records_to_insert = list(deduped_records.values()) + no_key_records
+
+            # Batch upsert in chunks of 100
             for i in range(0, len(records_to_insert), 100):
                 chunk = records_to_insert[i:i+100]
-                
-                # Log first chunk for date verification
+
                 if i == 0:
                     fechas_muestra = [r.get('fecha') for r in chunk[:3]]
-                    logger.info(f"Insertando ventas con fechas: {fechas_muestra}")
+                    logger.info(f"Insertando/actualizando ventas con fechas: {fechas_muestra}")
                     logger.info(f"Muestra registro completo: {chunk[0]}")
 
-                # Usar la columna correcta para conflicto (factura_no)
-                # Si no hay constraint unique, upsert falla. Cambiamos a insert para asegurar que entren.
                 try:
-                    res = supabase.table("ventas").insert(chunk).execute()
-                    logger.info(f"Respuesta inserción ventas: {res}")
+                    # Preferred path: true DB-level upsert on (local_id, fecha, factura_no).
+                    res = supabase.table("ventas").upsert(
+                        chunk,
+                        on_conflict="local_id,fecha,factura_no"
+                    ).execute()
+                    logger.info(f"Respuesta upsert ventas: {res}")
                 except Exception as e:
-                    # Si falla insert, podría ser por algún constraint que sí existe. Log y re-throw
-                    logger.error(f"Error insertando chunk: {e}")
-                    raise e
+                    msg = str(e).lower()
+                    if "no unique" in msg or "on conflict" in msg:
+                        logger.warning(
+                            "No existe constraint única para upsert en ventas(local_id,fecha,factura_no). "
+                            "Aplicando fallback de update/insert por aplicación."
+                        )
+                        _upsert_chunk_without_unique_constraint(chunk)
+                    else:
+                        logger.error(f"Error insertando/upsert chunk: {e}")
+                        raise e
                 
         return len(records_to_insert), errors
 

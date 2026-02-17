@@ -4,6 +4,7 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
 
 **Estado del Proyecto:** MVP Funcional (v1.0.2)
 **Arquitectura:** React SPA + Backend FastAPI + PostgreSQL
+**Ejecución actual:** frontend activo en **Vercel**.
 
 ## 0. Despliegue e Infraestructura
 - **Frontend (SPA):** desplegado en **Vercel**.

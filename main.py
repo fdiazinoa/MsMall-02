@@ -2589,6 +2589,20 @@ async def get_my_malls(user_id: str = Depends(get_current_user_id)):
         logger.error(f"Error fetching user malls: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/v1/users/me/access")
+async def get_my_access_context(user_id: str = Depends(get_current_user_id)):
+    """
+    Returns the effective access context for the current user.
+    Useful for frontend UI gating (role-based menus/actions).
+    """
+    try:
+        return await _get_access_context(user_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching access context: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- Mall Management Endpoints (Admin) ---
 
 class MallCreate(BaseModel):

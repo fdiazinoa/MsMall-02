@@ -4,6 +4,7 @@ import { supabase } from '../api'; // Asumiendo que supabase client está export
 
 const AuthContext = createContext();
 const SYSTEM_ADMIN_EMAIL = 'fdiaz@mercasend.net';
+const DEFAULT_RAILWAY_API_ROOT = 'https://msmall-02-production.up.railway.app';
 
 const normalizeRole = (roleValue) => (roleValue || '').toString().trim().toLowerCase().replace(/[-\s]+/g, '_');
 
@@ -16,6 +17,7 @@ export const AuthProvider = ({ children }) => {
     const [currentMall, setCurrentMall] = useState(null);
     const USER_MALLS_STORAGE_KEY = 'msmall_user_malls';
     const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim();
+    const RAW_DIRECT_BACKEND_URL = (import.meta.env.VITE_DIRECT_BACKEND_BASE_URL || '').trim();
 
     const [loading, setLoading] = useState(true);
 
@@ -36,6 +38,7 @@ export const AuthProvider = ({ children }) => {
 
             setSession(session);
             if (session) {
+                fetchEffectiveAccessRole(session.access_token);
                 fetchProfile(session.user.id);
                 fetchUserMalls(session.access_token, session.user.id);
             }
@@ -46,6 +49,7 @@ export const AuthProvider = ({ children }) => {
         const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
             setSession(session);
             if (session) {
+                fetchEffectiveAccessRole(session.access_token);
                 fetchProfile(session.user.id);
                 fetchUserMalls(session.access_token, session.user.id);
             }
@@ -70,13 +74,20 @@ export const AuthProvider = ({ children }) => {
     };
 
     const getApiBaseCandidates = () => {
-        const normalizedEnv = RAW_API_URL
+        const normalizeApiRoot = (value) => (value || '')
+            .trim()
             .replace(/\/+$/, '')
             .replace(/\/api\/v1$/i, '')
             .replace(/\/api$/i, '');
 
+        const normalizedEnv = normalizeApiRoot(RAW_API_URL);
+        const normalizedDirect = normalizeApiRoot(RAW_DIRECT_BACKEND_URL);
+        const isVercelHost = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
+
         const candidates = [];
         if (normalizedEnv) candidates.push(normalizedEnv);
+        if (normalizedDirect) candidates.push(normalizedDirect);
+        if (isVercelHost) candidates.push(DEFAULT_RAILWAY_API_ROOT);
         // Always include relative fallback (Vercel rewrite: /api/* -> Railway).
         candidates.push('');
         return [...new Set(candidates)];
@@ -125,6 +136,19 @@ export const AuthProvider = ({ children }) => {
         }
 
         return null;
+    };
+
+    const fetchEffectiveAccessRole = async (token) => {
+        try {
+            const payload = await fetchJsonFromCandidates('/api/v1/users/me/access', token);
+            const effectiveRole = normalizeRole(payload?.role);
+            if (effectiveRole) {
+                setRole(effectiveRole);
+            }
+        } catch (error) {
+            // Fallbacks (profile/metadata/mall roles) still apply.
+            console.warn('No se pudo resolver el rol efectivo:', error);
+        }
     };
 
     const fetchMallsFromAdminFallback = async (token, userId) => {
@@ -286,9 +310,22 @@ export const AuthProvider = ({ children }) => {
 
     const normalizedRole = normalizeRole(
         role ||
+        currentMall?.rol ||
+        malls?.[0]?.rol ||
         session?.user?.user_metadata?.rol ||
         session?.user?.user_metadata?.role
     );
+    if (typeof window !== 'undefined') {
+        console.log('[AuthProvider] role debug', {
+            effectiveRoleState: role,
+            currentMallRole: currentMall?.rol || null,
+            firstMallRole: malls?.[0]?.rol || null,
+            metadataRol: session?.user?.user_metadata?.rol || null,
+            metadataRole: session?.user?.user_metadata?.role || null,
+            normalizedRole,
+            email: session?.user?.email || null
+        });
+    }
     const currentEmail = (session?.user?.email || '').toLowerCase();
     const isSystemAdmin = currentEmail === SYSTEM_ADMIN_EMAIL;
 

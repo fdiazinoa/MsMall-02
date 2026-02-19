@@ -593,6 +593,19 @@ def _detect_delimiter_and_header(sample: str) -> Tuple[str, bool]:
 
     return delimiter, has_header
 
+def _build_raw_preview_lines(content: str, max_lines: int = 12, max_chars: int = 220) -> List[str]:
+    preview: List[str] = []
+    for line in (content or "").splitlines():
+        raw = str(line or "").rstrip("\r\n")
+        if not raw.strip():
+            continue
+        if len(raw) > max_chars:
+            raw = raw[:max_chars] + "..."
+        preview.append(raw)
+        if len(preview) >= max_lines:
+            break
+    return preview
+
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
     user_id: str = Depends(get_current_user_id)
@@ -1952,26 +1965,49 @@ SYSTEM_FIELDS_SYNONYMS = {
 
 
 def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, force_has_header: Optional[bool] = None, data_start_row: Optional[int] = None):
-    headers = []
-    sample_row = {}
-    
+    headers: List[str] = []
+    sample_row: Dict[str, Any] = {}
+    raw_preview_lines = _build_raw_preview_lines(decoded_content)
+    detected_delimiter: Optional[str] = None
+    detected_has_header: Optional[bool] = None
+
     # Normalize tipo_archivo if provided
     current_type = tipo_archivo.upper() if tipo_archivo else None
     if not current_type:
-        if filename.lower().endswith('.json'): current_type = "JSON"
-        elif filename.lower().endswith('.csv') or filename.lower().endswith('.txt'): current_type = "CSV"
-    
+        if filename.lower().endswith('.json'):
+            current_type = "JSON"
+        elif filename.lower().endswith('.csv') or filename.lower().endswith('.txt'):
+            current_type = "CSV"
+
+    def _payload(
+        csv_headers: List[str],
+        suggested_mapping: Dict[str, Any],
+        sample: Dict[str, Any],
+        detected_headers: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        return {
+            "csv_headers": csv_headers,
+            "headers": csv_headers,
+            "detected_headers": detected_headers if detected_headers is not None else csv_headers,
+            "suggested_mapping": suggested_mapping,
+            "sample_row": sample,
+            "raw_preview_lines": raw_preview_lines,
+            "analysis_type": current_type,
+            "detected_delimiter": detected_delimiter,
+            "detected_has_header": detected_has_header
+        }
+
     # 1. Detect Format and Extract Headers/Sample
     if current_type == "CSV" or current_type == "TXT" or not current_type:
-        # Simple Sniffer attempt
-        sample_str = decoded_content[:4096] # Analyze first 4KB
+        sample_str = decoded_content[:4096]
         delimiter, has_header = _detect_delimiter_and_header(sample_str)
         if force_has_header is not None:
             has_header = force_has_header
         if has_header and _should_treat_as_no_header(decoded_content, delimiter):
             has_header = False
-            
-        # Read first lines
+        detected_delimiter = delimiter
+        detected_has_header = has_header
+
         f = io.StringIO(decoded_content)
         if has_header:
             reader = csv.DictReader(f, delimiter=delimiter)
@@ -1980,83 +2016,64 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, forc
                 if data_start_row and data_start_row > 2:
                     all_rows = all_rows[data_start_row - 2:]
                 row1 = all_rows[0] if all_rows else None
-                headers = reader.fieldnames
+                headers = reader.fieldnames or []
                 sample_row = row1 or {}
                 if not row1:
-                    return {"csv_headers": headers or [], "headers": headers or [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": headers or []}
+                    return _payload(headers, {}, {}, headers)
             except Exception:
-                return {"csv_headers": [], "headers": [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": []}
+                return _payload([], {}, {}, [])
         else:
             raw_reader = csv.reader(f, delimiter=delimiter)
             matrix_rows = [r for r in raw_reader if any(str(c or "").strip() for c in r)]
             if data_start_row and data_start_row > 1:
                 matrix_rows = matrix_rows[data_start_row - 1:]
             if not matrix_rows:
-                return {"csv_headers": [], "headers": [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": []}
+                return _payload([], {}, {}, [])
 
             max_cols = max(len(r) for r in matrix_rows)
             headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]
             first_row = list(matrix_rows[0]) + [""] * (max_cols - len(matrix_rows[0]))
             sample_row = dict(zip(headers, first_row))
-            
+
     if current_type == "JSON":
         try:
-            # Try decoding with utf-8-sig to handle BOM
-            try:
-                if isinstance(decoded_content, str):
-                     data = json.loads(decoded_content)
-                else: 
-                     # Should be string here but safety check 
-                     data = json.loads(decoded_content)
-            except:
-                # If decoded_content wasn't decoded with sig, it might have issues?
-                # But here we receive string. We assume content was read properly in endpoints.
-                # However, for robustness we just proceed.
-                data = json.loads(decoded_content)
-            
-            # Logic Update: If root is dict, find the list (Recursive/Smart Search)
+            data = json.loads(decoded_content)
+
             target_data = data
             if isinstance(data, dict):
                 if "invoices" in data:
                     target_data = data["invoices"]
                 else:
-                    # Heuristic: Find first value that is a list of dicts
                     found_list = False
-                    for k, v in data.items():
+                    for _, v in data.items():
                         if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                            target_data = v 
+                            target_data = v
                             found_list = True
                             break
-                    
                     if not found_list:
-                        # If no list found, treat as single record
                         target_data = [data]
             elif isinstance(data, list):
                 target_data = data
             else:
-                 target_data = [data]
-            
-             # Use Pandas for robust flattening
+                target_data = [data]
+
             df = pd.json_normalize(target_data)
-            
-            # Convert back to list of dicts for header extraction/sample
+
             if df.empty:
-                 headers = []
+                headers = []
             else:
-                 headers = list(df.columns)
-                 # Get first row as dict, handle NaN
-                 if len(df) > 0:
-                     sample_row = df.iloc[0].where(pd.notnull(df.iloc[0]), None).to_dict()
+                headers = list(df.columns)
+                if len(df) > 0:
+                    sample_row = df.iloc[0].where(pd.notnull(df.iloc[0]), None).to_dict()
 
         except Exception as e:
             logger.error(f"Error parsing JSON analysis: {e}")
-            pass
-    
+
     if not headers:
-        return {"csv_headers": [], "headers": [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": []}
+        return _payload([], {}, {}, [])
 
     # 2. Fuzzy Match System Fields
-    suggested_mapping = {}
+    suggested_mapping: Dict[str, Any] = {}
     no_header_columns = all(isinstance(h, str) and h.lower().startswith("col_") for h in headers)
 
     if no_header_columns:
@@ -2075,54 +2092,37 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, forc
                     "confidence": 95,
                     "is_confident": True
                 }
-        return {
-            "csv_headers": headers,
-            "detected_headers": headers,
-            "suggested_mapping": suggested_mapping,
-            "sample_row": sample_row
-        }
-    
-    # Pre-process headers for matching logic
-    # We keep original headers but maybe create a lower version map
-    
+        return _payload(headers, suggested_mapping, sample_row, headers)
+
     for sys_field, synonyms in SYSTEM_FIELDS_SYNONYMS.items():
         query_list = [sys_field] + synonyms
         best_match = None
         best_score = 0
-        
-        # EXACT MATCH FIRST (Crucial for dot notation like totals.grandTotal)
+
         for h in headers:
             for q in query_list:
                 if h == q:
                     best_match = h
                     best_score = 100
                     break
-            if best_score == 100: break
-        
-        # If no exact match, try Fuzzy
+            if best_score == 100:
+                break
+
         if best_score < 100:
             for query in query_list:
-                # Use partial_ratio or token_sort based on needs. 
-                # token_sort_ratio handles "Total Bruto" vs "Bruto Total" nicely.
-                # We used extractOne before.
                 match, score = process.extractOne(query, headers, scorer=fuzz.token_sort_ratio) or (None, 0)
                 if score > best_score:
                     best_score = score
                     best_match = match
-        
+
         if best_score > 60:
             suggested_mapping[sys_field] = {
                 "csv_header": best_match,
                 "confidence": best_score,
                 "is_confident": best_score > 80
             }
-    
-    return {
-        "csv_headers": headers,
-        "detected_headers": headers, # Added explicit key as requested
-        "suggested_mapping": suggested_mapping,
-        "sample_row": sample_row
-    }
+
+    return _payload(headers, suggested_mapping, sample_row, headers)
 
 @app.post("/api/v1/mapping/analyze")
 async def analyze_mapping(file: UploadFile = File(...)):

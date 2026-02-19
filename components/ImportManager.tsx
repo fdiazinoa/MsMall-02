@@ -45,6 +45,13 @@ export const ImportManager: React.FC = () => {
   const [remoteHeaders, setRemoteHeaders] = useState<string[]>([]);
   const [fetchingHeaders, setFetchingHeaders] = useState(false);
   const [showSmartMapping, setShowSmartMapping] = useState(false);
+  const [selectedFilePreview, setSelectedFilePreview] = useState<{
+    filename: string;
+    lines: string[];
+    analysisType?: string | null;
+    detectedDelimiter?: string | null;
+    detectedHasHeader?: boolean | null;
+  } | null>(null);
 
   // Manual Execution Modal State
   const [showManualModal, setShowManualModal] = useState(false);
@@ -212,6 +219,14 @@ export const ImportManager: React.FC = () => {
     const fallback = isHeaderEnabled(config) ? 2 : 1;
     const raw = Number(config.constants?.['_data_start_row']);
     return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : fallback;
+  };
+  const formatDelimiter = (delimiter?: string | null) => {
+    if (!delimiter) return 'No detectado';
+    if (delimiter === '\t') return 'TAB';
+    if (delimiter === ';') return '; (punto y coma)';
+    if (delimiter === ',') return ', (coma)';
+    if (delimiter === '|') return '| (pipe)';
+    return delimiter;
   };
 
   const resolveProcessedCountFromLogs = async (config: ImportConfig, filename: string): Promise<number | null> => {
@@ -531,6 +546,7 @@ export const ImportManager: React.FC = () => {
   const handleSelectExplorerFile = (item: { nombre: string, ruta: string, es_dir: boolean }) => {
     setShowExplorer(false);
     setFetchingHeaders(true);
+    setSelectedFilePreview(null);
 
     const newConfig = {
       ...editingConfig,
@@ -542,6 +558,13 @@ export const ImportManager: React.FC = () => {
     ApiService.analyzeRemoteMapping(newConfig, tempPassword, item.ruta, authToken)
       .then(result => {
         setRemoteHeaders(result.csv_headers || []);
+        setSelectedFilePreview({
+          filename: item.nombre,
+          lines: Array.isArray(result.raw_preview_lines) ? result.raw_preview_lines : [],
+          analysisType: result.analysis_type || newConfig.tipo_archivo || null,
+          detectedDelimiter: result.detected_delimiter ?? null,
+          detectedHasHeader: typeof result.detected_has_header === 'boolean' ? result.detected_has_header : null
+        });
         setEditingConfig(prev => {
           const nextMapping: Record<string, string> = { ...prev.mapping };
           if (result.suggested_mapping) {
@@ -1027,6 +1050,42 @@ export const ImportManager: React.FC = () => {
                     />
                   </label>
                 </div>
+
+                {selectedFilePreview && (
+                  <div className="mb-6 rounded-xl border border-slate-200 bg-white">
+                    <div className="px-4 py-3 border-b border-slate-100 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <h6 className="text-sm font-bold text-slate-800">Vista Previa Cruda del Archivo</h6>
+                        <p className="text-xs text-slate-500">{selectedFilePreview.filename}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-[11px]">
+                        <span className="px-2 py-1 rounded-md bg-slate-100 text-slate-600 font-semibold">
+                          Tipo: {selectedFilePreview.analysisType || 'N/A'}
+                        </span>
+                        <span className="px-2 py-1 rounded-md bg-slate-100 text-slate-600 font-semibold">
+                          Delimitador: {formatDelimiter(selectedFilePreview.detectedDelimiter)}
+                        </span>
+                        <span className="px-2 py-1 rounded-md bg-slate-100 text-slate-600 font-semibold">
+                          Encabezado detectado: {selectedFilePreview.detectedHasHeader === null ? 'N/A' : selectedFilePreview.detectedHasHeader ? 'Sí' : 'No'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="max-h-64 overflow-auto p-3 bg-slate-950 rounded-b-xl">
+                      {selectedFilePreview.lines.length > 0 ? (
+                        <div className="space-y-1 font-mono text-[11px]">
+                          {selectedFilePreview.lines.map((line, idx) => (
+                            <div key={`${selectedFilePreview.filename}-${idx}`} className="grid grid-cols-[36px_1fr] gap-2">
+                              <span className="text-slate-500 text-right select-none">{idx + 1}</span>
+                              <span className="text-slate-200 whitespace-pre-wrap break-all">{line}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-slate-400">No hay líneas para mostrar en la vista previa.</div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <SmartMappingModal
                   isOpen={showSmartMapping}

@@ -880,10 +880,15 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     elif no_header_mode:
                         fallback_col = None
                         if header_key.isdigit():
-                            fallback_col = f"col_{int(header_key)}"
+                            numeric_col = f"col_{int(header_key)}"
+                            if numeric_col in row:
+                                fallback_col = numeric_col
                         elif header_key.lower().startswith("col_"):
-                            fallback_col = header_key.lower()
-                        else:
+                            explicit_col = header_key.lower()
+                            if explicit_col in row:
+                                fallback_col = explicit_col
+
+                        if not fallback_col:
                             fallback_col = default_no_header_map.get(sys_field)
 
                         if fallback_col and fallback_col in row:

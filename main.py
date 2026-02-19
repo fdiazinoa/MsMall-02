@@ -663,6 +663,16 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
     
     try:
         raw_rows = []
+        no_header_mode = False
+        line_offset = 2
+        default_no_header_map = {
+            "factura_numero": "col_1",
+            "local_codigo": "col_2",
+            "fecha_venta": "col_3",
+            "total_bruto": "col_8",
+            "total_impuestos": "col_9",
+            "total_neto": "col_10",
+        }
         if tipo_archivo == "JSON":
             try:
                 data = json.loads(content)
@@ -688,20 +698,42 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
             # Default CSV/TXT
             f = io.StringIO(content)
             sample = content[:4096]
+            has_header = True
             try:
-                dialect = csv.Sniffer().sniff(sample)
+                sniffer = csv.Sniffer()
+                dialect = sniffer.sniff(sample)
                 delimiter = dialect.delimiter
+                has_header = sniffer.has_header(sample)
             except:
                 delimiter = ","
+                has_header = True
             f.seek(0)
-            reader = csv.DictReader(f, delimiter=delimiter)
-            raw_rows = list(reader)
+            if has_header:
+                reader = csv.DictReader(f, delimiter=delimiter)
+                raw_rows = list(reader)
+            else:
+                no_header_mode = True
+                line_offset = 1
+                reader = csv.reader(f, delimiter=delimiter)
+                matrix_rows = [r for r in reader if any(str(c or "").strip() for c in r)]
+                if matrix_rows:
+                    max_cols = max(len(r) for r in matrix_rows)
+                    synthetic_headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]
+                    for r in matrix_rows:
+                        padded = list(r) + [""] * (max_cols - len(r))
+                        raw_rows.append(dict(zip(synthetic_headers, padded)))
+
+        effective_mapping = dict(mapping or {})
+        if no_header_mode:
+            for field, col in default_no_header_map.items():
+                if not effective_mapping.get(field):
+                    effective_mapping[field] = col
 
         # Validar mapeo básico
         req_sys_fields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto']
         missing_mapping = []
         for field in req_sys_fields:
-            has_mapping = field in mapping and mapping[field]
+            has_mapping = field in effective_mapping and effective_mapping[field]
             has_constant = field in constants and constants[field]
             if not (has_mapping or has_constant):
                 missing_mapping.append(field)
@@ -712,11 +744,29 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
 
         for i, row in enumerate(raw_rows):
             try:
+                line_no = i + line_offset
                 record = {}
                 # 1. Apply Mapping
-                for sys_field, header in mapping.items():
-                    if header in row:
-                        record[sys_field] = row[header]
+                for sys_field, header in effective_mapping.items():
+                    mapped_value = None
+                    header_key = str(header).strip() if header is not None else ""
+
+                    if header_key in row:
+                        mapped_value = row[header_key]
+                    elif no_header_mode:
+                        fallback_col = None
+                        if header_key.isdigit():
+                            fallback_col = f"col_{int(header_key)}"
+                        elif header_key.lower().startswith("col_"):
+                            fallback_col = header_key.lower()
+                        else:
+                            fallback_col = default_no_header_map.get(sys_field)
+
+                        if fallback_col and fallback_col in row:
+                            mapped_value = row[fallback_col]
+
+                    if mapped_value is not None:
+                        record[sys_field] = mapped_value
                 
                 # 2. Apply Constants (exclude meta-constants that are not DB columns)
                 META_CONSTANTS = ['_date_format']  # These are config-only, not DB fields
@@ -729,7 +779,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 
                 # 3. Validation & Type Casting (Shared for both formats)
                 if not record.get('fecha_venta'):
-                     errors.append({"linea": i+2, "error": "Falta fecha_venta"})
+                     errors.append({"linea": line_no, "error": "Falta fecha_venta"})
                      continue
 
                 # Normalize Date with format-specific or comprehensive support
@@ -785,7 +835,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 if parsed_date:
                     record['fecha_venta'] = parsed_date.strftime('%Y-%m-%d')
                 else:
-                    errors.append({"linea": i+2, "error": f"Formato de fecha inválido: {raw_date}"})
+                    errors.append({"linea": line_no, "error": f"Formato de fecha inválido: {raw_date}"})
                     continue
                 
                 # Ensure numeric types
@@ -800,10 +850,10 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 # Validation: Reject if Total/Net is 0 but Tax > 0
                 if record['total_bruto'] == 0:
                     if record['total_impuestos'] > 0:
-                        errors.append({"linea": i+2, "error": f"Total Bruto es 0.00 pero tiene impuestos ({record['total_impuestos']}). Verifique el archivo."})
+                        errors.append({"linea": line_no, "error": f"Total Bruto es 0.00 pero tiene impuestos ({record['total_impuestos']}). Verifique el archivo."})
                         continue
                     if record['total_neto'] > 0:
-                        errors.append({"linea": i+2, "error": f"Total Bruto es 0.00 pero tiene Neto ({record['total_neto']}). Verifique el archivo."})
+                        errors.append({"linea": line_no, "error": f"Total Bruto es 0.00 pero tiene Neto ({record['total_neto']}). Verifique el archivo."})
                         continue
 
                 if record['total_neto'] == 0 and record['total_bruto'] > 0 and record['total_impuestos'] > 0:
@@ -811,7 +861,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                      # but user asked for alert on zero net.
                      # Let's be strict: if tax > 0, net should ideally be > 0.
                      # However, user specifically mentioned "alert if totalbruto or totalneto is zero"
-                     errors.append({"linea": i+2, "error": f"Total Neto es 0.00 pero tiene Impuestos/Total. Verifique el archivo."})
+                     errors.append({"linea": line_no, "error": f"Total Neto es 0.00 pero tiene Impuestos/Total. Verifique el archivo."})
                      continue
                 
                 if record.get('total_bruto', 0) == 0:
@@ -821,7 +871,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
 
                 records_to_insert.append(record)
             except Exception as row_e:
-                errors.append({"linea": i+2, "error": str(row_e)})
+                errors.append({"linea": line_no, "error": str(row_e)})
 
     except Exception as e:
         logger.error(f"Error procesando contenido: {e}")
@@ -1786,21 +1836,36 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
     if current_type == "CSV" or current_type == "TXT" or not current_type:
         # Simple Sniffer attempt
         sample_str = decoded_content[:4096] # Analyze first 4KB
+        has_header = True
         try:
-            dialect = csv.Sniffer().sniff(sample_str)
+            sniffer = csv.Sniffer()
+            dialect = sniffer.sniff(sample_str)
             delimiter = dialect.delimiter
+            has_header = sniffer.has_header(sample_str)
         except:
             delimiter = ',' # Fallback
+            has_header = True
             
-        # Read first 2 lines
+        # Read first lines
         f = io.StringIO(decoded_content)
-        reader = csv.DictReader(f, delimiter=delimiter)
-        try:
-            row1 = next(reader)
-            headers = reader.fieldnames
-            sample_row = row1
-        except StopIteration:
-            return {"csv_headers": [], "headers": [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": []}
+        if has_header:
+            reader = csv.DictReader(f, delimiter=delimiter)
+            try:
+                row1 = next(reader)
+                headers = reader.fieldnames
+                sample_row = row1
+            except StopIteration:
+                return {"csv_headers": [], "headers": [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": []}
+        else:
+            raw_reader = csv.reader(f, delimiter=delimiter)
+            matrix_rows = [r for r in raw_reader if any(str(c or "").strip() for c in r)]
+            if not matrix_rows:
+                return {"csv_headers": [], "headers": [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": []}
+
+            max_cols = max(len(r) for r in matrix_rows)
+            headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]
+            first_row = list(matrix_rows[0]) + [""] * (max_cols - len(matrix_rows[0]))
+            sample_row = dict(zip(headers, first_row))
             
     if current_type == "JSON":
         try:
@@ -1860,6 +1925,30 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
 
     # 2. Fuzzy Match System Fields
     suggested_mapping = {}
+    no_header_columns = all(isinstance(h, str) and h.lower().startswith("col_") for h in headers)
+
+    if no_header_columns:
+        positional_defaults = {
+            "factura_numero": "col_1",
+            "local_codigo": "col_2",
+            "fecha_venta": "col_3",
+            "total_bruto": "col_8",
+            "total_impuestos": "col_9",
+            "total_neto": "col_10",
+        }
+        for sys_field, col_name in positional_defaults.items():
+            if col_name in headers:
+                suggested_mapping[sys_field] = {
+                    "csv_header": col_name,
+                    "confidence": 95,
+                    "is_confident": True
+                }
+        return {
+            "csv_headers": headers,
+            "detected_headers": headers,
+            "suggested_mapping": suggested_mapping,
+            "sample_row": sample_row
+        }
     
     # Pre-process headers for matching logic
     # We keep original headers but maybe create a lower version map

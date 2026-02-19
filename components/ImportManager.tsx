@@ -1128,6 +1128,7 @@ export const ImportManager: React.FC = () => {
                             >
                               <option value="auto">Auto (Intentar detectar)</option>
                               <option value="DD/MM/YYYY">DD/MM/YYYY (Ej: 31/01/2024)</option>
+                              <option value="DDmmYYYY">DDmmYYYY (Ej: 31012024)</option>
                               <option value="MM/DD/YYYY">MM/DD/YYYY (Ej: 01/31/2024)</option>
                               <option value="YYYY-MM-DD">YYYY-MM-DD (Ej: 2024-01-31)</option>
                             </select>

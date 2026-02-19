@@ -638,12 +638,14 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 raw_date = str(record['fecha_venta']).strip()
                 parsed_date = None
                 
-                # Check if explicit date_format is specified (from UI selector)
-                explicit_format = config.constants.get('_date_format', 'auto') if hasattr(config, 'constants') else 'auto'
+                # Check explicit date_format from constants selected in UI
+                explicit_format = constants.get('_date_format', 'auto')
                 
                 # Define format groups based on user selection
                 if explicit_format == 'DD/MM/YYYY':
                     date_formats = ['%d/%m/%Y', '%d-%m-%Y']
+                elif explicit_format == 'DDmmYYYY':
+                    date_formats = ['%d%m%Y']
                 elif explicit_format == 'MM/DD/YYYY':
                     date_formats = ['%m/%d/%Y', '%m-%d-%Y']
                 elif explicit_format == 'YYYY-MM-DD':
@@ -665,6 +667,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         '%Y-%m-%d %H:%M:%S',      # SQL datetime (2026-02-01 14:30:00)
                         '%Y-%m-%d',               # ISO 8601 date only (2026-02-01)
                         '%d/%m/%Y',               # DD/MM/YYYY (Dominican/Spanish format)
+                        '%d%m%Y',                 # DDmmYYYY (05012026)
                         '%m/%d/%Y',               # MM/DD/YYYY (US format)
                         '%d-%m-%Y',               # DD-MM-YYYY with hyphens
                         '%m-%d-%Y',               # MM-DD-YYYY with hyphens

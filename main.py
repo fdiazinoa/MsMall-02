@@ -898,9 +898,9 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         record[sys_field] = mapped_value
                 
                 # 2. Apply Constants (exclude meta-constants that are not DB columns)
-                META_CONSTANTS = ['_date_format']  # These are config-only, not DB fields
                 for k, v in constants.items():
-                    if k not in META_CONSTANTS:
+                    # Internal parsing/config flags (prefixed with "_") are not DB columns.
+                    if not str(k).startswith("_"):
                         record[k] = v
                 
                 if i == 0:

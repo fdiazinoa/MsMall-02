@@ -75,6 +75,16 @@ const parseErrorDetail = async (response: Response, fallbackMessage: string): Pr
   return fallbackMessage;
 };
 
+const normalizeErrorMessage = (error: any, fallbackMessage: string): string => {
+  if (error instanceof Error && error.message && error.message.trim()) {
+    return error.message;
+  }
+  if (typeof error === 'string' && error.trim()) {
+    return error;
+  }
+  return fallbackMessage;
+};
+
 const fetchJsonWithBaseFallback = async <T>(
   path: string,
   init: RequestInit,
@@ -370,7 +380,7 @@ export const ApiService = {
       return await response.json();
     } catch (error: any) {
       console.error("Explore directory error:", error);
-      throw error.message || error;
+      throw new Error(normalizeErrorMessage(error, "Error al listar directorio"));
     }
   },
 
@@ -398,12 +408,24 @@ export const ApiService = {
       return data.headers;
     } catch (error: any) {
       console.error("Read remote headers error:", error);
-      throw error.message || error;
+      throw new Error(normalizeErrorMessage(error, "Error al leer headers remotos"));
     }
   },
 
   async analyzeRemoteMapping(config: Partial<ImportConfig>, password?: string, testFile?: string, token?: string): Promise<any> {
     try {
+      const constants = config.constants || {};
+      const rawHasHeader = constants['_has_header'];
+      const hasHeader =
+        rawHasHeader === 'true' ? true :
+          rawHasHeader === 'false' ? false :
+            undefined;
+      const startRowRaw = constants['_data_start_row'];
+      const parsedStartRow = Number(startRowRaw);
+      const dataStartRow = Number.isFinite(parsedStartRow) && parsedStartRow > 0
+        ? Math.trunc(parsedStartRow)
+        : undefined;
+
       const response = await fetch(`${BASE_URL}/mapping/analyze-remote`, {
         method: 'POST',
         headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
@@ -414,7 +436,9 @@ export const ApiService = {
           usuario: config.usuario?.trim(),
           password: password || config.password,
           ruta: testFile || config.ruta_remota,
-          tipo_archivo: config.tipo_archivo
+          tipo_archivo: config.tipo_archivo,
+          has_header: hasHeader,
+          data_start_row: dataStartRow
         })
       });
       if (!response.ok) {
@@ -424,7 +448,7 @@ export const ApiService = {
       return await response.json();
     } catch (error: any) {
       console.error(error);
-      throw error.message || error;
+      throw new Error(normalizeErrorMessage(error, "Error analizando archivo remoto"));
     }
   },
 
@@ -486,7 +510,7 @@ export const ApiService = {
         lastError = error;
         console.error(`Error in analyzeSingleFile (attempt ${attempt}/${maxAttempts}):`, error);
 
-        const msg = String(error?.message || error || '');
+        const msg = normalizeErrorMessage(error, "Error analizando archivo");
         const isTimeout = error?.name === 'AbortError' || msg.toLowerCase().includes('aborted');
         const isNetworkFailure = msg.includes('Failed to fetch') || msg.includes('ERR_NETWORK_CHANGED');
 
@@ -505,7 +529,7 @@ export const ApiService = {
       }
     }
 
-    throw new Error(lastError?.message || "Error analizando archivo");
+    throw new Error(normalizeErrorMessage(lastError, "Error analizando archivo"));
   },
 
   async executeManualImport(config: ImportConfig, filename: string, token?: string): Promise<{ status: string, message: string, errors?: any[], records_processed?: number }> {

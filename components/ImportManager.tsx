@@ -207,6 +207,13 @@ export const ImportManager: React.FC = () => {
     return requiredFields.every(field => Boolean(config.mapping?.[field] || config.constants?.[field]));
   };
 
+  const isHeaderEnabled = (config: ImportConfig) => (config.constants?.['_has_header'] ?? 'true') !== 'false';
+  const getDataStartRow = (config: ImportConfig) => {
+    const fallback = isHeaderEnabled(config) ? 2 : 1;
+    const raw = Number(config.constants?.['_data_start_row']);
+    return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : fallback;
+  };
+
   const resolveProcessedCountFromLogs = async (config: ImportConfig, filename: string): Promise<number | null> => {
     try {
       const logs = await ApiService.getLoadLogs(currentMall?.id);
@@ -548,7 +555,8 @@ export const ImportManager: React.FC = () => {
       })
       .catch(err => {
         console.error(err);
-        alert("Error analizando archivo: " + err.message);
+        const msg = String(err?.message || err || "Error analizando archivo");
+        alert("Error analizando archivo: " + msg);
       })
       .finally(() => setFetchingHeaders(false));
   };
@@ -982,6 +990,42 @@ export const ImportManager: React.FC = () => {
                   >
                     <Wand2 size={16} /> Auto-Mapeo Mágico ✨
                   </button>
+                </div>
+
+                <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-xl grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={!isHeaderEnabled(editingConfig)}
+                      onChange={(e) => {
+                        const hasHeader = !e.target.checked;
+                        const nextConstants = { ...(editingConfig.constants || {}) } as Record<string, string>;
+                        nextConstants._has_header = hasHeader ? 'true' : 'false';
+                        if (!nextConstants._data_start_row) {
+                          nextConstants._data_start_row = hasHeader ? '2' : '1';
+                        }
+                        setEditingConfig(prev => ({ ...prev, constants: nextConstants }));
+                      }}
+                      className="rounded border-slate-300"
+                    />
+                    Archivo sin encabezado
+                  </label>
+
+                  <label className="text-xs font-semibold text-slate-700 flex flex-col gap-1">
+                    Línea donde inicia la data
+                    <input
+                      type="number"
+                      min={1}
+                      value={getDataStartRow(editingConfig)}
+                      onChange={(e) => {
+                        const rowValue = Math.max(1, Number(e.target.value || 1));
+                        const nextConstants = { ...(editingConfig.constants || {}) } as Record<string, string>;
+                        nextConstants._data_start_row = String(rowValue);
+                        setEditingConfig(prev => ({ ...prev, constants: nextConstants }));
+                      }}
+                      className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm"
+                    />
+                  </label>
                 </div>
 
                 <SmartMappingModal

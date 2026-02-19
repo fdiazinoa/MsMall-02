@@ -460,7 +460,8 @@ def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config:
         "host", "puerto", "usuario", "password", "ruta_remota", "protocolo", "tipo_archivo",
         "mapping", "constants", "accion_post_procesado", "prefijo_renombrado",
         "sftp_host", "sftp_port", "sftp_user", "sftp_pass", "sftp_path", "sftp_protocol",
-        "file_type", "mapping_config", "constants_config", "prefijo_backup"
+        "file_type", "mapping_config", "constants_config", "prefijo_backup",
+        "has_header", "data_start_row"
     ]
     for key in allowed_override_keys:
         val = runtime.get(key)
@@ -477,6 +478,38 @@ def _normalize_import_config_payload(config_data: Dict[str, Any]) -> Dict[str, A
     if not normalized.get("tipo_archivo"):
         normalized["tipo_archivo"] = normalized.get("file_type", "CSV")
     return normalized
+
+def _parse_bool_value(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "si", "sí", "yes", "y"):
+        return True
+    if text in ("false", "0", "no", "n"):
+        return False
+    return None
+
+def _extract_parsing_options(config: Optional[Dict[str, Any]]) -> Tuple[Optional[bool], Optional[int]]:
+    payload = config or {}
+    constants = payload.get("constants") or {}
+
+    has_header = _parse_bool_value(payload.get("has_header"))
+    if has_header is None:
+        has_header = _parse_bool_value(constants.get("_has_header"))
+
+    data_start_row = payload.get("data_start_row")
+    if data_start_row in (None, ""):
+        data_start_row = constants.get("_data_start_row")
+    try:
+        parsed_row = int(data_start_row) if data_start_row not in (None, "") else None
+        if parsed_row is not None and parsed_row < 1:
+            parsed_row = 1
+    except Exception:
+        parsed_row = None
+
+    return has_header, parsed_row
 
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
@@ -542,6 +575,8 @@ class RemoteRequest(BaseModel):
     password: Optional[str] = None
     ruta: str = "/"
     tipo_archivo: str = "CSV"
+    has_header: Optional[bool] = None
+    data_start_row: Optional[int] = None
 
 class ImportConfigSchema(BaseModel):
     id: Optional[str] = None
@@ -556,6 +591,8 @@ class ImportConfigSchema(BaseModel):
     mapping: Dict[str, str] = {}
     constants: Dict[str, str] = {}  # Added for constant field values
     date_format: Optional[str] = "auto"  # Date format preference for fecha_venta
+    has_header: Optional[bool] = None
+    data_start_row: Optional[int] = None
     # Worker names fallback support is in normalization logic
 
 class ExecuteManualRequest(BaseModel):
@@ -663,6 +700,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
     
     try:
         raw_rows = []
+        forced_has_header, forced_data_start_row = _extract_parsing_options(config)
         no_header_mode = False
         line_offset = 2
         default_no_header_map = {
@@ -707,15 +745,25 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
             except:
                 delimiter = ","
                 has_header = True
+            if forced_has_header is not None:
+                has_header = forced_has_header
             f.seek(0)
             if has_header:
                 reader = csv.DictReader(f, delimiter=delimiter)
                 raw_rows = list(reader)
+                if forced_data_start_row and forced_data_start_row > 2:
+                    skip_count = forced_data_start_row - 2
+                    raw_rows = raw_rows[skip_count:]
+                    line_offset = forced_data_start_row
             else:
                 no_header_mode = True
                 line_offset = 1
                 reader = csv.reader(f, delimiter=delimiter)
                 matrix_rows = [r for r in reader if any(str(c or "").strip() for c in r)]
+                if forced_data_start_row and forced_data_start_row > 1:
+                    skip_count = forced_data_start_row - 1
+                    matrix_rows = matrix_rows[skip_count:]
+                    line_offset = forced_data_start_row
                 if matrix_rows:
                     max_cols = max(len(r) for r in matrix_rows)
                     synthetic_headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]
@@ -1822,7 +1870,7 @@ SYSTEM_FIELDS_SYNONYMS = {
 
 
 
-def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
+def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, force_has_header: Optional[bool] = None, data_start_row: Optional[int] = None):
     headers = []
     sample_row = {}
     
@@ -1845,20 +1893,29 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None):
         except:
             delimiter = ',' # Fallback
             has_header = True
+        if force_has_header is not None:
+            has_header = force_has_header
             
         # Read first lines
         f = io.StringIO(decoded_content)
         if has_header:
             reader = csv.DictReader(f, delimiter=delimiter)
             try:
-                row1 = next(reader)
+                all_rows = list(reader)
+                if data_start_row and data_start_row > 2:
+                    all_rows = all_rows[data_start_row - 2:]
+                row1 = all_rows[0] if all_rows else None
                 headers = reader.fieldnames
-                sample_row = row1
-            except StopIteration:
+                sample_row = row1 or {}
+                if not row1:
+                    return {"csv_headers": headers or [], "headers": headers or [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": headers or []}
+            except Exception:
                 return {"csv_headers": [], "headers": [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": []}
         else:
             raw_reader = csv.reader(f, delimiter=delimiter)
             matrix_rows = [r for r in raw_reader if any(str(c or "").strip() for c in r)]
+            if data_start_row and data_start_row > 1:
+                matrix_rows = matrix_rows[data_start_row - 1:]
             if not matrix_rows:
                 return {"csv_headers": [], "headers": [], "suggested_mapping": {}, "sample_row": {}, "detected_headers": []}
 
@@ -2064,7 +2121,13 @@ async def analyze_remote_mapping(
         if not content:
             return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
             
-        return _perform_mapping_analysis(content, req.ruta, req.tipo_archivo)
+        return _perform_mapping_analysis(
+            content,
+            req.ruta,
+            req.tipo_archivo,
+            force_has_header=req.has_header,
+            data_start_row=req.data_start_row
+        )
         
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Timeout analizando archivo remoto (el archivo podría ser demasiado grande o la conexión lenta)")
@@ -2607,7 +2670,13 @@ async def analyze_remote_file(
         if not content:
             return {"csv_headers": [], "suggested_mapping": {}, "sample_row": {}, "current_mapping": {}}
         
-        analysis = _perform_mapping_analysis(content, req.filename)
+        forced_has_header, forced_data_start_row = _extract_parsing_options(config_data)
+        analysis = _perform_mapping_analysis(
+            content,
+            req.filename,
+            force_has_header=forced_has_header,
+            data_start_row=forced_data_start_row
+        )
         
         # Add current mapping from config if exists
         analysis["current_mapping"] = config_data.get("mapping", {})

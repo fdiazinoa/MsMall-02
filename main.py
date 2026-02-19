@@ -796,7 +796,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 has_header = True
             if forced_has_header is not None:
                 has_header = forced_has_header
-            elif has_header and _should_treat_as_no_header(content, delimiter):
+            if has_header and _should_treat_as_no_header(content, delimiter):
                 has_header = False
             f.seek(0)
             if has_header:
@@ -1946,7 +1946,7 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, forc
             has_header = True
         if force_has_header is not None:
             has_header = force_has_header
-        elif has_header and _should_treat_as_no_header(decoded_content, delimiter):
+        if has_header and _should_treat_as_no_header(decoded_content, delimiter):
             has_header = False
             
         # Read first lines

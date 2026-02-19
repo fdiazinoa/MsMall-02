@@ -39,7 +39,16 @@ else:
     except Exception as e:
         logger.error(f"Failed to initialize Supabase client: {e}")
 
-def insert_load_log(local_nombre: str, archivo: str, estado: str, mensaje: str, batch_id: str = None, detalles: list = None):
+def insert_load_log(
+    local_nombre: str,
+    archivo: str,
+    estado: str,
+    mensaje: str,
+    batch_id: str = None,
+    detalles: list = None,
+    mall_id: str = None,
+    local_id: str = None
+):
     """Inserts a log into Supabase 'logs_carga' table."""
     if not supabase:
         logger.warning("Skipping load log insert: Supabase client not initialized.")
@@ -54,7 +63,20 @@ def insert_load_log(local_nombre: str, archivo: str, estado: str, mensaje: str, 
             "batch_id": batch_id,
             "detalles": detalles or []
         }
-        supabase.table("logs_carga").insert(log_data).execute()
+        if mall_id:
+            log_data["mall_id"] = mall_id
+        if local_id:
+            log_data["local_id"] = local_id
+
+        try:
+            supabase.table("logs_carga").insert(log_data).execute()
+        except Exception as insert_err:
+            err_txt = str(insert_err).lower()
+            if ("mall_id" in err_txt or "local_id" in err_txt) and ("column" in err_txt or "schema" in err_txt):
+                legacy_payload = {k: v for k, v in log_data.items() if k not in {"mall_id", "local_id"}}
+                supabase.table("logs_carga").insert(legacy_payload).execute()
+            else:
+                raise
         logger.info(f"Log registrado: {mensaje}")
     except Exception as e:
         logger.error(f"Error inserting load log: {e}")
@@ -149,6 +171,8 @@ def process_file_logic(config, filename, content):
         
         if not local_id:
             return 0, [{"linea": 0, "error": "No se pudo determinar el local_id"}]
+        if not mall_id:
+            return 0, [{"linea": 0, "error": "La configuración no tiene mall_id. Importación cancelada para evitar mezcla entre malls."}]
             
         # Get mapping
         mapping = config.get('mapping_config') or {}
@@ -253,7 +277,10 @@ def process_local_files(config):
         try:
             ssh, sftp = connect_with_retries(lambda: get_sftp_client(host, port, user, password))
         except Exception as ce:
-            insert_load_log(config['nombre'], "N/A", "error", f"Fallo conexión SFTP: {str(ce)}")
+            insert_load_log(
+                config['nombre'], "N/A", "error", f"Fallo conexión SFTP: {str(ce)}",
+                mall_id=config.get("mall_id"), local_id=config.get("id")
+            )
             return
 
         try:
@@ -292,7 +319,10 @@ def process_local_files(config):
             
             if total_pending == 0:
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
-                insert_load_log(config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 pendientes.")
+                insert_load_log(
+                    config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 pendientes.",
+                    mall_id=config.get("mall_id"), local_id=config.get("id")
+                )
                 return
 
             logger.info(f"🚀 {config['nombre']}: Encontrados {total_pending} pendientes. Procesando lote de {len(batch_files)}.")
@@ -317,7 +347,10 @@ def process_local_files(config):
                         mensaje = f"Worker: Procesado {count} registros."
                         if errors: mensaje += f" {len(errors)} errores parciales."
                         
-                        insert_load_log(config['nombre'], filename, estado, mensaje, batch_id, errors)
+                        insert_load_log(
+                            config['nombre'], filename, estado, mensaje, batch_id, errors,
+                            mall_id=config.get("mall_id"), local_id=config.get("id")
+                        )
                         handle_post_process_sftp(sftp, remote_path, filename, post_action, processed_suffix, backup_prefix)
                     else:
                         # LOGIC ERROR case (empty file or parse error)
@@ -328,7 +361,10 @@ def process_local_files(config):
                 except Exception as fe:
                     # SAFETY NET: Rename to .error so it doesn't block the queue
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
-                    insert_load_log(config['nombre'], filename, "error", str(fe), batch_id)
+                    insert_load_log(
+                        config['nombre'], filename, "error", str(fe), batch_id,
+                        mall_id=config.get("mall_id"), local_id=config.get("id")
+                    )
                     try:
                         error_name = f"{remote_path}/{filename}.error"
                         sftp.rename(f"{remote_path}/{filename}", error_name)
@@ -344,7 +380,10 @@ def process_local_files(config):
         try:
             ftp = connect_with_retries(lambda: get_ftp_client(host, port, user, password))
         except Exception as ce:
-            insert_load_log(config['nombre'], "N/A", "error", f"Fallo conexión FTP: {str(ce)}")
+            insert_load_log(
+                config['nombre'], "N/A", "error", f"Fallo conexión FTP: {str(ce)}",
+                mall_id=config.get("mall_id"), local_id=config.get("id")
+            )
             return
 
         try:
@@ -379,7 +418,10 @@ def process_local_files(config):
             
             if total_pending == 0:
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
-                insert_load_log(config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 pendientes.")
+                insert_load_log(
+                    config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 pendientes.",
+                    mall_id=config.get("mall_id"), local_id=config.get("id")
+                )
                 return
 
             logger.info(f"🚀 {config['nombre']}: Encontrados {total_pending} pendientes. Procesando lote de {len(batch_files)}.")
@@ -404,7 +446,10 @@ def process_local_files(config):
                         mensaje = f"Worker: Procesado {count} registros."
                         if errors: mensaje += f" {len(errors)} errores parciales."
                         
-                        insert_load_log(config['nombre'], filename, estado, mensaje, batch_id, errors)
+                        insert_load_log(
+                            config['nombre'], filename, estado, mensaje, batch_id, errors,
+                            mall_id=config.get("mall_id"), local_id=config.get("id")
+                        )
                         handle_post_process_ftp(ftp, filename, post_action, processed_suffix, backup_prefix)
                     else:
                          raise Exception(f"Fallo lógico: {errors[0]['error'] if errors else 'Desconocido'}")
@@ -412,7 +457,10 @@ def process_local_files(config):
                     processed_count += 1
                 except Exception as fe:
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
-                    insert_load_log(config['nombre'], filename, "error", str(fe), batch_id)
+                    insert_load_log(
+                        config['nombre'], filename, "error", str(fe), batch_id,
+                        mall_id=config.get("mall_id"), local_id=config.get("id")
+                    )
                     try:
                         ftp.rename(filename, f"{filename}.error")
                     except: pass
@@ -541,7 +589,10 @@ async def process_local_safe(local, semaphore):
             
         except Exception as e:
             logger.error(f"❌ [Error] Processing {local_name}: {e}")
-            insert_load_log(local_name, "SYSTEM", "error", f"Async processing failed: {str(e)}")
+            insert_load_log(
+                local_name, "SYSTEM", "error", f"Async processing failed: {str(e)}",
+                mall_id=local.get("mall_id"), local_id=local.get("id")
+            )
             
             # Increment Failures
             new_failures = consecutive_failures + 1
@@ -614,7 +665,7 @@ async def run_worker_async():
             .eq("processing_status", "IDLE")\
             .execute()
             
-        locales = response.data or []
+        locales = [loc for loc in (response.data or []) if loc.get("mall_id")]
         current_hour = datetime.now().hour
         
         tasks_to_run = []

@@ -156,7 +156,7 @@ export const ImportManager: React.FC = () => {
 
     const configToSave = { ...editingConfig, password: tempPassword || editingConfig.password };
     try {
-      await ApiService.saveImportConfig(configToSave);
+      await ApiService.saveImportConfig(configToSave, currentMall?.id);
       setShowForm(false);
       setActiveStep(1);
       setTempPassword('');

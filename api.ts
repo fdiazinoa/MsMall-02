@@ -17,18 +17,31 @@ const DIRECT_BACKEND_BASE_URL = import.meta.env.VITE_DIRECT_BACKEND_BASE_URL || 
 const STORES_STORAGE_KEY = 'msmall_mock_stores';
 const USERS_STORAGE_KEY = 'msmall_mock_users';
 const IMPORTS_STORAGE_KEY = 'msmall_mock_imports';
+const DEFAULT_RAILWAY_BASE_URL = 'https://msmall-02-production.up.railway.app/api/v1';
 
-const getExecuteManualBaseUrls = (): string[] => {
-  const urls: string[] = [BASE_URL];
+const normalizeApiBaseUrl = (value: string): string => {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return '';
+  if (trimmed === BASE_URL) return BASE_URL;
+  return `${trimmed.replace(/\/+$/, '').replace(/\/api\/v1$/i, '').replace(/\/api$/i, '')}/api/v1`;
+};
 
-  if (DIRECT_BACKEND_BASE_URL && DIRECT_BACKEND_BASE_URL !== BASE_URL) {
-    urls.push(DIRECT_BACKEND_BASE_URL);
-  } else if (typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app')) {
-    urls.push('https://msmall-02-production.up.railway.app/api/v1');
+const getApiBaseUrls = (): string[] => {
+  const urls: string[] = [];
+  const normalizedDirectBase = normalizeApiBaseUrl(DIRECT_BACKEND_BASE_URL);
+  const isVercelHost = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
+
+  if (normalizedDirectBase && normalizedDirectBase !== BASE_URL) {
+    urls.push(normalizedDirectBase);
+  } else if (isVercelHost) {
+    urls.push(DEFAULT_RAILWAY_BASE_URL);
   }
 
+  urls.push(BASE_URL);
   return Array.from(new Set(urls));
 };
+
+const getExecuteManualBaseUrls = (): string[] => getApiBaseUrls();
 
 const isNetworkFetchFailure = (error: any): boolean => {
   const msg = String(error?.message || error || '');
@@ -42,6 +55,63 @@ const isNetworkFetchFailure = (error: any): boolean => {
 const withAuthHeaders = (token?: string, headers: Record<string, string> = {}): Record<string, string> => {
   if (!token) return headers;
   return { ...headers, Authorization: `Bearer ${token}` };
+};
+
+const parseErrorDetail = async (response: Response, fallbackMessage: string): Promise<string> => {
+  const raw = await response.text().catch(() => '');
+  if (!raw) return fallbackMessage;
+  if (raw.trim().startsWith('<')) return fallbackMessage;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      if (typeof parsed.detail === 'string' && parsed.detail.trim()) return parsed.detail;
+      if (typeof parsed.message === 'string' && parsed.message.trim()) return parsed.message;
+    }
+  } catch {
+    // Ignore parse errors and use fallback.
+  }
+
+  return fallbackMessage;
+};
+
+const fetchJsonWithBaseFallback = async <T>(
+  path: string,
+  init: RequestInit,
+  fallbackMessage: string
+): Promise<T> => {
+  const baseUrls = getApiBaseUrls();
+  let lastError: any = null;
+
+  for (let i = 0; i < baseUrls.length; i++) {
+    const baseUrl = baseUrls[i];
+    const endpoint = `${baseUrl}${path}`;
+
+    try {
+      const response = await fetch(endpoint, init);
+      if (response.ok) {
+        return await response.json();
+      }
+
+      // 5xx from proxy/rewrite should try direct backend fallback.
+      if (response.status >= 500 && i < baseUrls.length - 1) {
+        console.warn(`API fallback: ${endpoint} respondió ${response.status}. Intentando siguiente base...`);
+        continue;
+      }
+
+      const detail = await parseErrorDetail(response, fallbackMessage);
+      throw new Error(detail);
+    } catch (error: any) {
+      lastError = error;
+      if (isNetworkFetchFailure(error) && i < baseUrls.length - 1) {
+        console.warn(`API fallback: fallo de red en ${endpoint}. Intentando siguiente base...`);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw lastError || new Error(fallbackMessage);
 };
 
 export interface Store {
@@ -112,8 +182,12 @@ export const ApiService = {
     }));
   },
 
-  async saveImportConfig(config: ImportConfig): Promise<void> {
+  async saveImportConfig(config: ImportConfig, mallId?: string): Promise<void> {
     if (!supabase) throw new Error("Supabase client not initialized");
+
+    if (!config.id && !mallId) {
+      throw new Error("No se puede crear la configuración sin un mall seleccionado.");
+    }
 
     const dbPayload: any = {
       nombre: config.nombre, // Ensure name is saved if it's new
@@ -132,6 +206,10 @@ export const ApiService = {
       mapping_config: config.mapping,
       constants_config: config.constants
     };
+
+    if (mallId) {
+      dbPayload.mall_id = mallId;
+    }
 
     // Logic to always ensure codigo_interno is present and valid
     let finalCodigoInterno = `IMP-${Math.floor(Math.random() * 100000)}`;
@@ -532,25 +610,30 @@ export const ApiService = {
 
       // Filter by mall if provided
       if (mallId) {
-        // 1. Get store names for this mall
-        const { data: stores } = await supabase
-          .from('locales')
-          .select('nombre')
-          .eq('mall_id', mallId);
-
-        const storeNames = (stores || []).map((s: any) => s.nombre);
-
-        if (storeNames.length > 0) {
-          query = query.in('local_nombre', storeNames);
-        } else {
-          // If mall has no stores, return empty or filter by empty list (which returns 0)
-          // But query.in with empty list usually throws or returns all. Safety check:
-          return [];
-        }
+        query = query.eq('mall_id', mallId);
       }
 
       const { data, error } = await query;
-      if (error) throw error;
+      if (error) {
+        // Backward compatibility while logs_carga.mall_id is not migrated yet.
+        if (mallId && String((error as any)?.message || '').toLowerCase().includes('mall_id')) {
+          const { data: stores } = await supabase
+            .from('locales')
+            .select('nombre')
+            .eq('mall_id', mallId);
+          const storeNames = (stores || []).map((s: any) => s.nombre);
+          if (storeNames.length === 0) return [];
+          const legacy = await supabase
+            .from('logs_carga')
+            .select('*')
+            .in('local_nombre', storeNames)
+            .order('fecha_hora', { ascending: false })
+            .limit(50);
+          if (legacy.error) throw legacy.error;
+          return legacy.data || [];
+        }
+        throw error;
+      }
       return data;
     } catch (error) {
       console.error('Error fetching load logs:', error);
@@ -584,24 +667,21 @@ export const ApiService = {
     }
   },
 
-  async clearLoadLogs(): Promise<void> {
-    try {
-      // Use the backend endpoint instead of direct Supabase call to avoid hanging
-      const response = await fetch(`${BASE_URL}/audit/logs`, {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': 'demo-key-123' // Using the hardcoded demo key common in this mock app
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to clear logs via backend");
-      }
-    } catch (error) {
-      console.error('Error clearing load logs:', error);
-      throw error;
+  async clearLoadLogs(mallId: string, token?: string): Promise<{ status: string; message: string; deleted_count?: number }> {
+    if (!mallId) {
+      throw new Error("mall_id es requerido para limpiar historial.");
     }
+
+    return fetchJsonWithBaseFallback<{ status: string; message: string; deleted_count?: number }>(
+      `/audit/logs?mall_id=${encodeURIComponent(mallId)}`,
+      {
+        method: 'DELETE',
+        headers: withAuthHeaders(token, {
+          'Accept': 'application/json'
+        })
+      },
+      "Error limpiando historial de cargas"
+    );
   },
 
   // --- OTROS MÉTODOS ---
@@ -829,12 +909,16 @@ export const ApiService = {
     }
   },
 
-  async ingestSales(file: File, apiKey: string, onProgress?: (progress: number) => void): Promise<IngestionResponse> {
+  async ingestSales(file: File, apiKey: string, mallId: string, onProgress?: (progress: number) => void): Promise<IngestionResponse> {
     if (!supabase) {
       return { status: 'error', message: 'Supabase no está configurado', records_processed: 0 };
     }
 
-    const stores = await this.getStores();
+    if (!mallId) {
+      return { status: 'error', message: 'Debe seleccionar un mall antes de importar.', records_processed: 0 };
+    }
+
+    const stores = await this.getStores(mallId);
     // Create map of codigo_interno -> Store object for quick lookup
     const storeMap = new Map<string, Store>(stores.map(s => [s.codigo_interno.toUpperCase(), s]));
     const storeById = new Map<string, Store>(stores.map(s => [s.id, s]));
@@ -870,6 +954,7 @@ export const ApiService = {
           const recordsToInsert = [];
           const lineErrors: { linea: number, error: string }[] = [];
           let currentLocalName = 'Desconocido';
+          const touchedLocalIds = new Set<string>();
 
           // Process rows (skip header)
           for (let i = 1; i < lines.length; i++) {
@@ -896,6 +981,7 @@ export const ApiService = {
               }
 
               currentLocalName = store.nombre;
+              touchedLocalIds.add(store.id);
 
               recordsToInsert.push({
                 local_id: store.id,
@@ -1034,9 +1120,13 @@ export const ApiService = {
           const finalMsg = lineErrors.length > 0
             ? `Procesados ${processedCount} registros con ${lineErrors.length} errores.`
             : `Carga exitosa de ${processedCount} registros.`;
+          const singleLocalId = touchedLocalIds.size === 1 ? Array.from(touchedLocalIds)[0] : null;
+          const singleLocalName = touchedLocalIds.size === 1 ? currentLocalName : (touchedLocalIds.size > 1 ? 'Multiple locales' : currentLocalName);
 
           await this.logLoad({
-            local_nombre: currentLocalName,
+            local_nombre: singleLocalName,
+            mall_id: mallId,
+            local_id: singleLocalId,
             archivo: file.name,
             estado: finalStatus,
             mensaje: finalMsg,
@@ -1054,6 +1144,7 @@ export const ApiService = {
           console.error("Ingestion error:", error);
           await this.logLoad({
             local_nombre: 'Sistema',
+            mall_id: mallId,
             archivo: file.name,
             estado: 'error',
             mensaje: `Error crítico: ${error.message || 'Error desconocido'}`,
@@ -1074,11 +1165,11 @@ export const ApiService = {
   },
 
   async getUsers(token: string): Promise<User[]> {
-    const response = await fetch(`${BASE_URL}/admin/users`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-    if (!response.ok) throw new Error("Error fetching users");
-    return await response.json();
+    return fetchJsonWithBaseFallback<User[]>(
+      '/admin/users',
+      { headers: { 'Authorization': `Bearer ${token}` } },
+      "Error fetching users"
+    );
   },
 
   async createUser(email: string, password: string, role: string, mallIds: string[], token: string): Promise<any> {
@@ -1225,11 +1316,11 @@ export const ApiService = {
   // --- MALL MANAGEMENT (ADMIN) ---
   async getMalls(token: string): Promise<any[]> {
     try {
-      const response = await fetch(`${BASE_URL}/malls/all`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!response.ok) throw new Error("Error fetching malls");
-      return await response.json();
+      return await fetchJsonWithBaseFallback<any[]>(
+        '/malls/all',
+        { headers: { 'Authorization': `Bearer ${token}` } },
+        "Error fetching malls"
+      );
     } catch (e) {
       console.error(e);
       return [];

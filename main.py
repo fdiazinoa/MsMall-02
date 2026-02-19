@@ -405,6 +405,79 @@ async def require_it_or_admin_access(user_id: str = Depends(get_current_user_id)
         raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere rol IT o ADMIN.")
     return access_ctx
 
+def _get_user_mall_ids(user_id: str) -> List[str]:
+    if not user_id or not supabase:
+        return []
+    try:
+        res = (
+            supabase.table("usuarios_malls")
+            .select("mall_id")
+            .eq("usuario_id", user_id)
+            .execute()
+        )
+        return [row.get("mall_id") for row in (res.data or []) if row.get("mall_id")]
+    except Exception as e:
+        logger.warning(f"No se pudo cargar malls del usuario {user_id}: {e}")
+        return []
+
+def _ensure_operator_can_access_mall(operator_ctx: Dict[str, Any], mall_id: Optional[str]) -> None:
+    if operator_ctx.get("role") == "admin":
+        return
+    if not mall_id:
+        raise HTTPException(status_code=400, detail="La configuración no tiene mall_id asignado.")
+    allowed_malls = _get_user_mall_ids(operator_ctx.get("user_id"))
+    if mall_id not in allowed_malls:
+        raise HTTPException(status_code=403, detail="No tienes permisos para operar sobre este mall.")
+
+def _load_local_config_with_access(local_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    try:
+        res = (
+            supabase.table("locales")
+            .select("*")
+            .eq("id", local_id)
+            .maybe_single()
+            .execute()
+        )
+        local_cfg = res.data
+    except Exception as e:
+        logger.error(f"Error consultando local {local_id}: {e}")
+        raise HTTPException(status_code=500, detail="Error consultando configuración del local")
+
+    if not local_cfg:
+        raise HTTPException(status_code=404, detail="Configuración no encontrada")
+
+    _ensure_operator_can_access_mall(operator_ctx, local_cfg.get("mall_id"))
+    return local_cfg
+
+def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config: Optional[Any]) -> Dict[str, Any]:
+    if not runtime_config:
+        return base_config
+
+    runtime = runtime_config.dict(exclude_unset=True)
+    allowed_override_keys = [
+        "host", "puerto", "usuario", "password", "ruta_remota", "protocolo", "tipo_archivo",
+        "mapping", "constants", "accion_post_procesado", "prefijo_renombrado",
+        "sftp_host", "sftp_port", "sftp_user", "sftp_pass", "sftp_path", "sftp_protocol",
+        "file_type", "mapping_config", "constants_config", "prefijo_backup"
+    ]
+    for key in allowed_override_keys:
+        val = runtime.get(key)
+        if val not in (None, ""):
+            base_config[key] = val
+    return base_config
+
+def _normalize_import_config_payload(config_data: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(config_data or {})
+    if not normalized.get("mapping"):
+        normalized["mapping"] = normalized.get("mapping_config") or {}
+    if not normalized.get("constants"):
+        normalized["constants"] = normalized.get("constants_config") or {}
+    if not normalized.get("tipo_archivo"):
+        normalized["tipo_archivo"] = normalized.get("file_type", "CSV")
+    return normalized
+
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
     user_id: str = Depends(get_current_user_id)
@@ -494,6 +567,8 @@ class ExecuteManualRequest(BaseModel):
 class LoadLogSchema(BaseModel):
     id: Optional[str] = None
     fecha_hora: datetime
+    mall_id: Optional[str] = None
+    local_id: Optional[str] = None
     local_nombre: str
     archivo: str
     estado: str # 'exito', 'error', 'no_encontrado'
@@ -521,7 +596,16 @@ async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
         )
     return x_api_key
 
-def insert_load_log(local_nombre: str, archivo: str, estado: str, mensaje: str, batch_id: Optional[str] = None, detalles: List[Dict] = []):
+def insert_load_log(
+    local_nombre: str,
+    archivo: str,
+    estado: str,
+    mensaje: str,
+    batch_id: Optional[str] = None,
+    detalles: Optional[List[Dict]] = None,
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None
+):
     """Inserts a log into Supabase 'logs_carga' table."""
     if not supabase:
         logger.warning(f"Supabase not configured. Skipping log: {mensaje}")
@@ -535,10 +619,23 @@ def insert_load_log(local_nombre: str, archivo: str, estado: str, mensaje: str, 
             "estado": estado,
             "mensaje": mensaje,
             "batch_id": batch_id,
-            "detalles": detalles
+            "detalles": detalles or []
         }
+        if mall_id:
+            log_data["mall_id"] = mall_id
+        if local_id:
+            log_data["local_id"] = local_id
         logger.info(f"Intentando guardar log en Supabase: {local_nombre} - {archivo} - {estado}")
-        res = supabase.table("logs_carga").insert(log_data).execute()
+        try:
+            res = supabase.table("logs_carga").insert(log_data).execute()
+        except Exception as insert_err:
+            # Backward compatibility while DB migration is not applied yet.
+            err_txt = str(insert_err).lower()
+            if ("mall_id" in err_txt or "local_id" in err_txt) and ("column" in err_txt or "schema" in err_txt):
+                legacy_payload = {k: v for k, v in log_data.items() if k not in {"mall_id", "local_id"}}
+                res = supabase.table("logs_carga").insert(legacy_payload).execute()
+            else:
+                raise
         logger.info(f"Log guardado exitosamente. Respuesta: {res}")
     except Exception as e:
         logger.error(f"Error CRÍTICO insertando log en Supabase: {e}")
@@ -553,6 +650,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
     constants = config.get("constants", {})
     tipo_archivo = config.get("tipo_archivo", "CSV").upper()
     local_nombre = config.get("nombre", "Desconocido")
+    effective_mall_id = mall_id or config.get("mall_id")
     
     records_to_insert = []
     errors = []
@@ -734,15 +832,28 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         final_records = []
         
         # 1. Resolve Local UUIDs cache
-        local_codigos = set(r.get('local_codigo') for r in records_to_insert if r.get('local_codigo'))
+        local_codigos = {
+            str(r.get('local_codigo')).strip().upper()
+            for r in records_to_insert
+            if r.get('local_codigo')
+        }
         local_map = {} # codigo -> {id, mall_id}
         
         if local_codigos and supabase:
             try:
                 # Query locales table to find UUIDs for these codes
-                res = supabase.table("locales").select("id, codigo_interno, mall_id").in_("codigo_interno", list(local_codigos)).execute()
+                query = (
+                    supabase.table("locales")
+                    .select("id, codigo_interno, mall_id")
+                    .in_("codigo_interno", list(local_codigos))
+                )
+                if effective_mall_id:
+                    query = query.eq("mall_id", effective_mall_id)
+                res = query.execute()
                 for loc in res.data:
-                    local_map[loc['codigo_interno']] = {'id': loc['id'], 'mall_id': loc.get('mall_id')}
+                    code_key = str(loc.get('codigo_interno') or '').strip().upper()
+                    if code_key:
+                        local_map[code_key] = {'id': loc['id'], 'mall_id': loc.get('mall_id')}
             except Exception as e:
                 logger.warning(f"Error resolviendo local_ids: {e}")
 
@@ -796,7 +907,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                                 pass
 
             # Resolve Local ID & Mall ID
-            l_code = new_r.get('local_codigo')
+            l_code = str(new_r.get('local_codigo')).strip().upper() if new_r.get('local_codigo') else None
             if l_code:
                 if l_code in local_map:
                     local_info = local_map[l_code]
@@ -805,18 +916,23 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         new_r['mall_id'] = local_info['mall_id']
                     else:
                         # Fallback to context mall_id if local doesn't have one
-                        if mall_id:
-                            new_r['mall_id'] = mall_id
-                            logger.info(f"Using context mall_id: {mall_id} for local {l_code}")
+                        if effective_mall_id:
+                            new_r['mall_id'] = effective_mall_id
+                            logger.info(f"Using context mall_id: {effective_mall_id} for local {l_code}")
                     del new_r['local_codigo'] # Remove text code, keep UUID
                 else:
-                    logger.warning(f"No UUID found for local_codigo: {l_code}")
-                    del new_r['local_codigo']
+                    msg = (
+                        f"Código local '{l_code}' no encontrado"
+                        f"{f' en el mall {effective_mall_id}' if effective_mall_id else ''}."
+                    )
+                    errors.append({"linea": 0, "error": msg})
+                    logger.warning(msg)
+                    continue
             else:
                 # If no local_codigo provided, use context mall_id
-                if mall_id:
-                    new_r['mall_id'] = mall_id
-                    logger.info(f"Using context mall_id: {mall_id} (no local_codigo provided)") 
+                if effective_mall_id:
+                    new_r['mall_id'] = effective_mall_id
+                    logger.info(f"Using context mall_id: {effective_mall_id} (no local_codigo provided)") 
             
             final_records.append(new_r)
         
@@ -967,7 +1083,15 @@ async def ingesta_ventas(
         mensaje = f"Procesado: {count} registros."
         if errors: mensaje += f" Errores: {len(errors)}"
         
-        insert_load_log(config["nombre"], file.filename, estado, mensaje, batch_id, errors)
+        insert_load_log(
+            config["nombre"],
+            file.filename,
+            estado,
+            mensaje,
+            batch_id,
+            errors,
+            mall_id=mall_id
+        )
         
         return {
             "status": "success" if count > 0 else "error",
@@ -1205,20 +1329,87 @@ async def list_remote_files(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/v1/audit/logs", status_code=status.HTTP_200_OK)
-async def clear_load_logs(api_key: str = Depends(verify_api_key)):
+async def clear_load_logs(
+    mall_id: str = Query(..., alias="mall_id"),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
     """
-    Clears all load audit logs. Requires valid API Key.
+    Clears load audit logs only for the selected mall.
     """
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
-        
+
     try:
-        res = supabase.table("logs_carga").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-        logger.info(f"Cleared load logs. Response: {res}")
-        return {"status": "success", "message": "Historial de auditoría limpiado correctamente."}
-        
+        # Non-admin users must be explicitly assigned to the target mall.
+        if operator_ctx.get("role") != "admin":
+            membership = supabase.table("usuarios_malls") \
+                .select("mall_id") \
+                .eq("usuario_id", operator_ctx.get("user_id")) \
+                .eq("mall_id", mall_id) \
+                .limit(1) \
+                .execute()
+            if not membership.data:
+                raise HTTPException(
+                    status_code=403,
+                    detail="No tienes permisos para limpiar historial en este mall."
+                )
+
+        stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
+        stores = stores_res.data or []
+        store_ids = [s.get("id") for s in stores if s.get("id")]
+        store_names = [s.get("nombre") for s in stores if s.get("nombre")]
+
+        if not store_ids and not store_names:
+            return {
+                "status": "success",
+                "message": "No hay locales asociados al mall seleccionado.",
+                "deleted_count": 0
+            }
+
+        deleted_count = 0
+        try:
+            # Primary path: tenant-aware logs.
+            delete_by_mall = supabase.table("logs_carga").delete().eq("mall_id", mall_id).execute()
+            deleted_count += len(delete_by_mall.data or [])
+
+            # Legacy fallback rows (before migration): mall_id null + local_id/local_nombre lookup.
+            if store_ids:
+                delete_legacy_by_local = (
+                    supabase.table("logs_carga")
+                    .delete()
+                    .is_("mall_id", "null")
+                    .in_("local_id", store_ids)
+                    .execute()
+                )
+                deleted_count += len(delete_legacy_by_local.data or [])
+
+            if store_names:
+                delete_legacy_by_name = (
+                    supabase.table("logs_carga")
+                    .delete()
+                    .is_("mall_id", "null")
+                    .is_("local_id", "null")
+                    .in_("local_nombre", store_names)
+                    .execute()
+                )
+                deleted_count += len(delete_legacy_by_name.data or [])
+        except Exception:
+            # Backward compatibility while mall_id/local_id columns are not migrated yet.
+            if store_names:
+                legacy_delete = supabase.table("logs_carga").delete().in_("local_nombre", store_names).execute()
+                deleted_count += len(legacy_delete.data or [])
+
+        logger.info(f"Cleared load logs for mall {mall_id}. Deleted: {deleted_count}")
+        return {
+            "status": "success",
+            "message": "Historial de auditoría limpiado correctamente.",
+            "deleted_count": deleted_count
+        }
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error clearing logs: {e}")
+        logger.error(f"Error clearing logs for mall {mall_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def _read_remote_headers_sync(req: RemoteRequest):
@@ -1888,14 +2079,16 @@ async def list_files_endpoint(
     try:
         logger.info(f"Recibida solucitud de listado para: {config.host}:{config.puerto} (Protocolo: {config.protocolo})")
         config_dict = config.dict()
+        db_config = None
+        if config.id:
+            db_config = _load_local_config_with_access(config.id, operator_ctx)
         
         # Si tiene ID pero no host, intentar cargar de DB (enriquecer)
-        if config.id and not config.host and supabase:
-            res = supabase.table("locales").select("*").eq("id", config.id).single().execute()
-            if res.data:
-                # Merge data from DB if not provided in request
-                for k, v in res.data.items():
-                    if not config_dict.get(k): config_dict[k] = v
+        if db_config and not config.host:
+            # Merge data from DB if not provided in request
+            for k, v in db_config.items():
+                if not config_dict.get(k):
+                    config_dict[k] = v
 
         loop = asyncio.get_event_loop()
         files = await asyncio.wait_for(
@@ -1942,18 +2135,16 @@ async def execute_manual_endpoint(
                 _cache_set(request_cache_key, payload, ttl=1800)
             return payload
 
-        # Priorizar config enviada en el request para evitar dependencia de DB en configuración activa
-        config_data = {}
-        if req.config:
-            config_data = req.config.dict()
-        elif supabase:
-            # Fallback a DB
-            res = supabase.table("locales").select("*").eq("id", req.config_id).single().execute()
-            if res.data:
-                config_data = res.data
-        
-        if not config_data:
-            raise HTTPException(status_code=404, detail="Configuración no encontrada en el request ni en la base de datos.")
+        # Source of truth: config del local desde DB + overrides permitidos del request.
+        config_data = _load_local_config_with_access(req.config_id, operator_ctx)
+        config_data = _apply_runtime_import_overrides(config_data, req.config)
+        config_data = _normalize_import_config_payload(config_data)
+
+        if not config_data.get("mall_id"):
+            raise HTTPException(
+                status_code=400,
+                detail="La configuración del local no tiene mall_id asignado. No se puede importar de forma segura."
+            )
 
         # Normalizar para _list_remote_files (y para esta lógica local)
         local_nombre = config_data.get("nombre") or "Desconocido"
@@ -2022,11 +2213,25 @@ async def execute_manual_endpoint(
         except Exception as ce:
             error_msg = str(ce)
             logger.error(f"Error en ejecución manual ({protocolo} {host}): {error_msg}")
-            insert_load_log(local_nombre, req.filename, "error", f"Error de conexión: {error_msg}", batch_id)
+            insert_load_log(
+                local_nombre,
+                req.filename,
+                "error",
+                f"Error de conexión: {error_msg}",
+                batch_id,
+                mall_id=config_data.get("mall_id"),
+                local_id=config_data.get("id")
+            )
             raise HTTPException(status_code=500, detail=f"Error de conexión remota ({protocolo}): {error_msg}")
 
         # 3. Procesar Contenido
-        registros_exito, detalles_errores = process_file_content(content, req.filename, config_data, batch_id)
+        registros_exito, detalles_errores = process_file_content(
+            content,
+            req.filename,
+            config_data,
+            batch_id,
+            config_data.get("mall_id")
+        )
 
         estado = "exito" if registros_exito > 0 and not detalles_errores else "parcial" if registros_exito > 0 else "error"
         
@@ -2035,7 +2240,16 @@ async def execute_manual_endpoint(
             mensaje += f" Se encontraron {len(detalles_errores)} errores de validación/mapeo."
 
         # 4. Registrar Log en Monitor
-        insert_load_log(local_nombre, req.filename, estado, mensaje, batch_id, detalles_errores)
+        insert_load_log(
+            local_nombre,
+            req.filename,
+            estado,
+            mensaje,
+            batch_id,
+            detalles_errores,
+            mall_id=config_data.get("mall_id"),
+            local_id=config_data.get("id")
+        )
 
 
 
@@ -2105,7 +2319,15 @@ async def execute_manual_endpoint(
         traceback.print_exc()
         logger.error(f"Error en ejecución manual: {e}")
         if 'local_nombre' in locals():
-            insert_load_log(local_nombre, req.filename, "error", str(e), batch_id)
+            insert_load_log(
+                local_nombre,
+                req.filename,
+                "error",
+                str(e),
+                batch_id,
+                mall_id=config_data.get("mall_id") if 'config_data' in locals() else None,
+                local_id=config_data.get("id") if 'config_data' in locals() else None
+            )
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if request_id and manual_exec_lock_acquired:
@@ -2212,17 +2434,9 @@ async def analyze_remote_file(
     Similar to analyze_remote_mapping but uses config+filename instead of direct path.
     """
     try:
-        # Get config either from request or database
-        config_data = {}
-        if req.config:
-            config_data = req.config.dict()
-        elif supabase:
-            res = supabase.table("locales").select("*").eq("id", req.config_id).single().execute()
-            if res.data:
-                config_data = res.data
-        
-        if not config_data:
-            raise HTTPException(status_code=404, detail="Configuración no encontrada")
+        config_data = _load_local_config_with_access(req.config_id, operator_ctx)
+        config_data = _apply_runtime_import_overrides(config_data, req.config)
+        config_data = _normalize_import_config_payload(config_data)
 
         # Normalize configuration
         host = config_data.get("host") or config_data.get("sftp_host")
@@ -2327,17 +2541,9 @@ async def unmark_file(
     Renames 'PR_filename.ext' back to 'filename.ext'
     """
     try:
-        # Get config
-        config_data = {}
-        if req.config:
-            config_data = req.config.dict()
-        elif supabase:
-            res = supabase.table("locales").select("*").eq("id", req.config_id).single().execute()
-            if res.data:
-                config_data = res.data
-        
-        if not config_data:
-            raise HTTPException(status_code=404, detail="Configuración no encontrada")
+        config_data = _load_local_config_with_access(req.config_id, operator_ctx)
+        config_data = _apply_runtime_import_overrides(config_data, req.config)
+        config_data = _normalize_import_config_payload(config_data)
 
         # Normalize configuration
         host = config_data.get("host") or config_data.get("sftp_host")
@@ -3145,19 +3351,32 @@ async def get_sales_gaps(
         missing_dates = sorted(list(expected_dates - actual_dates))
         
         # 4. Enriquecimiento con Logs (logs_carga)
-        # Necesitamos el nombre del local para consultar logs_carga
-        local_resp = supabase.table('locales').select('nombre').eq('id', local_id).single().execute()
+        local_resp = supabase.table('locales').select('nombre, mall_id').eq('id', local_id).single().execute()
         local_name = local_resp.data['nombre'] if local_resp.data else None
+        local_mall_id = local_resp.data.get('mall_id') if local_resp.data else None
         
         audit_details = []
-        if local_name and missing_dates:
-            # Optimización: Consultar logs para todo el rango
-            logs_resp = supabase.table('logs_carga').select('*')\
-                .eq('local_nombre', local_name)\
-                .gte('fecha_hora', f"{fecha_inicio}T00:00:00")\
-                .lte('fecha_hora', f"{fecha_fin}T23:59:59")\
-                .order('fecha_hora', desc=True)\
-                .execute()
+        if missing_dates:
+            # Optimización: Consultar logs por local_id (tenant-safe) y fallback legacy por nombre+mall.
+            try:
+                logs_resp = supabase.table('logs_carga').select('*')\
+                    .eq('local_id', local_id)\
+                    .gte('fecha_hora', f"{fecha_inicio}T00:00:00")\
+                    .lte('fecha_hora', f"{fecha_fin}T23:59:59")\
+                    .order('fecha_hora', desc=True)\
+                    .execute()
+            except Exception:
+                logs_resp = type("Tmp", (), {"data": []})()
+
+            if (not logs_resp.data) and local_name:
+                legacy_q = supabase.table('logs_carga').select('*')\
+                    .eq('local_nombre', local_name)\
+                    .gte('fecha_hora', f"{fecha_inicio}T00:00:00")\
+                    .lte('fecha_hora', f"{fecha_fin}T23:59:59")\
+                    .order('fecha_hora', desc=True)
+                if local_mall_id:
+                    legacy_q = legacy_q.eq('mall_id', local_mall_id)
+                logs_resp = legacy_q.execute()
             
             logs_df = pd.DataFrame(logs_resp.data)
             if not logs_df.empty:

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ApiService } from '../api';
+import { useAuth } from '../context/AuthProvider';
 import Papa from 'papaparse';
 import { ArrowRight, FileSpreadsheet, AlertCircle, CheckCircle2, Upload, Info } from 'lucide-react';
 
@@ -13,6 +14,7 @@ const REQUIRED_COLUMNS = [
 ];
 
 export const UploadForm: React.FC = () => {
+  const { currentMall } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [apiKey, setApiKey] = useState('demo-key-123');
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'info' | 'idle', message: string }>({ type: 'idle', message: '' });
@@ -162,6 +164,10 @@ export const UploadForm: React.FC = () => {
     setStatus({ type: 'idle', message: '' });
 
     try {
+      if (!currentMall?.id) {
+        throw new Error('Selecciona un mall antes de importar.');
+      }
+
       let fileToUpload = file;
 
       if (isMappingNeeded) {
@@ -180,7 +186,7 @@ export const UploadForm: React.FC = () => {
         fileToUpload = await processMappedFile(file);
       }
 
-      const result = await ApiService.ingestSales(fileToUpload, apiKey, (progress) => {
+      const result = await ApiService.ingestSales(fileToUpload, apiKey, currentMall.id, (progress) => {
         setUploadProgress(progress);
       });
 

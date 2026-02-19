@@ -31,7 +31,7 @@ const StatCard = ({ title, count, icon: Icon, color, bgColor }: any) => (
 );
 
 export const LoadMonitor: React.FC = () => {
-    const { currentMall } = useAuth();
+    const { currentMall, session } = useAuth();
     const [logs, setLogs] = useState<LoadLog[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -53,10 +53,19 @@ export const LoadMonitor: React.FC = () => {
     };
 
     const handleClearLogs = async () => {
-        if (window.confirm('¿Estás seguro de que deseas limpiar todo el historial de cargas? Esta acción no se puede deshacer.')) {
+        if (!currentMall?.id) {
+            alert('No hay mall seleccionado.');
+            return;
+        }
+        if (!session?.access_token) {
+            alert('Sesión inválida. Inicia sesión nuevamente para continuar.');
+            return;
+        }
+
+        if (window.confirm(`¿Estás seguro de que deseas limpiar el historial de cargas de ${currentMall.nombre}? Esta acción no se puede deshacer.`)) {
             try {
-                await ApiService.clearLoadLogs();
-                setLogs([]);
+                await ApiService.clearLoadLogs(currentMall.id, session.access_token);
+                await loadData();
                 alert('Historial limpiado correctamente.');
             } catch (e) {
                 alert('Error al limpiar el historial.');

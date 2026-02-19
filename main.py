@@ -5,6 +5,7 @@ import io
 import logging
 import time
 import threading
+import re
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from uuid import uuid4
@@ -557,8 +558,40 @@ def _should_treat_as_no_header(content: str, delimiter: str) -> bool:
         second_ratio = second_data_like / max(len(second), 1)
 
         return header_like == 0 and first_ratio >= 0.7 and second_ratio >= 0.7
-    except Exception:
+    except Exception as e:
+        logger.debug(f"No se pudo evaluar encabezado automáticamente: {e}")
         return False
+
+def _detect_delimiter_and_header(sample: str) -> Tuple[str, bool]:
+    sniffer = csv.Sniffer()
+    delimiter = ","
+    has_header = True
+    candidates = [",", ";", "\t", "|"]
+
+    try:
+        dialect = sniffer.sniff(sample, delimiters="".join(candidates))
+        delimiter = dialect.delimiter
+    except Exception:
+        delimiter = ","
+
+    try:
+        lines = [ln for ln in sample.splitlines() if ln.strip()][:10]
+        if lines:
+            counts = {d: sum(ln.count(d) for ln in lines) for d in candidates}
+            best_delim = max(counts, key=counts.get)
+            best_count = counts.get(best_delim, 0)
+            current_count = counts.get(delimiter, 0)
+            if best_count > 0 and (current_count == 0 or best_count >= current_count * 2):
+                delimiter = best_delim
+    except Exception:
+        pass
+
+    try:
+        has_header = sniffer.has_header(sample)
+    except Exception:
+        has_header = True
+
+    return delimiter, has_header
 
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
@@ -785,15 +818,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
             # Default CSV/TXT
             f = io.StringIO(content)
             sample = content[:4096]
-            has_header = True
-            try:
-                sniffer = csv.Sniffer()
-                dialect = sniffer.sniff(sample)
-                delimiter = dialect.delimiter
-                has_header = sniffer.has_header(sample)
-            except:
-                delimiter = ","
-                has_header = True
+            delimiter, has_header = _detect_delimiter_and_header(sample)
             if forced_has_header is not None:
                 has_header = forced_has_header
             if has_header and _should_treat_as_no_header(content, delimiter):
@@ -1935,15 +1960,7 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, forc
     if current_type == "CSV" or current_type == "TXT" or not current_type:
         # Simple Sniffer attempt
         sample_str = decoded_content[:4096] # Analyze first 4KB
-        has_header = True
-        try:
-            sniffer = csv.Sniffer()
-            dialect = sniffer.sniff(sample_str)
-            delimiter = dialect.delimiter
-            has_header = sniffer.has_header(sample_str)
-        except:
-            delimiter = ',' # Fallback
-            has_header = True
+        delimiter, has_header = _detect_delimiter_and_header(sample_str)
         if force_has_header is not None:
             has_header = force_has_header
         if has_header and _should_treat_as_no_header(decoded_content, delimiter):

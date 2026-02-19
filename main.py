@@ -511,6 +511,55 @@ def _extract_parsing_options(config: Optional[Dict[str, Any]]) -> Tuple[Optional
 
     return has_header, parsed_row
 
+def _looks_like_data_cell(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    if re.fullmatch(r"\d+", text):
+        return True
+    if re.fullmatch(r"\d{8}", text):
+        return True
+    if re.fullmatch(r"\d+([.,]\d+)?", text):
+        return True
+    if re.fullmatch(r"[A-Za-z]\d{1,4}", text):
+        return True
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,6}", text):
+        return True
+    return False
+
+def _looks_like_header_cell(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    header_tokens = (
+        "fecha", "date", "factura", "invoice", "local", "codigo", "code",
+        "total", "impuesto", "tax", "neto", "bruto", "monto", "amount", "hora"
+    )
+    return any(token in text for token in header_tokens)
+
+def _should_treat_as_no_header(content: str, delimiter: str) -> bool:
+    try:
+        reader = csv.reader(io.StringIO(content), delimiter=delimiter)
+        rows = [r for r in reader if any(str(c or "").strip() for c in r)]
+        if len(rows) < 2:
+            return False
+
+        first = rows[0]
+        second = rows[1]
+        if not first:
+            return False
+
+        header_like = sum(1 for c in first if _looks_like_header_cell(c))
+        first_data_like = sum(1 for c in first if _looks_like_data_cell(c))
+        second_data_like = sum(1 for c in second if _looks_like_data_cell(c))
+
+        first_ratio = first_data_like / max(len(first), 1)
+        second_ratio = second_data_like / max(len(second), 1)
+
+        return header_like == 0 and first_ratio >= 0.7 and second_ratio >= 0.7
+    except Exception:
+        return False
+
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
     user_id: str = Depends(get_current_user_id)
@@ -747,6 +796,8 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 has_header = True
             if forced_has_header is not None:
                 has_header = forced_has_header
+            elif has_header and _should_treat_as_no_header(content, delimiter):
+                has_header = False
             f.seek(0)
             if has_header:
                 reader = csv.DictReader(f, delimiter=delimiter)
@@ -1895,6 +1946,8 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, forc
             has_header = True
         if force_has_header is not None:
             has_header = force_has_header
+        elif has_header and _should_treat_as_no_header(decoded_content, delimiter):
+            has_header = False
             
         # Read first lines
         f = io.StringIO(decoded_content)

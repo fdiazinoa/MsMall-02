@@ -2175,9 +2175,34 @@ async def analyze_remote_mapping(
             elif req.protocolo == "FTP":
                 ftp = get_ftp_client(req.host, req.puerto, req.usuario, req.password)
                 try:
+                    target_path = (req.ruta or "").replace("\\", "/")
+                    target_name = posixpath.basename(target_path)
+                    target_dir = posixpath.dirname(target_path)
+
                     bio = io.BytesIO()
-                    remote_name = req.ruta.split('/')[-1]
-                    ftp.retrbinary(f"RETR {remote_name}", bio.write)
+                    fetched = False
+
+                    # Preferred path: CWD to directory and retrieve basename.
+                    if target_dir and target_dir not in (".", "/"):
+                        try:
+                            ftp.cwd(target_dir)
+                        except Exception as cwd_err:
+                            logger.warning(f"No se pudo cambiar a carpeta FTP '{target_dir}': {cwd_err}")
+                    try:
+                        ftp.retrbinary(f"RETR {target_name}", bio.write)
+                        fetched = True
+                    except Exception:
+                        pass
+
+                    # Fallback path: try with complete path when server supports it.
+                    if not fetched:
+                        bio = io.BytesIO()
+                        ftp.retrbinary(f"RETR {target_path}", bio.write)
+                        fetched = True
+
+                    if not fetched:
+                        raise FileNotFoundError(f"No se pudo leer el archivo FTP: {req.ruta}")
+
                     bio.seek(0)
                     if is_json:
                          return bio.read().decode('utf-8-sig', errors='replace')

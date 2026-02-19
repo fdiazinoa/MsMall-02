@@ -512,6 +512,116 @@ export const ImportManager: React.FC = () => {
     setShowExplorer(false);
   };
 
+  const detectFileType = (filename: string): ImportConfig['tipo_archivo'] => {
+    const lowerName = filename.toLowerCase();
+    if (lowerName.endsWith('.json')) return 'JSON';
+    if (lowerName.endsWith('.xml')) return 'XML';
+    if (lowerName.endsWith('.txt')) return 'TXT';
+    if (lowerName.endsWith('.csv')) return 'CSV';
+    return editingConfig.tipo_archivo;
+  };
+
+  const handleSelectExplorerFile = (item: { nombre: string, ruta: string, es_dir: boolean }) => {
+    setShowExplorer(false);
+    setFetchingHeaders(true);
+
+    const newConfig = {
+      ...editingConfig,
+      ruta_remota: item.ruta,
+      tipo_archivo: detectFileType(item.nombre)
+    };
+    setEditingConfig(newConfig);
+
+    ApiService.analyzeRemoteMapping(newConfig, tempPassword, item.ruta, authToken)
+      .then(result => {
+        setRemoteHeaders(result.csv_headers || []);
+        setEditingConfig(prev => {
+          const nextMapping: Record<string, string> = { ...prev.mapping };
+          if (result.suggested_mapping) {
+            Object.entries(result.suggested_mapping).forEach(([field, suggestion]: [string, any]) => {
+              nextMapping[field] = suggestion.csv_header;
+            });
+          }
+          return { ...prev, mapping: nextMapping };
+        });
+        setActiveStep(2);
+      })
+      .catch(err => {
+        console.error(err);
+        alert("Error analizando archivo: " + err.message);
+      })
+      .finally(() => setFetchingHeaders(false));
+  };
+
+  const renderExplorerModal = () => (
+    showExplorer && (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div className="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-300 flex flex-col max-h-[80vh]">
+          <div className="bg-slate-50 p-3 border-b border-slate-100 flex justify-between items-center">
+            <span className="text-[10px] font-bold text-slate-500 truncate max-w-[80%]">{explorerPath}</span>
+            <button onClick={() => setShowExplorer(false)} className="text-slate-400 hover:text-slate-600"><XCircle size={14} /></button>
+          </div>
+          <div className="max-h-60 overflow-y-auto p-2 space-y-1">
+            {explorerLoading ? (
+              <div className="py-8 text-center"><RefreshCw className="animate-spin mx-auto text-indigo-400" size={20} /></div>
+            ) : (
+              <>
+                {(explorerItems || []).map((item, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-center justify-between p-2 hover:bg-indigo-50 rounded-lg cursor-pointer group transition-colors"
+                    onClick={() => {
+                      if (item.nombre === '..') {
+                        handleNavigateExplorer(item.ruta);
+                        return;
+                      }
+                      if (item.es_dir) {
+                        handleNavigateExplorer(item.ruta);
+                        return;
+                      }
+                      handleSelectExplorerFile(item);
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      {item.es_dir ? <FolderOpen size={16} className="text-indigo-400" /> : <FileText size={16} className="text-slate-400" />}
+                      <span className="text-sm text-slate-700 font-medium">{item.nombre}</span>
+                    </div>
+                    {item.nombre !== '..' && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (item.es_dir) {
+                            handleSelectDirectory(item.ruta);
+                          } else {
+                            handleSelectExplorerFile(item);
+                          }
+                        }}
+                        className="bg-indigo-600 text-white text-[10px] px-2 py-1 rounded-md font-bold hover:bg-indigo-700 transition-colors"
+                      >
+                        {item.es_dir ? 'Seleccionar Carpeta' : 'Usar para Mapeo'}
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {explorerItems.length === 0 && (
+                  <div className="py-4 text-center text-xs text-slate-400">No se encontraron carpetas</div>
+                )}
+              </>
+            )}
+          </div>
+          <div className="p-3 bg-slate-50 border-t border-slate-100 flex justify-end">
+            <button
+              onClick={() => handleSelectDirectory(explorerPath)}
+              className="bg-indigo-600 text-white text-xs px-4 py-1.5 rounded-lg font-bold hover:bg-indigo-700"
+            >
+              Seleccionar Actual (Dir)
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  );
+
   if (!canManageImports) {
     return (
       <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm font-medium">
@@ -813,144 +923,6 @@ export const ImportManager: React.FC = () => {
                     </div>
                   </div>
 
-                  {showExplorer && (
-                    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                      <div className="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-300 flex flex-col max-h-[80vh]">
-                        <div className="bg-slate-50 p-3 border-b border-slate-100 flex justify-between items-center">
-                          <span className="text-[10px] font-bold text-slate-500 truncate max-w-[80%]">{explorerPath}</span>
-                          <button onClick={() => setShowExplorer(false)} className="text-slate-400 hover:text-slate-600"><XCircle size={14} /></button>
-                        </div>
-                        <div className="max-h-60 overflow-y-auto p-2 space-y-1">
-                          {explorerLoading ? (
-                            <div className="py-8 text-center"><RefreshCw className="animate-spin mx-auto text-indigo-400" size={20} /></div>
-                          ) : (
-                            <>
-                              {(explorerItems || []).map((item, idx) => (
-                                <div
-                                  key={idx}
-                                  className="flex items-center justify-between p-2 hover:bg-indigo-50 rounded-lg cursor-pointer group transition-colors"
-                                  onClick={() => {
-                                    if (item.nombre === '..') {
-                                      handleNavigateExplorer(item.ruta);
-                                      return;
-                                    }
-
-                                    if (item.es_dir) {
-                                      handleNavigateExplorer(item.ruta);
-                                    } else {
-                                      setShowExplorer(false);
-                                      setFetchingHeaders(true);
-
-                                      let detectedType = editingConfig.tipo_archivo;
-                                      const lowerName = item.nombre.toLowerCase();
-                                      if (lowerName.endsWith('.json')) detectedType = 'JSON';
-                                      else if (lowerName.endsWith('.xml')) detectedType = 'XML';
-                                      else if (lowerName.endsWith('.txt')) detectedType = 'TXT';
-                                      else if (lowerName.endsWith('.csv')) detectedType = 'CSV';
-
-                                      const newConfig = { ...editingConfig, ruta_remota: item.ruta, tipo_archivo: detectedType };
-                                      setEditingConfig(newConfig);
-
-                                      ApiService.analyzeRemoteMapping(newConfig, tempPassword, item.ruta, authToken)
-                                        .then(result => {
-                                          setRemoteHeaders(result.csv_headers || []);
-
-                                          // Extract just the header names from the suggested mapping
-                                          const newMapping: Record<string, string> = { ...editingConfig.mapping };
-                                          if (result.suggested_mapping) {
-                                            Object.entries(result.suggested_mapping).forEach(([field, suggestion]: [string, any]) => {
-                                              newMapping[field] = suggestion.csv_header;
-                                            });
-                                          }
-
-                                          setEditingConfig(prev => ({ ...prev, mapping: newMapping }));
-
-                                          // Auto-advance to mapping step if we are in step 1
-                                          if (activeStep === 1) setActiveStep(2);
-                                        })
-                                        .catch(err => {
-                                          console.error(err);
-                                          alert("Error analizando archivo: " + err.message);
-                                        })
-                                        .finally(() => setFetchingHeaders(false));
-                                    }
-                                  }}
-                                >
-                                  <div className="flex items-center gap-2">
-                                    {item.es_dir ? <FolderOpen size={16} className="text-indigo-400" /> : <FileText size={16} className="text-slate-400" />}
-                                    <span className="text-sm text-slate-700 font-medium">{item.nombre}</span>
-                                  </div>
-                                  {item.nombre !== '..' && (
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (item.es_dir) {
-                                          handleSelectDirectory(item.ruta);
-                                        } else {
-                                          // Logic duplicated in row click, effectively triggering the same
-                                          // But we can trigger the row click programmatically or just leave it
-                                          // Let's call the click logic by bubbling? No, stopPropagation is here.
-                                          // We need to duplicate or extract function.
-                                          // For simplicity in this replacement, I'll duplicate the logic for the button too
-                                          // strictly to match the behavior we just added to the row.
-
-                                          setShowExplorer(false);
-                                          setFetchingHeaders(true);
-
-                                          let detectedType = editingConfig.tipo_archivo;
-                                          const lowerName = item.nombre.toLowerCase();
-                                          if (lowerName.endsWith('.json')) detectedType = 'JSON';
-                                          else if (lowerName.endsWith('.xml')) detectedType = 'XML';
-                                          else if (lowerName.endsWith('.txt')) detectedType = 'TXT';
-                                          else if (lowerName.endsWith('.csv')) detectedType = 'CSV';
-
-                                          const newConfig = { ...editingConfig, ruta_remota: item.ruta, tipo_archivo: detectedType };
-                                          setEditingConfig(newConfig);
-
-                                          ApiService.analyzeRemoteMapping(newConfig, tempPassword, item.ruta, authToken)
-                                            .then(result => {
-                                              setRemoteHeaders(result.csv_headers || []);
-                                              const newMapping: Record<string, string> = { ...editingConfig.mapping };
-                                              if (result.suggested_mapping) {
-                                                Object.entries(result.suggested_mapping).forEach(([field, suggestion]: [string, any]) => {
-                                                  newMapping[field] = suggestion.csv_header;
-                                                });
-                                              }
-                                              setEditingConfig(prev => ({ ...prev, mapping: newMapping }));
-                                              if (activeStep === 1) setActiveStep(2);
-                                            })
-                                            .catch(err => {
-                                              console.error(err);
-                                              alert("Error analizando archivo: " + err.message);
-                                            })
-                                            .finally(() => setFetchingHeaders(false));
-                                        }
-                                      }}
-                                      className="bg-indigo-600 text-white text-[10px] px-2 py-1 rounded-md font-bold hover:bg-indigo-700 transition-colors"
-                                    >
-                                      {item.es_dir ? 'Seleccionar Carpeta' : 'Usar para Mapeo'}
-                                    </button>
-                                  )}
-                                </div>
-                              ))}
-                              {explorerItems.length === 0 && (
-                                <div className="py-4 text-center text-xs text-slate-400">No se encontraron carpetas</div>
-                              )}
-                            </>
-                          )}
-                        </div>
-                        <div className="p-3 bg-slate-50 border-t border-slate-100 flex justify-end">
-                          <button
-                            onClick={() => handleSelectDirectory(explorerPath)}
-                            className="bg-indigo-600 text-white text-xs px-4 py-1.5 rounded-lg font-bold hover:bg-indigo-700"
-                          >
-                            Seleccionar Actual (Dir)
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div className="flex flex-col gap-3">
                       <button
@@ -1174,6 +1146,8 @@ export const ImportManager: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {renderExplorerModal()}
           </div>
 
           <div className="mt-10 pt-6 border-t border-slate-100 flex justify-end gap-3 px-8 pb-8">

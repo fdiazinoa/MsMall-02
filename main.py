@@ -2485,11 +2485,15 @@ async def execute_manual_endpoint(
             config_data.get("mall_id")
         )
 
-        estado = "exito" if registros_exito > 0 and not detalles_errores else "parcial" if registros_exito > 0 else "error"
-        
-        mensaje = f"Importación manual completada. {registros_exito} registros cargados."
-        if detalles_errores:
-            mensaje += f" Se encontraron {len(detalles_errores)} errores de validación/mapeo."
+        no_data_detected = (registros_exito == 0 and not detalles_errores)
+        if no_data_detected:
+            estado = "no_encontrado"
+            mensaje = "Importación manual completada. El archivo no contiene registros de data (vacío o solo encabezado)."
+        else:
+            estado = "exito" if registros_exito > 0 and not detalles_errores else "parcial" if registros_exito > 0 else "error"
+            mensaje = f"Importación manual completada. {registros_exito} registros cargados."
+            if detalles_errores:
+                mensaje += f" Se encontraron {len(detalles_errores)} errores de validación/mapeo."
 
         # 4. Registrar Log en Monitor
         insert_load_log(
@@ -2558,7 +2562,7 @@ async def execute_manual_endpoint(
                  })
 
         return _cache_and_return({
-            "status": "success" if registros_exito > 0 else "error",
+            "status": "success" if (registros_exito > 0 or no_data_detected) else "error",
             "message": mensaje,
             "records_processed": registros_exito,
             "batch_id": batch_id,

@@ -2244,6 +2244,96 @@ async def analyze_remote_mapping(
 
 import posixpath
 
+def _ftp_enter_target_dir(ftp: FTP, remote_path: str) -> str:
+    """
+    Try to enter remote_path; if it points to a file or is invalid, fallback to parent.
+    Returns the directory that was attempted/used.
+    """
+    normalized = (remote_path or ".").replace("\\", "/").strip() or "."
+    try:
+        ftp.cwd(normalized)
+        return normalized
+    except Exception:
+        parent = posixpath.dirname(normalized) or "."
+        try:
+            ftp.cwd(parent)
+            return parent
+        except Exception:
+            return normalized
+
+def _parse_ftp_list_line(line: str) -> Optional[Tuple[str, bool]]:
+    """
+    Parses a LIST line and preserves full filename (including spaces/commas).
+    Returns (name, is_dir) or None if parsing failed.
+    """
+    if not line:
+        return None
+
+    # Unix LIST format: perms links owner group size month day time/year name
+    unix_parts = line.split(maxsplit=8)
+    if len(unix_parts) == 9 and unix_parts[0] and unix_parts[0][0] in ("d", "-", "l"):
+        name = unix_parts[8].strip()
+        if name in (".", "..") or " -> " in name:
+            return None
+        return name, unix_parts[0][0] == "d"
+
+    # Windows/DOS LIST format: MM-DD-YY HH:MMPM <DIR>|size name
+    m = re.match(r"^\d{2}-\d{2}-\d{2,4}\s+\d{2}:\d{2}(?:AM|PM)\s+(\<DIR\>|\d+)\s+(.+)$", line, re.IGNORECASE)
+    if m:
+        marker = m.group(1).upper()
+        name = m.group(2).strip()
+        if name in (".", ".."):
+            return None
+        return name, marker == "<DIR>"
+
+    # Best effort fallback preserving tail as filename.
+    generic_parts = line.split(maxsplit=8)
+    if len(generic_parts) >= 9:
+        name = generic_parts[8].strip()
+        if name and name not in (".", ".."):
+            return name, False
+    return None
+
+def _resolve_ftp_filename(ftp: FTP, requested_filename: str, remote_path: str) -> str:
+    """
+    Resolves a potentially truncated FTP filename (e.g. due to LIST parsing) to the real file.
+    """
+    requested = (requested_filename or "").strip()
+    remote_basename = posixpath.basename((remote_path or "").replace("\\", "/").strip())
+
+    candidates: List[str] = []
+    for candidate in [requested, posixpath.basename(requested), remote_basename]:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    # Fast exact/basename match from current directory listing.
+    try:
+        names = ftp.nlst() or []
+    except Exception:
+        names = []
+
+    normalized_names: List[str] = []
+    for raw_name in names:
+        if not raw_name:
+            continue
+        cleaned = raw_name.rstrip("/")
+        if cleaned and cleaned not in (".", ".."):
+            normalized_names.append(cleaned)
+
+    for cand in candidates:
+        for listed in normalized_names:
+            if listed == cand or posixpath.basename(listed) == cand:
+                return posixpath.basename(listed)
+
+    # Suffix match fallback for cases like "Ventas XYZ, SRL29012026.txt" selected as "SRL29012026.txt".
+    for cand in candidates:
+        low = cand.lower()
+        matches = [posixpath.basename(n) for n in normalized_names if n.lower().endswith(low)]
+        if len(matches) == 1:
+            return matches[0]
+
+    return requested or remote_basename or ""
+
 def _list_remote_files(config: Dict[str, Any]):
     # Normalize keys (handles frontend names and worker-style names from Supabase 'locales')
     protocolo = config.get("protocolo") or config.get("sftp_protocol", "SFTP")
@@ -2303,29 +2393,55 @@ def _list_remote_files(config: Dict[str, Any]):
     elif protocolo == "FTP":
         ftp = get_ftp_client(host, puerto, usuario, password)
         try:
-            try:
-                ftp.cwd(ruta)
-            except:
-                # Si falla, intentar con el directorio padre
-                ruta_padre = posixpath.dirname(ruta) or "."
-                try:
-                    ftp.cwd(ruta_padre)
-                except:
-                    pass # Dejar que falle el LIST posterior si nada funciona
+            _ftp_enter_target_dir(ftp, ruta)
 
-            lines = []
-            ftp.retrlines('LIST', lines.append)
-            # Basic parsing of FTP LIST output
-            for line in lines:
-                parts = line.split()
-                if len(parts) >= 4:
-                    name = parts[-1]
-                    if name.lower().endswith(supported_exts):
-                        files.append({
-                            "nombre": name,
-                            "fecha": datetime.now().isoformat(), # FTP LIST date parsing is complex
-                            "tamano": 0
-                        })
+            seen_names = set()
+
+            def _append_file(name: str, size: int = 0):
+                clean_name = posixpath.basename((name or "").rstrip("/"))
+                if not clean_name or clean_name in seen_names:
+                    return
+                if not clean_name.lower().endswith(supported_exts):
+                    return
+                seen_names.add(clean_name)
+                files.append({
+                    "nombre": clean_name,
+                    "fecha": datetime.now().isoformat(), # FTP dates vary by server/listing format
+                    "tamano": size
+                })
+
+            # Prefer MLSD when available (structured output and safe filenames).
+            try:
+                for name, facts in ftp.mlsd():
+                    if name in (".", ".."):
+                        continue
+                    if (facts or {}).get("type") == "dir":
+                        continue
+                    file_size = int((facts or {}).get("size", 0) or 0)
+                    _append_file(name, file_size)
+            except Exception:
+                pass
+
+            # Fallback 1: NLST (usually returns complete names).
+            if not files:
+                try:
+                    for name in ftp.nlst() or []:
+                        _append_file(name, 0)
+                except Exception:
+                    pass
+
+            # Fallback 2: LIST with robust parsing preserving spaces/commas.
+            if not files:
+                lines: List[str] = []
+                ftp.retrlines("LIST", lines.append)
+                for line in lines:
+                    parsed = _parse_ftp_list_line(line)
+                    if not parsed:
+                        continue
+                    name, is_dir = parsed
+                    if is_dir:
+                        continue
+                    _append_file(name, 0)
         finally:
             ftp.quit()
     return sorted(files, key=lambda x: x["fecha"], reverse=True)
@@ -2413,6 +2529,7 @@ async def execute_manual_endpoint(
         password = config_data.get("password") or config_data.get("sftp_pass")
         ruta_remota = config_data.get("ruta_remota") or config_data.get("sftp_path", ".")
         protocolo = config_data.get("protocolo") or config_data.get("sftp_protocol", "SFTP")
+        source_filename = req.filename
         
         # 2. Conectar y Descargar
         content = ""
@@ -2430,10 +2547,10 @@ async def execute_manual_endpoint(
                     except Exception as e:
                         logger.warning(f"No se pudo determinar si la ruta es archivo/directorio: {e}")
 
-                    full_path = posixpath.join(target_dir, req.filename)
+                    full_path = posixpath.join(target_dir, source_filename)
                     logger.info(f"Intentando abrir archivo SFTP: {full_path}")
                     with sftp.open(full_path, 'r') as f:
-                        if req.filename.lower().endswith('.json'):
+                        if source_filename.lower().endswith('.json'):
                             content = f.read().decode('utf-8-sig', errors='replace')
                         else:
                             content = f.read().decode('utf-8', errors='replace')
@@ -2446,27 +2563,48 @@ async def execute_manual_endpoint(
             elif protocolo == "FTP":
                 ftp = get_ftp_client(host, puerto, usuario, password)
                 try:
-                    # Intentar CWD a la ruta. Si falla, intentar padre.
-                    try:
-                        ftp.cwd(ruta_remota)
-                    except:
-                        try:
-                            parent = posixpath.dirname(ruta_remota) or "."
-                            ftp.cwd(parent)
-                        except:
-                            pass
+                    _ftp_enter_target_dir(ftp, ruta_remota)
+                    resolved_filename = _resolve_ftp_filename(ftp, req.filename, ruta_remota) or req.filename
+
+                    download_candidates: List[str] = []
+                    for candidate in [
+                        resolved_filename,
+                        req.filename,
+                        posixpath.basename(req.filename),
+                        posixpath.basename((ruta_remota or "").replace("\\", "/"))
+                    ]:
+                        if candidate and candidate not in download_candidates:
+                            download_candidates.append(candidate)
 
                     bio = io.BytesIO()
-                    logger.info(f"Descargando archivo FTP: {req.filename}")
-                    ftp.retrbinary(f"RETR {req.filename}", bio.write)
+                    source_filename = resolved_filename
+                    download_error: Optional[Exception] = None
+                    downloaded = False
+                    for candidate in download_candidates:
+                        try:
+                            bio = io.BytesIO()
+                            logger.info(f"Descargando archivo FTP: {candidate}")
+                            ftp.retrbinary(f"RETR {candidate}", bio.write)
+                            source_filename = candidate
+                            downloaded = True
+                            break
+                        except Exception as retr_err:
+                            download_error = retr_err
+
+                    if not downloaded:
+                        raise FileNotFoundError(
+                            f"No se encontró '{req.filename}' (resuelto como '{resolved_filename}'). "
+                            f"Detalle FTP: {download_error}"
+                        )
+
                     bio.seek(0)
-                    if req.filename.lower().endswith('.json'):
+                    if source_filename.lower().endswith('.json'):
                         content = bio.read().decode('utf-8-sig', errors='replace')
                     else:
                         content = bio.read().decode('utf-8', errors='replace')
                     
                     # Log file size and first chars for verification
-                    logger.info(f"✅ Archivo FTP leído: {req.filename} | Tamaño: {len(content)} bytes | Primeros 100 chars: {content[:100]}")
+                    logger.info(f"✅ Archivo FTP leído: {source_filename} | Tamaño: {len(content)} bytes | Primeros 100 chars: {content[:100]}")
                 finally:
                     ftp.quit()
         except Exception as ce:
@@ -2474,7 +2612,7 @@ async def execute_manual_endpoint(
             logger.error(f"Error en ejecución manual ({protocolo} {host}): {error_msg}")
             insert_load_log(
                 local_nombre,
-                req.filename,
+                source_filename,
                 "error",
                 f"Error de conexión: {error_msg}",
                 batch_id,
@@ -2486,7 +2624,7 @@ async def execute_manual_endpoint(
         # 3. Procesar Contenido
         registros_exito, detalles_errores = process_file_content(
             content,
-            req.filename,
+            source_filename,
             config_data,
             batch_id,
             config_data.get("mall_id")
@@ -2505,7 +2643,7 @@ async def execute_manual_endpoint(
         # 4. Registrar Log en Monitor
         insert_load_log(
             local_nombre,
-            req.filename,
+            source_filename,
             estado,
             mensaje,
             batch_id,
@@ -2531,8 +2669,8 @@ async def execute_manual_endpoint(
                             target_dir = posixpath.dirname(ruta_remota) or "."
                      except: pass
                      
-                     old_path = posixpath.join(target_dir, req.filename)
-                     new_name = f"PR_{req.filename}" # Hardcoded prefix per user request "colocar el prefijo"
+                     old_path = posixpath.join(target_dir, source_filename)
+                     new_name = f"PR_{source_filename}" # Hardcoded prefix per user request "colocar el prefijo"
                      new_path = posixpath.join(target_dir, new_name)
                      
                      logger.info(f"Renombrando {old_path} -> {new_path}")
@@ -2542,18 +2680,12 @@ async def execute_manual_endpoint(
 
                 elif protocolo == "FTP":
                     ftp = get_ftp_client(host, puerto, usuario, password)
-                    # Navigate to dir
-                    try:
-                        ftp.cwd(ruta_remota)
-                    except:
-                        try:
-                            parent = posixpath.dirname(ruta_remota) or "."
-                            ftp.cwd(parent)
-                        except: pass
+                    _ftp_enter_target_dir(ftp, ruta_remota)
                     
-                    new_name = f"PR_{req.filename}"
-                    logger.info(f"Renombrando {req.filename} -> {new_name}")
-                    ftp.rename(req.filename, new_name)
+                    rename_source = _resolve_ftp_filename(ftp, source_filename, ruta_remota) or source_filename
+                    new_name = f"PR_{rename_source}"
+                    logger.info(f"Renombrando {rename_source} -> {new_name}")
+                    ftp.rename(rename_source, new_name)
                     ftp.quit()
              except Exception as rename_err:
                  logger.error(f"Error al renombrar archivo pos-importación: {rename_err}")
@@ -2584,7 +2716,7 @@ async def execute_manual_endpoint(
         if 'local_nombre' in locals():
             insert_load_log(
                 local_nombre,
-                req.filename,
+                source_filename,
                 "error",
                 str(e),
                 batch_id,
@@ -2708,10 +2840,12 @@ async def analyze_remote_file(
         password = config_data.get("password") or config_data.get("sftp_pass")
         ruta_remota = config_data.get("ruta_remota") or config_data.get("sftp_path", ".")
         protocolo = config_data.get("protocolo") or config_data.get("sftp_protocol", "SFTP")
+        analysis_filename = req.filename
         
         loop = asyncio.get_event_loop()
         
         def _read_file_sample():
+            nonlocal analysis_filename
             if protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(host, puerto, usuario, password)
                 try:
@@ -2726,9 +2860,10 @@ async def analyze_remote_file(
                     
                     full_path = posixpath.join(target_dir, req.filename)
                     with sftp.open(full_path, 'r') as f:
+                        analysis_filename = req.filename
                         # LEER TODO EL ARCHIVO SI ES JSON (necesario para parsear)
-                        if req.filename.lower().endswith('.json'):
-                            logger.info(f"Leyendo archivo COMPLETO (JSON): {req.filename}")
+                        if analysis_filename.lower().endswith('.json'):
+                            logger.info(f"Leyendo archivo COMPLETO (JSON): {analysis_filename}")
                             return f.read().decode('utf-8-sig', errors='replace')
                         else:
                             return f.read(8192).decode('utf-8', errors='replace')
@@ -2738,15 +2873,9 @@ async def analyze_remote_file(
             elif protocolo == "FTP":
                 ftp = get_ftp_client(host, puerto, usuario, password)
                 try:
-                    # Try to CWD
-                    try:
-                        ftp.cwd(ruta_remota)
-                    except:
-                        try:
-                            parent = posixpath.dirname(ruta_remota) or "."
-                            ftp.cwd(parent)
-                        except:
-                            pass
+                    _ftp_enter_target_dir(ftp, ruta_remota)
+                    resolved_filename = _resolve_ftp_filename(ftp, req.filename, ruta_remota) or req.filename
+                    analysis_filename = resolved_filename
                     
                     bio = io.BytesIO()
                     # FTP doesn't support partial reads easily, read first 8KB
@@ -2763,10 +2892,35 @@ async def analyze_remote_file(
                             self.written += to_write
                     
                     writer = LimitedWriter(bio)
+                    last_error: Optional[Exception] = None
+                    fetched = False
                     try:
-                        ftp.retrbinary(f"RETR {req.filename}", writer.write)
+                        ftp.retrbinary(f"RETR {resolved_filename}", writer.write)
+                        fetched = True
                     except StopIteration:
-                        pass  # Expected when limit reached
+                        fetched = True  # Expected when limit reached
+                    except Exception as retr_err:
+                        last_error = retr_err
+
+                    if not fetched:
+                        # Fallback to raw requested filename if the resolved candidate failed.
+                        try:
+                            writer = LimitedWriter(io.BytesIO())
+                            bio = writer.bio
+                            ftp.retrbinary(f"RETR {req.filename}", writer.write)
+                            fetched = True
+                            analysis_filename = req.filename
+                        except StopIteration:
+                            fetched = True
+                            analysis_filename = req.filename
+                        except Exception as fallback_err:
+                            last_error = fallback_err
+
+                    if not fetched:
+                        raise FileNotFoundError(
+                            f"No se pudo leer '{req.filename}' (resuelto como '{resolved_filename}'). Detalle FTP: {last_error}"
+                        )
+
                     bio.seek(0)
                     return bio.read().decode('utf-8', errors='replace')
                 finally:
@@ -2784,7 +2938,7 @@ async def analyze_remote_file(
         forced_has_header, forced_data_start_row = _extract_parsing_options(config_data)
         analysis = _perform_mapping_analysis(
             content,
-            req.filename,
+            analysis_filename,
             force_has_header=forced_has_header,
             data_start_row=forced_data_start_row
         )
@@ -2860,19 +3014,14 @@ async def unmark_file(
             elif protocolo == "FTP":
                 ftp = get_ftp_client(host, puerto, usuario, password)
                 try:
-                    # Navigate to directory
-                    try:
-                        ftp.cwd(ruta_remota)
-                    except:
-                        try:
-                            parent = posixpath.dirname(ruta_remota) or "."
-                            ftp.cwd(parent)
-                        except:
-                            pass
-                    
-                    logger.info(f"Unmarking: {req.filename} -> {new_filename}")
-                    ftp.rename(req.filename, new_filename)
-                    return new_filename
+                    _ftp_enter_target_dir(ftp, ruta_remota)
+
+                    resolved_old_name = _resolve_ftp_filename(ftp, req.filename, ruta_remota) or req.filename
+                    resolved_new_name = resolved_old_name[3:] if resolved_old_name.startswith("PR_") else new_filename
+
+                    logger.info(f"Unmarking: {resolved_old_name} -> {resolved_new_name}")
+                    ftp.rename(resolved_old_name, resolved_new_name)
+                    return resolved_new_name
                 finally:
                     ftp.quit()
             

@@ -44,7 +44,35 @@ export const FinancialDashboard: React.FC = () => {
 
             const parseNum = (value: any): number => {
                 if (value === null || value === undefined) return 0;
-                const normalized = String(value).replace(/\s/g, '').replace(',', '.');
+                if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+                let raw = String(value).trim();
+                if (!raw) return 0;
+
+                // Remove currency/percent/letters, keep separators and sign.
+                raw = raw.replace(/[^\d.,-]/g, '');
+                if (!raw) return 0;
+
+                const hasDot = raw.includes('.');
+                const hasComma = raw.includes(',');
+
+                let normalized = raw;
+                if (hasDot && hasComma) {
+                    // Decide decimal separator by the last symbol.
+                    if (raw.lastIndexOf(',') > raw.lastIndexOf('.')) {
+                        // 1.234.567,89 => 1234567.89
+                        normalized = raw.replace(/\./g, '').replace(',', '.');
+                    } else {
+                        // 1,234,567.89 => 1234567.89
+                        normalized = raw.replace(/,/g, '');
+                    }
+                } else if (hasComma) {
+                    // 2,50 or 1,234,567
+                    const commaGroups = raw.split(',');
+                    const looksThousands = commaGroups.length > 1 && commaGroups.slice(1).every(g => g.length === 3);
+                    normalized = looksThousands ? raw.replace(/,/g, '') : raw.replace(',', '.');
+                }
+
                 const n = Number(normalized);
                 return Number.isFinite(n) ? n : 0;
             };
@@ -82,6 +110,8 @@ export const FinancialDashboard: React.FC = () => {
                     proyeccion,
                     ocr,
                     rentaVariable,
+                    pctVar,
+                    breakpoint,
                     m2: Number(s.mts) || 1
                 };
             });
@@ -151,6 +181,10 @@ export const FinancialDashboard: React.FC = () => {
         ? data.reduce((acc, curr) => acc + (curr.venta / curr.m2), 0) / data.length
         : 0;
     const storesAtRisk = data.filter(s => s.ocr > 20).length;
+    const projectionRows = [...data]
+        .filter(s => (s.venta > 0) || (s.proyeccion > 0) || (s.rentaVariable > 0))
+        .sort((a, b) => (b.rentaVariable - a.rentaVariable) || (b.proyeccion - a.proyeccion));
+    const hasProjectedVariable = projectionRows.some(row => row.rentaVariable > 0);
 
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
@@ -318,12 +352,12 @@ export const FinancialDashboard: React.FC = () => {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-50">
-                                {data.filter(s => s.rentaVariable > 0).map((row) => (
+                                {projectionRows.map((row) => (
                                     <tr key={row.id} className="text-sm hover:bg-slate-50/50 transition-colors">
                                         <td className="py-4 font-semibold text-slate-700">{row.name}</td>
                                         <td className="py-4 text-slate-500">{format(row.venta)}</td>
                                         <td className="py-4 text-slate-500">{format(row.proyeccion)}</td>
-                                        <td className="py-4 text-right text-indigo-600 font-bold">
+                                        <td className={`py-4 text-right font-bold ${row.rentaVariable > 0 ? 'text-indigo-600' : 'text-slate-400'}`}>
                                             {format(row.rentaVariable)}
                                         </td>
                                     </tr>
@@ -331,8 +365,11 @@ export const FinancialDashboard: React.FC = () => {
                             </tbody>
                         </table>
                     </div>
-                    {data.filter(s => s.rentaVariable > 0).length === 0 && (
-                        <p className="text-center text-slate-400 text-sm py-8">No se proyecta cobro de renta variable este mes.</p>
+                    {projectionRows.length === 0 && (
+                        <p className="text-center text-slate-400 text-sm py-8">No hay ventas en el periodo para calcular proyecciones.</p>
+                    )}
+                    {projectionRows.length > 0 && !hasProjectedVariable && (
+                        <p className="text-center text-slate-400 text-sm py-8">Hay ventas registradas, pero la renta variable estimada es 0 para los locales en este periodo.</p>
                     )}
                 </div>
             </div>

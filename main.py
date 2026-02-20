@@ -274,6 +274,19 @@ def _resolve_effective_role(email: Optional[str], role_candidates: List[Optional
         return "auditor"
     return "auditor"
 
+def _canonical_admin_role(raw_role: Optional[str]) -> str:
+    """
+    Normalizes incoming admin-editable roles to the allowed canonical set.
+    """
+    normalized = _normalize_role(raw_role)
+    if normalized in ADMIN_ROLES:
+        return "admin"
+    if normalized in IT_ROLES:
+        return "it"
+    if normalized == "auditor":
+        return "auditor"
+    return ""
+
 def _parse_auth_users_result(auth_users_result: Any) -> List[Any]:
     if auth_users_result is None:
         return []
@@ -3330,6 +3343,12 @@ class AdminCreateUserRequest(BaseModel):
     rol: str = 'auditor'
     mall_ids: List[str] = []
 
+class AdminUpdateUserRequest(BaseModel):
+    email: Optional[str] = None
+    nombre: Optional[str] = None
+    rol: Optional[str] = None
+    mall_ids: Optional[List[str]] = None
+
 @app.get("/api/v1/admin/users")
 async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     """
@@ -3345,9 +3364,15 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_acce
             metadata = _user_field(u, "user_metadata", {}) or {}
             metadata_rol = metadata.get("rol") if isinstance(metadata, dict) else None
             metadata_role = metadata.get("role") if isinstance(metadata, dict) else None
+            metadata_name = (
+                metadata.get("nombre") or metadata.get("full_name")
+                if isinstance(metadata, dict)
+                else None
+            )
             users_list.append({
                 "id": uid,
                 "email": email,
+                "nombre": metadata_name,
                 "metadata": metadata,
                 "last_sign_in_at": _user_field(u, "last_sign_in_at"),
                 "created_at": _user_field(u, "created_at"),
@@ -3395,8 +3420,8 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
     Requires ADMIN role.
     """
     try:
-        role = _normalize_role(payload.rol)
-        if role not in {"admin", "it", "auditor"}:
+        role = _canonical_admin_role(payload.rol)
+        if not role:
             raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
 
         email = (payload.email or "").strip().lower()
@@ -3468,8 +3493,8 @@ async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, a
     Assign a list of malls to a user.
     """
     try:
-        role = _normalize_role(payload.rol)
-        if role not in {"admin", "it", "auditor"}:
+        role = _canonical_admin_role(payload.rol)
+        if not role:
             raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
 
         # Transaction? (Not supported natively in HTTP API, do sequentially)
@@ -3493,6 +3518,123 @@ async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, a
         raise
     except Exception as e:
         logger.error(f"Error assigning malls: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/admin/users/{target_user_id}")
+async def admin_update_user(
+    target_user_id: str,
+    payload: AdminUpdateUserRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access)
+):
+    """
+    Updates editable user profile fields (email/nombre), role and optional mall assignments.
+    """
+    try:
+        auth_result = supabase.auth.admin.get_user_by_id(target_user_id)
+        auth_user = _extract_auth_user(auth_result)
+        if not auth_user or not _user_field(auth_user, "id"):
+            raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+
+        current_email = (_user_field(auth_user, "email") or "").strip().lower()
+        current_metadata = _user_field(auth_user, "user_metadata", {}) or {}
+        if not isinstance(current_metadata, dict):
+            current_metadata = {}
+
+        role_to_set: Optional[str] = None
+        if payload.rol is not None:
+            role_to_set = _canonical_admin_role(payload.rol)
+            if not role_to_set:
+                raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
+
+        email_to_set: Optional[str] = None
+        if payload.email is not None:
+            email_candidate = (payload.email or "").strip().lower()
+            if not email_candidate:
+                raise HTTPException(status_code=400, detail="Email requerido.")
+            email_owner = _find_auth_user_by_email(email_candidate)
+            if email_owner and _user_field(email_owner, "id") != target_user_id:
+                raise HTTPException(status_code=409, detail="Ya existe otro usuario con ese email.")
+            if email_candidate != current_email:
+                email_to_set = email_candidate
+
+        updated_metadata = dict(current_metadata)
+        if payload.nombre is not None:
+            clean_name = (payload.nombre or "").strip()
+            if clean_name:
+                updated_metadata["nombre"] = clean_name
+                updated_metadata["full_name"] = clean_name
+            else:
+                updated_metadata.pop("nombre", None)
+                updated_metadata.pop("full_name", None)
+
+        if role_to_set:
+            updated_metadata["rol"] = role_to_set
+            updated_metadata["role"] = role_to_set
+
+        update_payload: Dict[str, Any] = {"user_metadata": updated_metadata}
+        if email_to_set:
+            update_payload["email"] = email_to_set
+
+        supabase.auth.admin.update_user_by_id(target_user_id, update_payload)
+
+        effective_email = email_to_set or current_email
+        if role_to_set:
+            try:
+                supabase.table("profiles").upsert({"id": target_user_id, "role": role_to_set}, on_conflict="id").execute()
+            except Exception as p_err:
+                logger.warning(f"No se pudo upsert profiles al actualizar usuario {target_user_id}: {p_err}")
+
+            # Keep existing assignments synchronized to the new role when malls are not being replaced.
+            if payload.mall_ids is None:
+                try:
+                    supabase.table("usuarios_malls").update({"rol": role_to_set}).eq("usuario_id", target_user_id).execute()
+                except Exception as um_err:
+                    logger.warning(f"No se pudo actualizar rol en usuarios_malls para {target_user_id}: {um_err}")
+
+        if payload.mall_ids is not None:
+            # If role not provided in this request, infer current effective role for mall assignments.
+            role_for_malls = role_to_set
+            if not role_for_malls:
+                existing_profile_role = None
+                try:
+                    profile = supabase.table("profiles").select("role").eq("id", target_user_id).maybe_single().execute()
+                    if profile and profile.data:
+                        existing_profile_role = profile.data.get("role")
+                except Exception:
+                    existing_profile_role = None
+
+                existing_meta_role = (
+                    updated_metadata.get("rol")
+                    or updated_metadata.get("role")
+                    or current_metadata.get("rol")
+                    or current_metadata.get("role")
+                )
+                role_for_malls = _resolve_effective_role(effective_email, [existing_profile_role, existing_meta_role])
+
+            role_for_malls = _canonical_admin_role(role_for_malls) or "auditor"
+
+            supabase.table("usuarios_malls").delete().eq("usuario_id", target_user_id).execute()
+            if payload.mall_ids:
+                inserts = [
+                    {"usuario_id": target_user_id, "mall_id": mall_id, "rol": role_for_malls}
+                    for mall_id in payload.mall_ids
+                ]
+                supabase.table("usuarios_malls").insert(inserts).execute()
+
+        return {
+            "id": target_user_id,
+            "email": email_to_set or current_email,
+            "nombre": updated_metadata.get("nombre") or updated_metadata.get("full_name"),
+            "rol": role_to_set or _resolve_effective_role(
+                effective_email,
+                [updated_metadata.get("rol"), updated_metadata.get("role")]
+            ),
+            "message": "Usuario actualizado correctamente."
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating user {target_user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router_export.get("/sales-report/excel")

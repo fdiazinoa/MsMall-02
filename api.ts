@@ -1269,6 +1269,26 @@ export const ApiService = {
     if (!response.ok) throw new Error("Error assigning malls");
   },
 
+  async updateUser(
+    userId: string,
+    payload: { email?: string; nombre?: string; rol?: string; mall_ids?: string[] },
+    token: string
+  ): Promise<any> {
+    const response = await fetch(`${BASE_URL}/admin/users/${userId}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ detail: "Error actualizando usuario" }));
+      throw new Error(errorData.detail || "Error actualizando usuario");
+    }
+    return await response.json();
+  },
+
   async toggleUserStatus(userId: string): Promise<void> {
     const users = await this.getUsers();
     const updated = users.map(u => u.id === userId ? { ...u, estado: u.estado === 'activo' ? 'inactivo' : 'activo' } as User : u);

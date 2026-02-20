@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import {
-  UserPlus, Shield, ShieldCheck, ShieldAlert, CheckCircle2, Building
+  UserPlus, Shield, ShieldCheck, ShieldAlert, CheckCircle2, UserCog
 } from 'lucide-react';
 
 const ROLE_STYLES: Record<string, { label: string, color: string, icon: any }> = {
@@ -26,6 +26,10 @@ export const UserManagement: React.FC = () => {
   const [assignmentModalOpen, setAssignmentModalOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<any>(null);
   const [selectedMallIds, setSelectedMallIds] = useState<string[]>([]);
+  const [editRole, setEditRole] = useState('auditor');
+  const [editEmail, setEditEmail] = useState('');
+  const [editName, setEditName] = useState('');
+  const [savingUser, setSavingUser] = useState(false);
 
   // Create User Modal State
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -106,6 +110,9 @@ export const UserManagement: React.FC = () => {
     // Pre-select existing malls
     const currentIds = user.malls?.map((m: any) => m.mall_id) || [];
     setSelectedMallIds(currentIds);
+    setEditRole(normalizeRole(user.rol || 'auditor'));
+    setEditEmail(user.email || '');
+    setEditName(user.nombre || user.metadata?.nombre || user.metadata?.full_name || '');
     setAssignmentModalOpen(true);
   };
 
@@ -119,12 +126,25 @@ export const UserManagement: React.FC = () => {
 
   const handleSaveAssignments = async () => {
     if (!selectedUser || !session?.access_token) return;
+    setSavingUser(true);
     try {
-      await ApiService.assignUserMalls(selectedUser.id, selectedMallIds, normalizeRole(selectedUser.rol), session.access_token);
+      await ApiService.updateUser(
+        selectedUser.id,
+        {
+          email: editEmail.trim(),
+          nombre: editName.trim(),
+          rol: normalizeRole(editRole),
+          mall_ids: selectedMallIds
+        },
+        session.access_token
+      );
       setAssignmentModalOpen(false);
-      loadUsers(); // Refresh to show new counts/data
+      await loadUsers(); // Refresh to show new data
     } catch (e) {
-      alert("Error asignando malls");
+      console.error(e);
+      alert("Error actualizando usuario.");
+    } finally {
+      setSavingUser(false);
     }
   };
 
@@ -217,8 +237,34 @@ export const UserManagement: React.FC = () => {
       {/* Assignment Modal */}
       {assignmentModalOpen && selectedUser && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
-            <h3 className="text-lg font-bold mb-4">Asignar Malls a {selectedUser.email}</h3>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6">
+            <h3 className="text-lg font-bold mb-4">Editar Usuario</h3>
+            <div className="space-y-3 mb-4">
+              <input
+                type="text"
+                placeholder="Nombre de perfil"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2"
+              />
+              <input
+                type="email"
+                placeholder="Email"
+                value={editEmail}
+                onChange={(e) => setEditEmail(e.target.value)}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2"
+              />
+              <select
+                value={editRole}
+                onChange={(e) => setEditRole(e.target.value)}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2"
+              >
+                <option value="auditor">AUDITOR (solo ver)</option>
+                <option value="it">IT (conexiones y locales)</option>
+                <option value="admin">ADMIN (gestión completa)</option>
+              </select>
+            </div>
+            <h4 className="text-sm font-semibold text-slate-700 mb-2">Malls Asignados</h4>
             {availableMalls.length === 0 ? (
               <p className="text-slate-500 italic mb-4">No hay Malls disponibles.</p>
             ) : (
@@ -235,7 +281,13 @@ export const UserManagement: React.FC = () => {
             )}
             <div className="flex justify-end gap-2">
               <button onClick={() => setAssignmentModalOpen(false)} className="px-4 py-2 text-slate-600">Cancelar</button>
-              <button onClick={handleSaveAssignments} className="px-4 py-2 bg-indigo-600 text-white rounded">Guardar Cambios</button>
+              <button
+                onClick={handleSaveAssignments}
+                disabled={savingUser}
+                className="px-4 py-2 bg-indigo-600 text-white rounded disabled:opacity-50"
+              >
+                {savingUser ? 'Guardando...' : 'Guardar Cambios'}
+              </button>
             </div>
           </div>
         </div>
@@ -259,7 +311,8 @@ export const UserManagement: React.FC = () => {
                 <tr key={user.id} className="hover:bg-slate-50 transition-colors group">
                   <td className="px-6 py-4">
                     <div>
-                      <div className="text-sm font-bold text-slate-800">{user.email}</div>
+                      <div className="text-sm font-bold text-slate-800">{user.nombre || user.email}</div>
+                      {user.nombre && <div className="text-xs text-slate-500">{user.email}</div>}
                       <div className="text-xs text-slate-400">ID: {user.id.slice(0, 8)}...</div>
                     </div>
                   </td>
@@ -278,7 +331,7 @@ export const UserManagement: React.FC = () => {
                       onClick={() => openAssignmentModal(user)}
                       className="text-indigo-600 hover:text-indigo-800 text-xs font-bold flex items-center gap-1 ml-auto"
                     >
-                      <Building size={14} /> Asignar Malls
+                      <UserCog size={14} /> Editar Perfil / Rol
                     </button>
                   </td>
                 </tr>

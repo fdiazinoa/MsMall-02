@@ -98,9 +98,9 @@ const normalizeSaleTotals = <T extends { total_bruto?: any; total_impuestos?: an
   // Keep a small epsilon for decimal rounding differences.
   const EPSILON = 0.05;
 
-  // Canonical convention for reports: bruto ≈ neto + impuestos.
-  const asIsDelta = Math.abs(bruto - (neto + impuestos));
-  const swappedDelta = Math.abs(neto - (bruto + impuestos));
+  // Canonical convention for reports: neto ≈ bruto + impuestos.
+  const asIsDelta = Math.abs(neto - (bruto + impuestos));
+  const swappedDelta = Math.abs(bruto - (neto + impuestos));
 
   if (swappedDelta + EPSILON < asIsDelta) {
     return {

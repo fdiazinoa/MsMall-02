@@ -85,6 +85,38 @@ const normalizeErrorMessage = (error: any, fallbackMessage: string): string => {
   return fallbackMessage;
 };
 
+const toFiniteNumber = (value: any): number => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const normalizeSaleTotals = <T extends { total_bruto?: any; total_impuestos?: any; total_neto?: any }>(row: T) => {
+  const bruto = toFiniteNumber(row.total_bruto);
+  const impuestos = toFiniteNumber(row.total_impuestos);
+  const neto = toFiniteNumber(row.total_neto);
+
+  // Keep a small epsilon for decimal rounding differences.
+  const EPSILON = 0.05;
+
+  // Canonical convention for reports: bruto ≈ neto + impuestos.
+  const asIsDelta = Math.abs(bruto - (neto + impuestos));
+  const swappedDelta = Math.abs(neto - (bruto + impuestos));
+
+  if (swappedDelta + EPSILON < asIsDelta) {
+    return {
+      total_bruto: neto,
+      total_impuestos: impuestos,
+      total_neto: bruto
+    };
+  }
+
+  return {
+    total_bruto: bruto,
+    total_impuestos: impuestos,
+    total_neto: neto
+  };
+};
+
 const fetchJsonWithBaseFallback = async <T>(
   path: string,
   init: RequestInit,
@@ -762,6 +794,7 @@ export const ApiService = {
         const store = storeMap.get(localId) as Store | undefined;
         const storeName = store?.nombre || 'Desconocido';
         const mallName = store?.mall_nombre || 'Mall Principal';
+        const totals = normalizeSaleTotals(sale);
 
         if (!reportMap[localId]) {
           reportMap[localId] = {
@@ -774,9 +807,9 @@ export const ApiService = {
           };
         }
 
-        reportMap[localId].total_bruto += Number(sale.total_bruto) || 0;
-        reportMap[localId].total_impuestos += Number(sale.total_impuestos) || 0;
-        reportMap[localId].total_neto += Number(sale.total_neto) || 0;
+        reportMap[localId].total_bruto += totals.total_bruto;
+        reportMap[localId].total_impuestos += totals.total_impuestos;
+        reportMap[localId].total_neto += totals.total_neto;
       });
 
       return Object.values(reportMap);
@@ -801,7 +834,10 @@ export const ApiService = {
         .order('hora', { ascending: false });
 
       if (error) throw error;
-      return data as SaleDetail[];
+      return ((data as SaleDetail[]) || []).map((row) => ({
+        ...row,
+        ...normalizeSaleTotals(row)
+      }));
     } catch (error) {
       console.error('Error getting sale details:', error);
       return [];

@@ -127,7 +127,7 @@ const App: React.FC = () => {
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
 
       <div className="flex-1 flex flex-col">
-        <Header />
+        <Header activeTab={activeTab} setActiveTab={setActiveTab} />
 
         <main className="p-6 md:p-10 flex-1 overflow-y-auto">
           <div className="max-w-7xl mx-auto">

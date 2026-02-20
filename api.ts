@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -304,6 +304,87 @@ export const ApiService = {
     if (error) {
       console.error("Error deleting config:", error);
       throw error;
+    }
+  },
+
+  async getRemoteConnections(mallId: string): Promise<RemoteConnection[]> {
+    if (!supabase) return [];
+    if (!mallId) return [];
+
+    const { data, error } = await supabase
+      .from('remote_connections')
+      .select('*')
+      .eq('mall_id', mallId)
+      .order('nombre', { ascending: true });
+
+    if (error) {
+      console.error("Error fetching remote connections:", error);
+      throw new Error("No se pudieron cargar las conexiones guardadas.");
+    }
+
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      mall_id: row.mall_id,
+      nombre: row.nombre,
+      protocolo: (row.protocolo || 'SFTP') as ImportProtocol,
+      host: row.host || '',
+      puerto: Number(row.puerto || 22),
+      usuario: row.usuario || '',
+      password: row.password || '',
+      ruta_base: row.ruta_base || '',
+      created_at: row.created_at
+    }));
+  },
+
+  async saveRemoteConnection(
+    payload: Omit<RemoteConnection, 'id' | 'created_at'> & { id?: string }
+  ): Promise<RemoteConnection> {
+    if (!supabase) throw new Error("Supabase client not initialized");
+    if (!payload.mall_id) throw new Error("mall_id es requerido.");
+
+    const dbPayload: any = {
+      mall_id: payload.mall_id,
+      nombre: payload.nombre,
+      protocolo: payload.protocolo,
+      host: payload.host,
+      puerto: payload.puerto,
+      usuario: payload.usuario,
+      password: payload.password,
+      ruta_base: payload.ruta_base || null
+    };
+
+    const query = payload.id
+      ? supabase.from('remote_connections').upsert({ id: payload.id, ...dbPayload }).select().single()
+      : supabase.from('remote_connections').insert(dbPayload).select().single();
+
+    const { data, error } = await query;
+    if (error) {
+      console.error("Error saving remote connection:", error);
+      throw new Error("No se pudo guardar la conexión remota.");
+    }
+
+    return {
+      id: data.id,
+      mall_id: data.mall_id,
+      nombre: data.nombre,
+      protocolo: (data.protocolo || 'SFTP') as ImportProtocol,
+      host: data.host || '',
+      puerto: Number(data.puerto || 22),
+      usuario: data.usuario || '',
+      password: data.password || '',
+      ruta_base: data.ruta_base || '',
+      created_at: data.created_at
+    };
+  },
+
+  async deleteRemoteConnection(id: string): Promise<void> {
+    if (!supabase) throw new Error("Supabase client not initialized");
+    if (!id) return;
+
+    const { error } = await supabase.from('remote_connections').delete().eq('id', id);
+    if (error) {
+      console.error("Error deleting remote connection:", error);
+      throw new Error("No se pudo eliminar la conexión remota.");
     }
   },
 

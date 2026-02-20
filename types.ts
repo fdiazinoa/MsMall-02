@@ -103,3 +103,16 @@ export interface ImportConfig {
   tipo_ejecucion?: ExecutionMode;
   frecuencia_cron?: string;
 }
+
+export interface RemoteConnection {
+  id: string;
+  mall_id: string;
+  nombre: string;
+  protocolo: ImportProtocol;
+  host: string;
+  puerto: number;
+  usuario: string;
+  password: string;
+  ruta_base?: string;
+  created_at?: string;
+}

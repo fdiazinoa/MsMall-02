@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 // Fix: Import types from '../types' instead of '../api'
-import { ImportConfig, ImportProtocol } from '../types';
+import { ImportConfig, ImportProtocol, RemoteConnection } from '../types';
 import { SmartMappingModal } from './SmartMappingModal';
 import MappingModal from './MappingModal';
 import {
@@ -34,6 +34,8 @@ export const ImportManager: React.FC = () => {
   const [showForm, setShowForm] = useState(false);
   const [activeStep, setActiveStep] = useState(1);
   const [tempPassword, setTempPassword] = useState('');
+  const [remoteConnections, setRemoteConnections] = useState<RemoteConnection[]>([]);
+  const [selectedConnectionId, setSelectedConnectionId] = useState('');
 
   // Explorer State
   const [showExplorer, setShowExplorer] = useState(false);
@@ -118,10 +120,22 @@ export const ImportManager: React.FC = () => {
     setAvailableStores(stores);
   };
 
+  const loadRemoteConnections = async () => {
+    if (!currentMall?.id) return;
+    try {
+      const items = await ApiService.getRemoteConnections(currentMall.id);
+      setRemoteConnections(items);
+    } catch (error: any) {
+      console.error("Error loading remote connections:", error);
+      setRemoteConnections([]);
+    }
+  };
+
   useEffect(() => {
     if (currentMall) {
       loadConfigs();
       loadStores();
+      loadRemoteConnections();
     }
   }, [currentMall]);
 
@@ -139,6 +153,77 @@ export const ImportManager: React.FC = () => {
     } finally {
       console.log("Finalizando estado de prueba.");
       setTestingConnection(false);
+    }
+  };
+
+  const applySavedConnection = (connectionId: string) => {
+    setSelectedConnectionId(connectionId);
+    if (!connectionId) return;
+    const conn = remoteConnections.find(c => c.id === connectionId);
+    if (!conn) return;
+
+    setEditingConfig(prev => ({
+      ...prev,
+      protocolo: conn.protocolo,
+      host: conn.host,
+      puerto: conn.puerto,
+      usuario: conn.usuario,
+      ruta_remota: conn.ruta_base || prev.ruta_remota
+    }));
+    setTempPassword(conn.password || '');
+  };
+
+  const handleSaveCurrentAsConnection = async () => {
+    if (!currentMall?.id) {
+      alert("Selecciona un mall antes de guardar conexiones.");
+      return;
+    }
+    if (editingConfig.protocolo === 'LOCAL') {
+      alert("Las conexiones guardadas aplican solo para FTP/SFTP.");
+      return;
+    }
+    if (!editingConfig.host || !editingConfig.usuario) {
+      alert("Completa host y usuario antes de guardar la conexión.");
+      return;
+    }
+
+    const suggestedName = `${editingConfig.nombre || 'Conexión'} - ${editingConfig.usuario}@${editingConfig.host}`;
+    const name = window.prompt("Nombre para esta conexión guardada:", suggestedName)?.trim();
+    if (!name) return;
+
+    try {
+      const saved = await ApiService.saveRemoteConnection({
+        mall_id: currentMall.id,
+        nombre: name,
+        protocolo: editingConfig.protocolo,
+        host: editingConfig.host.trim(),
+        puerto: Number(editingConfig.puerto) || (editingConfig.protocolo === 'SFTP' ? 22 : 21),
+        usuario: editingConfig.usuario.trim(),
+        password: tempPassword || editingConfig.password || '',
+        ruta_base: editingConfig.ruta_remota || '.'
+      });
+      await loadRemoteConnections();
+      setSelectedConnectionId(saved.id);
+      alert("Conexión guardada correctamente.");
+    } catch (error: any) {
+      alert(`No se pudo guardar la conexión: ${error.message || error}`);
+    }
+  };
+
+  const handleDeleteSavedConnection = async () => {
+    if (!selectedConnectionId) {
+      alert("Selecciona una conexión guardada para eliminar.");
+      return;
+    }
+    if (!confirm("¿Eliminar esta conexión guardada?")) return;
+
+    try {
+      await ApiService.deleteRemoteConnection(selectedConnectionId);
+      setSelectedConnectionId('');
+      await loadRemoteConnections();
+      alert("Conexión eliminada.");
+    } catch (error: any) {
+      alert(`No se pudo eliminar: ${error.message || error}`);
     }
   };
 
@@ -167,6 +252,7 @@ export const ImportManager: React.FC = () => {
       setShowForm(false);
       setActiveStep(1);
       setTempPassword('');
+      setSelectedConnectionId('');
       setEditingConfig({
         id: '', nombre: '', protocolo: 'SFTP', host: '', puerto: 22, usuario: '', ruta_remota: '.', tipo_archivo: 'CSV',
         frecuencia: 'manual', accion_post_procesado: 'ninguna', estado: 'activo',
@@ -700,6 +786,7 @@ export const ImportManager: React.FC = () => {
               password: ''
             });
             setTempPassword('');
+            setSelectedConnectionId('');
             setActiveStep(1);
             setShowForm(true);
           }}
@@ -725,6 +812,7 @@ export const ImportManager: React.FC = () => {
             <button onClick={() => {
               setShowForm(false);
               setTempPassword('');
+              setSelectedConnectionId('');
               setEditingConfig({
                 id: '', nombre: '', protocolo: 'SFTP', host: '', puerto: 22, usuario: '', ruta_remota: '.', tipo_archivo: 'CSV',
                 frecuencia: 'manual', accion_post_procesado: 'ninguna', estado: 'activo',
@@ -757,6 +845,14 @@ export const ImportManager: React.FC = () => {
                           const existingConfig = configs.find(c => c.id === selectedId);
                           if (existingConfig) {
                             setEditingConfig({ ...existingConfig });
+                            setSelectedConnectionId('');
+                            const matchedConn = remoteConnections.find(c =>
+                              c.protocolo === existingConfig.protocolo &&
+                              c.host === existingConfig.host &&
+                              String(c.puerto) === String(existingConfig.puerto) &&
+                              c.usuario === existingConfig.usuario
+                            );
+                            if (matchedConn) setSelectedConnectionId(matchedConn.id);
                           } else {
                             setEditingConfig({
                               ...editingConfig,
@@ -764,6 +860,7 @@ export const ImportManager: React.FC = () => {
                               nombre: store.nombre,
                               mapping: { ...editingConfig.mapping, local_codigo: store.codigo_interno }
                             });
+                            setSelectedConnectionId('');
                           }
                         }
                       }}
@@ -788,13 +885,54 @@ export const ImportManager: React.FC = () => {
                       onChange={e => setEditingConfig({ ...editingConfig, nombre: e.target.value })}
                     />
                   </div>
+
+                  {editingConfig.protocolo !== 'LOCAL' && (
+                    <div className="p-3 rounded-xl border border-indigo-100 bg-indigo-50/50 space-y-2">
+                      <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest">
+                        Conexiones Guardadas (FTP/SFTP)
+                      </label>
+                      <div className="flex gap-2">
+                        <select
+                          className="flex-1 px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm"
+                          value={selectedConnectionId}
+                          onChange={(e) => applySavedConnection(e.target.value)}
+                        >
+                          <option value="">-- Seleccionar conexión guardada --</option>
+                          {remoteConnections.map((conn) => (
+                            <option key={conn.id} value={conn.id}>
+                              {conn.nombre} ({conn.usuario}@{conn.host})
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleSaveCurrentAsConnection}
+                          className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700"
+                        >
+                          Guardar Actual
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDeleteSavedConnection}
+                          disabled={!selectedConnectionId}
+                          className="px-3 py-2 rounded-lg border border-rose-200 text-rose-600 text-xs font-bold hover:bg-rose-50 disabled:opacity-50"
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <div className="flex gap-4">
                     <div className="flex-1">
                       <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Protocolo</label>
                       <select
                         className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium"
                         value={editingConfig.protocolo}
-                        onChange={e => setEditingConfig({ ...editingConfig, protocolo: e.target.value as ImportProtocol, puerto: e.target.value === 'SFTP' ? 22 : 21 })}
+                        onChange={e => {
+                          const nextProtocol = e.target.value as ImportProtocol;
+                          if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
+                          setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : 21 });
+                        }}
                       >
                         <option value="SFTP">SFTP (SSH File Transfer)</option>
                         <option value="FTP">FTP (Estándar)</option>
@@ -1278,7 +1416,7 @@ export const ImportManager: React.FC = () => {
           </div>
 
           <div className="mt-10 pt-6 border-t border-slate-100 flex justify-end gap-3 px-8 pb-8">
-            <button onClick={() => { setShowForm(false); setActiveStep(1); }} className="px-6 py-2.5 text-slate-500 font-medium hover:text-slate-800 transition-colors">Cerrar</button>
+            <button onClick={() => { setShowForm(false); setActiveStep(1); setSelectedConnectionId(''); }} className="px-6 py-2.5 text-slate-500 font-medium hover:text-slate-800 transition-colors">Cerrar</button>
             {activeStep === 1 ? (
               <div className="flex gap-2">
                 <button

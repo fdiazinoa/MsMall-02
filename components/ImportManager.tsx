@@ -229,6 +229,21 @@ export const ImportManager: React.FC = () => {
     return delimiter;
   };
 
+  const hasDataRowsInAnalysis = (analysis: any): boolean => {
+    const sampleRow = analysis?.sample_row || {};
+    const sampleHasValues = Object.values(sampleRow).some(v => String(v ?? '').trim() !== '');
+    if (sampleHasValues) return true;
+
+    const previewLines = Array.isArray(analysis?.raw_preview_lines)
+      ? analysis.raw_preview_lines.filter((line: string) => String(line || '').trim() !== '')
+      : [];
+    const headerCount = Array.isArray(analysis?.csv_headers) ? analysis.csv_headers.length : 0;
+
+    if (previewLines.length === 0) return false;
+    if (previewLines.length === 1 && headerCount > 0) return false;
+    return previewLines.length > 1;
+  };
+
   const resolveProcessedCountFromLogs = async (config: ImportConfig, filename: string): Promise<number | null> => {
     try {
       const logs = await ApiService.getLoadLogs(currentMall?.id);
@@ -263,13 +278,20 @@ export const ImportManager: React.FC = () => {
     setProgressRecords(0);
 
     try {
-      // Step 1: Analyze file structure only when required mapping is missing.
-      if (!hasRequiredMapping(config)) {
-        console.log("Analizando estructura del archivo:", filename);
-        setProgressStep('processing');
-        setProgressMessage(`Analizando estructura del archivo...`);
+      // Step 1: Analyze file structure to validate content and mapping readiness.
+      console.log("Analizando estructura del archivo:", filename);
+      setProgressStep('processing');
+      setProgressMessage(`Analizando estructura del archivo...`);
+      const analysis = await ApiService.analyzeSingleFile(config, filename, authToken);
 
-        const analysis = await ApiService.analyzeSingleFile(config, filename, authToken);
+      if (!hasDataRowsInAnalysis(analysis)) {
+        setProgressStep('error');
+        setProgressMessage('⚠️ El archivo seleccionado no contiene filas de data para importar (vacío o solo encabezado).');
+        setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
+        return;
+      }
+
+      if (!hasRequiredMapping(config)) {
         const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
         const currentMapping = analysis.current_mapping || {};
         const missingFields = requiredFields.filter(f => !currentMapping[f]);

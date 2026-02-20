@@ -474,7 +474,11 @@ export const ApiService = {
     csv_headers: string[],
     suggested_mapping: Record<string, any>,
     sample_row: Record<string, any>,
-    current_mapping: Record<string, string>
+    current_mapping: Record<string, string>,
+    raw_preview_lines?: string[],
+    analysis_type?: string,
+    detected_delimiter?: string | null,
+    detected_has_header?: boolean | null
   }> {
     const payload = {
       config_id: config.id || '',

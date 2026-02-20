@@ -891,11 +891,12 @@ export const ImportManager: React.FC = () => {
                       <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest">
                         Conexiones Guardadas (FTP/SFTP)
                       </label>
-                      <div className="flex gap-2">
+                      <div className="flex flex-col md:flex-row gap-2">
                         <select
-                          className="flex-1 px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm"
+                          className="min-w-0 flex-1 px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm truncate"
                           value={selectedConnectionId}
                           onChange={(e) => applySavedConnection(e.target.value)}
+                          title={remoteConnections.find(c => c.id === selectedConnectionId)?.nombre || ''}
                         >
                           <option value="">-- Seleccionar conexión guardada --</option>
                           {remoteConnections.map((conn) => (
@@ -904,21 +905,23 @@ export const ImportManager: React.FC = () => {
                             </option>
                           ))}
                         </select>
-                        <button
-                          type="button"
-                          onClick={handleSaveCurrentAsConnection}
-                          className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700"
-                        >
-                          Guardar Actual
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleDeleteSavedConnection}
-                          disabled={!selectedConnectionId}
-                          className="px-3 py-2 rounded-lg border border-rose-200 text-rose-600 text-xs font-bold hover:bg-rose-50 disabled:opacity-50"
-                        >
-                          Eliminar
-                        </button>
+                        <div className="flex gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={handleSaveCurrentAsConnection}
+                            className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 whitespace-nowrap"
+                          >
+                            Guardar Actual
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDeleteSavedConnection}
+                            disabled={!selectedConnectionId}
+                            className="px-3 py-2 rounded-lg border border-rose-200 text-rose-600 text-xs font-bold hover:bg-rose-50 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            Eliminar
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}

@@ -118,12 +118,12 @@ export const DashboardKPIs: React.FC = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <KPICard
-          title="Ventas Brutas"
+          title="Ventas Netas"
           value={format(data.ventas_totales_neto || 0)}
           icon={DollarSign}
           trend={data.variacion_ventas}
           color="bg-indigo-500"
-          tooltip="Ventas base antes de impuestos (anteriormente Netas)."
+          tooltip="Total de ingresos sin impuestos en el periodo seleccionado."
         />
         <KPICard
           title="Transacciones"
@@ -142,11 +142,11 @@ export const DashboardKPIs: React.FC = () => {
           tooltip="Promedio de venta por transacción: Ventas Totales / Número de Transacciones."
         />
         <KPICard
-          title="Ventas Netas"
+          title="Ventas Brutas"
           value={format(data.ventas_totales_bruto || 0)}
           icon={BarChart3}
           color="bg-rose-500"
-          tooltip="Total de ingresos finales incluyendo impuestos (anteriormente Brutas)."
+          tooltip="Total de ingresos incluyendo impuestos en el periodo seleccionado."
         />
       </div>
 

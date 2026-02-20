@@ -98,20 +98,20 @@ export const DashboardKPIs: React.FC = () => {
           <h2 className="text-2xl font-bold text-slate-800">Business Intelligence</h2>
           <p className="text-slate-500">Indicadores clave de rendimiento del mall.</p>
         </div>
-        <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-100 flex items-center gap-2">
+        <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-100 flex flex-wrap items-center gap-2 w-full md:w-auto">
           <Calendar size={16} className="text-slate-400 ml-2" />
           <input
             type="date"
             value={dates.startDate}
             onChange={(e) => setDates({ ...dates, startDate: e.target.value })}
-            className="text-sm border-none focus:ring-0 outline-none p-1"
+            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[130px]"
           />
           <span className="text-slate-300">-</span>
           <input
             type="date"
             value={dates.endDate}
             onChange={(e) => setDates({ ...dates, endDate: e.target.value })}
-            className="text-sm border-none focus:ring-0 outline-none p-1"
+            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[130px]"
           />
         </div>
       </div>

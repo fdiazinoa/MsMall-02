@@ -268,7 +268,7 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Benchmarking & ATV */}
-                <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <div className="bg-white p-4 sm:p-8 rounded-3xl border border-slate-200 shadow-sm">
                     <div className="flex items-center justify-between mb-8">
                         <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                             <BarChart3 className="text-indigo-500" size={20} />
@@ -276,7 +276,7 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                         </h3>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-8 mb-8">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-8 mb-8">
                         <div className="p-4 bg-slate-50 rounded-2xl">
                             <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Ticket Promedio (ATV)</p>
                             <p className="text-2xl font-bold text-slate-800">${benchmarking?.atv_local}</p>
@@ -312,7 +312,7 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                 </div>
 
                 {/* Heatmap Section */}
-                <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <div className="bg-white p-4 sm:p-8 rounded-3xl border border-slate-200 shadow-sm">
                     <div className="flex items-center justify-between mb-8">
                         <div>
                             <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">

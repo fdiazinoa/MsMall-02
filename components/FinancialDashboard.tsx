@@ -155,24 +155,24 @@ export const FinancialDashboard: React.FC = () => {
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
             {/* Header with Filters & Exports */}
-            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
                 <div>
                     <h2 className="text-xl font-bold text-slate-800">Salud Financiera</h2>
                     <p className="text-slate-500 text-sm">Análisis de OCR y Proyecciones</p>
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
-                    <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200">
+                <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 w-full md:w-auto">
                         <Calendar size={16} className="text-slate-400" />
                         <input
                             type="date"
-                            className="bg-transparent border-none text-sm outline-none w-32 text-slate-600"
+                            className="bg-transparent border-none text-sm outline-none w-full sm:w-32 text-slate-600"
                             value={dates.startDate}
                             onChange={(e) => setDates({ ...dates, startDate: e.target.value })}
                         />
-                        <ArrowRight size={14} className="text-slate-300" />
+                        <ArrowRight size={14} className="text-slate-300 hidden sm:block" />
                         <input
                             type="date"
-                            className="bg-transparent border-none text-sm outline-none w-32 text-slate-600"
+                            className="bg-transparent border-none text-sm outline-none w-full sm:w-32 text-slate-600"
                             value={dates.endDate}
                             onChange={(e) => setDates({ ...dates, endDate: e.target.value })}
                         />
@@ -302,13 +302,13 @@ export const FinancialDashboard: React.FC = () => {
                 </div>
 
                 {/* Table: Proyección de Recaudación */}
-                <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+                <div className="bg-white p-4 sm:p-8 rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
                     <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
                         <TrendingUp className="text-indigo-500" size={20} />
                         Proyección de Recaudación (Variable)
                     </h3>
                     <div className="overflow-x-auto">
-                        <table className="w-full text-left">
+                        <table className="w-full min-w-[620px] text-left">
                             <thead>
                                 <tr className="text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-50">
                                     <th className="pb-4">Local</th>

@@ -542,19 +542,23 @@ def _should_treat_as_no_header(content: str, delimiter: str) -> bool:
     try:
         reader = csv.reader(io.StringIO(content), delimiter=delimiter)
         rows = [r for r in reader if any(str(c or "").strip() for c in r)]
-        if len(rows) < 2:
+        if not rows:
             return False
 
         first = rows[0]
-        second = rows[1]
         if not first:
             return False
 
         header_like = sum(1 for c in first if _looks_like_header_cell(c))
         first_data_like = sum(1 for c in first if _looks_like_data_cell(c))
-        second_data_like = sum(1 for c in second if _looks_like_data_cell(c))
-
         first_ratio = first_data_like / max(len(first), 1)
+
+        # Single-line files (one transaction) still can be confidently identified as no-header.
+        if len(rows) == 1:
+            return header_like == 0 and first_ratio >= 0.7
+
+        second = rows[1]
+        second_data_like = sum(1 for c in second if _looks_like_data_cell(c))
         second_ratio = second_data_like / max(len(second), 1)
 
         return header_like == 0 and first_ratio >= 0.7 and second_ratio >= 0.7

@@ -192,6 +192,7 @@ export default function MappingModal({
                                                         <option value="auto">🔍 Autodetectar (recomendado)</option>
                                                         <option value="DD/MM/YYYY">📅 DD/MM/YYYY (02/01 = 2 de Enero)</option>
                                                         <option value="DDmmYYYY">🔢 DDmmYYYY (02012026 = 2 de Enero)</option>
+                                                        <option value="YYYYmmDD">🧮 YYYYmmDD (20260102 = 2 de Enero)</option>
                                                         <option value="MM/DD/YYYY">🇺🇸 MM/DD/YYYY (02/01 = 1 de Febrero)</option>
                                                         <option value="YYYY-MM-DD">🌐 YYYY-MM-DD (ISO 8601)</option>
                                                         <option value="timestamp">⏰ Con hora (ISO timestamp)</option>

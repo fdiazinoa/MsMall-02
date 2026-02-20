@@ -940,6 +940,8 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     date_formats = ['%d/%m/%Y', '%d-%m-%Y']
                 elif explicit_format == 'DDmmYYYY':
                     date_formats = ['%d%m%Y']
+                elif explicit_format == 'YYYYmmDD':
+                    date_formats = ['%Y%m%d']
                 elif explicit_format == 'MM/DD/YYYY':
                     date_formats = ['%m/%d/%Y', '%m-%d-%Y']
                 elif explicit_format == 'YYYY-MM-DD':
@@ -962,6 +964,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         '%Y-%m-%d',               # ISO 8601 date only (2026-02-01)
                         '%d/%m/%Y',               # DD/MM/YYYY (Dominican/Spanish format)
                         '%d%m%Y',                 # DDmmYYYY (05012026)
+                        '%Y%m%d',                 # YYYYmmDD (20260105)
                         '%m/%d/%Y',               # MM/DD/YYYY (US format)
                         '%d-%m-%Y',               # DD-MM-YYYY with hyphens
                         '%m-%d-%Y',               # MM-DD-YYYY with hyphens

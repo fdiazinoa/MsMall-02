@@ -84,14 +84,14 @@ def insert_load_log(
 def normalize_date(date_str):
     """
     Attempts to parse a date string into YYYY-MM-DD format.
-    Supports: DD/MM/YYYY, YYYY-MM-DD, MM/DD/YYYY, DD-MM-YYYY, YYYY/MM/DD
+    Supports: DD/MM/YYYY, YYYY-MM-DD, MM/DD/YYYY, DD-MM-YYYY, YYYY/MM/DD, YYYYmmDD
     """
     if not date_str:
         return None
         
     raw_date = str(date_str).strip()
     # Try common formats
-    for fmt in ['%d/%m/%Y', '%Y-%m-%d', '%m/%d/%Y', '%d-%m-%Y', '%Y/%m/%d']:
+    for fmt in ['%d/%m/%Y', '%Y-%m-%d', '%m/%d/%Y', '%d-%m-%Y', '%Y/%m/%d', '%Y%m%d']:
         try:
             parsed_date = datetime.strptime(raw_date, fmt)
             return parsed_date.strftime('%Y-%m-%d')

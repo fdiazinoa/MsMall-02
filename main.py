@@ -722,8 +722,15 @@ def _fallback_parse_csv_rows(
         data_rows = best_matrix[1:]
         line_offset = 2
         if forced_data_start_row and forced_data_start_row > 2:
-            data_rows = data_rows[forced_data_start_row - 2:]
-            line_offset = forced_data_start_row
+            skip_count = forced_data_start_row - 2
+            if skip_count < len(data_rows):
+                data_rows = data_rows[skip_count:]
+                line_offset = forced_data_start_row
+            else:
+                logger.warning(
+                    f"Fallback parser: data_start_row={forced_data_start_row} fuera de rango. "
+                    "Usando inicio por defecto (línea 2)."
+                )
 
         for r in data_rows:
             padded = list(r) + [""] * (max_cols - len(r))
@@ -733,8 +740,15 @@ def _fallback_parse_csv_rows(
     matrix_rows = best_matrix
     line_offset = 1
     if forced_data_start_row and forced_data_start_row > 1:
-        matrix_rows = matrix_rows[forced_data_start_row - 1:]
-        line_offset = forced_data_start_row
+        skip_count = forced_data_start_row - 1
+        if skip_count < len(matrix_rows):
+            matrix_rows = matrix_rows[skip_count:]
+            line_offset = forced_data_start_row
+        else:
+            logger.warning(
+                f"Fallback parser (no header): data_start_row={forced_data_start_row} fuera de rango. "
+                "Usando inicio por defecto (línea 1)."
+            )
     if matrix_rows:
         max_cols = max(len(r) for r in matrix_rows)
         synthetic_headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]
@@ -787,8 +801,15 @@ def _emergency_parse_delimited_rows(
         data_rows = matrix[1:]
         line_offset = 2
         if forced_data_start_row and forced_data_start_row > 2:
-            data_rows = data_rows[forced_data_start_row - 2:]
-            line_offset = forced_data_start_row
+            skip_count = forced_data_start_row - 2
+            if skip_count < len(data_rows):
+                data_rows = data_rows[skip_count:]
+                line_offset = forced_data_start_row
+            else:
+                logger.warning(
+                    f"Emergency parser: data_start_row={forced_data_start_row} fuera de rango. "
+                    "Usando inicio por defecto (línea 2)."
+                )
 
         raw_rows: List[Dict[str, Any]] = []
         for r in data_rows:
@@ -800,8 +821,15 @@ def _emergency_parse_delimited_rows(
     matrix_rows = matrix
     line_offset = 1
     if forced_data_start_row and forced_data_start_row > 1:
-        matrix_rows = matrix_rows[forced_data_start_row - 1:]
-        line_offset = forced_data_start_row
+        skip_count = forced_data_start_row - 1
+        if skip_count < len(matrix_rows):
+            matrix_rows = matrix_rows[skip_count:]
+            line_offset = forced_data_start_row
+        else:
+            logger.warning(
+                f"Emergency parser (no header): data_start_row={forced_data_start_row} fuera de rango. "
+                "Usando inicio por defecto (línea 1)."
+            )
 
     raw_rows: List[Dict[str, Any]] = []
     if matrix_rows:
@@ -1052,16 +1080,14 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 parsed_rows_before_offset = len(raw_rows)
                 if forced_data_start_row and forced_data_start_row > 2:
                     skip_count = forced_data_start_row - 2
-                    raw_rows = raw_rows[skip_count:]
-                    line_offset = forced_data_start_row
-                if parsed_rows_before_offset > 0 and not raw_rows:
-                    return 0, [{
-                        "linea": 0,
-                        "error": (
-                            f"No hay filas de data desde la línea {forced_data_start_row}. "
-                            "Ajuste 'Línea donde inicia la data' en el mapeo."
+                    if skip_count < len(raw_rows):
+                        raw_rows = raw_rows[skip_count:]
+                        line_offset = forced_data_start_row
+                    else:
+                        logger.warning(
+                            f"data_start_row={forced_data_start_row} fuera de rango para archivo '{filename}'. "
+                            "Usando inicio por defecto (línea 2)."
                         )
-                    }]
             else:
                 no_header_mode = True
                 line_offset = 1
@@ -1070,16 +1096,14 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 parsed_rows_before_offset = len(matrix_rows)
                 if forced_data_start_row and forced_data_start_row > 1:
                     skip_count = forced_data_start_row - 1
-                    matrix_rows = matrix_rows[skip_count:]
-                    line_offset = forced_data_start_row
-                if parsed_rows_before_offset > 0 and not matrix_rows:
-                    return 0, [{
-                        "linea": 0,
-                        "error": (
-                            f"No hay filas de data desde la línea {forced_data_start_row}. "
-                            "Ajuste 'Línea donde inicia la data' en el mapeo."
+                    if skip_count < len(matrix_rows):
+                        matrix_rows = matrix_rows[skip_count:]
+                        line_offset = forced_data_start_row
+                    else:
+                        logger.warning(
+                            f"data_start_row={forced_data_start_row} fuera de rango para archivo '{filename}' (no header). "
+                            "Usando inicio por defecto (línea 1)."
                         )
-                    }]
                 if matrix_rows:
                     max_cols = max(len(r) for r in matrix_rows)
                     synthetic_headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]

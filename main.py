@@ -2701,14 +2701,49 @@ def _download_ftp_file_bytes(
         if requested_clean and (name == requested_clean or name.lower() == requested_clean.lower())
     ]
 
+    def _normalized_stem(name: str) -> str:
+        stem = posixpath.splitext(posixpath.basename(name or ""))[0].strip().lower()
+        if stem.startswith("pr_"):
+            stem = stem[3:]
+        for ch in [" ", "-", "_"]:
+            stem = stem.replace(ch, "")
+        return stem
+
+    requested_stem = _normalized_stem(requested_clean)
+    related_matches: List[str] = []
+    for listed in listed_basenames:
+        listed_stem = _normalized_stem(listed)
+        if not listed_stem or not requested_stem:
+            continue
+        if listed_stem == requested_stem:
+            related_matches.append(listed)
+            continue
+        # Keep permissive suffix relation for legacy names with extra prefixes/suffixes.
+        if listed.lower().endswith(requested_clean.lower()) or requested_clean.lower().endswith(listed.lower()):
+            related_matches.append(listed)
+
     candidates: List[str] = []
     if exact_matches:
         for candidate in exact_matches:
             if candidate not in candidates:
                 candidates.append(candidate)
+    for candidate in related_matches:
+        if candidate not in candidates:
+            candidates.append(candidate)
     for candidate in [requested_clean, resolved_filename, remote_base]:
         if candidate and candidate not in candidates:
             candidates.append(candidate)
+
+    # Explicit PR_ / non-PR toggles.
+    if requested_clean:
+        if requested_clean.upper().startswith("PR_"):
+            alt = requested_clean[3:]
+            if alt and alt not in candidates:
+                candidates.append(alt)
+        else:
+            alt = f"PR_{requested_clean}"
+            if alt not in candidates:
+                candidates.append(alt)
 
     # Also try absolute-like paths; some FTP servers behave better this way.
     for base_name in list(candidates):

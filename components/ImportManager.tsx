@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 // Fix: Import types from '../types' instead of '../api'
@@ -90,6 +90,28 @@ export const ImportManager: React.FC = () => {
   const [unmarkingFile, setUnmarkingFile] = useState<string | null>(null); // Track file being unmarked
   const [activeConfigId, setActiveConfigId] = useState<string | null>(null);
   const [fileStatuses, setFileStatuses] = useState<Record<string, 'success' | 'error' | 'idle'>>({});
+  const [batchMask, setBatchMask] = useState<string>('*');
+  const [batchLimit, setBatchLimit] = useState<number>(30);
+  const [batchProgress, setBatchProgress] = useState<{
+    running: boolean;
+    total: number;
+    processed: number;
+    success: number;
+    failed: number;
+    skipped: number;
+    currentFile: string;
+    message: string;
+  }>({
+    running: false,
+    total: 0,
+    processed: 0,
+    success: 0,
+    failed: 0,
+    skipped: 0,
+    currentFile: '',
+    message: ''
+  });
+  const batchCancelRef = useRef(false);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
 
   // Progress Modal State
@@ -304,6 +326,98 @@ export const ImportManager: React.FC = () => {
     }
   };
 
+  const stopManualBatch = () => {
+    batchCancelRef.current = true;
+    setBatchProgress(prev => ({
+      ...prev,
+      message: 'Deteniendo lote al finalizar el archivo actual...'
+    }));
+  };
+
+  const handleExecuteManualBatch = async () => {
+    if (!activeConfigId) return;
+    const config = configs.find(c => c.id === activeConfigId);
+    if (!config) return;
+    if (!hasRequiredMapping(config)) {
+      alert('Configura primero el mapeo obligatorio (Factura, Fecha, Código Local, Total Bruto) antes de procesar en lote.');
+      return;
+    }
+
+    const safeLimit = Number.isFinite(batchLimit) && batchLimit > 0 ? Math.trunc(batchLimit) : 30;
+    const candidates = filteredBatchCandidates.slice(0, safeLimit);
+    const skipped = Math.max(filteredBatchCandidates.length - candidates.length, 0);
+
+    if (candidates.length === 0) {
+      alert('No hay archivos que coincidan con la máscara para procesar en lote.');
+      return;
+    }
+
+    batchCancelRef.current = false;
+    setBatchProgress({
+      running: true,
+      total: candidates.length,
+      processed: 0,
+      success: 0,
+      failed: 0,
+      skipped,
+      currentFile: '',
+      message: `Iniciando lote (${candidates.length} archivos)...`
+    });
+
+    let processed = 0;
+    let success = 0;
+    let failed = 0;
+
+    for (const file of candidates) {
+      if (batchCancelRef.current) break;
+
+      setBatchProgress(prev => ({
+        ...prev,
+        currentFile: file.nombre,
+        message: `Procesando ${file.nombre}...`
+      }));
+
+      try {
+        const result = await ApiService.executeManualImport(config, file.nombre, authToken);
+        const records = Number(result?.records_processed || 0);
+        const ok = (result?.status === 'success' || result?.status === 'partial') && records > 0;
+
+        if (ok) {
+          success += 1;
+          setFileStatuses(prev => ({ ...prev, [file.nombre]: 'success' }));
+        } else {
+          failed += 1;
+          setFileStatuses(prev => ({ ...prev, [file.nombre]: 'error' }));
+        }
+      } catch (error) {
+        failed += 1;
+        setFileStatuses(prev => ({ ...prev, [file.nombre]: 'error' }));
+      } finally {
+        processed += 1;
+        setBatchProgress(prev => ({
+          ...prev,
+          processed,
+          success,
+          failed
+        }));
+      }
+    }
+
+    const cancelled = batchCancelRef.current;
+    setBatchProgress(prev => ({
+      ...prev,
+      running: false,
+      currentFile: '',
+      message: cancelled
+        ? `Lote detenido. ${success} OK, ${failed} con error, ${processed}/${prev.total} procesados.`
+        : `Lote completado. ${success} OK, ${failed} con error, ${processed}/${prev.total} procesados.`
+    }));
+
+    if (activeConfigId) {
+      await refreshFileList(activeConfigId);
+    }
+  };
+
   const handleSyncNow = async (id: string, name: string) => {
     setActiveConfigId(id);
     const config = configs.find(c => c.id === id);
@@ -350,6 +464,26 @@ export const ImportManager: React.FC = () => {
     if (previewLines.length === 1 && headerCount > 0) return false;
     return previewLines.length > 1;
   };
+
+  const maskToRegex = (rawMask: string): RegExp => {
+    const normalized = String(rawMask || '*').trim() || '*';
+    const wildcardMask = normalized.replace(/%/g, '*');
+    const escaped = wildcardMask.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    const regexPattern = `^${escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.')}$`;
+    return new RegExp(regexPattern, 'i');
+  };
+
+  const filteredBatchCandidates = useMemo(() => {
+    const matcher = maskToRegex(batchMask);
+    const nonProcessed = (manualFiles || []).filter((f) => !/^(PR_|ERR_)/i.test(f.nombre));
+    const matched = nonProcessed.filter((f) => matcher.test(f.nombre));
+    return matched.sort((a, b) => {
+      const at = new Date(a.fecha).getTime();
+      const bt = new Date(b.fecha).getTime();
+      if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt; // Oldest first
+      return String(a.nombre || '').localeCompare(String(b.nombre || ''));
+    });
+  }, [manualFiles, batchMask]);
 
   const resolveProcessedCountFromLogs = async (config: ImportConfig, filename: string): Promise<number | null> => {
     try {
@@ -1726,11 +1860,101 @@ export const ImportManager: React.FC = () => {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6">
-              {manualLoading ? (
-                <div className="py-20 text-center">
-                  <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
-                  <p className="text-slate-500 font-medium">Buscando archivos en el servidor...</p>
+	            <div className="flex-1 overflow-y-auto p-6">
+              <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-2xl">
+                <div className="flex flex-col lg:flex-row lg:items-end gap-3">
+                  <div className="flex-1">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                      Máscara de Archivo
+                    </label>
+                    <input
+                      type="text"
+                      value={batchMask}
+                      onChange={(e) => setBatchMask(e.target.value)}
+                      placeholder="Ej: *2026* (también acepta %2026%)"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                      disabled={batchProgress.running}
+                    />
+                  </div>
+                  <div className="w-full lg:w-36">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                      Límite
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={500}
+                      value={batchLimit}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        setBatchLimit(Number.isFinite(n) ? Math.max(1, Math.min(500, Math.trunc(n))) : 30);
+                      }}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                      disabled={batchProgress.running}
+                    />
+                  </div>
+                  <div className="w-full lg:w-auto">
+                    {batchProgress.running ? (
+                      <button
+                        onClick={stopManualBatch}
+                        className="w-full lg:w-auto bg-rose-600 text-white px-4 py-2.5 rounded-xl text-xs font-bold hover:bg-rose-700 transition-all"
+                      >
+                        Detener Lote
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleExecuteManualBatch}
+                        className="w-full lg:w-auto bg-indigo-600 text-white px-4 py-2.5 rounded-xl text-xs font-bold hover:bg-indigo-700 transition-all"
+                      >
+                        Procesar Lote
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="px-2 py-1 rounded-lg bg-white border border-slate-200 text-slate-600 font-bold">
+                    Coinciden: {filteredBatchCandidates.length}
+                  </span>
+                  <span className="px-2 py-1 rounded-lg bg-white border border-slate-200 text-slate-600 font-bold">
+                    A procesar: {Math.min(filteredBatchCandidates.length, Math.max(1, Math.trunc(batchLimit || 0)))}
+                  </span>
+                  {batchProgress.skipped > 0 && (
+                    <span className="px-2 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 font-bold">
+                      Saltados por límite: {batchProgress.skipped}
+                    </span>
+                  )}
+                </div>
+
+                {(batchProgress.total > 0 || batchProgress.running) && (
+                  <div className="mt-3">
+                    <div className="flex items-center justify-between text-[11px] font-bold mb-1">
+                      <span className="text-slate-600">
+                        {batchProgress.currentFile ? `Procesando: ${batchProgress.currentFile}` : 'Procesamiento por lote'}
+                      </span>
+                      <span className="text-slate-500">
+                        {batchProgress.processed}/{batchProgress.total} ({Math.round((batchProgress.processed / Math.max(batchProgress.total, 1)) * 100)}%)
+                      </span>
+                    </div>
+                    <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full ${batchProgress.running ? 'bg-indigo-600' : 'bg-emerald-600'} transition-all duration-300`}
+                        style={{ width: `${Math.round((batchProgress.processed / Math.max(batchProgress.total, 1)) * 100)}%` }}
+                      />
+                    </div>
+                    <div className="mt-2 text-[11px] text-slate-600 flex flex-wrap items-center gap-3">
+                      <span>OK: <strong className="text-green-700">{batchProgress.success}</strong></span>
+                      <span>Error: <strong className="text-rose-700">{batchProgress.failed}</strong></span>
+                      {batchProgress.message && <span className="text-slate-500">{batchProgress.message}</span>}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+	              {manualLoading ? (
+	                <div className="py-20 text-center">
+	                  <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
+	                  <p className="text-slate-500 font-medium">Buscando archivos en el servidor...</p>
                 </div>
               ) : manualFiles.length > 0 ? (
                 <div className="overflow-hidden rounded-2xl border border-slate-100">
@@ -1768,13 +1992,13 @@ export const ImportManager: React.FC = () => {
                           <td className="px-5 py-4 text-center">
                             <div className="flex items-center justify-center gap-2">
                               {/* Unmark button for processed files */}
-                              {file.nombre.startsWith('PR_') && (
-                                <button
-                                  onClick={() => handleUnmarkFile(file.nombre)}
-                                  disabled={unmarkingFile === file.nombre}
-                                  className="p-2 text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-xl transition-all disabled:opacity-50"
-                                  title="Desmarcar archivo para reprocesar"
-                                >
+	                              {file.nombre.startsWith('PR_') && (
+	                                <button
+	                                  onClick={() => handleUnmarkFile(file.nombre)}
+	                                  disabled={unmarkingFile === file.nombre || batchProgress.running}
+	                                  className="p-2 text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-xl transition-all disabled:opacity-50"
+	                                  title="Desmarcar archivo para reprocesar"
+	                                >
                                   {unmarkingFile === file.nombre ? (
                                     <RefreshCw className="animate-spin" size={16} />
                                   ) : (
@@ -1784,12 +2008,12 @@ export const ImportManager: React.FC = () => {
                               )}
 
                               {/* Execute button */}
-                              <button
-                                onClick={() => handleExecuteManualFile(file.nombre)}
-                                disabled={executingFile === file.nombre || isProcessed}
-                                className={`px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all shadow-lg flex items-center gap-2 disabled:opacity-50
-                                  ${isProcessed
-                                    ? 'bg-green-500 text-white shadow-green-200 cursor-default'
+	                              <button
+	                                onClick={() => handleExecuteManualFile(file.nombre)}
+	                                disabled={executingFile === file.nombre || isProcessed || batchProgress.running}
+	                                className={`px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all shadow-lg flex items-center gap-2 disabled:opacity-50
+	                                  ${isProcessed
+	                                    ? 'bg-green-500 text-white shadow-green-200 cursor-default'
                                     : isErrored
                                       ? 'bg-rose-500 text-white shadow-rose-200 hover:bg-rose-600'
                                       : 'bg-indigo-600 text-white shadow-indigo-200 hover:bg-indigo-700'

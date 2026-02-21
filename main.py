@@ -3037,6 +3037,68 @@ async def execute_manual_endpoint(
         ruta_remota = config_data.get("ruta_remota") or config_data.get("sftp_path", ".")
         protocolo = config_data.get("protocolo") or config_data.get("sftp_protocol", "SFTP")
         source_filename = req.filename
+
+        def _build_prefixed_name(filename: str, prefix: str) -> str:
+            base_name = posixpath.basename((filename or "").strip())
+            if not base_name:
+                return base_name
+            upper_name = base_name.upper()
+            if upper_name.startswith("PR_"):
+                base_name = base_name[3:]
+            elif upper_name.startswith("ERR_"):
+                base_name = base_name[4:]
+            return f"{prefix}{base_name}"
+
+        def _rename_source_file(prefix: str) -> Optional[str]:
+            nonlocal source_filename
+            if not source_filename:
+                return None
+
+            if protocolo == "SFTP":
+                ssh, sftp = get_sftp_client(host, puerto, usuario, password)
+                try:
+                    target_dir = ruta_remota
+                    try:
+                        st = sftp.stat(ruta_remota)
+                        if not stat.S_ISDIR(st.st_mode):
+                            target_dir = posixpath.dirname(ruta_remota) or "."
+                    except Exception:
+                        pass
+
+                    old_path = posixpath.join(target_dir, source_filename)
+                    new_name = _build_prefixed_name(source_filename, prefix)
+                    new_path = posixpath.join(target_dir, new_name)
+                    logger.info(f"Renombrando {old_path} -> {new_path}")
+                    sftp.rename(old_path, new_path)
+                    source_filename = new_name
+                    return new_name
+                finally:
+                    try:
+                        sftp.close()
+                    except Exception:
+                        pass
+                    try:
+                        ssh.close()
+                    except Exception:
+                        pass
+
+            if protocolo == "FTP":
+                ftp = get_ftp_client(host, puerto, usuario, password)
+                try:
+                    used_dir = _ftp_enter_target_dir(ftp, ruta_remota)
+                    rename_source = _resolve_ftp_filename(ftp, source_filename, used_dir) or source_filename
+                    new_name = _build_prefixed_name(rename_source, prefix)
+                    logger.info(f"Renombrando {rename_source} -> {new_name}")
+                    ftp.rename(rename_source, new_name)
+                    source_filename = new_name
+                    return new_name
+                finally:
+                    try:
+                        ftp.quit()
+                    except Exception:
+                        pass
+
+            return None
         
         # 2. Conectar y Descargar
         content = ""
@@ -3115,12 +3177,19 @@ async def execute_manual_endpoint(
                 mall_id=config_data.get("mall_id"),
                 local_id=config_data.get("id")
             )
+            renaming_error = None
+            try:
+                _rename_source_file("ERR_")
+            except Exception as rename_err:
+                renaming_error = str(rename_err)
+                logger.error(f"Error renombrando archivo a ERR_: {rename_err}")
             return _cache_and_return({
                 "status": "error",
                 "message": "Importación manual completada. 0 registros cargados. Se encontraron 1 errores de validación/mapeo.",
                 "records_processed": 0,
                 "batch_id": batch_id,
-                "errors": detalles_errores
+                "errors": detalles_errores,
+                "renaming_error": renaming_error
             })
 
         registros_exito, detalles_errores = process_file_content(
@@ -3155,58 +3224,25 @@ async def execute_manual_endpoint(
 
 
 
-        # 5. Renombrar si fue exitoso
+        # 5. Renombrar resultado: PR_ (éxito con registros) o ERR_ (fallo/no-data)
         logger.info(f"Evaluando renombrado: registros_exito={registros_exito} (Tipo: {type(registros_exito)})")
-        
-        if isinstance(registros_exito, int) and registros_exito > 0:
-             try:
-                if protocolo == "SFTP":
-                     ssh, sftp = get_sftp_client(host, puerto, usuario, password)
-                     # Determine dir again (could be optimized but safe here)
-                     target_dir = ruta_remota
-                     try:
-                        st = sftp.stat(ruta_remota)
-                        if not stat.S_ISDIR(st.st_mode):
-                            target_dir = posixpath.dirname(ruta_remota) or "."
-                     except: pass
-                     
-                     old_path = posixpath.join(target_dir, source_filename)
-                     new_name = f"PR_{source_filename}" # Hardcoded prefix per user request "colocar el prefijo"
-                     new_path = posixpath.join(target_dir, new_name)
-                     
-                     logger.info(f"Renombrando {old_path} -> {new_path}")
-                     sftp.rename(old_path, new_path)
-                     sftp.close()
-                     ssh.close()
+        target_prefix = "PR_" if (isinstance(registros_exito, int) and registros_exito > 0) else "ERR_"
+        renaming_error = None
+        try:
+            _rename_source_file(target_prefix)
+        except Exception as rename_err:
+            renaming_error = str(rename_err)
+            logger.error(f"Error al renombrar archivo pos-importación ({target_prefix}): {rename_err}")
+            mensaje += f" (Advertencia: No se pudo renombrar el archivo: {rename_err})"
 
-                elif protocolo == "FTP":
-                    ftp = get_ftp_client(host, puerto, usuario, password)
-                    used_dir = _ftp_enter_target_dir(ftp, ruta_remota)
-                    
-                    rename_source = _resolve_ftp_filename(ftp, source_filename, used_dir) or source_filename
-                    new_name = f"PR_{rename_source}"
-                    logger.info(f"Renombrando {rename_source} -> {new_name}")
-                    ftp.rename(rename_source, new_name)
-                    ftp.quit()
-             except Exception as rename_err:
-                 logger.error(f"Error al renombrar archivo pos-importación: {rename_err}")
-                 # Don't fail the request, just log it. The import was successful.
-                 mensaje += f" (Advertencia: No se pudo renombrar el archivo: {rename_err})"
-                 return _cache_and_return({
-                    "status": "success",
-                    "message": mensaje,
-                    "records_processed": registros_exito,
-                    "batch_id": batch_id,
-                    "errors": detalles_errores,
-                    "renaming_error": str(rename_err)
-                 })
-
+        final_status = "partial" if estado == "parcial" else ("success" if registros_exito > 0 else "error")
         return _cache_and_return({
-            "status": "success" if (registros_exito > 0 or no_data_detected) else "error",
+            "status": final_status,
             "message": mensaje,
             "records_processed": registros_exito,
             "batch_id": batch_id,
-            "errors": detalles_errores
+            "errors": detalles_errores,
+            "renaming_error": renaming_error
         })
     except Exception as e:
         if isinstance(e, HTTPException):

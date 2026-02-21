@@ -23,6 +23,32 @@ const STANDARD_FIELDS = [
   { key: 'hora_transaccion', label: 'Hora Transacción', required: false }
 ];
 
+const createDefaultImportConfig = (): ImportConfig => ({
+  id: '',
+  nombre: '',
+  protocolo: 'SFTP',
+  host: '',
+  puerto: 22,
+  usuario: '',
+  ruta_remota: '.',
+  tipo_archivo: 'CSV',
+  frecuencia: 'manual',
+  accion_post_procesado: 'ninguna',
+  estado: 'activo',
+  mapping: {
+    factura_numero: '',
+    fecha_venta: '',
+    local_codigo: '',
+    total_bruto: '',
+    total_impuestos: '',
+    total_neto: '',
+    comprobante: '',
+    hora_transaccion: ''
+  },
+  constants: {},
+  password: ''
+});
+
 export const ImportManager: React.FC = () => {
   const { currentMall, isAdmin, isTic, session } = useAuth();
   const canManageImports = isAdmin || isTic;
@@ -80,30 +106,7 @@ export const ImportManager: React.FC = () => {
     filename: string
   } | null>(null);
 
-  const [editingConfig, setEditingConfig] = useState<ImportConfig>({
-    id: '',
-    nombre: '',
-    protocolo: 'SFTP',
-    host: '',
-    puerto: 22,
-    usuario: '',
-    ruta_remota: '.',
-    tipo_archivo: 'CSV',
-    frecuencia: 'manual',
-    accion_post_procesado: 'ninguna',
-    estado: 'activo',
-    mapping: {
-      factura_numero: '',
-      fecha_venta: '',
-      local_codigo: '',
-      total_bruto: '',
-      total_impuestos: '',
-      total_neto: '',
-      comprobante: '',
-      hora_transaccion: ''
-    },
-    constants: {}
-  });
+  const [editingConfig, setEditingConfig] = useState<ImportConfig>(createDefaultImportConfig());
 
   const [availableStores, setAvailableStores] = useState<any[]>([]);
 
@@ -138,6 +141,24 @@ export const ImportManager: React.FC = () => {
       loadRemoteConnections();
     }
   }, [currentMall]);
+
+  const closeFormDrawer = () => {
+    setShowForm(false);
+    setActiveStep(1);
+    setTempPassword('');
+    setSelectedConnectionId('');
+    setShowExplorer(false);
+    setSelectedFilePreview(null);
+    setEditingConfig(createDefaultImportConfig());
+  };
+
+  const openNewConnectionDrawer = () => {
+    setEditingConfig(createDefaultImportConfig());
+    setTempPassword('');
+    setSelectedConnectionId('');
+    setActiveStep(1);
+    setShowForm(true);
+  };
 
   const handleTestConnection = async () => {
     if (testingConnection) return;
@@ -249,17 +270,7 @@ export const ImportManager: React.FC = () => {
     const configToSave = { ...editingConfig, password: tempPassword || editingConfig.password };
     try {
       await ApiService.saveImportConfig(configToSave, currentMall?.id);
-      setShowForm(false);
-      setActiveStep(1);
-      setTempPassword('');
-      setSelectedConnectionId('');
-      setEditingConfig({
-        id: '', nombre: '', protocolo: 'SFTP', host: '', puerto: 22, usuario: '', ruta_remota: '.', tipo_archivo: 'CSV',
-        frecuencia: 'manual', accion_post_procesado: 'ninguna', estado: 'activo',
-        mapping: { factura_numero: '', fecha_venta: '', local_codigo: '', total_bruto: '', total_impuestos: '', total_neto: '', comprobante: '', hora_transaccion: '' },
-        constants: {},
-        password: ''
-      });
+      closeFormDrawer();
       loadConfigs();
     } catch (error: any) {
       console.error("Error saving config:", error);
@@ -704,7 +715,7 @@ export const ImportManager: React.FC = () => {
 
   const renderExplorerModal = () => (
     showExplorer && (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+      <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
         <div className="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-300 flex flex-col max-h-[80vh]">
           <div className="bg-slate-50 p-3 border-b border-slate-100 flex justify-between items-center">
             <span className="text-[10px] font-bold text-slate-500 truncate max-w-[80%]">{explorerPath}</span>
@@ -787,19 +798,7 @@ export const ImportManager: React.FC = () => {
           <p className="text-slate-500 text-sm">Configure conexiones directas vía FTP/SFTP para auditoría automática.</p>
         </div>
         <button
-          onClick={() => {
-            setEditingConfig({
-              id: '', nombre: '', protocolo: 'SFTP', host: '', puerto: 22, usuario: '', ruta_remota: '.', tipo_archivo: 'CSV',
-              frecuencia: 'manual', accion_post_procesado: 'ninguna', estado: 'activo',
-              mapping: { factura_numero: '', fecha_venta: '', local_codigo: '', total_bruto: '', total_impuestos: '', total_neto: '', comprobante: '', hora_transaccion: '' },
-              constants: {},
-              password: ''
-            });
-            setTempPassword('');
-            setSelectedConnectionId('');
-            setActiveStep(1);
-            setShowForm(true);
-          }}
+          onClick={openNewConnectionDrawer}
           className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 active:scale-95 font-medium"
         >
           <Plus size={18} />
@@ -808,8 +807,13 @@ export const ImportManager: React.FC = () => {
       </div>
 
       {showForm && (
-        <div className="bg-white rounded-2xl border border-indigo-100 shadow-2xl animate-in zoom-in-95 duration-200 overflow-hidden">
-          <div className="bg-slate-50 border-b border-slate-100 p-6 flex justify-between items-center">
+        <div className="fixed inset-0 z-[105] bg-black/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="absolute inset-0 flex justify-end" onClick={closeFormDrawer}>
+            <div
+              className="w-full lg:w-[1120px] h-full bg-white border-l border-indigo-100 shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="bg-slate-50 border-b border-slate-100 p-6 flex justify-between items-center sticky top-0 z-10">
             <div className="flex items-center gap-4">
               <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold ${activeStep === 1 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
                 1. Conexión
@@ -819,21 +823,11 @@ export const ImportManager: React.FC = () => {
                 2. Mapeo de Campos
               </div>
             </div>
-            <button onClick={() => {
-              setShowForm(false);
-              setTempPassword('');
-              setSelectedConnectionId('');
-              setEditingConfig({
-                id: '', nombre: '', protocolo: 'SFTP', host: '', puerto: 22, usuario: '', ruta_remota: '.', tipo_archivo: 'CSV',
-                frecuencia: 'manual', accion_post_procesado: 'ninguna', estado: 'activo',
-                mapping: { factura_numero: '', fecha_venta: '', local_codigo: '', total_bruto: '', total_impuestos: '', total_neto: '', comprobante: '', hora_transaccion: '' },
-                constants: {},
-                password: ''
-              });
-            }} className="text-slate-400 hover:text-slate-600"><XCircle size={20} /></button>
+            <button onClick={closeFormDrawer} className="text-slate-400 hover:text-slate-600"><XCircle size={20} /></button>
           </div>
 
-          <div className="p-8">
+              <div className="flex-1 overflow-y-auto">
+                <div className="p-8">
             {activeStep === 1 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="space-y-5">
@@ -1427,10 +1421,11 @@ export const ImportManager: React.FC = () => {
             )}
 
             {renderExplorerModal()}
-          </div>
+                </div>
+              </div>
 
-          <div className="mt-10 pt-6 border-t border-slate-100 flex justify-end gap-3 px-8 pb-8">
-            <button onClick={() => { setShowForm(false); setActiveStep(1); setSelectedConnectionId(''); }} className="px-6 py-2.5 text-slate-500 font-medium hover:text-slate-800 transition-colors">Cerrar</button>
+              <div className="border-t border-slate-100 flex justify-end gap-3 px-8 py-5 bg-white">
+            <button onClick={closeFormDrawer} className="px-6 py-2.5 text-slate-500 font-medium hover:text-slate-800 transition-colors">Cerrar</button>
             {activeStep === 1 ? (
               <div className="flex gap-2">
                 <button
@@ -1452,6 +1447,8 @@ export const ImportManager: React.FC = () => {
                 <button onClick={handleSave} className="bg-indigo-600 text-white px-10 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 active:scale-95 transition-all">Guardar y Activar</button>
               </div>
             )}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1532,6 +1529,8 @@ export const ImportManager: React.FC = () => {
                   onClick={() => {
                     setEditingConfig(config);
                     setTempPassword(config.password || '');
+                    setActiveStep(1);
+                    setSelectedConnectionId('');
                     setShowForm(true);
                   }}
                   className="p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
@@ -1566,7 +1565,7 @@ export const ImportManager: React.FC = () => {
             </div>
             <h3 className="text-lg font-bold text-slate-800">No hay automatizaciones configuradas</h3>
             <p className="text-slate-400 text-sm mt-1 mb-8 max-w-sm">Conecte sus tiendas vía SFTP para que el sistema audite las ventas cada noche sin intervención manual.</p>
-            <button onClick={() => setShowForm(true)} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-xl shadow-indigo-100 hover:scale-105 transition-transform">Configurar Primera Fuente</button>
+            <button onClick={openNewConnectionDrawer} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-xl shadow-indigo-100 hover:scale-105 transition-transform">Configurar Primera Fuente</button>
           </div>
         )}
       </div>

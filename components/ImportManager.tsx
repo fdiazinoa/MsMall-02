@@ -371,10 +371,20 @@ export const ImportManager: React.FC = () => {
       const analysis = await ApiService.analyzeSingleFile(config, filename, authToken);
 
       if (!hasDataRowsInAnalysis(analysis)) {
-        setProgressStep('error');
-        setProgressMessage('⚠️ El archivo seleccionado no contiene filas de data para importar (vacío o solo encabezado).');
-        setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
-        return;
+        const previewLines = Array.isArray(analysis?.raw_preview_lines)
+          ? analysis.raw_preview_lines.filter((line: string) => String(line || '').trim() !== '')
+          : [];
+
+        if (previewLines.length === 0) {
+          setProgressStep('error');
+          setProgressMessage('⚠️ El archivo seleccionado no contiene filas de data para importar (vacío o solo encabezado).');
+          setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
+          return;
+        }
+
+        console.warn("Análisis preliminar sin filas detectadas, pero hay contenido crudo. Se intentará procesar.");
+        setProgressStep('processing');
+        setProgressMessage('⚠️ El análisis preliminar no detectó filas con certeza, intentando procesar el archivo...');
       }
 
       if (!hasRequiredMapping(config)) {

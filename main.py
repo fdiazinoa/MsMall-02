@@ -638,6 +638,16 @@ def _normalize_csv_row_keys(row: Dict[Any, Any]) -> Dict[str, Any]:
             normalized[clean_key] = value
     return normalized
 
+def _clean_cell_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+            cleaned = cleaned[1:-1].strip()
+        return cleaned
+    return value
+
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
     user_id: str = Depends(get_current_user_id)
@@ -946,7 +956,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                             mapped_value = lowered_row[fallback_col.lower()]
 
                     if mapped_value is not None:
-                        record[sys_field] = mapped_value
+                        record[sys_field] = _clean_cell_value(mapped_value)
                 
                 # 2. Apply Constants (exclude meta-constants that are not DB columns)
                 for k, v in constants.items():
@@ -963,7 +973,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                      continue
 
                 # Normalize Date with format-specific or comprehensive support
-                raw_date = str(record['fecha_venta']).strip()
+                raw_date = str(record['fecha_venta']).strip().strip("'\"")
                 parsed_date = None
                 
                 # Check explicit date_format from constants selected in UI
@@ -1042,7 +1052,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     val = record.get(num_field, 0.0)
                     if val is None: val = 0.0
                     try:
-                        record[num_field] = float(str(val).replace(',', '').strip())
+                        record[num_field] = float(str(val).replace(',', '').strip().strip("'\""))
                     except:
                         record[num_field] = 0.0
                 
@@ -1116,13 +1126,13 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
             if 'fecha_venta' in new_r:
                 new_r['fecha'] = new_r.pop('fecha_venta')
             if 'factura_no' in new_r and new_r['factura_no'] is not None:
-                factura_limpia = str(new_r['factura_no']).strip()
+                factura_limpia = str(new_r['factura_no']).strip().strip("'\"")
                 new_r['factura_no'] = factura_limpia if factura_limpia else None
             
             # Normalizar campos de hora (hora, hora_transaccion)
             for time_col in ['hora', 'hora_transaccion']:
                 if time_col in new_r and new_r[time_col]:
-                    val = str(new_r[time_col]).strip()
+                    val = str(new_r[time_col]).strip().strip("'\"")
                     if val.isdigit():
                         if int(val) < 24:
                             new_r[time_col] = f"{int(val):02d}:00:00"
@@ -1156,7 +1166,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                                 pass
 
             # Resolve Local ID & Mall ID
-            l_code = str(new_r.get('local_codigo')).strip().upper() if new_r.get('local_codigo') else None
+            l_code = str(new_r.get('local_codigo')).strip().strip("'\"").upper() if new_r.get('local_codigo') else None
             if l_code:
                 if l_code in local_map:
                     local_info = local_map[l_code]

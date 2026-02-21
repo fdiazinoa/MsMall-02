@@ -90,7 +90,7 @@ def normalize_date(date_str):
     if not date_str:
         return None
         
-    raw_date = str(date_str).strip()
+    raw_date = str(date_str).strip().strip("'\"")
     # Try common formats
     for fmt in [
         '%d/%m/%Y',
@@ -127,6 +127,16 @@ def _normalize_csv_row_keys(row: dict) -> dict:
         if clean_key not in normalized:
             normalized[clean_key] = value
     return normalized
+
+def _clean_cell_value(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+            cleaned = cleaned[1:-1].strip()
+        return cleaned
+    return value
 
 def get_sftp_client(host, port, user, password):
     ssh = paramiko.SSHClient()
@@ -217,14 +227,14 @@ def process_file_logic(config, filename, content):
                 def pick_value(mapped_header, fallback_header=""):
                     key = _clean_csv_header_name(mapped_header)
                     if key and key in normalized_row:
-                        return normalized_row[key]
+                        return _clean_cell_value(normalized_row[key])
                     if key and key.lower() in lowered_row:
-                        return lowered_row[key.lower()]
+                        return _clean_cell_value(lowered_row[key.lower()])
                     fallback = _clean_csv_header_name(fallback_header)
                     if fallback and fallback in normalized_row:
-                        return normalized_row[fallback]
+                        return _clean_cell_value(normalized_row[fallback])
                     if fallback and fallback.lower() in lowered_row:
-                        return lowered_row[fallback.lower()]
+                        return _clean_cell_value(lowered_row[fallback.lower()])
                     return ""
 
                 # Map fields using mapping_config
@@ -243,7 +253,7 @@ def process_file_logic(config, filename, content):
                 def clean_float(val):
                     if val is None: return 0.0
                     try:
-                        return float(str(val).replace(',', '').strip())
+                        return float(str(val).replace(',', '').strip().strip("'\""))
                     except:
                         return 0.0
 

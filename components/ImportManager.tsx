@@ -1608,7 +1608,12 @@ export const ImportManager: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
-                      {(manualFiles || []).map((file) => (
+                      {(manualFiles || []).map((file) => {
+                        const isServerMarkedProcessed = file.nombre.startsWith('PR_');
+                        const isProcessed = isServerMarkedProcessed || fileStatuses[file.nombre] === 'success';
+                        const isErrored = !isProcessed && fileStatuses[file.nombre] === 'error';
+
+                        return (
                         <tr key={file.nombre} className="hover:bg-indigo-50/30 transition-colors group">
                           <td className="px-5 py-4">
                             <div className="flex items-center gap-3">
@@ -1645,24 +1650,25 @@ export const ImportManager: React.FC = () => {
                               {/* Execute button */}
                               <button
                                 onClick={() => handleExecuteManualFile(file.nombre)}
-                                disabled={executingFile === file.nombre || fileStatuses[file.nombre] === 'success'}
+                                disabled={executingFile === file.nombre || isProcessed}
                                 className={`px-4 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all shadow-lg flex items-center gap-2 disabled:opacity-50
-                                  ${fileStatuses[file.nombre] === 'success'
+                                  ${isProcessed
                                     ? 'bg-green-500 text-white shadow-green-200 cursor-default'
-                                    : fileStatuses[file.nombre] === 'error'
+                                    : isErrored
                                       ? 'bg-rose-500 text-white shadow-rose-200 hover:bg-rose-600'
                                       : 'bg-indigo-600 text-white shadow-indigo-200 hover:bg-indigo-700'
                                   }`}
                               >
                                 {executingFile === file.nombre ? <RefreshCw className="animate-spin" size={14} />
-                                  : fileStatuses[file.nombre] === 'success' ? <CheckCircle2 size={14} />
+                                  : isProcessed ? <CheckCircle2 size={14} />
                                     : <Play size={12} fill="white" />}
-                                {fileStatuses[file.nombre] === 'success' ? 'Procesado' : fileStatuses[file.nombre] === 'error' ? 'Reintentar' : 'Procesar Ahora'}
+                                {isProcessed ? 'Procesado' : isErrored ? 'Reintentar' : 'Procesar Ahora'}
                               </button>
                             </div>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

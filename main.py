@@ -2616,23 +2616,38 @@ def _download_ftp_file_bytes(
     Download an FTP file trying robust candidate paths.
     Prefers non-empty payload when multiple candidates succeed.
     """
-    resolved_filename = _resolve_ftp_filename(ftp, requested_filename, remote_path) or requested_filename
+    requested_clean = posixpath.basename(str(requested_filename or "").strip().strip("'\""))
+    resolved_filename = _resolve_ftp_filename(ftp, requested_clean, remote_path) or requested_clean
     remote_norm = (remote_path or "").replace("\\", "/").strip()
     remote_dir = posixpath.dirname(remote_norm) if remote_norm else ""
     remote_base = posixpath.basename(remote_norm) if remote_norm else ""
 
+    listed_basenames: List[str] = []
+    try:
+        names = ftp.nlst() or []
+        for raw_name in names:
+            cleaned = posixpath.basename(str(raw_name or "").rstrip("/"))
+            if cleaned and cleaned not in (".", ".."):
+                listed_basenames.append(cleaned)
+    except Exception:
+        listed_basenames = []
+
+    exact_matches = [
+        name for name in listed_basenames
+        if requested_clean and (name == requested_clean or name.lower() == requested_clean.lower())
+    ]
+
     candidates: List[str] = []
-    for candidate in [
-        resolved_filename,
-        requested_filename,
-        posixpath.basename(requested_filename),
-        remote_base,
-    ]:
+    if exact_matches:
+        for candidate in exact_matches:
+            if candidate not in candidates:
+                candidates.append(candidate)
+    for candidate in [requested_clean, resolved_filename, remote_base]:
         if candidate and candidate not in candidates:
             candidates.append(candidate)
 
     # Also try absolute-like paths; some FTP servers behave better this way.
-    for base_name in [resolved_filename, posixpath.basename(requested_filename)]:
+    for base_name in list(candidates):
         if not base_name:
             continue
         for base_dir in [remote_norm, remote_dir]:
@@ -2661,8 +2676,22 @@ def _download_ftp_file_bytes(
                 self.bio.write(chunk)
                 self.written += len(chunk)
 
+    def _score_payload(data: bytes) -> Tuple[int, int, int]:
+        if not data:
+            return (0, 0, 0)
+        text = _normalize_text_for_csv(data.decode("utf-8", errors="replace"))
+        lines = [ln.strip() for ln in text.split("\n") if str(ln).strip()]
+        if not lines:
+            return (0, 0, len(data))
+        first = lines[0]
+        delimiters = [",", ";", "\t", "|"]
+        best_delim = max(delimiters, key=lambda d: first.count(d))
+        structured = sum(1 for ln in lines[:500] if ln.count(best_delim) >= 1)
+        return (structured, len(lines), len(data))
+
     best_payload = b""
     best_candidate = ""
+    best_score: Tuple[int, int, int] = (0, 0, 0)
     last_error: Optional[Exception] = None
 
     for candidate in candidates:
@@ -2674,19 +2703,19 @@ def _download_ftp_file_bytes(
                 pass  # expected for limited reads
 
             payload = writer.bio.getvalue()
-            if len(payload) > len(best_payload):
+            score = _score_payload(payload)
+            if score > best_score:
                 best_payload = payload
                 best_candidate = candidate
+                best_score = score
             if payload:
-                logger.info(f"Descarga FTP exitosa: {candidate} ({len(payload)} bytes)")
-                return payload, posixpath.basename(candidate)
+                logger.info(f"Descarga FTP candidata: {candidate} ({len(payload)} bytes) score={score}")
         except Exception as retr_err:
             last_error = retr_err
 
     if best_candidate:
-        logger.warning(
-            f"Solo se obtuvo contenido vacío para '{requested_filename}'. "
-            f"Usando mejor candidato '{best_candidate}' con {len(best_payload)} bytes."
+        logger.info(
+            f"Descarga FTP seleccionada: {best_candidate} bytes={len(best_payload)} score={best_score}"
         )
         return best_payload, posixpath.basename(best_candidate)
 

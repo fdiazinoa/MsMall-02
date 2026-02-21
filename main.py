@@ -659,7 +659,45 @@ def _normalize_text_for_csv(content: str) -> str:
     # Normalize Unicode line separators + classic CR styles to '\n'.
     text = text.replace("\u2028", "\n").replace("\u2029", "\n")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Handle escaped newlines in a single-line payload (e.g., "\\n" literal separators).
+    if "\n" not in text and text.count("\\n") >= 1:
+        text = text.replace("\\n", "\n")
     return text
+
+def _decode_remote_text(raw_bytes: bytes, is_json: bool = False) -> str:
+    if raw_bytes is None:
+        return ""
+
+    candidates: List[Tuple[Tuple[int, int, int, int], str, str]] = []
+    for enc in ["utf-8-sig", "utf-8", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1"]:
+        try:
+            decoded = raw_bytes.decode(enc)
+        except Exception:
+            continue
+
+        replacement_count = decoded.count("�")
+        if is_json:
+            stripped = decoded.lstrip()
+            json_hint = 1 if (stripped.startswith("{") or stripped.startswith("[")) else 0
+            score = (json_hint, -replacement_count, len(decoded), -abs(len(raw_bytes) - len(decoded)))
+        else:
+            normalized = _normalize_text_for_csv(decoded)
+            lines = [ln for ln in normalized.split("\n") if str(ln).strip()]
+            first = lines[0] if lines else ""
+            delim_counts = [first.count(d) for d in [",", ";", "\t", "|"]]
+            max_delim = max(delim_counts) if delim_counts else 0
+            structured = sum(1 for ln in lines[:500] if max([ln.count(d) for d in [",", ";", "\t", "|"]]) >= 1)
+            score = (structured, len(lines), max_delim, -replacement_count)
+
+        candidates.append((score, decoded, enc))
+
+    if not candidates:
+        return raw_bytes.decode("utf-8", errors="replace")
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_decoded, best_enc = candidates[0]
+    logger.info(f"Decodificación seleccionada: {best_enc} score={best_score} bytes={len(raw_bytes)}")
+    return best_decoded
 
 def _fallback_parse_csv_rows(
     content: str,
@@ -2466,12 +2504,9 @@ async def analyze_remote_mapping(
                     st = sftp.stat(target_path)
                     if stat.S_ISDIR(st.st_mode):
                         raise FileNotFoundError(f"La ruta '{target_path}' es un directorio. Seleccione un archivo.")
-                    with sftp.open(target_path, 'r') as f:
-                        if is_json:
-                            # Use utf-8-sig to handle BOM
-                            return f.read().decode('utf-8-sig', errors='replace')
-                        else:
-                            return f.read(read_size).decode('utf-8-sig', errors='replace')
+                    with sftp.open(target_path, 'rb') as f:
+                        payload = f.read() if is_json else f.read(read_size)
+                        return _decode_remote_text(payload, is_json=is_json)
                 finally:
                     sftp.close()
                     ssh.close()
@@ -2481,36 +2516,14 @@ async def analyze_remote_mapping(
                     target_path = (req.ruta or "").replace("\\", "/")
                     target_name = posixpath.basename(target_path)
                     target_dir = posixpath.dirname(target_path)
-
-                    bio = io.BytesIO()
-                    fetched = False
-
-                    # Preferred path: CWD to directory and retrieve basename.
-                    if target_dir and target_dir not in (".", "/"):
-                        try:
-                            ftp.cwd(target_dir)
-                        except Exception as cwd_err:
-                            logger.warning(f"No se pudo cambiar a carpeta FTP '{target_dir}': {cwd_err}")
-                    try:
-                        ftp.retrbinary(f"RETR {target_name}", bio.write)
-                        fetched = True
-                    except Exception:
-                        pass
-
-                    # Fallback path: try with complete path when server supports it.
-                    if not fetched:
-                        bio = io.BytesIO()
-                        ftp.retrbinary(f"RETR {target_path}", bio.write)
-                        fetched = True
-
-                    if not fetched:
-                        raise FileNotFoundError(f"No se pudo leer el archivo FTP: {req.ruta}")
-
-                    bio.seek(0)
-                    if is_json:
-                         return bio.read().decode('utf-8-sig', errors='replace')
-                    else:
-                         return bio.read(read_size).decode('utf-8-sig', errors='replace')
+                    _ftp_enter_target_dir(ftp, target_dir or ".")
+                    raw_bytes, _ = _download_ftp_file_bytes(
+                        ftp=ftp,
+                        requested_filename=target_name,
+                        remote_path=target_dir or ".",
+                        max_bytes=None if is_json else read_size
+                    )
+                    return _decode_remote_text(raw_bytes, is_json=is_json)
                 finally:
                     ftp.quit()
             return ""
@@ -2703,7 +2716,7 @@ def _download_ftp_file_bytes(
     def _score_payload(data: bytes) -> Tuple[int, int, int]:
         if not data:
             return (0, 0, 0)
-        text = _normalize_text_for_csv(data.decode("utf-8", errors="replace"))
+        text = _normalize_text_for_csv(_decode_remote_text(data, is_json=False))
         lines = [ln.strip() for ln in text.split("\n") if str(ln).strip()]
         if not lines:
             return (0, 0, len(data))
@@ -2962,11 +2975,12 @@ async def execute_manual_endpoint(
 
                     full_path = posixpath.join(target_dir, source_filename)
                     logger.info(f"Intentando abrir archivo SFTP: {full_path}")
-                    with sftp.open(full_path, 'r') as f:
-                        if source_filename.lower().endswith('.json'):
-                            content = f.read().decode('utf-8-sig', errors='replace')
-                        else:
-                            content = f.read().decode('utf-8', errors='replace')
+                    with sftp.open(full_path, 'rb') as f:
+                        raw_bytes = f.read()
+                        content = _decode_remote_text(
+                            raw_bytes,
+                            is_json=source_filename.lower().endswith('.json')
+                        )
                     
                     # Log file size and first chars for verification
                     logger.info(f"✅ Archivo leído: {full_path} | Tamaño: {len(content)} bytes | Primeros 100 chars: {content[:100]}")
@@ -2984,10 +2998,10 @@ async def execute_manual_endpoint(
                         max_bytes=None
                     )
                     source_filename = resolved_name or req.filename
-                    if source_filename.lower().endswith('.json'):
-                        content = raw_bytes.decode('utf-8-sig', errors='replace')
-                    else:
-                        content = raw_bytes.decode('utf-8', errors='replace')
+                    content = _decode_remote_text(
+                        raw_bytes,
+                        is_json=source_filename.lower().endswith('.json')
+                    )
                     
                     # Log file size and first chars for verification
                     logger.info(f"✅ Archivo FTP leído: {source_filename} | Tamaño: {len(content)} bytes | Primeros 100 chars: {content[:100]}")
@@ -3265,14 +3279,14 @@ async def analyze_remote_file(
                         pass
                     
                     full_path = posixpath.join(target_dir, req.filename)
-                    with sftp.open(full_path, 'r') as f:
+                    with sftp.open(full_path, 'rb') as f:
                         analysis_filename = req.filename
                         # LEER TODO EL ARCHIVO SI ES JSON (necesario para parsear)
                         if analysis_filename.lower().endswith('.json'):
                             logger.info(f"Leyendo archivo COMPLETO (JSON): {analysis_filename}")
-                            return f.read().decode('utf-8-sig', errors='replace')
+                            return _decode_remote_text(f.read(), is_json=True)
                         else:
-                            return f.read(8192).decode('utf-8', errors='replace')
+                            return _decode_remote_text(f.read(65536), is_json=False)
                 finally:
                     sftp.close()
                     ssh.close()
@@ -3287,7 +3301,7 @@ async def analyze_remote_file(
                         max_bytes=65536
                     )
                     analysis_filename = resolved_name or req.filename
-                    return raw_bytes.decode('utf-8', errors='replace')
+                    return _decode_remote_text(raw_bytes, is_json=False)
                 finally:
                     ftp.quit()
             return ""

@@ -874,6 +874,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
             f = io.StringIO(content)
             sample = content[:4096]
             delimiter, has_header = _detect_delimiter_and_header(sample)
+            parsed_rows_before_offset = 0
             if forced_has_header is not None:
                 has_header = forced_has_header
             if has_header and _should_treat_as_no_header(content, delimiter):
@@ -882,25 +883,46 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
             if has_header:
                 reader = csv.DictReader(f, delimiter=delimiter, skipinitialspace=True)
                 raw_rows = [_normalize_csv_row_keys(r) for r in reader]
+                parsed_rows_before_offset = len(raw_rows)
                 if forced_data_start_row and forced_data_start_row > 2:
                     skip_count = forced_data_start_row - 2
                     raw_rows = raw_rows[skip_count:]
                     line_offset = forced_data_start_row
+                if parsed_rows_before_offset > 0 and not raw_rows:
+                    return 0, [{
+                        "linea": 0,
+                        "error": (
+                            f"No hay filas de data desde la línea {forced_data_start_row}. "
+                            "Ajuste 'Línea donde inicia la data' en el mapeo."
+                        )
+                    }]
             else:
                 no_header_mode = True
                 line_offset = 1
                 reader = csv.reader(f, delimiter=delimiter, skipinitialspace=True)
                 matrix_rows = [r for r in reader if any(str(c or "").strip() for c in r)]
+                parsed_rows_before_offset = len(matrix_rows)
                 if forced_data_start_row and forced_data_start_row > 1:
                     skip_count = forced_data_start_row - 1
                     matrix_rows = matrix_rows[skip_count:]
                     line_offset = forced_data_start_row
+                if parsed_rows_before_offset > 0 and not matrix_rows:
+                    return 0, [{
+                        "linea": 0,
+                        "error": (
+                            f"No hay filas de data desde la línea {forced_data_start_row}. "
+                            "Ajuste 'Línea donde inicia la data' en el mapeo."
+                        )
+                    }]
                 if matrix_rows:
                     max_cols = max(len(r) for r in matrix_rows)
                     synthetic_headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]
                     for r in matrix_rows:
                         padded = list(r) + [""] * (max_cols - len(r))
                         raw_rows.append(dict(zip(synthetic_headers, padded)))
+
+        if not raw_rows:
+            return 0, [{"linea": 0, "error": "El archivo no contiene filas de data para importar."}]
 
         effective_mapping = dict(mapping or {})
         if no_header_mode:

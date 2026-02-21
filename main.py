@@ -954,7 +954,15 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 elif explicit_format == 'DDmmYYYY':
                     date_formats = ['%d%m%Y']
                 elif explicit_format == 'YYYYmmDD':
-                    date_formats = ['%Y%m%d']
+                    date_formats = [
+                        '%Y%m%d',
+                        '%Y%m%d %H:%M:%S',
+                        '%Y%m%d %H:%M',
+                        '%Y%m%d %H:%M:%S.%f',
+                        '%Y%m%dT%H:%M:%S',
+                        '%Y%m%dT%H:%M',
+                        '%Y%m%dT%H:%M:%S.%f',
+                    ]
                 elif explicit_format == 'MM/DD/YYYY':
                     date_formats = ['%m/%d/%Y', '%m-%d-%Y']
                 elif explicit_format == 'YYYY-MM-DD':
@@ -978,6 +986,12 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         '%d/%m/%Y',               # DD/MM/YYYY (Dominican/Spanish format)
                         '%d%m%Y',                 # DDmmYYYY (05012026)
                         '%Y%m%d',                 # YYYYmmDD (20260105)
+                        '%Y%m%d %H:%M:%S',       # YYYYmmDD HH:MM:SS (20260219 10:14:19)
+                        '%Y%m%d %H:%M',          # YYYYmmDD HH:MM (20260219 10:14)
+                        '%Y%m%d %H:%M:%S.%f',    # YYYYmmDD HH:MM:SS.sss
+                        '%Y%m%dT%H:%M:%S',       # YYYYmmDDTHH:MM:SS
+                        '%Y%m%dT%H:%M',          # YYYYmmDDTHH:MM
+                        '%Y%m%dT%H:%M:%S.%f',    # YYYYmmDDTHH:MM:SS.sss
                         '%m/%d/%Y',               # MM/DD/YYYY (US format)
                         '%d-%m-%Y',               # DD-MM-YYYY with hyphens
                         '%m-%d-%Y',               # MM-DD-YYYY with hyphens

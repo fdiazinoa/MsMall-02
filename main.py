@@ -659,6 +659,9 @@ def _normalize_text_for_csv(content: str) -> str:
     # Normalize Unicode line separators + classic CR styles to '\n'.
     text = text.replace("\u2028", "\n").replace("\u2029", "\n")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Additional record separators sometimes used by legacy exports.
+    for sep in ["\x1e", "\x1d", "\x1c", "\x85", "\x0b", "\x0c"]:
+        text = text.replace(sep, "\n")
     # Handle escaped newlines in a single-line payload (e.g., "\\n" literal separators).
     if "\n" not in text and text.count("\\n") >= 1:
         text = text.replace("\\n", "\n")
@@ -698,6 +701,17 @@ def _decode_remote_text(raw_bytes: bytes, is_json: bool = False) -> str:
     best_score, best_decoded, best_enc = candidates[0]
     logger.info(f"Decodificación seleccionada: {best_enc} score={best_score} bytes={len(raw_bytes)}")
     return best_decoded
+
+def _build_no_data_diagnostic(content: str, delimiter: Optional[str], has_header: Optional[bool]) -> str:
+    normalized = _normalize_text_for_csv(content)
+    lines = [ln for ln in normalized.split("\n") if str(ln).strip()]
+    first_line = lines[0][:120] if lines else ""
+    return (
+        f"El archivo no contiene filas de data para importar. "
+        f"[diag: bytes={len(content or '')}, lineas_no_vacias={len(lines)}, "
+        f"delimitador='{delimiter or '?'}', has_header={has_header}, "
+        f"primera_linea='{first_line}']"
+    )
 
 def _fallback_parse_csv_rows(
     content: str,
@@ -1072,6 +1086,8 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         forced_has_header, forced_data_start_row = _extract_parsing_options(config)
         no_header_mode = False
         line_offset = 2
+        detected_delimiter: Optional[str] = None
+        detected_has_header: Optional[bool] = None
         default_no_header_map = {
             "factura_numero": "col_1",
             "local_codigo": "col_2",
@@ -1106,11 +1122,15 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
             f = io.StringIO(normalized_content)
             sample = normalized_content[:4096]
             delimiter, has_header = _detect_delimiter_and_header(sample)
+            detected_delimiter = delimiter
+            detected_has_header = has_header
             parsed_rows_before_offset = 0
             if forced_has_header is not None:
                 has_header = forced_has_header
+                detected_has_header = has_header
             if has_header and _should_treat_as_no_header(normalized_content, delimiter):
                 has_header = False
+                detected_has_header = has_header
             f.seek(0)
             if has_header:
                 reader = csv.DictReader(f, delimiter=delimiter, skipinitialspace=True)
@@ -1173,7 +1193,14 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 line_offset = emergency_line_offset
 
         if not raw_rows:
-            return 0, [{"linea": 0, "error": "El archivo no contiene filas de data para importar."}]
+            return 0, [{
+                "linea": 0,
+                "error": _build_no_data_diagnostic(
+                    normalized_content if tipo_archivo != "JSON" else content,
+                    detected_delimiter,
+                    detected_has_header
+                )
+            }]
 
         effective_mapping = dict(mapping or {})
         if no_header_mode:

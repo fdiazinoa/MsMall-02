@@ -92,6 +92,16 @@ export const ImportManager: React.FC = () => {
   const [fileStatuses, setFileStatuses] = useState<Record<string, 'success' | 'error' | 'idle'>>({});
   const [batchMask, setBatchMask] = useState<string>('*');
   const [batchLimit, setBatchLimit] = useState<number>(30);
+  const initialBatchProgress = {
+    running: false,
+    total: 0,
+    processed: 0,
+    success: 0,
+    failed: 0,
+    skipped: 0,
+    currentFile: '',
+    message: ''
+  };
   const [batchProgress, setBatchProgress] = useState<{
     running: boolean;
     total: number;
@@ -101,16 +111,7 @@ export const ImportManager: React.FC = () => {
     skipped: number;
     currentFile: string;
     message: string;
-  }>({
-    running: false,
-    total: 0,
-    processed: 0,
-    success: 0,
-    failed: 0,
-    skipped: 0,
-    currentFile: '',
-    message: ''
-  });
+  }>(initialBatchProgress);
   const batchCancelRef = useRef(false);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
 
@@ -190,6 +191,24 @@ export const ImportManager: React.FC = () => {
     setActiveStep(1);
     setSelectedConnectionId('');
     setShowForm(true);
+  };
+
+  const resetManualExecutionState = () => {
+    batchCancelRef.current = false;
+    setManualFiles([]);
+    setManualLoading(false);
+    setExecutingFile(null);
+    setUnmarkingFile(null);
+    setFileStatuses({});
+    setBatchMask('*');
+    setBatchLimit(30);
+    setBatchProgress(initialBatchProgress);
+  };
+
+  const closeManualModal = () => {
+    setShowManualModal(false);
+    setActiveConfigId(null);
+    resetManualExecutionState();
   };
 
   const handleTestConnection = async () => {
@@ -320,7 +339,7 @@ export const ImportManager: React.FC = () => {
       setManualFiles(files);
     } catch (error: any) {
       console.error(error);
-      // Don't alert on refresh, just log
+      setManualFiles([]);
     } finally {
       setManualLoading(false);
     }
@@ -419,6 +438,7 @@ export const ImportManager: React.FC = () => {
   };
 
   const handleSyncNow = async (id: string, name: string) => {
+    resetManualExecutionState();
     setActiveConfigId(id);
     const config = configs.find(c => c.id === id);
     if (!config) {
@@ -1850,7 +1870,7 @@ export const ImportManager: React.FC = () => {
       {showManualModal && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-4xl bg-white rounded-[2rem] border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col max-h-[85vh]">
-            <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-center">
+	            <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-center">
               <div>
                 <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                   <Play size={20} className="text-indigo-600" fill="currentColor" />
@@ -1858,13 +1878,13 @@ export const ImportManager: React.FC = () => {
                 </h3>
                 <p className="text-slate-400 text-xs mt-0.5">Seleccione un archivo del servidor remoto para procesar inmediatamente.</p>
               </div>
-              <button
-                onClick={() => setShowManualModal(false)}
-                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
-              >
-                <XCircle size={24} />
-              </button>
-            </div>
+	              <button
+	                onClick={closeManualModal}
+	                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
+	              >
+	                <XCircle size={24} />
+	              </button>
+	            </div>
 
 	            <div className="flex-1 overflow-y-auto p-6">
               <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-2xl">
@@ -2049,13 +2069,13 @@ export const ImportManager: React.FC = () => {
               )}
             </div>
 
-            <div className="bg-slate-50 p-6 border-t border-slate-100 flex justify-end">
-              <button
-                onClick={() => setShowManualModal(false)}
-                className="px-6 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-600 font-bold hover:bg-slate-50 active:scale-95 transition-all text-sm"
-              >
-                Cerrar Ventana
-              </button>
+	            <div className="bg-slate-50 p-6 border-t border-slate-100 flex justify-end">
+	              <button
+	                onClick={closeManualModal}
+	                className="px-6 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-600 font-bold hover:bg-slate-50 active:scale-95 transition-all text-sm"
+	              >
+	                Cerrar Ventana
+	              </button>
             </div>
           </div>
         </div>

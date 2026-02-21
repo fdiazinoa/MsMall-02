@@ -8,6 +8,14 @@ import {
 import { DateRange } from '../types';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
+const DEFAULT_RAILWAY_BASE_URL = 'https://msmall-02-production.up.railway.app';
+
+const normalizeBase = (value: string): string => {
+    const trimmed = (value || '').trim();
+    if (!trimmed) return '';
+    return trimmed.replace(/\/+$/, '').replace(/\/api\/v1$/i, '').replace(/\/api$/i, '');
+};
+
 export const SalesCube: React.FC = () => {
     const { currentMall, session } = useAuth();
     const { format } = useFormatCurrency();
@@ -88,19 +96,59 @@ export const SalesCube: React.FC = () => {
             }
 
             const token = session?.access_token;
-            const headers: HeadersInit = {
-                'X-Mall-Id': currentMall.id
-            };
+            const headers: HeadersInit = { 'X-Mall-Id': currentMall.id };
             if (token) headers['Authorization'] = `Bearer ${token}`;
 
-            const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/export/sales-cube/excel?${params.toString()}`, {
-                headers
-            });
+            const configuredApiBase = normalizeBase(import.meta.env.VITE_API_URL || '');
+            const directApiBase = normalizeBase(import.meta.env.VITE_DIRECT_BACKEND_BASE_URL || '');
+            const isVercelHost = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
 
-            if (!response.ok) throw new Error("Export failed");
+            const baseCandidates = Array.from(new Set([
+                configuredApiBase,
+                directApiBase,
+                ...(isVercelHost ? [DEFAULT_RAILWAY_BASE_URL] : []),
+                '' // relative fallback
+            ]));
 
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
+            let downloadedBlob: Blob | null = null;
+            let lastError = 'No se pudo exportar el archivo Excel del cubo.';
+
+            for (const base of baseCandidates) {
+                const endpoint = `${base}/api/v1/export/sales-cube/excel?${params.toString()}`;
+                try {
+                    const response = await fetch(endpoint, { headers });
+                    if (!response.ok) {
+                        lastError = `Export failed (${response.status})`;
+                        continue;
+                    }
+
+                    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+                    const blob = await response.blob();
+
+                    const looksLikeExcel =
+                        contentType.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') ||
+                        contentType.includes('application/octet-stream');
+
+                    if (!looksLikeExcel) {
+                        const rawText = (await blob.text()).slice(0, 200).toLowerCase();
+                        if (rawText.includes('<!doctype html') || rawText.includes('<html')) {
+                            lastError = 'El servidor devolvió HTML en lugar de Excel. Verifica la URL del backend.';
+                            continue;
+                        }
+                    }
+
+                    downloadedBlob = blob;
+                    break;
+                } catch (err: any) {
+                    lastError = err?.message || lastError;
+                }
+            }
+
+            if (!downloadedBlob) {
+                throw new Error(lastError);
+            }
+
+            const url = window.URL.createObjectURL(downloadedBlob);
             const a = document.createElement('a');
             a.href = url;
             a.download = `matriz_ventas_${dates.startDate}_${dates.endDate}.xlsx`;
@@ -110,7 +158,7 @@ export const SalesCube: React.FC = () => {
             document.body.removeChild(a);
         } catch (e) {
             console.error(e);
-            alert("Error al exportar");
+            alert(`Error al exportar: ${e instanceof Error ? e.message : 'fallo desconocido'}`);
         } finally {
             setIsExporting(false);
         }

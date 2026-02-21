@@ -648,6 +648,88 @@ def _clean_cell_value(value: Any) -> Any:
         return cleaned
     return value
 
+def _fallback_parse_csv_rows(
+    content: str,
+    has_header: bool,
+    forced_data_start_row: Optional[int],
+    preferred_delimiter: str = ","
+) -> Tuple[List[Dict[str, Any]], bool, int]:
+    """
+    Secondary parser when DictReader fails to produce rows.
+    Tries different delimiters and quote chars (including single-quote quoted TXT exports).
+    Returns (rows, no_header_mode, line_offset).
+    """
+    delimiters: List[str] = []
+    for d in [preferred_delimiter, ",", ";", "\t", "|"]:
+        if d and d not in delimiters:
+            delimiters.append(d)
+
+    best_matrix: List[List[str]] = []
+    best_delimiter = preferred_delimiter
+    best_quote = '"'
+    best_score: Tuple[int, int] = (0, 0)
+
+    for delim in delimiters:
+        for quote in ['"', "'"]:
+            try:
+                reader = csv.reader(
+                    io.StringIO(content),
+                    delimiter=delim,
+                    skipinitialspace=True,
+                    quotechar=quote
+                )
+                matrix_rows = [r for r in reader if any(str(c or "").strip() for c in r)]
+                if not matrix_rows:
+                    continue
+                score = (len(matrix_rows), max(len(r) for r in matrix_rows))
+                if score > best_score:
+                    best_score = score
+                    best_matrix = matrix_rows
+                    best_delimiter = delim
+                    best_quote = quote
+            except Exception:
+                continue
+
+    if not best_matrix:
+        return [], (not has_header), (1 if not has_header else 2)
+
+    logger.info(
+        f"Fallback CSV parser aplicado. delimiter='{best_delimiter}' quotechar='{best_quote}' "
+        f"rows={len(best_matrix)} has_header={has_header}"
+    )
+
+    raw_rows: List[Dict[str, Any]] = []
+    if has_header:
+        header_row = [_clean_csv_header_name(c) for c in best_matrix[0]]
+        max_cols = max(len(r) for r in best_matrix)
+        normalized_headers = [
+            (header_row[idx] if idx < len(header_row) and header_row[idx] else f"col_{idx + 1}")
+            for idx in range(max_cols)
+        ]
+        data_rows = best_matrix[1:]
+        line_offset = 2
+        if forced_data_start_row and forced_data_start_row > 2:
+            data_rows = data_rows[forced_data_start_row - 2:]
+            line_offset = forced_data_start_row
+
+        for r in data_rows:
+            padded = list(r) + [""] * (max_cols - len(r))
+            raw_rows.append(dict(zip(normalized_headers, padded)))
+        return raw_rows, False, line_offset
+
+    matrix_rows = best_matrix
+    line_offset = 1
+    if forced_data_start_row and forced_data_start_row > 1:
+        matrix_rows = matrix_rows[forced_data_start_row - 1:]
+        line_offset = forced_data_start_row
+    if matrix_rows:
+        max_cols = max(len(r) for r in matrix_rows)
+        synthetic_headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]
+        for r in matrix_rows:
+            padded = list(r) + [""] * (max_cols - len(r))
+            raw_rows.append(dict(zip(synthetic_headers, padded)))
+    return raw_rows, True, line_offset
+
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
     user_id: str = Depends(get_current_user_id)
@@ -920,6 +1002,18 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     for r in matrix_rows:
                         padded = list(r) + [""] * (max_cols - len(r))
                         raw_rows.append(dict(zip(synthetic_headers, padded)))
+
+        if tipo_archivo != "JSON" and not raw_rows:
+            fallback_rows, fallback_no_header, fallback_line_offset = _fallback_parse_csv_rows(
+                content=content,
+                has_header=has_header,
+                forced_data_start_row=forced_data_start_row,
+                preferred_delimiter=delimiter
+            )
+            if fallback_rows:
+                raw_rows = fallback_rows
+                no_header_mode = fallback_no_header
+                line_offset = fallback_line_offset
 
         if not raw_rows:
             return 0, [{"linea": 0, "error": "El archivo no contiene filas de data para importar."}]

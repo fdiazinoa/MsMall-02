@@ -195,6 +195,7 @@ export default function MappingModal({
                                                         <option value="YYYYmmDD">🧮 YYYYmmDD (20260102 = 2 de Enero)</option>
                                                         <option value="MM/DD/YYYY">🇺🇸 MM/DD/YYYY (02/01 = 1 de Febrero)</option>
                                                         <option value="YYYY-MM-DD">🌐 YYYY-MM-DD (ISO 8601)</option>
+                                                        <option value="YYYY/MM/DD">📆 YYYY/MM/DD (2026/01/01)</option>
                                                         <option value="timestamp">⏰ Con hora (ISO timestamp)</option>
                                                     </select>
                                                     <p className="text-xs text-gray-500 mt-1">Elige el formato para evitar ambigüedad en fechas como 2/1/2026</p>

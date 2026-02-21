@@ -210,6 +210,7 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
                                                                     <option value="YYYYmmDD">🧮 YYYYmmDD</option>
                                                                     <option value="MM/DD/YYYY">🇺🇸 MM/DD/YYYY</option>
                                                                     <option value="YYYY-MM-DD">🌐 YYYY-MM-DD</option>
+                                                                    <option value="YYYY/MM/DD">📆 YYYY/MM/DD</option>
                                                                     <option value="timestamp">⏰ Con hora</option>
                                                                 </select>
                                                             </div>

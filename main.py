@@ -986,6 +986,8 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     ]
                 elif explicit_format == 'MM/DD/YYYY':
                     date_formats = ['%m/%d/%Y', '%m-%d-%Y']
+                elif explicit_format == 'YYYY/MM/DD':
+                    date_formats = ['%Y/%m/%d']
                 elif explicit_format == 'YYYY-MM-DD':
                     date_formats = ['%Y-%m-%d', '%Y/%m/%d']
                 elif explicit_format == 'timestamp':

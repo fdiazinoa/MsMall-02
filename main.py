@@ -1452,18 +1452,30 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                             mm = min(mm, 59)
                             ss = min(ss, 59)
                             new_r[time_col] = f"{hh:02d}:{mm:02d}:{ss:02d}"
-                    elif val.count(':') == 1:
-                        new_r[time_col] = f"{val}:00"
                     elif 'AM' in val.upper() or 'PM' in val.upper():
-                        try:
-                            dt = datetime.strptime(val, "%I:%M %p")
-                            new_r[time_col] = dt.strftime("%H:%M:%S")
-                        except:
+                        # Example: "10:02 AM" must not become "10:02 AM:00".
+                        # Parse first, then truncate to hour as requested (HH:00:00).
+                        ampm_val = re.sub(r'\s+', ' ', val.replace('.', '')).strip()
+                        ampm_val = re.sub(r'(?i)\s*([AP]M)$', r' \1', ampm_val).strip()
+                        parsed_dt = None
+                        for fmt in ("%I:%M:%S %p", "%I:%M %p", "%I %p"):
                             try:
-                                dt = datetime.strptime(val, "%I %p")
-                                new_r[time_col] = dt.strftime("%H:%M:%S")
-                            except:
-                                pass
+                                parsed_dt = datetime.strptime(ampm_val, fmt)
+                                break
+                            except Exception:
+                                continue
+                        if parsed_dt:
+                            new_r[time_col] = f"{parsed_dt.hour:02d}:00:00"
+                    elif val.count(':') == 1:
+                        hh_mm = val.split(':', 1)
+                        try:
+                            hh = int(hh_mm[0])
+                            mm = int(hh_mm[1])
+                            if 0 <= hh <= 23:
+                                mm = min(max(mm, 0), 59)
+                                new_r[time_col] = f"{hh:02d}:{mm:02d}:00"
+                        except Exception:
+                            pass
 
             # Resolve Local ID & Mall ID
             l_code = str(new_r.get('local_codigo')).strip().strip("'\"").upper() if new_r.get('local_codigo') else None

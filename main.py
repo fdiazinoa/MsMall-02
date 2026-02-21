@@ -2543,11 +2543,11 @@ async def analyze_remote_mapping(
                     target_path = (req.ruta or "").replace("\\", "/")
                     target_name = posixpath.basename(target_path)
                     target_dir = posixpath.dirname(target_path)
-                    _ftp_enter_target_dir(ftp, target_dir or ".")
+                    used_dir = _ftp_enter_target_dir(ftp, target_dir or ".")
                     raw_bytes, _ = _download_ftp_file_bytes(
                         ftp=ftp,
                         requested_filename=target_name,
-                        remote_path=target_dir or ".",
+                        remote_path=used_dir,
                         max_bytes=None if is_json else read_size
                     )
                     return _decode_remote_text(raw_bytes, is_json=is_json)
@@ -2595,7 +2595,14 @@ def _ftp_enter_target_dir(ftp: FTP, remote_path: str) -> str:
             ftp.cwd(parent)
             return parent
         except Exception:
-            return normalized
+            logger.warning(
+                f"No se pudo cambiar a ruta FTP '{normalized}' ni a su padre '{parent}'. "
+                "Se usará el directorio actual de sesión."
+            )
+            try:
+                return ftp.pwd() or "."
+            except Exception:
+                return "."
 
 def _parse_ftp_list_line(line: str) -> Optional[Tuple[str, bool]]:
     """
@@ -3052,11 +3059,11 @@ async def execute_manual_endpoint(
             elif protocolo == "FTP":
                 ftp = get_ftp_client(host, puerto, usuario, password)
                 try:
-                    _ftp_enter_target_dir(ftp, ruta_remota)
+                    used_dir = _ftp_enter_target_dir(ftp, ruta_remota)
                     raw_bytes, resolved_name = _download_ftp_file_bytes(
                         ftp=ftp,
                         requested_filename=req.filename,
-                        remote_path=ruta_remota,
+                        remote_path=used_dir,
                         max_bytes=None
                     )
                     source_filename = resolved_name or req.filename
@@ -3162,9 +3169,9 @@ async def execute_manual_endpoint(
 
                 elif protocolo == "FTP":
                     ftp = get_ftp_client(host, puerto, usuario, password)
-                    _ftp_enter_target_dir(ftp, ruta_remota)
+                    used_dir = _ftp_enter_target_dir(ftp, ruta_remota)
                     
-                    rename_source = _resolve_ftp_filename(ftp, source_filename, ruta_remota) or source_filename
+                    rename_source = _resolve_ftp_filename(ftp, source_filename, used_dir) or source_filename
                     new_name = f"PR_{rename_source}"
                     logger.info(f"Renombrando {rename_source} -> {new_name}")
                     ftp.rename(rename_source, new_name)
@@ -3355,11 +3362,11 @@ async def analyze_remote_file(
             elif protocolo == "FTP":
                 ftp = get_ftp_client(host, puerto, usuario, password)
                 try:
-                    _ftp_enter_target_dir(ftp, ruta_remota)
+                    used_dir = _ftp_enter_target_dir(ftp, ruta_remota)
                     raw_bytes, resolved_name = _download_ftp_file_bytes(
                         ftp=ftp,
                         requested_filename=req.filename,
-                        remote_path=ruta_remota,
+                        remote_path=used_dir,
                         max_bytes=65536
                     )
                     analysis_filename = resolved_name or req.filename
@@ -3455,9 +3462,9 @@ async def unmark_file(
             elif protocolo == "FTP":
                 ftp = get_ftp_client(host, puerto, usuario, password)
                 try:
-                    _ftp_enter_target_dir(ftp, ruta_remota)
+                    used_dir = _ftp_enter_target_dir(ftp, ruta_remota)
 
-                    resolved_old_name = _resolve_ftp_filename(ftp, req.filename, ruta_remota) or req.filename
+                    resolved_old_name = _resolve_ftp_filename(ftp, req.filename, used_dir) or req.filename
                     resolved_new_name = resolved_old_name[3:] if resolved_old_name.startswith("PR_") else new_filename
 
                     logger.info(f"Unmarking: {resolved_old_name} -> {resolved_new_name}")

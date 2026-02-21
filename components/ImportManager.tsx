@@ -468,9 +468,15 @@ export const ImportManager: React.FC = () => {
   const maskToRegex = (rawMask: string): RegExp => {
     const normalized = String(rawMask || '*').trim() || '*';
     const wildcardMask = normalized.replace(/%/g, '*');
-    const escaped = wildcardMask.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    // Escape regex tokens first, then restore wildcard semantics for * and ?.
+    const escaped = wildcardMask.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
     const regexPattern = `^${escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.')}$`;
-    return new RegExp(regexPattern, 'i');
+    try {
+      return new RegExp(regexPattern, 'i');
+    } catch {
+      // Never break rendering due to malformed masks.
+      return /.*/i;
+    }
   };
 
   const filteredBatchCandidates = useMemo(() => {

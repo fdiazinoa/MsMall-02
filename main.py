@@ -2510,6 +2510,94 @@ def _resolve_ftp_filename(ftp: FTP, requested_filename: str, remote_path: str) -
 
     return requested or remote_basename or ""
 
+def _download_ftp_file_bytes(
+    ftp: FTP,
+    requested_filename: str,
+    remote_path: str,
+    max_bytes: Optional[int] = None
+) -> Tuple[bytes, str]:
+    """
+    Download an FTP file trying robust candidate paths.
+    Prefers non-empty payload when multiple candidates succeed.
+    """
+    resolved_filename = _resolve_ftp_filename(ftp, requested_filename, remote_path) or requested_filename
+    remote_norm = (remote_path or "").replace("\\", "/").strip()
+    remote_dir = posixpath.dirname(remote_norm) if remote_norm else ""
+    remote_base = posixpath.basename(remote_norm) if remote_norm else ""
+
+    candidates: List[str] = []
+    for candidate in [
+        resolved_filename,
+        requested_filename,
+        posixpath.basename(requested_filename),
+        remote_base,
+    ]:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    # Also try absolute-like paths; some FTP servers behave better this way.
+    for base_name in [resolved_filename, posixpath.basename(requested_filename)]:
+        if not base_name:
+            continue
+        for base_dir in [remote_norm, remote_dir]:
+            if not base_dir:
+                continue
+            joined = posixpath.join(base_dir, base_name)
+            if joined not in candidates:
+                candidates.append(joined)
+
+    class _LimitedWriter:
+        def __init__(self, limit: Optional[int] = None):
+            self.bio = io.BytesIO()
+            self.limit = limit
+            self.written = 0
+
+        def write(self, data: bytes):
+            if self.limit is not None and self.written >= self.limit:
+                raise StopIteration
+            chunk = data
+            if self.limit is not None:
+                remaining = self.limit - self.written
+                if remaining <= 0:
+                    raise StopIteration
+                chunk = data[:remaining]
+            if chunk:
+                self.bio.write(chunk)
+                self.written += len(chunk)
+
+    best_payload = b""
+    best_candidate = ""
+    last_error: Optional[Exception] = None
+
+    for candidate in candidates:
+        try:
+            writer = _LimitedWriter(limit=max_bytes)
+            try:
+                ftp.retrbinary(f"RETR {candidate}", writer.write)
+            except StopIteration:
+                pass  # expected for limited reads
+
+            payload = writer.bio.getvalue()
+            if len(payload) > len(best_payload):
+                best_payload = payload
+                best_candidate = candidate
+            if payload:
+                logger.info(f"Descarga FTP exitosa: {candidate} ({len(payload)} bytes)")
+                return payload, posixpath.basename(candidate)
+        except Exception as retr_err:
+            last_error = retr_err
+
+    if best_candidate:
+        logger.warning(
+            f"Solo se obtuvo contenido vacío para '{requested_filename}'. "
+            f"Usando mejor candidato '{best_candidate}' con {len(best_payload)} bytes."
+        )
+        return best_payload, posixpath.basename(best_candidate)
+
+    raise FileNotFoundError(
+        f"No se pudo descargar '{requested_filename}' por FTP. Último error: {last_error}"
+    )
+
 def _list_remote_files(config: Dict[str, Any]):
     # Normalize keys (handles frontend names and worker-style names from Supabase 'locales')
     protocolo = config.get("protocolo") or config.get("sftp_protocol", "SFTP")
@@ -2740,44 +2828,17 @@ async def execute_manual_endpoint(
                 ftp = get_ftp_client(host, puerto, usuario, password)
                 try:
                     _ftp_enter_target_dir(ftp, ruta_remota)
-                    resolved_filename = _resolve_ftp_filename(ftp, req.filename, ruta_remota) or req.filename
-
-                    download_candidates: List[str] = []
-                    for candidate in [
-                        resolved_filename,
-                        req.filename,
-                        posixpath.basename(req.filename),
-                        posixpath.basename((ruta_remota or "").replace("\\", "/"))
-                    ]:
-                        if candidate and candidate not in download_candidates:
-                            download_candidates.append(candidate)
-
-                    bio = io.BytesIO()
-                    source_filename = resolved_filename
-                    download_error: Optional[Exception] = None
-                    downloaded = False
-                    for candidate in download_candidates:
-                        try:
-                            bio = io.BytesIO()
-                            logger.info(f"Descargando archivo FTP: {candidate}")
-                            ftp.retrbinary(f"RETR {candidate}", bio.write)
-                            source_filename = candidate
-                            downloaded = True
-                            break
-                        except Exception as retr_err:
-                            download_error = retr_err
-
-                    if not downloaded:
-                        raise FileNotFoundError(
-                            f"No se encontró '{req.filename}' (resuelto como '{resolved_filename}'). "
-                            f"Detalle FTP: {download_error}"
-                        )
-
-                    bio.seek(0)
+                    raw_bytes, resolved_name = _download_ftp_file_bytes(
+                        ftp=ftp,
+                        requested_filename=req.filename,
+                        remote_path=ruta_remota,
+                        max_bytes=None
+                    )
+                    source_filename = resolved_name or req.filename
                     if source_filename.lower().endswith('.json'):
-                        content = bio.read().decode('utf-8-sig', errors='replace')
+                        content = raw_bytes.decode('utf-8-sig', errors='replace')
                     else:
-                        content = bio.read().decode('utf-8', errors='replace')
+                        content = raw_bytes.decode('utf-8', errors='replace')
                     
                     # Log file size and first chars for verification
                     logger.info(f"✅ Archivo FTP leído: {source_filename} | Tamaño: {len(content)} bytes | Primeros 100 chars: {content[:100]}")
@@ -2798,6 +2859,26 @@ async def execute_manual_endpoint(
             raise HTTPException(status_code=500, detail=f"Error de conexión remota ({protocolo}): {error_msg}")
 
         # 3. Procesar Contenido
+        if not str(content or "").strip():
+            detalles_errores = [{"linea": 0, "error": "Archivo remoto descargado vacío (0 bytes o sin texto)."}]
+            insert_load_log(
+                local_nombre,
+                source_filename,
+                "error",
+                "Importación manual completada. 0 registros cargados. Se encontraron 1 errores de validación/mapeo.",
+                batch_id,
+                detalles_errores,
+                mall_id=config_data.get("mall_id"),
+                local_id=config_data.get("id")
+            )
+            return _cache_and_return({
+                "status": "error",
+                "message": "Importación manual completada. 0 registros cargados. Se encontraron 1 errores de validación/mapeo.",
+                "records_processed": 0,
+                "batch_id": batch_id,
+                "errors": detalles_errores
+            })
+
         registros_exito, detalles_errores = process_file_content(
             content,
             source_filename,
@@ -3050,55 +3131,14 @@ async def analyze_remote_file(
                 ftp = get_ftp_client(host, puerto, usuario, password)
                 try:
                     _ftp_enter_target_dir(ftp, ruta_remota)
-                    resolved_filename = _resolve_ftp_filename(ftp, req.filename, ruta_remota) or req.filename
-                    analysis_filename = resolved_filename
-                    
-                    bio = io.BytesIO()
-                    # FTP doesn't support partial reads easily, read first 8KB
-                    class LimitedWriter:
-                        def __init__(self, bio, limit=8192):
-                            self.bio = bio
-                            self.limit = limit
-                            self.written = 0
-                        def write(self, data):
-                            if self.written >= self.limit:
-                                raise StopIteration  # Abort transfer
-                            to_write = min(len(data), self.limit - self.written)
-                            self.bio.write(data[:to_write])
-                            self.written += to_write
-                    
-                    writer = LimitedWriter(bio)
-                    last_error: Optional[Exception] = None
-                    fetched = False
-                    try:
-                        ftp.retrbinary(f"RETR {resolved_filename}", writer.write)
-                        fetched = True
-                    except StopIteration:
-                        fetched = True  # Expected when limit reached
-                    except Exception as retr_err:
-                        last_error = retr_err
-
-                    if not fetched:
-                        # Fallback to raw requested filename if the resolved candidate failed.
-                        try:
-                            writer = LimitedWriter(io.BytesIO())
-                            bio = writer.bio
-                            ftp.retrbinary(f"RETR {req.filename}", writer.write)
-                            fetched = True
-                            analysis_filename = req.filename
-                        except StopIteration:
-                            fetched = True
-                            analysis_filename = req.filename
-                        except Exception as fallback_err:
-                            last_error = fallback_err
-
-                    if not fetched:
-                        raise FileNotFoundError(
-                            f"No se pudo leer '{req.filename}' (resuelto como '{resolved_filename}'). Detalle FTP: {last_error}"
-                        )
-
-                    bio.seek(0)
-                    return bio.read().decode('utf-8', errors='replace')
+                    raw_bytes, resolved_name = _download_ftp_file_bytes(
+                        ftp=ftp,
+                        requested_filename=req.filename,
+                        remote_path=ruta_remota,
+                        max_bytes=65536
+                    )
+                    analysis_filename = resolved_name or req.filename
+                    return raw_bytes.decode('utf-8', errors='replace')
                 finally:
                     ftp.quit()
             return ""

@@ -648,6 +648,19 @@ def _clean_cell_value(value: Any) -> Any:
         return cleaned
     return value
 
+def _normalize_text_for_csv(content: str) -> str:
+    """
+    Normalize uncommon line separators and control chars that can break csv.DictReader
+    while still being displayed as multiple lines in previews.
+    """
+    text = str(content or "")
+    # Remove null bytes that can break CSV parsing.
+    text = text.replace("\x00", "")
+    # Normalize Unicode line separators + classic CR styles to '\n'.
+    text = text.replace("\u2028", "\n").replace("\u2029", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text
+
 def _fallback_parse_csv_rows(
     content: str,
     has_header: bool,
@@ -907,6 +920,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
     tipo_archivo = config.get("tipo_archivo", "CSV").upper()
     local_nombre = config.get("nombre", "Desconocido")
     effective_mall_id = mall_id or config.get("mall_id")
+    normalized_content = _normalize_text_for_csv(content) if tipo_archivo != "JSON" else content
     
     records_to_insert = []
     errors = []
@@ -953,13 +967,13 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 return 0, [{"linea": 0, "error": f"JSON inválido: {str(e)}"}]
         else:
             # Default CSV/TXT
-            f = io.StringIO(content)
-            sample = content[:4096]
+            f = io.StringIO(normalized_content)
+            sample = normalized_content[:4096]
             delimiter, has_header = _detect_delimiter_and_header(sample)
             parsed_rows_before_offset = 0
             if forced_has_header is not None:
                 has_header = forced_has_header
-            if has_header and _should_treat_as_no_header(content, delimiter):
+            if has_header and _should_treat_as_no_header(normalized_content, delimiter):
                 has_header = False
             f.seek(0)
             if has_header:
@@ -1005,7 +1019,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
 
         if tipo_archivo != "JSON" and not raw_rows:
             fallback_rows, fallback_no_header, fallback_line_offset = _fallback_parse_csv_rows(
-                content=content,
+                content=normalized_content,
                 has_header=has_header,
                 forced_data_start_row=forced_data_start_row,
                 preferred_delimiter=delimiter
@@ -2150,7 +2164,8 @@ SYSTEM_FIELDS_SYNONYMS = {
 def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, force_has_header: Optional[bool] = None, data_start_row: Optional[int] = None):
     headers: List[str] = []
     sample_row: Dict[str, Any] = {}
-    raw_preview_lines = _build_raw_preview_lines(decoded_content)
+    normalized_decoded_content = _normalize_text_for_csv(decoded_content)
+    raw_preview_lines = _build_raw_preview_lines(normalized_decoded_content)
     detected_delimiter: Optional[str] = None
     detected_has_header: Optional[bool] = None
 
@@ -2182,16 +2197,16 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, forc
 
     # 1. Detect Format and Extract Headers/Sample
     if current_type == "CSV" or current_type == "TXT" or not current_type:
-        sample_str = decoded_content[:4096]
+        sample_str = normalized_decoded_content[:4096]
         delimiter, has_header = _detect_delimiter_and_header(sample_str)
         if force_has_header is not None:
             has_header = force_has_header
-        if has_header and _should_treat_as_no_header(decoded_content, delimiter):
+        if has_header and _should_treat_as_no_header(normalized_decoded_content, delimiter):
             has_header = False
         detected_delimiter = delimiter
         detected_has_header = has_header
 
-        f = io.StringIO(decoded_content)
+        f = io.StringIO(normalized_decoded_content)
         if has_header:
             reader = csv.DictReader(f, delimiter=delimiter, skipinitialspace=True)
             try:

@@ -188,7 +188,13 @@ export const PeriodComparison: React.FC = () => {
     };
 
     const formatCurrency = (val: number) => {
-        return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(val);
+        const safeValue = Number.isFinite(val) ? val : 0;
+        return `$${safeValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    };
+
+    const formatInteger = (val: number) => {
+        const safeValue = Number.isFinite(val) ? val : 0;
+        return safeValue.toLocaleString('en-US', { maximumFractionDigits: 0 });
     };
 
     if (loading && !data) {
@@ -285,7 +291,7 @@ export const PeriodComparison: React.FC = () => {
                         />
                         <MetricCard
                             label="Transacciones"
-                            value={data?.periodo_actual?.transacciones || 0}
+                            value={formatInteger(data?.periodo_actual?.transacciones || 0)}
                             icon={<Hash className="text-amber-600" size={24} />}
                             color="bg-amber-50"
                         />

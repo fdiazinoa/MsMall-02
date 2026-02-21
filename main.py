@@ -743,6 +743,76 @@ def _fallback_parse_csv_rows(
             raw_rows.append(dict(zip(synthetic_headers, padded)))
     return raw_rows, True, line_offset
 
+def _emergency_parse_delimited_rows(
+    content: str,
+    has_header: bool,
+    forced_data_start_row: Optional[int]
+) -> Tuple[List[Dict[str, Any]], bool, int]:
+    """
+    Last-resort parser based on plain line splitting.
+    Useful when CSV parser cannot tokenize but raw preview clearly shows delimited lines.
+    """
+    text = _normalize_text_for_csv(content)
+    lines = [ln.strip() for ln in text.split("\n") if str(ln).strip()]
+    if not lines:
+        return [], (not has_header), (1 if not has_header else 2)
+
+    delimiter_candidates = [",", ";", "\t", "|"]
+    first_line = lines[0]
+    delimiter = max(delimiter_candidates, key=lambda d: first_line.count(d))
+    if first_line.count(delimiter) <= 0:
+        return [], (not has_header), (1 if not has_header else 2)
+
+    matrix: List[List[str]] = []
+    for ln in lines:
+        row = [str(cell).strip() for cell in ln.split(delimiter)]
+        if any(cell.strip() for cell in row):
+            matrix.append(row)
+
+    if not matrix:
+        return [], (not has_header), (1 if not has_header else 2)
+
+    logger.warning(
+        f"Parser de emergencia activado. delimiter='{delimiter}' rows={len(matrix)} has_header={has_header}"
+    )
+
+    if has_header:
+        header_row = [_clean_csv_header_name(_clean_cell_value(c)) for c in matrix[0]]
+        max_cols = max(len(r) for r in matrix)
+        normalized_headers = [
+            (header_row[idx] if idx < len(header_row) and header_row[idx] else f"col_{idx + 1}")
+            for idx in range(max_cols)
+        ]
+
+        data_rows = matrix[1:]
+        line_offset = 2
+        if forced_data_start_row and forced_data_start_row > 2:
+            data_rows = data_rows[forced_data_start_row - 2:]
+            line_offset = forced_data_start_row
+
+        raw_rows: List[Dict[str, Any]] = []
+        for r in data_rows:
+            padded = list(r) + [""] * (max_cols - len(r))
+            cleaned_row = [_clean_cell_value(cell) for cell in padded]
+            raw_rows.append(dict(zip(normalized_headers, cleaned_row)))
+        return raw_rows, False, line_offset
+
+    matrix_rows = matrix
+    line_offset = 1
+    if forced_data_start_row and forced_data_start_row > 1:
+        matrix_rows = matrix_rows[forced_data_start_row - 1:]
+        line_offset = forced_data_start_row
+
+    raw_rows: List[Dict[str, Any]] = []
+    if matrix_rows:
+        max_cols = max(len(r) for r in matrix_rows)
+        synthetic_headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]
+        for r in matrix_rows:
+            padded = list(r) + [""] * (max_cols - len(r))
+            cleaned_row = [_clean_cell_value(cell) for cell in padded]
+            raw_rows.append(dict(zip(synthetic_headers, cleaned_row)))
+    return raw_rows, True, line_offset
+
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
     user_id: str = Depends(get_current_user_id)
@@ -1028,6 +1098,17 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 raw_rows = fallback_rows
                 no_header_mode = fallback_no_header
                 line_offset = fallback_line_offset
+
+        if tipo_archivo != "JSON" and not raw_rows:
+            emergency_rows, emergency_no_header, emergency_line_offset = _emergency_parse_delimited_rows(
+                content=normalized_content,
+                has_header=has_header,
+                forced_data_start_row=forced_data_start_row
+            )
+            if emergency_rows:
+                raw_rows = emergency_rows
+                no_header_mode = emergency_no_header
+                line_offset = emergency_line_offset
 
         if not raw_rows:
             return 0, [{"linea": 0, "error": "El archivo no contiene filas de data para importar."}]

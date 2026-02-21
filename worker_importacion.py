@@ -113,6 +113,21 @@ def normalize_date(date_str):
             continue
     return None
 
+def _clean_csv_header_name(name) -> str:
+    return str(name or "").replace("\ufeff", "").strip()
+
+def _normalize_csv_row_keys(row: dict) -> dict:
+    if not isinstance(row, dict):
+        return {}
+    normalized = {}
+    for key, value in row.items():
+        clean_key = _clean_csv_header_name(key)
+        if not clean_key:
+            continue
+        if clean_key not in normalized:
+            normalized[clean_key] = value
+    return normalized
+
 def get_sftp_client(host, port, user, password):
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -173,8 +188,8 @@ def process_file_logic(config, filename, content):
                 return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}]
         else:
             # Default to CSV/TXT
-            reader = csv.DictReader(io.StringIO(content))
-            raw_records = list(reader)
+            reader = csv.DictReader(io.StringIO(content), skipinitialspace=True)
+            raw_records = [_normalize_csv_row_keys(r) for r in reader]
             
         if not raw_records:
             return 0, [{"linea": 0, "error": "Archivo vacío o sin datos válidos"}]
@@ -196,15 +211,28 @@ def process_file_logic(config, filename, content):
 
         for i, row in enumerate(raw_records, start=2):
             try:
+                normalized_row = _normalize_csv_row_keys(row)
+                lowered_row = {k.lower(): v for k, v in normalized_row.items()}
+
+                def pick_value(mapped_header, fallback_header=""):
+                    key = _clean_csv_header_name(mapped_header)
+                    if key and key in normalized_row:
+                        return normalized_row[key]
+                    if key and key.lower() in lowered_row:
+                        return lowered_row[key.lower()]
+                    fallback = _clean_csv_header_name(fallback_header)
+                    if fallback and fallback in normalized_row:
+                        return normalized_row[fallback]
+                    if fallback and fallback.lower() in lowered_row:
+                        return lowered_row[fallback.lower()]
+                    return ""
+
                 # Map fields using mapping_config
                 # mapping_config usually translates system_field -> file_header
-                fecha_venta_raw = row.get(mapping.get('fecha_venta', 'fecha_venta'), '')
-                factura_no = row.get(mapping.get('factura_numero', 'factura_numero'), '')
+                fecha_venta_raw = pick_value(mapping.get('fecha_venta', 'fecha_venta'), 'fecha')
+                factura_no = pick_value(mapping.get('factura_numero', 'factura_numero'), 'factura_no')
                 
                 # Check for direct key matches if mapping fails
-                if not fecha_venta_raw and 'fecha' in row: fecha_venta_raw = row['fecha']
-                if not factura_no and 'factura_no' in row: factura_no = row['factura_no']
-
                 fecha_venta = normalize_date(fecha_venta_raw)
                 
                 if fecha_venta_raw and not fecha_venta:
@@ -219,9 +247,9 @@ def process_file_logic(config, filename, content):
                     except:
                         return 0.0
 
-                total_bruto = clean_float(row.get(mapping.get('total_bruto', 'total_bruto'), '0'))
-                total_impuestos = clean_float(row.get(mapping.get('total_impuestos', 'total_impuestos'), '0'))
-                total_neto = clean_float(row.get(mapping.get('total_neto', 'total_neto'), '0'))
+                total_bruto = clean_float(pick_value(mapping.get('total_bruto', 'total_bruto')))
+                total_impuestos = clean_float(pick_value(mapping.get('total_impuestos', 'total_impuestos')))
+                total_neto = clean_float(pick_value(mapping.get('total_neto', 'total_neto')))
                 
                 if not fecha_venta or total_bruto == 0:
                     detalles.append({"linea": i, "error": "Datos incompletos (Fecha o Total Bruto faltante/cero)"})

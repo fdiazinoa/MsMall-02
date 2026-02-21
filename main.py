@@ -623,6 +623,21 @@ def _build_raw_preview_lines(content: str, max_lines: int = 12, max_chars: int =
             break
     return preview
 
+def _clean_csv_header_name(name: Any) -> str:
+    return str(name or "").replace("\ufeff", "").strip()
+
+def _normalize_csv_row_keys(row: Dict[Any, Any]) -> Dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    normalized: Dict[str, Any] = {}
+    for key, value in row.items():
+        clean_key = _clean_csv_header_name(key)
+        if not clean_key:
+            continue
+        if clean_key not in normalized:
+            normalized[clean_key] = value
+    return normalized
+
 async def get_current_mall(
     x_mall_id: Optional[str] = Header(None, alias="X-Mall-Id"),
     user_id: str = Depends(get_current_user_id)
@@ -855,8 +870,8 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 has_header = False
             f.seek(0)
             if has_header:
-                reader = csv.DictReader(f, delimiter=delimiter)
-                raw_rows = list(reader)
+                reader = csv.DictReader(f, delimiter=delimiter, skipinitialspace=True)
+                raw_rows = [_normalize_csv_row_keys(r) for r in reader]
                 if forced_data_start_row and forced_data_start_row > 2:
                     skip_count = forced_data_start_row - 2
                     raw_rows = raw_rows[skip_count:]
@@ -864,7 +879,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
             else:
                 no_header_mode = True
                 line_offset = 1
-                reader = csv.reader(f, delimiter=delimiter)
+                reader = csv.reader(f, delimiter=delimiter, skipinitialspace=True)
                 matrix_rows = [r for r in reader if any(str(c or "").strip() for c in r)]
                 if forced_data_start_row and forced_data_start_row > 1:
                     skip_count = forced_data_start_row - 1
@@ -900,29 +915,35 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
             try:
                 line_no = i + line_offset
                 record = {}
+                normalized_row = _normalize_csv_row_keys(row) if isinstance(row, dict) else {}
+                lowered_row = {k.lower(): v for k, v in normalized_row.items()}
                 # 1. Apply Mapping
                 for sys_field, header in effective_mapping.items():
                     mapped_value = None
-                    header_key = str(header).strip() if header is not None else ""
+                    header_key = _clean_csv_header_name(header) if header is not None else ""
 
-                    if header_key in row:
-                        mapped_value = row[header_key]
+                    if header_key in normalized_row:
+                        mapped_value = normalized_row[header_key]
+                    elif header_key.lower() in lowered_row:
+                        mapped_value = lowered_row[header_key.lower()]
                     elif no_header_mode:
                         fallback_col = None
                         if header_key.isdigit():
                             numeric_col = f"col_{int(header_key)}"
-                            if numeric_col in row:
+                            if numeric_col in normalized_row:
                                 fallback_col = numeric_col
                         elif header_key.lower().startswith("col_"):
                             explicit_col = header_key.lower()
-                            if explicit_col in row:
+                            if explicit_col in normalized_row:
                                 fallback_col = explicit_col
 
                         if not fallback_col:
                             fallback_col = default_no_header_map.get(sys_field)
 
-                        if fallback_col and fallback_col in row:
-                            mapped_value = row[fallback_col]
+                        if fallback_col and fallback_col in normalized_row:
+                            mapped_value = normalized_row[fallback_col]
+                        elif fallback_col and fallback_col.lower() in lowered_row:
+                            mapped_value = lowered_row[fallback_col.lower()]
 
                     if mapped_value is not None:
                         record[sys_field] = mapped_value
@@ -2044,20 +2065,20 @@ def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, forc
 
         f = io.StringIO(decoded_content)
         if has_header:
-            reader = csv.DictReader(f, delimiter=delimiter)
+            reader = csv.DictReader(f, delimiter=delimiter, skipinitialspace=True)
             try:
-                all_rows = list(reader)
+                all_rows = [_normalize_csv_row_keys(r) for r in reader]
                 if data_start_row and data_start_row > 2:
                     all_rows = all_rows[data_start_row - 2:]
                 row1 = all_rows[0] if all_rows else None
-                headers = reader.fieldnames or []
+                headers = [_clean_csv_header_name(h) for h in (reader.fieldnames or []) if _clean_csv_header_name(h)]
                 sample_row = row1 or {}
                 if not row1:
                     return _payload(headers, {}, {}, headers)
             except Exception:
                 return _payload([], {}, {}, [])
         else:
-            raw_reader = csv.reader(f, delimiter=delimiter)
+            raw_reader = csv.reader(f, delimiter=delimiter, skipinitialspace=True)
             matrix_rows = [r for r in raw_reader if any(str(c or "").strip() for c in r)]
             if data_start_row and data_start_row > 1:
                 matrix_rows = matrix_rows[data_start_row - 1:]

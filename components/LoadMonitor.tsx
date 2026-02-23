@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
+import { queueImportConnectionOpenRequest } from '../utils/importNavigation';
 import {
     CheckCircle2, XCircle, AlertCircle, Clock,
     Search, RefreshCw, FileText, Store, Filter
@@ -11,6 +12,7 @@ interface LoadLog {
     id: string;
     fecha_hora: string;
     local_nombre: string;
+    local_id?: string;
     archivo: string;
     estado: 'exito' | 'error' | 'no_encontrado';
     mensaje: string;
@@ -153,6 +155,29 @@ export const LoadMonitor: React.FC = () => {
             return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 text-xs font-bold"><AlertCircle size={12} /> No Encontrado</span>;
         }
         return <span className="px-2.5 py-0.5 rounded-full bg-slate-50 text-slate-700 text-xs font-bold">{log.estado}</span>;
+    };
+
+    const canOpenConnectionFromLog = (log: LoadLog | null) => {
+        if (!log) return false;
+        if (!(log.estado === 'error' || log.estado === 'no_encontrado')) return false;
+        return Boolean((log as any).local_id || log.local_nombre);
+    };
+
+    const handleOpenConnectionFromLog = (log: LoadLog) => {
+        const localId = (log as any).local_id || (log as any).localId || undefined;
+        const localName = (log.local_nombre || '').trim() || undefined;
+
+        if (!localId && !localName) {
+            alert('No se pudo identificar el local asociado a este registro.');
+            return;
+        }
+
+        queueImportConnectionOpenRequest({
+            localId,
+            localName,
+            logId: log.id
+        });
+        setSelectedLog(null);
     };
 
     return (
@@ -390,7 +415,15 @@ export const LoadMonitor: React.FC = () => {
                             </div>
                         </div>
 
-                        <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex justify-end">
+                        <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex justify-end gap-3">
+                            {canOpenConnectionFromLog(selectedLog) && (
+                                <button
+                                    onClick={() => handleOpenConnectionFromLog(selectedLog)}
+                                    className="px-6 py-2 rounded-xl border border-indigo-200 bg-white text-indigo-700 font-bold hover:bg-indigo-50 transition-all active:scale-95"
+                                >
+                                    Ir a Conexión
+                                </button>
+                            )}
                             <button
                                 onClick={() => setSelectedLog(null)}
                                 className="px-6 py-2 rounded-xl bg-slate-800 text-white font-bold hover:bg-slate-900 transition-all active:scale-95"

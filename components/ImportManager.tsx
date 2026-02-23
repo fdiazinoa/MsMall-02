@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 // Fix: Import types from '../types' instead of '../api'
 import { ImportConfig, ImportProtocol, RemoteConnection } from '../types';
+import { clearImportConnectionOpenRequest, peekImportConnectionOpenRequest } from '../utils/importNavigation';
 import { SmartMappingModal } from './SmartMappingModal';
 import MappingModal from './MappingModal';
 import {
@@ -166,6 +167,34 @@ export const ImportManager: React.FC = () => {
       loadRemoteConnections();
     }
   }, [currentMall]);
+
+  useEffect(() => {
+    if (loading) return;
+
+    const pendingRequest = peekImportConnectionOpenRequest();
+    if (!pendingRequest) return;
+
+    const normalizedRequestedName = String(pendingRequest.localName || '').trim().toLowerCase();
+    const targetConfig =
+      (pendingRequest.localId
+        ? configs.find(c => String(c.id) === String(pendingRequest.localId))
+        : undefined) ||
+      (normalizedRequestedName
+        ? configs.find(c => String(c.nombre || '').trim().toLowerCase() === normalizedRequestedName)
+        : undefined);
+
+    if (targetConfig) {
+      openEditConnectionDrawer(targetConfig);
+      clearImportConnectionOpenRequest();
+      return;
+    }
+
+    // Evita loops de alertas si no existe la configuración (por ejemplo, fue eliminada).
+    clearImportConnectionOpenRequest();
+    if (pendingRequest.localId || pendingRequest.localName) {
+      alert(`No se encontró la conexión del local ${pendingRequest.localName || pendingRequest.localId}.`);
+    }
+  }, [configs, loading]);
 
   const closeFormDrawer = () => {
     setShowForm(false);

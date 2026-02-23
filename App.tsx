@@ -1,9 +1,10 @@
-import React, { useState, Suspense } from 'react';
+import React, { useEffect, useState, Suspense } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { useAuth } from './context/AuthProvider';
 import { supabase } from './api';
+import { OPEN_IMPORT_CONNECTION_EVENT } from './utils/importNavigation';
 
 // Suppress Recharts deprecation warnings (XAxis, YAxis defaultProps)
 const originalConsoleError = console.error;
@@ -17,6 +18,17 @@ console.error = (...args: any[]) => {
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons'>('analytics');
   const { session, loading } = useAuth();
+
+  useEffect(() => {
+    const handleOpenImportConnection = () => {
+      setActiveTab('auto-import');
+    };
+
+    window.addEventListener(OPEN_IMPORT_CONNECTION_EVENT, handleOpenImportConnection as EventListener);
+    return () => {
+      window.removeEventListener(OPEN_IMPORT_CONNECTION_EVENT, handleOpenImportConnection as EventListener);
+    };
+  }, []);
 
   // Estados para el login
   const [email, setEmail] = useState('');

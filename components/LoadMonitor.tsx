@@ -356,12 +356,22 @@ export const LoadMonitor: React.FC = () => {
                                             </div>
                                         </td>
                                         <td className="px-6 py-4 text-right">
-                                            <button
-                                                onClick={() => setSelectedLog(log)}
-                                                className="text-xs font-bold text-indigo-600 hover:text-indigo-800 underline"
-                                            >
-                                                Ver Detalle
-                                            </button>
+                                            <div className="inline-flex items-center gap-3">
+                                                {canOpenConnectionFromLog(log) && (
+                                                    <button
+                                                        onClick={() => handleOpenConnectionFromLog(log)}
+                                                        className="text-xs font-bold text-indigo-600 hover:text-indigo-800 underline"
+                                                    >
+                                                        Ir a Conexión
+                                                    </button>
+                                                )}
+                                                <button
+                                                    onClick={() => setSelectedLog(log)}
+                                                    className="text-xs font-bold text-indigo-600 hover:text-indigo-800 underline"
+                                                >
+                                                    Ver Detalle
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                 ))

@@ -180,6 +180,21 @@ export const LoadMonitor: React.FC = () => {
         setSelectedLog(null);
     };
 
+    const inferFailureKind = (log: LoadLog | null) => {
+        if (!log) return 'Fallo de ejecución';
+        const msg = String(log.mensaje || '').toLowerCase();
+        if (msg.includes('conexión') || msg.includes('conexion') || msg.includes('ftp') || msg.includes('sftp')) {
+            return 'Fallo de Conexión';
+        }
+        if (msg.includes('no se pudo descargar') || msg.includes('no encontrado') || msg.includes('not found')) {
+            return 'Archivo no Encontrado';
+        }
+        if (msg.includes('vacío') || msg.includes('vacio') || msg.includes('sin datos') || msg.includes('solo encabezado') || msg.includes('no contiene filas')) {
+            return 'Archivo sin Datos';
+        }
+        return 'Fallo de ejecución';
+    };
+
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
             <div className="flex justify-between items-center">
@@ -364,6 +379,17 @@ export const LoadMonitor: React.FC = () => {
 
             {/* Detail Modal */}
             {selectedLog && (
+                (() => {
+                    const lineErrors = selectedLog.detalles || [];
+                    const hasLineErrors = lineErrors.length > 0;
+                    const isExecutionFailure = (selectedLog.estado === 'error' || selectedLog.estado === 'no_encontrado') && !hasLineErrors;
+                    const detailTitle = hasLineErrors
+                        ? `Errores por Línea (${lineErrors.length})`
+                        : isExecutionFailure
+                            ? inferFailureKind(selectedLog)
+                            : 'Resultado de Validación';
+
+                    return (
                 <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
                     <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
                         <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
@@ -393,23 +419,31 @@ export const LoadMonitor: React.FC = () => {
 
                             <div>
                                 <h4 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-2">
-                                    <AlertCircle size={16} className="text-amber-500" />
-                                    Errores por Línea ({selectedLog.detalles?.length || 0})
+                                    <AlertCircle size={16} className={isExecutionFailure ? "text-red-500" : "text-amber-500"} />
+                                    {detailTitle}
                                 </h4>
 
-                                {selectedLog.detalles && selectedLog.detalles.length > 0 ? (
+                                {hasLineErrors ? (
                                     <div className="space-y-2">
-                                        {selectedLog.detalles.map((err: any, idx: number) => (
+                                        {lineErrors.map((err: any, idx: number) => (
                                             <div key={idx} className="flex items-start gap-3 p-3 rounded-xl bg-red-50 border border-red-100">
                                                 <span className="text-[10px] font-mono font-bold bg-red-200 text-red-700 px-1.5 py-0.5 rounded">L{err.linea}</span>
                                                 <p className="text-xs text-red-700 font-medium">{err.error}</p>
                                             </div>
                                         ))}
                                     </div>
+                                ) : isExecutionFailure ? (
+                                    <div className="p-5 rounded-2xl bg-red-50 border border-red-100 space-y-2">
+                                        <p className="text-sm font-bold text-red-700">La carga falló antes de procesar líneas del archivo.</p>
+                                        <p className="text-xs text-red-700/90">{selectedLog.mensaje || 'Sin detalle adicional.'}</p>
+                                        <p className="text-[11px] text-red-600/80">
+                                            No hay errores por línea porque el fallo ocurrió en conexión, descarga, ubicación del archivo o validación inicial.
+                                        </p>
+                                    </div>
                                 ) : (
                                     <div className="p-8 text-center bg-green-50 rounded-2xl border border-green-100">
                                         <CheckCircle2 size={32} className="text-green-500 mx-auto mb-2" />
-                                        <p className="text-sm text-green-700 font-medium">No se encontraron errores en las líneas del archivo.</p>
+                                        <p className="text-sm text-green-700 font-medium">No se encontraron errores por línea en el archivo.</p>
                                     </div>
                                 )}
                             </div>
@@ -433,6 +467,8 @@ export const LoadMonitor: React.FC = () => {
                         </div>
                     </div>
                 </div>
+                    );
+                })()
             )}
         </div>
     );

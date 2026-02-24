@@ -118,3 +118,66 @@ export interface RemoteConnection {
   ruta_base?: string;
   created_at?: string;
 }
+
+export interface ConnectionMonitorRun {
+  id: string;
+  mall_id: string;
+  local_id?: string | null;
+  connection_id?: string | null;
+  run_type: 'scheduled' | 'manual';
+  status: 'ok' | 'fail' | 'partial';
+  error_code?: 'auth_error' | 'timeout' | 'endpoint_down' | 'validation_error' | 'unknown_error' | null;
+  error_message?: string | null;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  created_by?: string | null;
+  created_at?: string | null;
+}
+
+export interface ConnectionMonitorStatusResponse {
+  mall_id: string;
+  summary: {
+    total: number;
+    ok: number;
+    fail: number;
+    partial: number;
+    pending?: number;
+  };
+  recent_runs: ConnectionMonitorRun[];
+  connections: Array<{
+    id: string;
+    nombre: string;
+    protocolo: ImportProtocol | string;
+    host: string;
+    last_run?: ConnectionMonitorRun | null;
+  }>;
+}
+
+export interface ConnectionMonitorFailuresResponse {
+  mall_id: string;
+  date: string;
+  count: number;
+  failures: ConnectionMonitorRun[];
+}
+
+export interface ConnectionRetryActionResponse {
+  status: string;
+  connection_id: string;
+  mall_id?: string;
+  run: ConnectionMonitorRun;
+  retry_attempt?: Record<string, any> | null;
+  policy: Record<string, any>;
+}
+
+export interface ConnectionRetryBatchResponse {
+  status: string;
+  mall_id: string;
+  date: string;
+  requested: number;
+  limit: number;
+  retried_ok: number;
+  retried_fail: number;
+  skipped: number;
+  results: any[];
+}

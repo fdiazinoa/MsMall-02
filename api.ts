@@ -90,6 +90,158 @@ const toFiniteNumber = (value: any): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+const parseCsvLine = (line: string): string[] => {
+  const out: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+
+    if (ch === '"') {
+      // Escaped quote inside quoted field.
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (ch === ',' && !inQuotes) {
+      out.push(current);
+      current = '';
+      continue;
+    }
+
+    current += ch;
+  }
+
+  out.push(current);
+  return out;
+};
+
+const parseCsvAmount = (raw: any): number => {
+  if (raw === null || raw === undefined) return NaN;
+  let text = String(raw).trim();
+  if (!text) return NaN;
+
+  // Remove wrapping quotes and spaces/currency symbols.
+  text = text.replace(/^"(.*)"$/, '$1').trim();
+  text = text.replace(/\s+/g, '');
+  text = text.replace(/^RD\$/i, '');
+  text = text.replace(/[$€]/g, '');
+
+  const hasComma = text.includes(',');
+  const hasDot = text.includes('.');
+
+  if (hasComma && hasDot) {
+    const lastComma = text.lastIndexOf(',');
+    const lastDot = text.lastIndexOf('.');
+    if (lastDot > lastComma) {
+      // 4,984.34 => comma thousands, dot decimal
+      text = text.replace(/,/g, '');
+    } else {
+      // 4.984,34 => dot thousands, comma decimal
+      text = text.replace(/\./g, '').replace(',', '.');
+    }
+  } else if (hasComma) {
+    const commaCount = (text.match(/,/g) || []).length;
+    if (commaCount > 1) {
+      text = text.replace(/,/g, '');
+    } else {
+      const [left, right = ''] = text.split(',');
+      if (right.length === 3 && left.length >= 1) {
+        // Likely thousands separator
+        text = `${left}${right}`;
+      } else {
+        text = `${left}.${right}`;
+      }
+    }
+  }
+
+  const n = Number(text);
+  return Number.isFinite(n) ? n : NaN;
+};
+
+const pad2 = (value: number): string => String(value).padStart(2, '0');
+
+const isValidDateParts = (year: number, month: number, day: number): boolean => {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
+  if (year < 1900 || year > 2100) return false;
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > 31) return false;
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  return dt.getUTCFullYear() === year && (dt.getUTCMonth() + 1) === month && dt.getUTCDate() === day;
+};
+
+const toYmdIfValid = (year: number, month: number, day: number): string | null => {
+  if (!isValidDateParts(year, month, day)) return null;
+  return `${year}-${pad2(month)}-${pad2(day)}`;
+};
+
+const expandTwoDigitYear = (yy: number): number => {
+  // Keep current operational data in modern years while preserving older values if needed.
+  return yy >= 70 ? 1900 + yy : 2000 + yy;
+};
+
+const normalizeCsvSaleDate = (raw: any): string | null => {
+  if (raw === null || raw === undefined) return null;
+  let text = String(raw).trim();
+  if (!text) return null;
+  text = text.replace(/^"(.*)"$/, '$1').trim().replace(/^'(.*)'$/, '$1').trim();
+
+  let m: RegExpMatchArray | null;
+
+  // Match order mirrors worker_importacion.normalize_date (dd/mm first, then others).
+  m = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/); // DD/MM/YYYY
+  if (m) {
+    const ddmm = toYmdIfValid(Number(m[3]), Number(m[2]), Number(m[1]));
+    if (ddmm) return ddmm;
+    const mmdd = toYmdIfValid(Number(m[3]), Number(m[1]), Number(m[2]));
+    if (mmdd) return mmdd;
+    return null;
+  }
+
+  m = text.match(/^(\d{4})-(\d{2})-(\d{2})$/); // YYYY-MM-DD
+  if (m) {
+    return toYmdIfValid(Number(m[1]), Number(m[2]), Number(m[3]));
+  }
+
+  m = text.match(/^(\d{2})-(\d{2})-(\d{4})$/); // DD-MM-YYYY
+  if (m) {
+    return toYmdIfValid(Number(m[3]), Number(m[2]), Number(m[1]));
+  }
+
+  m = text.match(/^(\d{2})\/(\d{2})\/(\d{2})$/); // DD/MM/YY or MM/DD/YY
+  if (m) {
+    const year = expandTwoDigitYear(Number(m[3]));
+    const ddmm = toYmdIfValid(year, Number(m[2]), Number(m[1]));
+    if (ddmm) return ddmm;
+    const mmdd = toYmdIfValid(year, Number(m[1]), Number(m[2]));
+    if (mmdd) return mmdd;
+    return null;
+  }
+
+  m = text.match(/^(\d{2})-(\d{2})-(\d{2})$/); // DD-MM-YY
+  if (m) {
+    return toYmdIfValid(expandTwoDigitYear(Number(m[3])), Number(m[2]), Number(m[1]));
+  }
+
+  m = text.match(/^(\d{4})\/(\d{2})\/(\d{2})$/); // YYYY/MM/DD
+  if (m) {
+    return toYmdIfValid(Number(m[1]), Number(m[2]), Number(m[3]));
+  }
+
+  m = text.match(/^(\d{4})(\d{2})(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?$/); // YYYYmmDD[ time]
+  if (m) {
+    return toYmdIfValid(Number(m[1]), Number(m[2]), Number(m[3]));
+  }
+
+  return null;
+};
+
 const normalizeSaleTotals = <T extends { total_bruto?: any; total_impuestos?: any; total_neto?: any }>(row: T) => {
   const bruto = toFiniteNumber(row.total_bruto);
   const impuestos = toFiniteNumber(row.total_impuestos);
@@ -1142,14 +1294,31 @@ export const ApiService = {
 
           // Process rows (skip header)
           for (let i = 1; i < lines.length; i++) {
-            const columns = lines[i].split(',');
+            const columns = parseCsvLine(lines[i]);
             if (columns.length >= 6) {
               const factura = columns[0].trim();
-              const fecha = columns[1].trim();
+              const fechaRaw = columns[1].trim();
+              const fecha = normalizeCsvSaleDate(fechaRaw);
               const storeCode = columns[2].trim();
-              const bruto = parseFloat(columns[3].trim());
-              const impuestos = parseFloat(columns[4].trim());
-              const neto = parseFloat(columns[5].trim());
+              const bruto = parseCsvAmount(columns[3]);
+              const impuestos = parseCsvAmount(columns[4]);
+              const neto = parseCsvAmount(columns[5]);
+
+              if (!fecha) {
+                lineErrors.push({
+                  linea: i + 1,
+                  error: `Formato de fecha inválido: ${fechaRaw}`
+                });
+                continue;
+              }
+
+              if (![bruto, impuestos, neto].every(Number.isFinite)) {
+                lineErrors.push({
+                  linea: i + 1,
+                  error: `Montos inválidos. bruto='${columns[3] ?? ''}', impuestos='${columns[4] ?? ''}', neto='${columns[5] ?? ''}'`
+                });
+                continue;
+              }
 
               const normalizedStoreCode = storeCode.toUpperCase();
               const store = storeMap.get(normalizedStoreCode);

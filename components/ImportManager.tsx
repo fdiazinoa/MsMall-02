@@ -785,9 +785,15 @@ export const ImportManager: React.FC = () => {
     setExplorerLoading(true);
 
     try {
+      const localInitialPath =
+        editingConfig.protocolo === 'LOCAL' &&
+        (!initialPath || initialPath === '.' || initialPath === './' || initialPath === '/app')
+          ? ''
+          : initialPath;
+
       console.log("Calling ApiService.exploreDirectory...");
       const data = await ApiService.exploreDirectory(
-        initialPath || '.',
+        localInitialPath,
         editingConfig.protocolo,
         editingConfig.host,
         editingConfig.puerto,

@@ -24,6 +24,11 @@ import stat
 from worker_importacion import run_worker_async
 from analytics import generate_sales_cube
 from routers import recipes, comparisons, admin_tools
+from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
+from services.connection_monitor_service import (
+    ConnectionMonitorService,
+    RetryPolicyBlocked,
+)
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -64,6 +69,12 @@ SYSTEM_ADMIN_EMAILS = {
 }
 ADMIN_ROLES = {"admin", "superadmin", "super_admin", "administrador"}
 IT_ROLES = {"it", "tic"}
+
+def _sensitive_ops_service() -> SensitiveOpsService:
+    return SensitiveOpsService(supabase, logger)
+
+def _connection_monitor_service() -> ConnectionMonitorService:
+    return ConnectionMonitorService(supabase, logger)
 
 
 # --- LIGHTWEIGHT IN-MEMORY CACHE (TTL) ---
@@ -437,6 +448,12 @@ async def require_it_or_admin_access(user_id: str = Depends(get_current_user_id)
     access_ctx = await _get_access_context(user_id)
     if access_ctx["role"] not in {"admin", "it"}:
         raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere rol IT o ADMIN.")
+    return access_ctx
+
+async def require_audit_read_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    access_ctx = await _get_access_context(user_id)
+    if access_ctx["role"] not in {"admin", "it", "auditor"}:
+        raise HTTPException(status_code=403, detail="Permisos insuficientes para consultar logs.")
     return access_ctx
 
 def _get_user_mall_ids(user_id: str) -> List[str]:
@@ -979,6 +996,74 @@ class RemoteRequest(BaseModel):
     tipo_archivo: str = "CSV"
     has_header: Optional[bool] = None
     data_start_row: Optional[int] = None
+
+class RemoteConnectionCreateRequest(BaseModel):
+    mall_id: str
+    nombre: str
+    protocolo: str = "SFTP"
+    host: str
+    puerto: int = 22
+    usuario: str
+    password: str
+    ruta_base: Optional[str] = None
+
+class RemoteConnectionUpdateRequest(BaseModel):
+    nombre: Optional[str] = None
+    protocolo: Optional[str] = None
+    host: Optional[str] = None
+    puerto: Optional[int] = None
+    usuario: Optional[str] = None
+    password: Optional[str] = None
+    ruta_base: Optional[str] = None
+
+class RemoteConnectionResponse(BaseModel):
+    id: str
+    mall_id: str
+    nombre: str
+    protocolo: str
+    host: str
+    puerto: int
+    usuario: str
+    password: str = ""
+    password_masked: Optional[str] = ""
+    has_password: bool = False
+    ruta_base: Optional[str] = None
+    created_at: Optional[str] = None
+
+class ConnectionRunSchema(BaseModel):
+    id: str
+    mall_id: str
+    local_id: Optional[str] = None
+    connection_id: Optional[str] = None
+    run_type: str
+    status: str
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    started_at: str
+    finished_at: str
+    duration_ms: int = 0
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+class ConnectionStatusResponse(BaseModel):
+    mall_id: str
+    summary: Dict[str, int]
+    recent_runs: List[Dict[str, Any]]
+    connections: List[Dict[str, Any]]
+
+class ConnectionFailuresResponse(BaseModel):
+    mall_id: str
+    date: str
+    count: int
+    failures: List[Dict[str, Any]]
+
+class ConnectionRetryResponse(BaseModel):
+    status: str
+    connection_id: str
+    mall_id: Optional[str] = None
+    run: Dict[str, Any]
+    retry_attempt: Optional[Dict[str, Any]] = None
+    policy: Dict[str, Any]
 
 class ImportConfigSchema(BaseModel):
     id: Optional[str] = None
@@ -1919,6 +2004,130 @@ async def list_remote_files(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/v1/remote-connections", response_model=List[RemoteConnectionResponse])
+async def get_remote_connections(
+    mall_id: str = Query(..., alias="mall_id"),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return _sensitive_ops_service().list_remote_connections(
+            mall_id=mall_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing remote connections: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron cargar las conexiones remotas.")
+
+@app.post("/api/v1/remote-connections", response_model=RemoteConnectionResponse)
+async def create_remote_connection(
+    payload: RemoteConnectionCreateRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return _sensitive_ops_service().create_remote_connection(
+            payload=payload.dict(),
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error creating remote connection: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo guardar la conexión remota.")
+
+@app.patch("/api/v1/remote-connections/{connection_id}", response_model=RemoteConnectionResponse)
+async def update_remote_connection(
+    connection_id: str,
+    payload: RemoteConnectionUpdateRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return _sensitive_ops_service().update_remote_connection(
+            connection_id=connection_id,
+            payload=payload.dict(exclude_unset=True),
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conexión remota no encontrada.")
+    except Exception as e:
+        logger.error(f"Error updating remote connection {connection_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo actualizar la conexión remota.")
+
+@app.delete("/api/v1/remote-connections/{connection_id}", status_code=status.HTTP_200_OK)
+async def delete_remote_connection(
+    connection_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        _sensitive_ops_service().delete_remote_connection(
+            connection_id=connection_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+        return {"status": "success", "message": "Conexión remota eliminada correctamente."}
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conexión remota no encontrada.")
+    except Exception as e:
+        logger.error(f"Error deleting remote connection {connection_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo eliminar la conexión remota.")
+
+@app.get("/api/v1/load-logs", status_code=status.HTTP_200_OK)
+async def get_load_logs_secure(
+    mall_id: Optional[str] = Query(None, alias="mall_id"),
+    local_id: Optional[str] = Query(None, alias="local_id"),
+    start_date: Optional[str] = Query(None, alias="start_date"),
+    end_date: Optional[str] = Query(None, alias="end_date"),
+    limit: int = Query(50, ge=1, le=200),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+    current_mall: str = Depends(get_current_mall)
+):
+    try:
+        effective_mall_id = mall_id or current_mall
+        return _sensitive_ops_service().list_load_logs(
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+            mall_id=effective_mall_id,
+            local_id=local_id,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing load logs: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron cargar los logs de carga.")
+
+def _clear_load_logs_via_service(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    return _sensitive_ops_service().clear_load_logs(
+        mall_id=mall_id,
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+    )
+
+@app.delete("/api/v1/load-logs", status_code=status.HTTP_200_OK)
+async def clear_load_logs_secure(
+    mall_id: str = Query(..., alias="mall_id"),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return _clear_load_logs_via_service(mall_id, operator_ctx)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error clearing load logs for mall {mall_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo limpiar el historial de cargas.")
+
 @app.delete("/api/v1/audit/logs", status_code=status.HTTP_200_OK)
 async def clear_load_logs(
     mall_id: str = Query(..., alias="mall_id"),
@@ -1927,81 +2136,131 @@ async def clear_load_logs(
     """
     Clears load audit logs only for the selected mall.
     """
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Supabase not configured")
-
     try:
-        # Non-admin users must be explicitly assigned to the target mall.
-        if operator_ctx.get("role") != "admin":
-            membership = supabase.table("usuarios_malls") \
-                .select("mall_id") \
-                .eq("usuario_id", operator_ctx.get("user_id")) \
-                .eq("mall_id", mall_id) \
-                .limit(1) \
-                .execute()
-            if not membership.data:
-                raise HTTPException(
-                    status_code=403,
-                    detail="No tienes permisos para limpiar historial en este mall."
-                )
-
-        stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
-        stores = stores_res.data or []
-        store_ids = [s.get("id") for s in stores if s.get("id")]
-        store_names = [s.get("nombre") for s in stores if s.get("nombre")]
-
-        if not store_ids and not store_names:
-            return {
-                "status": "success",
-                "message": "No hay locales asociados al mall seleccionado.",
-                "deleted_count": 0
-            }
-
-        deleted_count = 0
-        try:
-            # Primary path: tenant-aware logs.
-            delete_by_mall = supabase.table("logs_carga").delete().eq("mall_id", mall_id).execute()
-            deleted_count += len(delete_by_mall.data or [])
-
-            # Legacy fallback rows (before migration): mall_id null + local_id/local_nombre lookup.
-            if store_ids:
-                delete_legacy_by_local = (
-                    supabase.table("logs_carga")
-                    .delete()
-                    .is_("mall_id", "null")
-                    .in_("local_id", store_ids)
-                    .execute()
-                )
-                deleted_count += len(delete_legacy_by_local.data or [])
-
-            if store_names:
-                delete_legacy_by_name = (
-                    supabase.table("logs_carga")
-                    .delete()
-                    .is_("mall_id", "null")
-                    .is_("local_id", "null")
-                    .in_("local_nombre", store_names)
-                    .execute()
-                )
-                deleted_count += len(delete_legacy_by_name.data or [])
-        except Exception:
-            # Backward compatibility while mall_id/local_id columns are not migrated yet.
-            if store_names:
-                legacy_delete = supabase.table("logs_carga").delete().in_("local_nombre", store_names).execute()
-                deleted_count += len(legacy_delete.data or [])
-
-        logger.info(f"Cleared load logs for mall {mall_id}. Deleted: {deleted_count}")
-        return {
-            "status": "success",
-            "message": "Historial de auditoría limpiado correctamente.",
-            "deleted_count": deleted_count
-        }
-
+        return _clear_load_logs_via_service(mall_id, operator_ctx)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error clearing logs for mall {mall_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error clearing logs for mall {mall_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo limpiar el historial de auditoría.")
+
+@app.post("/api/v1/locales/{local_id}/reactivate-processing", status_code=status.HTTP_200_OK)
+async def reactivate_local_processing(
+    local_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return _sensitive_ops_service().reactivate_local_processing(
+            local_id=local_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Local no encontrado.")
+    except Exception as e:
+        logger.error(f"Error reactivating local {local_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo reactivar el local.")
+
+@app.get("/api/v1/connections/status", response_model=ConnectionStatusResponse)
+async def get_connections_status(
+    mall_id: str = Query(..., alias="mall_id"),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access)
+):
+    try:
+        return _connection_monitor_service().get_status_summary(
+            mall_id=mall_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting connection status for mall {mall_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo obtener el estado de conexiones.")
+
+@app.get("/api/v1/connections/failures", response_model=ConnectionFailuresResponse)
+async def get_connections_failures(
+    mall_id: str = Query(..., alias="mall_id"),
+    date_str: str = Query(..., alias="date"),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access)
+):
+    try:
+        return _connection_monitor_service().get_failures_by_date(
+            mall_id=mall_id,
+            run_date=date_str,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting connection failures mall={mall_id} date={date_str}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron cargar las fallas de conexiones.")
+
+@app.post("/api/v1/connections/retry-failed", status_code=status.HTTP_200_OK)
+async def retry_failed_connections_batch(
+    mall_id: str = Query(..., alias="mall_id"),
+    date_str: str = Query(..., alias="date"),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return await asyncio.to_thread(
+            _connection_monitor_service().execute_batch_retry_failed,
+            mall_id=mall_id,
+            run_date=date_str,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RetryPolicyBlocked as e:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": e.message,
+                "reason": e.code,
+                "retry_after_seconds": e.retry_after_seconds,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error batch retry failed connections mall={mall_id} date={date_str}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron ejecutar los reintentos en lote.")
+
+@app.post("/api/v1/connections/{connection_id}/retry", response_model=ConnectionRetryResponse)
+async def retry_connection_manual(
+    connection_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return await asyncio.to_thread(
+            _connection_monitor_service().execute_manual_retry,
+            connection_id=connection_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conexión remota no encontrada.")
+    except RetryPolicyBlocked as e:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": e.message,
+                "reason": e.code,
+                "retry_after_seconds": e.retry_after_seconds,
+                "attempt_no": e.attempt_no,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error manual retry connection {connection_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo ejecutar el reintento de conexión.")
 
 def _read_remote_headers_sync(req: RemoteRequest):
     content = ""

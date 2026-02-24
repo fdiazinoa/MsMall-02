@@ -151,7 +151,7 @@ export const ImportManager: React.FC = () => {
   const loadRemoteConnections = async () => {
     if (!currentMall?.id) return;
     try {
-      const items = await ApiService.getRemoteConnections(currentMall.id);
+      const items = await ApiService.getRemoteConnections(currentMall.id, authToken);
       setRemoteConnections(items);
     } catch (error: any) {
       console.error("Error loading remote connections:", error);
@@ -273,7 +273,7 @@ export const ImportManager: React.FC = () => {
         usuario: editingConfig.usuario.trim(),
         password: tempPassword || editingConfig.password || '',
         ruta_base: editingConfig.ruta_remota || '.'
-      });
+      }, authToken);
       await loadRemoteConnections();
       setSelectedConnectionId(saved.id);
       alert("Conexión guardada correctamente.");
@@ -290,7 +290,7 @@ export const ImportManager: React.FC = () => {
     if (!confirm("¿Eliminar esta conexión guardada?")) return;
 
     try {
-      await ApiService.deleteRemoteConnection(selectedConnectionId);
+      await ApiService.deleteRemoteConnection(selectedConnectionId, authToken);
       setSelectedConnectionId('');
       await loadRemoteConnections();
       alert("Conexión eliminada.");
@@ -513,7 +513,7 @@ export const ImportManager: React.FC = () => {
 
   const resolveProcessedCountFromLogs = async (config: ImportConfig, filename: string): Promise<number | null> => {
     try {
-      const logs = await ApiService.getLoadLogs(currentMall?.id);
+      const logs = await ApiService.getLoadLogs(currentMall?.id, authToken);
       const targetLog = (logs || []).find((log: any) =>
         log?.archivo === filename &&
         log?.local_nombre === config.nombre &&

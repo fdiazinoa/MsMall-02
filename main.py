@@ -1781,23 +1781,66 @@ async def ingesta_ventas(
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- EXPLORACIÓN DE DIRECTORIOS LOCALES ---
+def _default_local_explorer_root() -> str:
+    import os
+    import sys
+
+    # Optional override for local installs / containers.
+    env_root = str(os.getenv("LOCAL_EXPLORER_ROOT") or "").strip()
+    if env_root and os.path.isdir(env_root):
+        return os.path.abspath(env_root)
+
+    if os.name == "nt":
+        system_drive = str(os.getenv("SystemDrive") or "C:").rstrip("\\/")
+        candidate = f"{system_drive}\\"
+        return candidate if os.path.isdir(candidate) else "C:\\"
+
+    if sys.platform == "darwin" and os.path.isdir("/Users"):
+        return "/Users"
+
+    for candidate in ["/home", os.path.expanduser("~"), "/"]:
+        if candidate and os.path.isdir(candidate):
+            return os.path.abspath(candidate)
+    return "/"
+
+
+def _resolve_local_explorer_path(requested_path: Optional[str]) -> str:
+    import os
+
+    raw = str(requested_path or "").strip()
+    if not raw:
+        return _default_local_explorer_root()
+
+    normalized = os.path.abspath(raw)
+    cwd_path = os.path.abspath(os.getcwd())
+    # Keep "/" navigable (clicking ".." from /Users or /home should reach filesystem root).
+    default_markers = {".", "./", "/app", cwd_path}
+
+    # When the UI opens the browser for the first time it often sends '.' which becomes /app
+    # in containerized environments. Prefer a user-friendly root for LOCAL browsing.
+    if raw in default_markers or normalized in default_markers:
+        return _default_local_explorer_root()
+
+    if os.path.exists(normalized):
+        return normalized
+
+    # If requested path doesn't exist, fall back to a sensible root instead of /app.
+    return _default_local_explorer_root()
+
+
 @app.get("/api/v1/explorar-directorio")
 async def explorar_directorio(
-    path: str = Query("/", alias="ruta"),
+    path: Optional[str] = Query(None, alias="ruta"),
     operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
 ):
     """
     Endpoint para listar directorios locales. 
     Permite al usuario navegar por carpetas para configurar la importación.
     """
-    import os
     try:
-        # Normalizar ruta para el OS actual
-        target_path = os.path.abspath(path)
-        
-        if not os.path.exists(target_path):
-            # Si no existe, intentar con el home del usuario o raíz
-            target_path = os.path.expanduser("~")
+        import os
+        # Resolver ruta inicial amigable según OS (evita caer en /app por defecto).
+        target_path = _resolve_local_explorer_path(path)
             
         items = []
         # Añadir opción para subir de nivel
@@ -2089,10 +2132,16 @@ async def get_load_logs_secure(
     end_date: Optional[str] = Query(None, alias="end_date"),
     limit: int = Query(50, ge=1, le=200),
     operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
-    current_mall: str = Depends(get_current_mall)
 ):
     try:
-        effective_mall_id = mall_id or current_mall
+        effective_mall_id = mall_id
+        if not effective_mall_id:
+            user_malls = _get_user_mall_ids(operator_ctx.get("user_id"))
+            if len(user_malls) == 1:
+                effective_mall_id = user_malls[0]
+            elif len(user_malls) > 1:
+                raise HTTPException(status_code=400, detail="Ambiguous context. Please select a mall (mall_id).")
+            raise HTTPException(status_code=403, detail="No mall assigned to user.")
         return _sensitive_ops_service().list_load_logs(
             operator_ctx=operator_ctx,
             ensure_operator_can_access_mall=_ensure_operator_can_access_mall,

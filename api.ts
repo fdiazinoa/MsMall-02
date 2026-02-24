@@ -968,11 +968,13 @@ export const ApiService = {
       const query = new URLSearchParams();
       if (mallId) query.set('mall_id', mallId);
       const suffix = query.toString() ? `?${query.toString()}` : '';
+      const headers: Record<string, string> = { 'Accept': 'application/json' };
+      if (mallId) headers['X-Mall-Id'] = mallId;
       return await fetchJsonWithBaseFallback<any[]>(
         `/load-logs${suffix}`,
         {
           method: 'GET',
-          headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+          headers: withAuthHeaders(token, headers)
         },
         'Error cargando historial de cargas'
       );
@@ -1021,7 +1023,8 @@ export const ApiService = {
       {
         method: 'DELETE',
         headers: withAuthHeaders(token, {
-          'Accept': 'application/json'
+          'Accept': 'application/json',
+          'X-Mall-Id': mallId
         })
       },
       "Error limpiando historial de cargas"

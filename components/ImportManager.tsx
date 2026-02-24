@@ -69,6 +69,10 @@ export const ImportManager: React.FC = () => {
   const [explorerPath, setExplorerPath] = useState('.');
   const [explorerItems, setExplorerItems] = useState<{ nombre: string, ruta: string, es_dir: boolean }[]>([]);
   const [explorerLoading, setExplorerLoading] = useState(false);
+  const [browserFilesSelection, setBrowserFilesSelection] = useState<{
+    count: number;
+    names: string[];
+  } | null>(null);
 
   // Mapping Helper State
   const [remoteHeaders, setRemoteHeaders] = useState<string[]>([]);
@@ -113,6 +117,7 @@ export const ImportManager: React.FC = () => {
     message: string;
   }>(initialBatchProgress);
   const batchCancelRef = useRef(false);
+  const browserFilesInputRef = useRef<HTMLInputElement | null>(null);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
 
   // Progress Modal State
@@ -173,6 +178,7 @@ export const ImportManager: React.FC = () => {
     setTempPassword('');
     setSelectedConnectionId('');
     setShowExplorer(false);
+    setBrowserFilesSelection(null);
     setSelectedFilePreview(null);
     setEditingConfig(createDefaultImportConfig());
   };
@@ -181,6 +187,7 @@ export const ImportManager: React.FC = () => {
     setEditingConfig(createDefaultImportConfig());
     setTempPassword('');
     setSelectedConnectionId('');
+    setBrowserFilesSelection(null);
     setActiveStep(1);
     setShowForm(true);
   };
@@ -188,6 +195,7 @@ export const ImportManager: React.FC = () => {
   const openEditConnectionDrawer = (config: ImportConfig) => {
     setEditingConfig(config);
     setTempPassword(config.password || '');
+    setBrowserFilesSelection(null);
     setActiveStep(1);
     setSelectedConnectionId('');
     setShowForm(true);
@@ -785,9 +793,15 @@ export const ImportManager: React.FC = () => {
     setExplorerLoading(true);
 
     try {
+      const localInitialPath =
+        editingConfig.protocolo === 'LOCAL' &&
+        (!initialPath || initialPath === '.' || initialPath === './' || initialPath === '/app')
+          ? ''
+          : initialPath;
+
       console.log("Calling ApiService.exploreDirectory...");
       const data = await ApiService.exploreDirectory(
-        initialPath || '.',
+        localInitialPath,
         editingConfig.protocolo,
         editingConfig.host,
         editingConfig.puerto,
@@ -804,6 +818,66 @@ export const ImportManager: React.FC = () => {
       setExplorerItems([]);
     }
     setExplorerLoading(false);
+  };
+
+  const handlePickBrowserFiles = () => {
+    try {
+      const openFilePicker = (window as any).showOpenFilePicker as undefined | ((opts?: any) => Promise<any[]>);
+      if (typeof openFilePicker === 'function') {
+        openFilePicker({
+          multiple: true,
+          types: [
+            {
+              description: 'Archivos de importación',
+              accept: {
+                'text/csv': ['.csv'],
+                'text/plain': ['.txt'],
+                'application/json': ['.json'],
+                'application/xml': ['.xml'],
+                'text/xml': ['.xml']
+              }
+            }
+          ]
+        }).then((handles) => {
+          if (!handles || handles.length === 0) return;
+          const names = handles.map((h: any) => String(h?.name || 'archivo'));
+          setBrowserFilesSelection({
+            count: handles.length,
+            names: names.slice(0, 5)
+          });
+          if (handles.length === 1) {
+            setEditingConfig(prev => ({ ...prev, tipo_archivo: detectFileType(names[0]) }));
+          }
+        }).catch((err: any) => {
+          const msg = String(err?.message || err || '').toLowerCase();
+          if (msg.includes('abort') || msg.includes('cancel')) return;
+          browserFilesInputRef.current?.click();
+        });
+        return;
+      }
+
+      browserFilesInputRef.current?.click();
+    } catch (error: any) {
+      console.error(error);
+      alert('No se pudo abrir el selector de archivos del navegador.');
+    }
+  };
+
+  const handleBrowserFilesInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const names = files.map((f) => f.name);
+    setBrowserFilesSelection({
+      count: files.length,
+      names: names.slice(0, 5)
+    });
+    if (files.length === 1) {
+      setEditingConfig(prev => ({ ...prev, tipo_archivo: detectFileType(files[0].name) }));
+    }
+
+    // Allow re-selecting the same file(s).
+    e.target.value = '';
   };
 
   const handleNavigateExplorer = async (path: string) => {
@@ -888,7 +962,14 @@ export const ImportManager: React.FC = () => {
       <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
         <div className="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-300 flex flex-col max-h-[80vh]">
           <div className="bg-slate-50 p-3 border-b border-slate-100 flex justify-between items-center">
-            <span className="text-[10px] font-bold text-slate-500 truncate max-w-[80%]">{explorerPath}</span>
+            <div className="min-w-0 max-w-[85%]">
+              <span className="text-[10px] font-bold text-slate-500 truncate block">{explorerPath}</span>
+              {editingConfig.protocolo === 'LOCAL' && (
+                <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 inline-block mt-1">
+                  Directorio local (servidor): muestra carpetas del servidor donde corre MsMall
+                </span>
+              )}
+            </div>
             <button onClick={() => setShowExplorer(false)} className="text-slate-400 hover:text-slate-600"><XCircle size={14} /></button>
           </div>
           <div className="max-h-60 overflow-y-auto p-2 space-y-1">
@@ -1133,12 +1214,13 @@ export const ImportManager: React.FC = () => {
                         onChange={e => {
                           const nextProtocol = e.target.value as ImportProtocol;
                           if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
+                          if (nextProtocol !== 'LOCAL') setBrowserFilesSelection(null);
                           setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : 21 });
                         }}
                       >
                         <option value="SFTP">SFTP (SSH File Transfer)</option>
                         <option value="FTP">FTP (Estándar)</option>
-                        <option value="LOCAL">Directorio Local (Windows/Linux)</option>
+                        <option value="LOCAL">Directorio local (servidor)</option>
                       </select>
                     </div>
                     {editingConfig.protocolo !== 'LOCAL' && (
@@ -1258,7 +1340,7 @@ export const ImportManager: React.FC = () => {
                   )}
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                      {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio' : 'Ruta Remota de Archivos'}
+                      {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio (Servidor)' : 'Ruta Remota de Archivos'}
                     </label>
                     <div className="relative">
                       <button
@@ -1276,6 +1358,36 @@ export const ImportManager: React.FC = () => {
                         onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
                       />
                     </div>
+                    {editingConfig.protocolo === 'LOCAL' && (
+                      <div className="mt-2 space-y-2">
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenExplorer(editingConfig.ruta_remota)}
+                            className="px-3 py-2 rounded-lg border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 text-xs font-bold"
+                          >
+                            Explorar directorio local (servidor)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handlePickBrowserFiles}
+                            className="px-3 py-2 rounded-lg border border-cyan-200 text-cyan-700 bg-cyan-50 hover:bg-cyan-100 text-xs font-bold"
+                          >
+                            Seleccionar archivos de mi equipo
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                          <code>Directorio local (servidor)</code> navega carpetas del servidor donde corre MsMall (ej. Railway/Linux). Tu PC no es accesible desde el backend.
+                        </p>
+                        {browserFilesSelection && (
+                          <p className="text-[11px] text-cyan-700 bg-cyan-50 border border-cyan-200 rounded-lg px-3 py-2">
+                            Archivos seleccionados de tu equipo: <strong>{browserFilesSelection.count}</strong>
+                            {browserFilesSelection.names.length > 0 ? ` · ${browserFilesSelection.names.join(', ')}` : ''}
+                            {browserFilesSelection.count > browserFilesSelection.names.length ? ' ...' : ''}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -1616,6 +1728,14 @@ export const ImportManager: React.FC = () => {
             )}
 
             {renderExplorerModal()}
+            <input
+              ref={browserFilesInputRef}
+              type="file"
+              multiple
+              accept=".csv,.txt,.json,.xml,text/csv,text/plain,application/json,text/xml,application/xml"
+              onChange={handleBrowserFilesInputChange}
+              className="hidden"
+            />
                 </div>
               </div>
 
@@ -1667,7 +1787,7 @@ export const ImportManager: React.FC = () => {
           {(configs || []).map(config => (
             <div key={config.id} className="bg-white rounded-3xl border border-slate-200 p-6 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
               <div className={`absolute top-0 right-0 px-6 py-2 rounded-bl-3xl text-[10px] font-bold uppercase tracking-widest ${config.protocolo === 'SFTP' ? 'bg-indigo-600 text-white' : config.protocolo === 'LOCAL' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}`}>
-                {config.protocolo === 'LOCAL' ? 'Directorio' : config.protocolo}
+                {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
               </div>
 
               <div className="flex items-start gap-4 mb-6">
@@ -1793,7 +1913,7 @@ export const ImportManager: React.FC = () => {
                       </td>
                       <td className="px-5 py-4">
                         <span className={`inline-flex px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide ${config.protocolo === 'SFTP' ? 'bg-indigo-100 text-indigo-700' : config.protocolo === 'LOCAL' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                          {config.protocolo === 'LOCAL' ? 'Directorio' : config.protocolo}
+                          {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
                         </span>
                       </td>
                       <td className="px-5 py-4 text-xs text-slate-600 font-medium">

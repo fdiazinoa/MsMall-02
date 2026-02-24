@@ -47,6 +47,7 @@ def _parse_bool_env(name: str, default: bool = False) -> bool:
 
 def _is_api_scheduler_enabled() -> bool:
     return _parse_bool_env("ENABLE_API_SCHEDULER", default=False)
+_CORS_LOCK_V1_ORIGINS = ["https://msmall.vercel.app"]
 
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -240,10 +241,13 @@ async def startup_event():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_LOCK_V1_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger.info("CORS_LOCK_V1 origins=%s", _CORS_LOCK_V1_ORIGINS)
 
 # --- SECURITY & MULTI-TENANT MIDDLEWARE ---
 security = HTTPBearer()

@@ -57,6 +57,13 @@ Esquema relacional optimizado (`init.sql`):
 - **Autenticación por X-API-Key:** Para integración con sistemas POS externos.
 - **Validación de Esquema:** Validación de encabezados CSV.
 - **Cifrado:** Diseño para cifrado RSA-4096 de credenciales.
+- **CORS en backend (FastAPI):** en `production/staging` usar allowlist por variable de entorno (sin wildcard `*`).
+
+### Configuración CORS (ejemplo)
+```env
+APP_ENV=production
+CORS_ALLOW_ORIGINS=https://msmall.vercel.app,https://admin.tudominio.com
+```
 
 ## 5. Roadmap
 - Webhooks de Notificación (Slack/Email).

@@ -39,6 +39,42 @@ supabase: Optional[Client] = None
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("msmall-api")
 
+def _app_env() -> str:
+    return (os.getenv("APP_ENV") or "production").strip().lower()
+
+def _parse_csv_env(name: str) -> List[str]:
+    raw = os.getenv(name, "")
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item and item.strip()]
+
+def _dedupe_keep_order(values: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+def _cors_allow_origins() -> List[str]:
+    env = _app_env()
+    configured = [origin for origin in _parse_csv_env("CORS_ALLOW_ORIGINS") if origin != "*"]
+    if env in {"production", "staging"} and not configured:
+        # Safe minimal fallback to avoid accidental wildcard in production.
+        configured = ["https://msmall.vercel.app"]
+
+    if env == "development":
+        configured.extend([
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ])
+
+    return _dedupe_keep_order(configured)
+
+_CORS_ALLOWED_ORIGINS = _cors_allow_origins()
+
 if SUPABASE_URL and SUPABASE_KEY:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -224,10 +260,12 @@ async def startup_event():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger.info("CORS origins loaded: %s (env=%s)", _CORS_ALLOWED_ORIGINS, _app_env())
 
 # --- SECURITY & MULTI-TENANT MIDDLEWARE ---
 security = HTTPBearer()

@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -807,6 +807,57 @@ export const ApiService = {
         })
       },
       "Error limpiando historial de cargas"
+    );
+  },
+
+  // --- CONNECTION MONITOR / RETRY (PR-5) ---
+  async getConnectionsStatus(mallId: string, token?: string): Promise<ConnectionMonitorStatusResponse> {
+    if (!mallId) throw new Error("mall_id es requerido.");
+    return fetchJsonWithBaseFallback<ConnectionMonitorStatusResponse>(
+      `/connections/status?mall_id=${encodeURIComponent(mallId)}`,
+      {
+        method: 'GET',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudo obtener el estado de conexiones"
+    );
+  },
+
+  async getConnectionFailures(mallId: string, date: string, token?: string): Promise<ConnectionMonitorFailuresResponse> {
+    if (!mallId) throw new Error("mall_id es requerido.");
+    if (!date) throw new Error("date es requerido.");
+    return fetchJsonWithBaseFallback<ConnectionMonitorFailuresResponse>(
+      `/connections/failures?mall_id=${encodeURIComponent(mallId)}&date=${encodeURIComponent(date)}`,
+      {
+        method: 'GET',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudieron cargar las fallas de conexiones"
+    );
+  },
+
+  async retryConnection(connectionId: string, token?: string): Promise<ConnectionRetryActionResponse> {
+    if (!connectionId) throw new Error("connectionId es requerido.");
+    return fetchJsonWithBaseFallback<ConnectionRetryActionResponse>(
+      `/connections/${encodeURIComponent(connectionId)}/retry`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudo ejecutar el reintento de conexión"
+    );
+  },
+
+  async retryFailedConnections(mallId: string, date: string, token?: string): Promise<ConnectionRetryBatchResponse> {
+    if (!mallId) throw new Error("mall_id es requerido.");
+    if (!date) throw new Error("date es requerido.");
+    return fetchJsonWithBaseFallback<ConnectionRetryBatchResponse>(
+      `/connections/retry-failed?mall_id=${encodeURIComponent(mallId)}&date=${encodeURIComponent(date)}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudieron ejecutar los reintentos en lote"
     );
   },
 

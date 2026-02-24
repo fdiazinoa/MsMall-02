@@ -25,6 +25,10 @@ from worker_importacion import run_worker_async
 from analytics import generate_sales_cube
 from routers import recipes, comparisons, admin_tools
 from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
+from services.connection_monitor_service import (
+    ConnectionMonitorService,
+    RetryPolicyBlocked,
+)
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -68,6 +72,9 @@ IT_ROLES = {"it", "tic"}
 
 def _sensitive_ops_service() -> SensitiveOpsService:
     return SensitiveOpsService(supabase, logger)
+
+def _connection_monitor_service() -> ConnectionMonitorService:
+    return ConnectionMonitorService(supabase, logger)
 
 
 # --- LIGHTWEIGHT IN-MEMORY CACHE (TTL) ---
@@ -1022,6 +1029,41 @@ class RemoteConnectionResponse(BaseModel):
     has_password: bool = False
     ruta_base: Optional[str] = None
     created_at: Optional[str] = None
+
+class ConnectionRunSchema(BaseModel):
+    id: str
+    mall_id: str
+    local_id: Optional[str] = None
+    connection_id: Optional[str] = None
+    run_type: str
+    status: str
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    started_at: str
+    finished_at: str
+    duration_ms: int = 0
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+class ConnectionStatusResponse(BaseModel):
+    mall_id: str
+    summary: Dict[str, int]
+    recent_runs: List[Dict[str, Any]]
+    connections: List[Dict[str, Any]]
+
+class ConnectionFailuresResponse(BaseModel):
+    mall_id: str
+    date: str
+    count: int
+    failures: List[Dict[str, Any]]
+
+class ConnectionRetryResponse(BaseModel):
+    status: str
+    connection_id: str
+    mall_id: Optional[str] = None
+    run: Dict[str, Any]
+    retry_attempt: Optional[Dict[str, Any]] = None
+    policy: Dict[str, Any]
 
 class ImportConfigSchema(BaseModel):
     id: Optional[str] = None
@@ -2120,6 +2162,105 @@ async def reactivate_local_processing(
     except Exception as e:
         logger.error(f"Error reactivating local {local_id}: {sanitize_sensitive_ops_error(e)}")
         raise HTTPException(status_code=500, detail="No se pudo reactivar el local.")
+
+@app.get("/api/v1/connections/status", response_model=ConnectionStatusResponse)
+async def get_connections_status(
+    mall_id: str = Query(..., alias="mall_id"),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access)
+):
+    try:
+        return _connection_monitor_service().get_status_summary(
+            mall_id=mall_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting connection status for mall {mall_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo obtener el estado de conexiones.")
+
+@app.get("/api/v1/connections/failures", response_model=ConnectionFailuresResponse)
+async def get_connections_failures(
+    mall_id: str = Query(..., alias="mall_id"),
+    date_str: str = Query(..., alias="date"),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access)
+):
+    try:
+        return _connection_monitor_service().get_failures_by_date(
+            mall_id=mall_id,
+            run_date=date_str,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting connection failures mall={mall_id} date={date_str}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron cargar las fallas de conexiones.")
+
+@app.post("/api/v1/connections/retry-failed", status_code=status.HTTP_200_OK)
+async def retry_failed_connections_batch(
+    mall_id: str = Query(..., alias="mall_id"),
+    date_str: str = Query(..., alias="date"),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return await asyncio.to_thread(
+            _connection_monitor_service().execute_batch_retry_failed,
+            mall_id=mall_id,
+            run_date=date_str,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RetryPolicyBlocked as e:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": e.message,
+                "reason": e.code,
+                "retry_after_seconds": e.retry_after_seconds,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error batch retry failed connections mall={mall_id} date={date_str}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron ejecutar los reintentos en lote.")
+
+@app.post("/api/v1/connections/{connection_id}/retry", response_model=ConnectionRetryResponse)
+async def retry_connection_manual(
+    connection_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return await asyncio.to_thread(
+            _connection_monitor_service().execute_manual_retry,
+            connection_id=connection_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conexión remota no encontrada.")
+    except RetryPolicyBlocked as e:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": e.message,
+                "reason": e.code,
+                "retry_after_seconds": e.retry_after_seconds,
+                "attempt_no": e.attempt_no,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error manual retry connection {connection_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo ejecutar el reintento de conexión.")
 
 def _read_remote_headers_sync(req: RemoteRequest):
     content = ""

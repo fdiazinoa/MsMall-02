@@ -13,6 +13,19 @@ const REQUIRED_COLUMNS = [
   { key: 'total_neto', label: 'Total Neto', index: 5 },
 ];
 
+const DATE_FORMAT_OPTIONS = [
+  { value: 'auto', label: 'Auto (detectar)' },
+  { value: 'dd/mm/yyyy', label: 'DD/MM/YYYY' },
+  { value: 'dd/mm/yy', label: 'DD/MM/YY' },
+  { value: 'mm/dd/yyyy', label: 'MM/DD/YYYY' },
+  { value: 'mm/dd/yy', label: 'MM/DD/YY' },
+  { value: 'yyyy-mm-dd', label: 'YYYY-MM-DD' },
+  { value: 'dd-mm-yyyy', label: 'DD-MM-YYYY' },
+  { value: 'dd-mm-yy', label: 'DD-MM-YY' },
+  { value: 'yyyy/mm/dd', label: 'YYYY/MM/DD' },
+  { value: 'yyyymmdd', label: 'YYYYMMDD (con/sin hora)' },
+] as const;
+
 export const UploadForm: React.FC = () => {
   const { currentMall } = useAuth();
   const [file, setFile] = useState<File | null>(null);
@@ -26,6 +39,7 @@ export const UploadForm: React.FC = () => {
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
   const [columnMapping, setColumnMapping] = useState<Record<string, string>>({});
   const [constantValues, setConstantValues] = useState<Record<string, string>>({});
+  const [dateFormatPreference, setDateFormatPreference] = useState<(typeof DATE_FORMAT_OPTIONS)[number]['value']>('auto');
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -84,26 +98,9 @@ export const UploadForm: React.FC = () => {
   };
 
   const normalizeDate = (dateStr: string): string => {
-    if (!dateStr) return '';
-    try {
-      // Handle various formats
-      const date = new Date(dateStr);
-      if (isNaN(date.getTime())) {
-        // Try parsing DD/MM/YYYY or DD-MM-YYYY manually if standard parse fails
-        const parts = dateStr.split(/[-/]/);
-        if (parts.length === 3) {
-          // Assume DD/MM/YYYY if first part is > 12 or based on common non-US formats
-          // Simple heuristic: if year is last
-          if (parts[2].length === 4) {
-            return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-          }
-        }
-        return dateStr; // Return original if we can't parse
-      }
-      return date.toISOString().split('T')[0];
-    } catch (e) {
-      return dateStr;
-    }
+    // Preserve the original value. ApiService.ingestSales applies the selected parser
+    // deterministically to avoid browser-dependent Date parsing.
+    return String(dateStr || '').trim();
   };
 
   const processMappedFile = async (originalFile: File): Promise<File> => {
@@ -186,9 +183,15 @@ export const UploadForm: React.FC = () => {
         fileToUpload = await processMappedFile(file);
       }
 
-      const result = await ApiService.ingestSales(fileToUpload, apiKey, currentMall.id, (progress) => {
-        setUploadProgress(progress);
-      });
+      const result = await ApiService.ingestSales(
+        fileToUpload,
+        apiKey,
+        currentMall.id,
+        (progress) => {
+          setUploadProgress(progress);
+        },
+        dateFormatPreference
+      );
 
       setStatus({
         type: result.message.includes('Mock') ? 'info' : 'success',
@@ -233,6 +236,22 @@ export const UploadForm: React.FC = () => {
             placeholder="Introduce la API Key del local..."
             required
           />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">Formato de Fecha (como importador FTP)</label>
+          <select
+            value={dateFormatPreference}
+            onChange={(e) => setDateFormatPreference(e.target.value as (typeof DATE_FORMAT_OPTIONS)[number]['value'])}
+            className="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none bg-white"
+          >
+            {DATE_FORMAT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-slate-500 mt-1">
+            Usa un formato fijo para fechas ambiguas (ej. <code>13/01/26</code>). `Auto` mantiene detección automática.
+          </p>
         </div>
 
         <div className={`border-2 border-dashed rounded-xl p-10 flex flex-col items-center justify-center transition-all cursor-pointer relative ${isMappingNeeded ? 'border-amber-300 bg-amber-50' : 'border-slate-300 bg-slate-50 hover:bg-slate-100'}`}>

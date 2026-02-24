@@ -186,20 +186,39 @@ const expandTwoDigitYear = (yy: number): number => {
   return yy >= 70 ? 1900 + yy : 2000 + yy;
 };
 
-const normalizeCsvSaleDate = (raw: any): string | null => {
+type CsvDateFormatPreference =
+  | 'auto'
+  | 'dd/mm/yyyy'
+  | 'dd/mm/yy'
+  | 'mm/dd/yyyy'
+  | 'mm/dd/yy'
+  | 'dd-mm-yyyy'
+  | 'dd-mm-yy'
+  | 'yyyy-mm-dd'
+  | 'yyyy/mm/dd'
+  | 'yyyymmdd';
+
+const normalizeCsvSaleDate = (raw: any, preferredFormat: CsvDateFormatPreference = 'auto'): string | null => {
   if (raw === null || raw === undefined) return null;
   let text = String(raw).trim();
   if (!text) return null;
   text = text.replace(/^"(.*)"$/, '$1').trim().replace(/^'(.*)'$/, '$1').trim();
+  const pref = String(preferredFormat || 'auto').toLowerCase() as CsvDateFormatPreference;
 
   let m: RegExpMatchArray | null;
 
-  // Match order mirrors worker_importacion.normalize_date (dd/mm first, then others).
+  // Match order mirrors worker_importacion.normalize_date (dd/mm first, then others),
+  // with an explicit override when the user selects a CSV date format in the UI.
   m = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/); // DD/MM/YYYY
   if (m) {
-    const ddmm = toYmdIfValid(Number(m[3]), Number(m[2]), Number(m[1]));
+    const year = Number(m[3]);
+    const first = Number(m[1]);
+    const second = Number(m[2]);
+    const ddmm = toYmdIfValid(year, second, first);
+    const mmdd = toYmdIfValid(year, first, second);
+    if (pref === 'mm/dd/yyyy') return mmdd || ddmm;
+    if (pref === 'dd/mm/yyyy') return ddmm || mmdd;
     if (ddmm) return ddmm;
-    const mmdd = toYmdIfValid(Number(m[3]), Number(m[1]), Number(m[2]));
     if (mmdd) return mmdd;
     return null;
   }
@@ -211,15 +230,24 @@ const normalizeCsvSaleDate = (raw: any): string | null => {
 
   m = text.match(/^(\d{2})-(\d{2})-(\d{4})$/); // DD-MM-YYYY
   if (m) {
-    return toYmdIfValid(Number(m[3]), Number(m[2]), Number(m[1]));
+    const year = Number(m[3]);
+    const first = Number(m[1]);
+    const second = Number(m[2]);
+    const ddmm = toYmdIfValid(year, second, first);
+    if (pref === 'dd-mm-yyyy') return ddmm;
+    return ddmm;
   }
 
   m = text.match(/^(\d{2})\/(\d{2})\/(\d{2})$/); // DD/MM/YY or MM/DD/YY
   if (m) {
     const year = expandTwoDigitYear(Number(m[3]));
-    const ddmm = toYmdIfValid(year, Number(m[2]), Number(m[1]));
+    const first = Number(m[1]);
+    const second = Number(m[2]);
+    const ddmm = toYmdIfValid(year, second, first);
+    const mmdd = toYmdIfValid(year, first, second);
+    if (pref === 'mm/dd/yy') return mmdd || ddmm;
+    if (pref === 'dd/mm/yy') return ddmm || mmdd;
     if (ddmm) return ddmm;
-    const mmdd = toYmdIfValid(year, Number(m[1]), Number(m[2]));
     if (mmdd) return mmdd;
     return null;
   }
@@ -1245,7 +1273,13 @@ export const ApiService = {
     }
   },
 
-  async ingestSales(file: File, apiKey: string, mallId: string, onProgress?: (progress: number) => void): Promise<IngestionResponse> {
+  async ingestSales(
+    file: File,
+    apiKey: string,
+    mallId: string,
+    onProgress?: (progress: number) => void,
+    dateFormatPreference: CsvDateFormatPreference = 'auto'
+  ): Promise<IngestionResponse> {
     if (!supabase) {
       return { status: 'error', message: 'Supabase no está configurado', records_processed: 0 };
     }
@@ -1298,7 +1332,7 @@ export const ApiService = {
             if (columns.length >= 6) {
               const factura = columns[0].trim();
               const fechaRaw = columns[1].trim();
-              const fecha = normalizeCsvSaleDate(fechaRaw);
+              const fecha = normalizeCsvSaleDate(fechaRaw, dateFormatPreference);
               const storeCode = columns[2].trim();
               const bruto = parseCsvAmount(columns[3]);
               const impuestos = parseCsvAmount(columns[4]);

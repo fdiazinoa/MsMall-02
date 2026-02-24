@@ -75,6 +75,10 @@ export const ImportManager: React.FC = () => {
     source: 'picker' | 'input';
     samplePath?: string;
   } | null>(null);
+  const [browserFilesSelection, setBrowserFilesSelection] = useState<{
+    count: number;
+    names: string[];
+  } | null>(null);
 
   // Mapping Helper State
   const [remoteHeaders, setRemoteHeaders] = useState<string[]>([]);
@@ -180,6 +184,7 @@ export const ImportManager: React.FC = () => {
     setSelectedConnectionId('');
     setShowExplorer(false);
     setBrowserFolderSelection(null);
+    setBrowserFilesSelection(null);
     setSelectedFilePreview(null);
     setEditingConfig(createDefaultImportConfig());
   };
@@ -189,6 +194,7 @@ export const ImportManager: React.FC = () => {
     setTempPassword('');
     setSelectedConnectionId('');
     setBrowserFolderSelection(null);
+    setBrowserFilesSelection(null);
     setActiveStep(1);
     setShowForm(true);
   };
@@ -197,6 +203,7 @@ export const ImportManager: React.FC = () => {
     setEditingConfig(config);
     setTempPassword(config.password || '');
     setBrowserFolderSelection(null);
+    setBrowserFilesSelection(null);
     setActiveStep(1);
     setSelectedConnectionId('');
     setShowForm(true);
@@ -861,6 +868,31 @@ export const ImportManager: React.FC = () => {
     }
   };
 
+  const handlePickBrowserFiles = () => {
+    try {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.multiple = true;
+      input.accept = '.csv,.txt,.json,.xml,text/csv,text/plain,application/json,text/xml,application/xml';
+      input.onchange = () => {
+        const files = Array.from(input.files || []);
+        if (files.length === 0) return;
+        const names = files.map((f) => f.name);
+        setBrowserFilesSelection({
+          count: files.length,
+          names: names.slice(0, 5)
+        });
+        if (files.length === 1) {
+          setEditingConfig(prev => ({ ...prev, tipo_archivo: detectFileType(files[0].name) }));
+        }
+      };
+      input.click();
+    } catch (error: any) {
+      console.error(error);
+      alert('No se pudo abrir el selector de archivos del navegador.');
+    }
+  };
+
   const handleNavigateExplorer = async (path: string) => {
     setExplorerLoading(true);
     try {
@@ -1196,6 +1228,7 @@ export const ImportManager: React.FC = () => {
                           const nextProtocol = e.target.value as ImportProtocol;
                           if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
                           if (nextProtocol !== 'LOCAL') setBrowserFolderSelection(null);
+                          if (nextProtocol !== 'LOCAL') setBrowserFilesSelection(null);
                           setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : 21 });
                         }}
                       >
@@ -1356,15 +1389,32 @@ export const ImportManager: React.FC = () => {
                           >
                             Seleccionar carpeta de mi equipo
                           </button>
+                          <button
+                            type="button"
+                            onClick={handlePickBrowserFiles}
+                            className="px-3 py-2 rounded-lg border border-cyan-200 text-cyan-700 bg-cyan-50 hover:bg-cyan-100 text-xs font-bold"
+                          >
+                            Seleccionar archivos de mi equipo
+                          </button>
                         </div>
                         <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                           <code>Directorio local (servidor)</code> navega carpetas del servidor donde corre MsMall (ej. Railway/Linux). Tu PC no es accesible desde el backend.
+                        </p>
+                        <p className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                          El selector de <strong>carpeta de mi equipo</strong> es solo para elegir carpetas (el navegador no permite seleccionar archivos en ese diálogo). Para CSV/TXT/JSON usa <strong>Seleccionar archivos de mi equipo</strong>.
                         </p>
                         {browserFolderSelection && (
                           <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
                             Carpeta de tu equipo seleccionada en navegador: <strong>{browserFolderSelection.name}</strong>
                             {typeof browserFolderSelection.fileCount === 'number' ? ` (${browserFolderSelection.fileCount} archivos detectados)` : ''}
                             {browserFolderSelection.samplePath ? ` · Ejemplo: ${browserFolderSelection.samplePath}` : ''}
+                          </p>
+                        )}
+                        {browserFilesSelection && (
+                          <p className="text-[11px] text-cyan-700 bg-cyan-50 border border-cyan-200 rounded-lg px-3 py-2">
+                            Archivos seleccionados de tu equipo: <strong>{browserFilesSelection.count}</strong>
+                            {browserFilesSelection.names.length > 0 ? ` · ${browserFilesSelection.names.join(', ')}` : ''}
+                            {browserFilesSelection.count > browserFilesSelection.names.length ? ' ...' : ''}
                           </p>
                         )}
                       </div>

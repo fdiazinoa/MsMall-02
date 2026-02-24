@@ -11,6 +11,12 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
 - **Backend API + procesos programados:** ejecutados en **Railway**.
 - **Worker/Cron de importación:** corridos en Railway para tareas horarias de SFTP/FTP.
 
+### Scheduler (autoridad de cron)
+- **Autoridad única recomendada:** `worker_importacion.py` (servicio worker en Railway).
+- **API FastAPI:** el scheduler embebido queda deshabilitado por defecto y solo se activa con `ENABLE_API_SCHEDULER=true`.
+- **Valor recomendado en producción:** `ENABLE_API_SCHEDULER=false`.
+- **Nota de despliegue Railway:** mantener el cron/loop automático únicamente en el servicio worker; la API conserva triggers manuales/endpoints.
+
 ## 1. Stack Tecnológico
 - **Frontend:** React 18.3.1 con TypeScript.
 - **Estilos:** Tailwind CSS.
@@ -45,6 +51,10 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
 - El backend expone rutas tanto desde `main.py` como desde `routers/` (`recipes`, `comparisons`, `admin_tools`).
 - El script operativo presente para worker es `start_worker.sh` (no existe `run.sh` en este repositorio).
 - La versión declarada de la API en FastAPI es `1.0.0` (`main.py`), aunque el estado funcional del proyecto se documenta como MVP `v1.0.2`.
+- Variables operativas relevantes:
+  - `ENABLE_API_SCHEDULER=false` (default recomendado)
+  - `CACHE_TTL_DASHBOARD`, `CACHE_TTL_RANKING`, `CACHE_TTL_HEATMAP`
+  - `frecuencia_cron` / `hora_especifica` en configuración de locales (worker)
 
 ## 3. Arquitectura de Datos
 Esquema relacional optimizado (`init.sql`):

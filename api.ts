@@ -181,6 +181,11 @@ const toYmdIfValid = (year: number, month: number, day: number): string | null =
   return `${year}-${pad2(month)}-${pad2(day)}`;
 };
 
+const expandTwoDigitYear = (yy: number): number => {
+  // Keep current operational data in modern years while preserving older values if needed.
+  return yy >= 70 ? 1900 + yy : 2000 + yy;
+};
+
 const normalizeCsvSaleDate = (raw: any): string | null => {
   if (raw === null || raw === undefined) return null;
   let text = String(raw).trim();
@@ -207,6 +212,21 @@ const normalizeCsvSaleDate = (raw: any): string | null => {
   m = text.match(/^(\d{2})-(\d{2})-(\d{4})$/); // DD-MM-YYYY
   if (m) {
     return toYmdIfValid(Number(m[3]), Number(m[2]), Number(m[1]));
+  }
+
+  m = text.match(/^(\d{2})\/(\d{2})\/(\d{2})$/); // DD/MM/YY or MM/DD/YY
+  if (m) {
+    const year = expandTwoDigitYear(Number(m[3]));
+    const ddmm = toYmdIfValid(year, Number(m[2]), Number(m[1]));
+    if (ddmm) return ddmm;
+    const mmdd = toYmdIfValid(year, Number(m[1]), Number(m[2]));
+    if (mmdd) return mmdd;
+    return null;
+  }
+
+  m = text.match(/^(\d{2})-(\d{2})-(\d{2})$/); // DD-MM-YY
+  if (m) {
+    return toYmdIfValid(expandTwoDigitYear(Number(m[3])), Number(m[2]), Number(m[1]));
   }
 
   m = text.match(/^(\d{4})\/(\d{2})\/(\d{2})$/); // YYYY/MM/DD

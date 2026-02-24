@@ -203,6 +203,12 @@ const normalizeCsvSaleDate = (raw: any, preferredFormat: CsvDateFormatPreference
   let text = String(raw).trim();
   if (!text) return null;
   text = text.replace(/^"(.*)"$/, '$1').trim().replace(/^'(.*)'$/, '$1').trim();
+  // Common POS/Excel exports append a zeroed time to the date field. Keep only the date part
+  // before applying the format-specific parser (e.g. "2026-01-02 00:00:00.000").
+  text = text.replace(
+    /^((?:\d{4}[-/]\d{2}[-/]\d{2})|(?:\d{2}[-/]\d{2}[-/]\d{2,4}))(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/,
+    '$1'
+  );
   const pref = String(preferredFormat || 'auto').toLowerCase() as CsvDateFormatPreference;
 
   let m: RegExpMatchArray | null;

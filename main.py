@@ -2089,10 +2089,16 @@ async def get_load_logs_secure(
     end_date: Optional[str] = Query(None, alias="end_date"),
     limit: int = Query(50, ge=1, le=200),
     operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
-    current_mall: str = Depends(get_current_mall)
 ):
     try:
-        effective_mall_id = mall_id or current_mall
+        effective_mall_id = mall_id
+        if not effective_mall_id:
+            user_malls = _get_user_mall_ids(operator_ctx.get("user_id"))
+            if len(user_malls) == 1:
+                effective_mall_id = user_malls[0]
+            elif len(user_malls) > 1:
+                raise HTTPException(status_code=400, detail="Ambiguous context. Please select a mall (mall_id).")
+            raise HTTPException(status_code=403, detail="No mall assigned to user.")
         return _sensitive_ops_service().list_load_logs(
             operator_ctx=operator_ctx,
             ensure_operator_can_access_mall=_ensure_operator_can_access_mall,

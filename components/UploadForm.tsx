@@ -4,14 +4,17 @@ import { useAuth } from '../context/AuthProvider';
 import Papa from 'papaparse';
 import { ArrowRight, FileSpreadsheet, AlertCircle, CheckCircle2, Upload, Info } from 'lucide-react';
 
-const REQUIRED_COLUMNS = [
-  { key: 'factura_numero', label: 'Número de Factura', index: 0 },
-  { key: 'fecha_venta', label: 'Fecha de Venta', index: 1 },
-  { key: 'local_codigo', label: 'Código de Local', index: 2 },
-  { key: 'total_bruto', label: 'Total Bruto', index: 3 },
-  { key: 'total_impuestos', label: 'Impuestos', index: 4 },
-  { key: 'total_neto', label: 'Total Neto', index: 5 },
-];
+const CSV_MAPPABLE_COLUMNS = [
+  { key: 'factura_numero', label: 'Número de Factura', index: 0, required: true },
+  { key: 'fecha_venta', label: 'Fecha de Venta', index: 1, required: true },
+  { key: 'local_codigo', label: 'Código de Local', index: 2, required: true },
+  { key: 'total_bruto', label: 'Total Bruto', index: 3, required: true },
+  { key: 'total_impuestos', label: 'Impuestos', index: 4, required: true },
+  { key: 'total_neto', label: 'Total Neto', index: 5, required: true },
+  { key: 'hora', label: 'Hora (Opcional)', index: 6, required: false },
+] as const;
+
+const REQUIRED_COLUMNS = CSV_MAPPABLE_COLUMNS.filter(col => col.required);
 
 const DATE_FORMAT_OPTIONS = [
   { value: 'auto', label: 'Auto (detectar)' },
@@ -107,7 +110,7 @@ export const UploadForm: React.FC = () => {
 
         setColumnMapping(prev => {
           const next: Record<string, string> = {};
-          for (const req of REQUIRED_COLUMNS) {
+          for (const req of CSV_MAPPABLE_COLUMNS) {
             const prevValue = prev[req.key];
             if (prevValue && (headerValues.includes(prevValue) || prevValue === 'CONSTANT')) {
               next[req.key] = prevValue;
@@ -215,7 +218,7 @@ export const UploadForm: React.FC = () => {
 
               // Create array in specific order expected by api.ts
               // [factura, fecha, local, bruto, impuestos, neto]
-              return REQUIRED_COLUMNS.map(col => {
+              return CSV_MAPPABLE_COLUMNS.map(col => {
                 const mappedHeader = columnMapping[col.key];
                 let value = '';
 
@@ -238,7 +241,7 @@ export const UploadForm: React.FC = () => {
             const cleanData = transformedData.filter(row => row.some(cell => cell !== ''));
 
             // Add header row expected by api.ts logic (it skips first row)
-            const headerRow = REQUIRED_COLUMNS.map(c => c.key);
+            const headerRow = CSV_MAPPABLE_COLUMNS.map(c => c.key);
 
             // Unparse to CSV string
             const csv = Papa.unparse([headerRow, ...cleanData], { header: false });
@@ -420,7 +423,7 @@ export const UploadForm: React.FC = () => {
           />
           <FileSpreadsheet className={`w-12 h-12 mb-4 ${isMappingNeeded ? 'text-amber-500' : 'text-slate-400'}`} />
           <p className="text-slate-600 font-medium">{file ? file.name : 'Haz clic o arrastra un archivo CSV'}</p>
-          {!isMappingNeeded && <p className="text-slate-400 text-sm mt-1">Formato: factura, fecha, local, bruto, impuestos, neto</p>}
+          {!isMappingNeeded && <p className="text-slate-400 text-sm mt-1">Formato: factura, fecha, local, bruto, impuestos, neto (+ hora opcional)</p>}
         </div>
 
         {isMappingNeeded && (
@@ -435,7 +438,7 @@ export const UploadForm: React.FC = () => {
             </p>
 
             <div className="space-y-3">
-              {REQUIRED_COLUMNS.map((col) => (
+              {CSV_MAPPABLE_COLUMNS.map((col) => (
                 <div key={col.key} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center bg-white p-3 rounded-lg border border-amber-100">
                   <div className="font-medium text-slate-700 text-sm flex items-center gap-2">
                     <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold">
@@ -451,7 +454,7 @@ export const UploadForm: React.FC = () => {
                       value={columnMapping[col.key] || ''}
                       onChange={(e) => handleMappingChange(col.key, e.target.value)}
                       className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                      required
+                      required={col.required}
                     >
                       <option value="">-- Seleccionar Columna --</option>
                       <option value="CONSTANT" className="font-bold text-indigo-600">-- VALOR CONSTANTE --</option>
@@ -466,7 +469,7 @@ export const UploadForm: React.FC = () => {
                         value={constantValues[col.key] || ''}
                         onChange={(e) => handleConstantChange(col.key, e.target.value)}
                         className="w-full px-3 py-2 rounded-lg border border-indigo-300 bg-indigo-50 text-sm focus:ring-2 focus:ring-indigo-500 outline-none animate-in fade-in slide-in-from-top-1"
-                        required
+                        required={col.required}
                       />
                     )}
                   </div>
@@ -512,9 +515,9 @@ export const UploadForm: React.FC = () => {
         <div className="mt-8 pt-8 border-t border-slate-100">
           <h4 className="text-sm font-semibold text-slate-700 mb-4">Ejemplo del Formato Requerido:</h4>
           <div className="bg-slate-900 rounded-lg p-4 font-mono text-xs text-indigo-300 overflow-x-auto">
-            <p>factura_numero,fecha_venta,local_codigo,total_bruto,total_impuestos,total_neto</p>
-            <p>12345,2024-01-26,L001,100.00,10.00,90.00</p>
-            <p>12346,2024-01-26,L001,50.00,5.00,45.00</p>
+            <p>factura_numero,fecha_venta,local_codigo,total_bruto,total_impuestos,total_neto,hora</p>
+            <p>12345,2024-01-26,L001,100.00,10.00,90.00,13:30:00</p>
+            <p>12346,2024-01-26,L001,50.00,5.00,45.00,14:05</p>
           </div>
         </div>
       )}

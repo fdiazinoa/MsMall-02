@@ -270,6 +270,44 @@ const normalizeCsvSaleDate = (raw: any, preferredFormat: CsvDateFormatPreference
   return null;
 };
 
+const normalizeCsvSaleTime = (raw: any): string | null => {
+  if (raw === null || raw === undefined) return null;
+  let text = String(raw).trim();
+  if (!text) return null;
+  text = text.replace(/^"(.*)"$/, '$1').trim().replace(/^'(.*)'$/, '$1').trim();
+
+  let m = text.match(/\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/);
+  if (m) {
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
+    const ss = Number(m[3] || '0');
+    if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59 && ss >= 0 && ss <= 59) {
+      return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
+    }
+  }
+
+  m = text.match(/^(\d{2})(\d{2})(\d{2})$/); // HHMMSS
+  if (m) {
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
+    const ss = Number(m[3]);
+    if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59 && ss >= 0 && ss <= 59) {
+      return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
+    }
+  }
+
+  m = text.match(/^(\d{2})(\d{2})$/); // HHMM
+  if (m) {
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
+    if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) {
+      return `${pad2(hh)}:${pad2(mm)}:00`;
+    }
+  }
+
+  return null;
+};
+
 const normalizeSaleTotals = <T extends { total_bruto?: any; total_impuestos?: any; total_neto?: any }>(row: T) => {
   const bruto = toFiniteNumber(row.total_bruto);
   const impuestos = toFiniteNumber(row.total_impuestos);
@@ -1337,6 +1375,8 @@ export const ApiService = {
               const bruto = parseCsvAmount(columns[3]);
               const impuestos = parseCsvAmount(columns[4]);
               const neto = parseCsvAmount(columns[5]);
+              const horaRaw = (columns[6] ?? '').trim();
+              const hora = horaRaw ? normalizeCsvSaleTime(horaRaw) : null;
 
               if (!fecha) {
                 lineErrors.push({
@@ -1350,6 +1390,14 @@ export const ApiService = {
                 lineErrors.push({
                   linea: i + 1,
                   error: `Montos inválidos. bruto='${columns[3] ?? ''}', impuestos='${columns[4] ?? ''}', neto='${columns[5] ?? ''}'`
+                });
+                continue;
+              }
+
+              if (horaRaw && !hora) {
+                lineErrors.push({
+                  linea: i + 1,
+                  error: `Formato de hora inválido: ${horaRaw}`
                 });
                 continue;
               }
@@ -1374,7 +1422,7 @@ export const ApiService = {
                 local_id: store.id,
                 mall_id: store.mall_id,  // Include mall_id from store
                 fecha: fecha,
-                hora: '12:00:00',
+                hora: hora || '12:00:00',
                 total_bruto: bruto,
                 total_impuestos: impuestos,
                 total_neto: neto,

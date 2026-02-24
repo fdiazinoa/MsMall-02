@@ -90,6 +90,81 @@ const toFiniteNumber = (value: any): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+const parseCsvLine = (line: string): string[] => {
+  const out: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+
+    if (ch === '"') {
+      // Escaped quote inside quoted field.
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (ch === ',' && !inQuotes) {
+      out.push(current);
+      current = '';
+      continue;
+    }
+
+    current += ch;
+  }
+
+  out.push(current);
+  return out;
+};
+
+const parseCsvAmount = (raw: any): number => {
+  if (raw === null || raw === undefined) return NaN;
+  let text = String(raw).trim();
+  if (!text) return NaN;
+
+  // Remove wrapping quotes and spaces/currency symbols.
+  text = text.replace(/^"(.*)"$/, '$1').trim();
+  text = text.replace(/\s+/g, '');
+  text = text.replace(/^RD\$/i, '');
+  text = text.replace(/[$€]/g, '');
+
+  const hasComma = text.includes(',');
+  const hasDot = text.includes('.');
+
+  if (hasComma && hasDot) {
+    const lastComma = text.lastIndexOf(',');
+    const lastDot = text.lastIndexOf('.');
+    if (lastDot > lastComma) {
+      // 4,984.34 => comma thousands, dot decimal
+      text = text.replace(/,/g, '');
+    } else {
+      // 4.984,34 => dot thousands, comma decimal
+      text = text.replace(/\./g, '').replace(',', '.');
+    }
+  } else if (hasComma) {
+    const commaCount = (text.match(/,/g) || []).length;
+    if (commaCount > 1) {
+      text = text.replace(/,/g, '');
+    } else {
+      const [left, right = ''] = text.split(',');
+      if (right.length === 3 && left.length >= 1) {
+        // Likely thousands separator
+        text = `${left}${right}`;
+      } else {
+        text = `${left}.${right}`;
+      }
+    }
+  }
+
+  const n = Number(text);
+  return Number.isFinite(n) ? n : NaN;
+};
+
 const normalizeSaleTotals = <T extends { total_bruto?: any; total_impuestos?: any; total_neto?: any }>(row: T) => {
   const bruto = toFiniteNumber(row.total_bruto);
   const impuestos = toFiniteNumber(row.total_impuestos);
@@ -1139,14 +1214,22 @@ export const ApiService = {
 
           // Process rows (skip header)
           for (let i = 1; i < lines.length; i++) {
-            const columns = lines[i].split(',');
+            const columns = parseCsvLine(lines[i]);
             if (columns.length >= 6) {
               const factura = columns[0].trim();
               const fecha = columns[1].trim();
               const storeCode = columns[2].trim();
-              const bruto = parseFloat(columns[3].trim());
-              const impuestos = parseFloat(columns[4].trim());
-              const neto = parseFloat(columns[5].trim());
+              const bruto = parseCsvAmount(columns[3]);
+              const impuestos = parseCsvAmount(columns[4]);
+              const neto = parseCsvAmount(columns[5]);
+
+              if (![bruto, impuestos, neto].every(Number.isFinite)) {
+                lineErrors.push({
+                  linea: i + 1,
+                  error: `Montos inválidos. bruto='${columns[3] ?? ''}', impuestos='${columns[4] ?? ''}', neto='${columns[5] ?? ''}'`
+                });
+                continue;
+              }
 
               const normalizedStoreCode = storeCode.toUpperCase();
               const store = storeMap.get(normalizedStoreCode);

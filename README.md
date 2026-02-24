@@ -11,6 +11,12 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
 - **Backend API + procesos programados:** ejecutados en **Railway**.
 - **Worker/Cron de importación:** corridos en Railway para tareas horarias de SFTP/FTP.
 
+### Scheduler (autoridad de cron)
+- **Autoridad única recomendada:** `worker_importacion.py` (servicio worker en Railway).
+- **API FastAPI:** el scheduler embebido queda deshabilitado por defecto y solo se activa con `ENABLE_API_SCHEDULER=true`.
+- **Valor recomendado en producción:** `ENABLE_API_SCHEDULER=false`.
+- **Nota de despliegue Railway:** mantener el cron/loop automático únicamente en el servicio worker; la API conserva triggers manuales/endpoints.
+
 ## 1. Stack Tecnológico
 - **Frontend:** React 18.3.1 con TypeScript.
 - **Estilos:** Tailwind CSS.
@@ -45,6 +51,10 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
 - El backend expone rutas tanto desde `main.py` como desde `routers/` (`recipes`, `comparisons`, `admin_tools`).
 - El script operativo presente para worker es `start_worker.sh` (no existe `run.sh` en este repositorio).
 - La versión declarada de la API en FastAPI es `1.0.0` (`main.py`), aunque el estado funcional del proyecto se documenta como MVP `v1.0.2`.
+- Variables operativas relevantes:
+  - `ENABLE_API_SCHEDULER=false` (default recomendado)
+  - `CACHE_TTL_DASHBOARD`, `CACHE_TTL_RANKING`, `CACHE_TTL_HEATMAP`
+  - `frecuencia_cron` / `hora_especifica` en configuración de locales (worker)
 
 ## 3. Arquitectura de Datos
 Esquema relacional optimizado (`init.sql`):
@@ -57,6 +67,33 @@ Esquema relacional optimizado (`init.sql`):
 - **Autenticación por X-API-Key:** Para integración con sistemas POS externos.
 - **Validación de Esquema:** Validación de encabezados CSV.
 - **Cifrado:** Diseño para cifrado RSA-4096 de credenciales.
+
+### PR-4: Operaciones sensibles movidas a backend (FastAPI)
+- **Conexiones remotas (`remote_connections`)**: CRUD vía API backend con RBAC/tenant checks.
+- **Secretos protegidos**: la API no devuelve `password` en claro (retorna `password=""` + `password_masked`/`has_password`).
+- **Logs de carga (`logs_carga`)**: lectura y limpieza vía API backend (`/api/v1/load-logs`).
+- **Reactivación de locales suspendidos**: endpoint backend para restablecer `processing_status` y `consecutive_failures`.
+- **Compatibilidad**: se mantiene `/api/v1/audit/logs` como alias legacy para limpieza, mientras el frontend migra a `/api/v1/load-logs`.
+
+#### Endpoints nuevos / seguros
+- `GET /api/v1/remote-connections?mall_id=<uuid>`
+- `POST /api/v1/remote-connections`
+- `PATCH /api/v1/remote-connections/{id}`
+- `DELETE /api/v1/remote-connections/{id}`
+- `GET /api/v1/load-logs?mall_id=<uuid>&local_id=<uuid>&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+- `DELETE /api/v1/load-logs?mall_id=<uuid>`
+- `POST /api/v1/locales/{id}/reactivate-processing`
+
+#### Rollout / compatibilidad
+- Frontend `ImportManager`, `LoadMonitor` y `StoreMaintenance` ahora consumen estas operaciones sensibles vía backend (Bearer).
+- Las rutas de importación manual y scheduler no se modifican en este PR.
+- **CORS en backend (FastAPI):** en `production/staging` usar allowlist por variable de entorno (sin wildcard `*`).
+
+### Configuración CORS (ejemplo)
+```env
+APP_ENV=production
+CORS_ALLOW_ORIGINS=https://msmall.vercel.app,https://admin.tudominio.com
+```
 
 ## 5. Roadmap
 - Webhooks de Notificación (Slack/Email).

@@ -569,20 +569,50 @@ async def mark_local_status(local_id: str, status: str):
     except Exception as e:
         logger.error(f"Failed to update status {status} for local {local_id}: {e}")
 
+def _sanitize_health_error(value: object) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    if len(text) > 500:
+        text = f"{text[:497]}..."
+    return text or "unknown_error"
+
+async def _upsert_system_health_value(key: str, value: str):
+    if not supabase:
+        return
+    now_utc = datetime.now(timezone.utc)
+    await asyncio.to_thread(
+        lambda: supabase.table("system_health").upsert({
+            "key": key,
+            "value": value,
+            "last_update": now_utc.isoformat()
+        }).execute()
+    )
+
 async def update_heartbeat():
     """Updates the system_health table with current timestamp (UTC)."""
     try:
-        # Upsert heartbeat with Timezone Aware UTC
         now_utc = datetime.now(timezone.utc)
-        await asyncio.to_thread(
-            lambda: supabase.table("system_health").upsert({
-                "key": "CRON_LAST_RUN",
-                "value": now_utc.isoformat(),
-                "last_update": now_utc.isoformat()
-            }).execute()
-        )
+        await _upsert_system_health_value("CRON_LAST_RUN", now_utc.isoformat())
     except Exception as e:
         logger.error(f"Error updating heartbeat: {e}")
+
+async def update_cron_success():
+    try:
+        now_utc = datetime.now(timezone.utc)
+        await _upsert_system_health_value("CRON_LAST_SUCCESS", now_utc.isoformat())
+    except Exception as e:
+        logger.error(f"Error updating CRON_LAST_SUCCESS: {e}")
+
+async def update_cron_error(error: object):
+    try:
+        await _upsert_system_health_value("CRON_LAST_ERROR", _sanitize_health_error(error))
+    except Exception as e:
+        logger.error(f"Error updating CRON_LAST_ERROR: {e}")
+
+async def clear_cron_error():
+    try:
+        await _upsert_system_health_value("CRON_LAST_ERROR", "")
+    except Exception as e:
+        logger.error(f"Error clearing CRON_LAST_ERROR: {e}")
 
 async def process_local_safe(local, semaphore):
     """
@@ -748,6 +778,8 @@ async def run_worker_async():
 
         if not tasks_to_run:
             logger.info("😴 No active tasks for this hour.")
+            await update_cron_success()
+            await clear_cron_error()
             return
 
         logger.info(f"📋 Encolados {len(tasks_to_run)} locales para ejecución.")
@@ -760,9 +792,12 @@ async def run_worker_async():
         await asyncio.gather(*tasks)
         
         logger.info("🏁 Cycle finished.")
+        await update_cron_success()
+        await clear_cron_error()
         
     except Exception as e:
         logger.error(f"Critical error in main loop: {e}")
+        await update_cron_error(e)
 
 if __name__ == "__main__":
     asyncio.run(run_worker_async())

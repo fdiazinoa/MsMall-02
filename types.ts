@@ -113,6 +113,8 @@ export interface RemoteConnection {
   puerto: number;
   usuario: string;
   password: string;
+  password_masked?: string;
+  has_password?: boolean;
   ruta_base?: string;
   created_at?: string;
 }

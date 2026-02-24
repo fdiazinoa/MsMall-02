@@ -39,6 +39,14 @@ supabase: Optional[Client] = None
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("msmall-api")
 
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+def _is_api_scheduler_enabled() -> bool:
+    return _parse_bool_env("ENABLE_API_SCHEDULER", default=False)
 _CORS_LOCK_V1_ORIGINS = ["https://msmall.vercel.app"]
 
 if SUPABASE_URL and SUPABASE_KEY:
@@ -206,6 +214,7 @@ async def diagnose_file_endpoint(file: UploadFile = File(...)):
 app.include_router(recipes.router)
 app.include_router(comparisons.router)
 app.include_router(admin_tools.router)
+_api_scheduler_task = None
 
 async def scheduler_loop():
     await asyncio.sleep(10) # Initial delay
@@ -221,8 +230,14 @@ async def scheduler_loop():
 
 @app.on_event("startup")
 async def startup_event():
+    global _api_scheduler_task
     logger.info("MSMALL API Starting up... routes loaded.")
-    asyncio.create_task(scheduler_loop())
+    api_scheduler_enabled = _is_api_scheduler_enabled()
+    logger.info("API scheduler enabled: %s", str(api_scheduler_enabled).lower())
+    if api_scheduler_enabled:
+        _api_scheduler_task = asyncio.create_task(scheduler_loop())
+    else:
+        logger.info("API embedded scheduler disabled; worker is the scheduler authority.")
 
 app.add_middleware(
     CORSMiddleware,

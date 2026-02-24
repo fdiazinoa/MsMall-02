@@ -43,7 +43,7 @@ export const LoadMonitor: React.FC = () => {
         if (!currentMall?.id) return;
         setLoading(true);
         try {
-            const data = await ApiService.getLoadLogs(currentMall.id);
+            const data = await ApiService.getLoadLogs(currentMall.id, session?.access_token);
             setLogs(data);
         } catch (e) {
             console.error(e);

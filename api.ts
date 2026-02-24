@@ -307,20 +307,16 @@ export const ApiService = {
     }
   },
 
-  async getRemoteConnections(mallId: string): Promise<RemoteConnection[]> {
-    if (!supabase) return [];
+  async getRemoteConnections(mallId: string, token?: string): Promise<RemoteConnection[]> {
     if (!mallId) return [];
-
-    const { data, error } = await supabase
-      .from('remote_connections')
-      .select('*')
-      .eq('mall_id', mallId)
-      .order('nombre', { ascending: true });
-
-    if (error) {
-      console.error("Error fetching remote connections:", error);
-      throw new Error("No se pudieron cargar las conexiones guardadas.");
-    }
+    const data = await fetchJsonWithBaseFallback<any[]>(
+      `/remote-connections?mall_id=${encodeURIComponent(mallId)}`,
+      {
+        method: 'GET',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudieron cargar las conexiones guardadas."
+    );
 
     return (data || []).map((row: any) => ({
       id: row.id,
@@ -330,38 +326,44 @@ export const ApiService = {
       host: row.host || '',
       puerto: Number(row.puerto || 22),
       usuario: row.usuario || '',
-      password: row.password || '',
+      password: '', // Nunca exponer secretos desde backend.
+      password_masked: row.password_masked || '',
+      has_password: Boolean(row.has_password),
       ruta_base: row.ruta_base || '',
       created_at: row.created_at
     }));
   },
 
   async saveRemoteConnection(
-    payload: Omit<RemoteConnection, 'id' | 'created_at'> & { id?: string }
+    payload: Omit<RemoteConnection, 'id' | 'created_at'> & { id?: string },
+    token?: string
   ): Promise<RemoteConnection> {
-    if (!supabase) throw new Error("Supabase client not initialized");
     if (!payload.mall_id) throw new Error("mall_id es requerido.");
 
-    const dbPayload: any = {
+    const requestPayload: any = {
       mall_id: payload.mall_id,
       nombre: payload.nombre,
       protocolo: payload.protocolo,
       host: payload.host,
       puerto: payload.puerto,
       usuario: payload.usuario,
-      password: payload.password,
+      password: payload.password || undefined,
       ruta_base: payload.ruta_base || null
     };
 
-    const query = payload.id
-      ? supabase.from('remote_connections').upsert({ id: payload.id, ...dbPayload }).select().single()
-      : supabase.from('remote_connections').insert(dbPayload).select().single();
-
-    const { data, error } = await query;
-    if (error) {
-      console.error("Error saving remote connection:", error);
-      throw new Error("No se pudo guardar la conexión remota.");
-    }
+    const isUpdate = Boolean(payload.id);
+    const data = await fetchJsonWithBaseFallback<any>(
+      isUpdate ? `/remote-connections/${encodeURIComponent(payload.id as string)}` : '/remote-connections',
+      {
+        method: isUpdate ? 'PATCH' : 'POST',
+        headers: withAuthHeaders(token, {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        }),
+        body: JSON.stringify(requestPayload)
+      },
+      "No se pudo guardar la conexión remota."
+    );
 
     return {
       id: data.id,
@@ -371,21 +373,24 @@ export const ApiService = {
       host: data.host || '',
       puerto: Number(data.puerto || 22),
       usuario: data.usuario || '',
-      password: data.password || '',
+      password: '',
+      password_masked: data.password_masked || '',
+      has_password: Boolean(data.has_password),
       ruta_base: data.ruta_base || '',
       created_at: data.created_at
     };
   },
 
-  async deleteRemoteConnection(id: string): Promise<void> {
-    if (!supabase) throw new Error("Supabase client not initialized");
+  async deleteRemoteConnection(id: string, token?: string): Promise<void> {
     if (!id) return;
-
-    const { error } = await supabase.from('remote_connections').delete().eq('id', id);
-    if (error) {
-      console.error("Error deleting remote connection:", error);
-      throw new Error("No se pudo eliminar la conexión remota.");
-    }
+    await fetchJsonWithBaseFallback<{ status: string }>(
+      `/remote-connections/${encodeURIComponent(id)}`,
+      {
+        method: 'DELETE',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudo eliminar la conexión remota."
+    );
   },
 
   async syncImportConnection(id: string): Promise<{ success: boolean, processed: number, message: string }> {
@@ -740,42 +745,19 @@ export const ApiService = {
   },
 
   // --- MÉTODOS DE AUDITORÍA DE CARGA ---
-  async getLoadLogs(mallId?: string): Promise<any[]> {
-    if (!supabase) return [];
+  async getLoadLogs(mallId?: string, token?: string): Promise<any[]> {
     try {
-      let query = supabase
-        .from('logs_carga')
-        .select('*')
-        .order('fecha_hora', { ascending: false })
-        .limit(50);
-
-      // Filter by mall if provided
-      if (mallId) {
-        query = query.eq('mall_id', mallId);
-      }
-
-      const { data, error } = await query;
-      if (error) {
-        // Backward compatibility while logs_carga.mall_id is not migrated yet.
-        if (mallId && String((error as any)?.message || '').toLowerCase().includes('mall_id')) {
-          const { data: stores } = await supabase
-            .from('locales')
-            .select('nombre')
-            .eq('mall_id', mallId);
-          const storeNames = (stores || []).map((s: any) => s.nombre);
-          if (storeNames.length === 0) return [];
-          const legacy = await supabase
-            .from('logs_carga')
-            .select('*')
-            .in('local_nombre', storeNames)
-            .order('fecha_hora', { ascending: false })
-            .limit(50);
-          if (legacy.error) throw legacy.error;
-          return legacy.data || [];
-        }
-        throw error;
-      }
-      return data;
+      const query = new URLSearchParams();
+      if (mallId) query.set('mall_id', mallId);
+      const suffix = query.toString() ? `?${query.toString()}` : '';
+      return await fetchJsonWithBaseFallback<any[]>(
+        `/load-logs${suffix}`,
+        {
+          method: 'GET',
+          headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+        },
+        'Error cargando historial de cargas'
+      );
     } catch (error) {
       console.error('Error fetching load logs:', error);
       return [];
@@ -784,12 +766,15 @@ export const ApiService = {
 
 
 
-  async reactivateStore(id: string) {
-    const { error } = await supabase
-      .from('locales')
-      .update({ processing_status: 'IDLE', consecutive_failures: 0 })
-      .eq('id', id);
-    if (error) throw error;
+  async reactivateStore(id: string, token?: string) {
+    await fetchJsonWithBaseFallback<{ status: string; message: string }>(
+      `/locales/${encodeURIComponent(id)}/reactivate-processing`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      'No se pudo reactivar el local'
+    );
     return true;
   },
 
@@ -814,7 +799,7 @@ export const ApiService = {
     }
 
     return fetchJsonWithBaseFallback<{ status: string; message: string; deleted_count?: number }>(
-      `/audit/logs?mall_id=${encodeURIComponent(mallId)}`,
+      `/load-logs?mall_id=${encodeURIComponent(mallId)}`,
       {
         method: 'DELETE',
         headers: withAuthHeaders(token, {

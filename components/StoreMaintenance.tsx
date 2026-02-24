@@ -9,7 +9,7 @@ import {
 import { SalesPurge } from './SalesPurge';
 
 export const StoreMaintenance: React.FC = () => {
-  const { currentMall, isAdmin, isTic } = useAuth();
+  const { currentMall, isAdmin, isTic, session } = useAuth();
   const canManageStores = isAdmin || isTic;
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
@@ -355,7 +355,7 @@ export const StoreMaintenance: React.FC = () => {
                             onClick={async () => {
                               if (confirm('¿Reactivar este local? Se restablecerá el contador de fallos.')) {
                                 try {
-                                  await ApiService.reactivateStore(store.id);
+                                  await ApiService.reactivateStore(store.id, session?.access_token);
                                   loadStores();
                                 } catch (e) { alert('Error: ' + e); }
                               }

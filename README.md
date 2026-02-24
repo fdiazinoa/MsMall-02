@@ -67,6 +67,26 @@ Esquema relacional optimizado (`init.sql`):
 - **Autenticación por X-API-Key:** Para integración con sistemas POS externos.
 - **Validación de Esquema:** Validación de encabezados CSV.
 - **Cifrado:** Diseño para cifrado RSA-4096 de credenciales.
+
+### PR-4: Operaciones sensibles movidas a backend (FastAPI)
+- **Conexiones remotas (`remote_connections`)**: CRUD vía API backend con RBAC/tenant checks.
+- **Secretos protegidos**: la API no devuelve `password` en claro (retorna `password=""` + `password_masked`/`has_password`).
+- **Logs de carga (`logs_carga`)**: lectura y limpieza vía API backend (`/api/v1/load-logs`).
+- **Reactivación de locales suspendidos**: endpoint backend para restablecer `processing_status` y `consecutive_failures`.
+- **Compatibilidad**: se mantiene `/api/v1/audit/logs` como alias legacy para limpieza, mientras el frontend migra a `/api/v1/load-logs`.
+
+#### Endpoints nuevos / seguros
+- `GET /api/v1/remote-connections?mall_id=<uuid>`
+- `POST /api/v1/remote-connections`
+- `PATCH /api/v1/remote-connections/{id}`
+- `DELETE /api/v1/remote-connections/{id}`
+- `GET /api/v1/load-logs?mall_id=<uuid>&local_id=<uuid>&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+- `DELETE /api/v1/load-logs?mall_id=<uuid>`
+- `POST /api/v1/locales/{id}/reactivate-processing`
+
+#### Rollout / compatibilidad
+- Frontend `ImportManager`, `LoadMonitor` y `StoreMaintenance` ahora consumen estas operaciones sensibles vía backend (Bearer).
+- Las rutas de importación manual y scheduler no se modifican en este PR.
 - **CORS en backend (FastAPI):** en `production/staging` usar allowlist por variable de entorno (sin wildcard `*`).
 
 ### Configuración CORS (ejemplo)

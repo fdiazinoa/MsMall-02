@@ -123,6 +123,7 @@ export const ImportManager: React.FC = () => {
     message: string;
   }>(initialBatchProgress);
   const batchCancelRef = useRef(false);
+  const browserFilesInputRef = useRef<HTMLInputElement | null>(null);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
 
   // Progress Modal State
@@ -870,27 +871,62 @@ export const ImportManager: React.FC = () => {
 
   const handlePickBrowserFiles = () => {
     try {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.multiple = true;
-      input.accept = '.csv,.txt,.json,.xml,text/csv,text/plain,application/json,text/xml,application/xml';
-      input.onchange = () => {
-        const files = Array.from(input.files || []);
-        if (files.length === 0) return;
-        const names = files.map((f) => f.name);
-        setBrowserFilesSelection({
-          count: files.length,
-          names: names.slice(0, 5)
+      const openFilePicker = (window as any).showOpenFilePicker as undefined | ((opts?: any) => Promise<any[]>);
+      if (typeof openFilePicker === 'function') {
+        openFilePicker({
+          multiple: true,
+          types: [
+            {
+              description: 'Archivos de importación',
+              accept: {
+                'text/csv': ['.csv'],
+                'text/plain': ['.txt'],
+                'application/json': ['.json'],
+                'application/xml': ['.xml'],
+                'text/xml': ['.xml']
+              }
+            }
+          ]
+        }).then((handles) => {
+          if (!handles || handles.length === 0) return;
+          const names = handles.map((h: any) => String(h?.name || 'archivo'));
+          setBrowserFilesSelection({
+            count: handles.length,
+            names: names.slice(0, 5)
+          });
+          if (handles.length === 1) {
+            setEditingConfig(prev => ({ ...prev, tipo_archivo: detectFileType(names[0]) }));
+          }
+        }).catch((err: any) => {
+          const msg = String(err?.message || err || '').toLowerCase();
+          if (msg.includes('abort') || msg.includes('cancel')) return;
+          browserFilesInputRef.current?.click();
         });
-        if (files.length === 1) {
-          setEditingConfig(prev => ({ ...prev, tipo_archivo: detectFileType(files[0].name) }));
-        }
-      };
-      input.click();
+        return;
+      }
+
+      browserFilesInputRef.current?.click();
     } catch (error: any) {
       console.error(error);
       alert('No se pudo abrir el selector de archivos del navegador.');
     }
+  };
+
+  const handleBrowserFilesInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const names = files.map((f) => f.name);
+    setBrowserFilesSelection({
+      count: files.length,
+      names: names.slice(0, 5)
+    });
+    if (files.length === 1) {
+      setEditingConfig(prev => ({ ...prev, tipo_archivo: detectFileType(files[0].name) }));
+    }
+
+    // Allow re-selecting the same file(s).
+    e.target.value = '';
   };
 
   const handleNavigateExplorer = async (path: string) => {
@@ -1759,6 +1795,14 @@ export const ImportManager: React.FC = () => {
             )}
 
             {renderExplorerModal()}
+            <input
+              ref={browserFilesInputRef}
+              type="file"
+              multiple
+              accept=".csv,.txt,.json,.xml,text/csv,text/plain,application/json,text/xml,application/xml"
+              onChange={handleBrowserFilesInputChange}
+              className="hidden"
+            />
                 </div>
               </div>
 

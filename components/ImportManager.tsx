@@ -69,12 +69,6 @@ export const ImportManager: React.FC = () => {
   const [explorerPath, setExplorerPath] = useState('.');
   const [explorerItems, setExplorerItems] = useState<{ nombre: string, ruta: string, es_dir: boolean }[]>([]);
   const [explorerLoading, setExplorerLoading] = useState(false);
-  const [browserFolderSelection, setBrowserFolderSelection] = useState<{
-    name: string;
-    fileCount?: number;
-    source: 'picker' | 'input';
-    samplePath?: string;
-  } | null>(null);
   const [browserFilesSelection, setBrowserFilesSelection] = useState<{
     count: number;
     names: string[];
@@ -184,7 +178,6 @@ export const ImportManager: React.FC = () => {
     setTempPassword('');
     setSelectedConnectionId('');
     setShowExplorer(false);
-    setBrowserFolderSelection(null);
     setBrowserFilesSelection(null);
     setSelectedFilePreview(null);
     setEditingConfig(createDefaultImportConfig());
@@ -194,7 +187,6 @@ export const ImportManager: React.FC = () => {
     setEditingConfig(createDefaultImportConfig());
     setTempPassword('');
     setSelectedConnectionId('');
-    setBrowserFolderSelection(null);
     setBrowserFilesSelection(null);
     setActiveStep(1);
     setShowForm(true);
@@ -203,7 +195,6 @@ export const ImportManager: React.FC = () => {
   const openEditConnectionDrawer = (config: ImportConfig) => {
     setEditingConfig(config);
     setTempPassword(config.password || '');
-    setBrowserFolderSelection(null);
     setBrowserFilesSelection(null);
     setActiveStep(1);
     setSelectedConnectionId('');
@@ -829,46 +820,6 @@ export const ImportManager: React.FC = () => {
     setExplorerLoading(false);
   };
 
-  const handlePickBrowserFolder = async () => {
-    try {
-      const picker = (window as any).showDirectoryPicker as undefined | (() => Promise<any>);
-      if (typeof picker === 'function') {
-        const handle = await picker();
-        if (handle?.name) {
-          setBrowserFolderSelection({
-            name: String(handle.name),
-            source: 'picker'
-          });
-        }
-        return;
-      }
-
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.multiple = true;
-      input.setAttribute('webkitdirectory', '');
-      input.setAttribute('directory', '');
-
-      input.onchange = () => {
-        const files = Array.from(input.files || []);
-        if (files.length === 0) return;
-        const first = files[0] as File & { webkitRelativePath?: string };
-        const samplePath = String(first.webkitRelativePath || '');
-        const folderName = samplePath.split('/').filter(Boolean)[0] || 'Carpeta seleccionada';
-        setBrowserFolderSelection({
-          name: folderName,
-          fileCount: files.length,
-          samplePath,
-          source: 'input'
-        });
-      };
-      input.click();
-    } catch (error: any) {
-      console.error(error);
-      alert('No se pudo abrir el selector de carpeta del navegador. Intenta con Chrome/Edge.');
-    }
-  };
-
   const handlePickBrowserFiles = () => {
     try {
       const openFilePicker = (window as any).showOpenFilePicker as undefined | ((opts?: any) => Promise<any[]>);
@@ -1263,7 +1214,6 @@ export const ImportManager: React.FC = () => {
                         onChange={e => {
                           const nextProtocol = e.target.value as ImportProtocol;
                           if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
-                          if (nextProtocol !== 'LOCAL') setBrowserFolderSelection(null);
                           if (nextProtocol !== 'LOCAL') setBrowserFilesSelection(null);
                           setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : 21 });
                         }}
@@ -1420,13 +1370,6 @@ export const ImportManager: React.FC = () => {
                           </button>
                           <button
                             type="button"
-                            onClick={handlePickBrowserFolder}
-                            className="px-3 py-2 rounded-lg border border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 text-xs font-bold"
-                          >
-                            Seleccionar carpeta de mi equipo
-                          </button>
-                          <button
-                            type="button"
                             onClick={handlePickBrowserFiles}
                             className="px-3 py-2 rounded-lg border border-cyan-200 text-cyan-700 bg-cyan-50 hover:bg-cyan-100 text-xs font-bold"
                           >
@@ -1436,16 +1379,6 @@ export const ImportManager: React.FC = () => {
                         <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                           <code>Directorio local (servidor)</code> navega carpetas del servidor donde corre MsMall (ej. Railway/Linux). Tu PC no es accesible desde el backend.
                         </p>
-                        <p className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-                          El selector de <strong>carpeta de mi equipo</strong> es solo para elegir carpetas (el navegador no permite seleccionar archivos en ese diálogo). Para CSV/TXT/JSON usa <strong>Seleccionar archivos de mi equipo</strong>.
-                        </p>
-                        {browserFolderSelection && (
-                          <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-                            Carpeta de tu equipo seleccionada en navegador: <strong>{browserFolderSelection.name}</strong>
-                            {typeof browserFolderSelection.fileCount === 'number' ? ` (${browserFolderSelection.fileCount} archivos detectados)` : ''}
-                            {browserFolderSelection.samplePath ? ` · Ejemplo: ${browserFolderSelection.samplePath}` : ''}
-                          </p>
-                        )}
                         {browserFilesSelection && (
                           <p className="text-[11px] text-cyan-700 bg-cyan-50 border border-cyan-200 rounded-lg px-3 py-2">
                             Archivos seleccionados de tu equipo: <strong>{browserFilesSelection.count}</strong>

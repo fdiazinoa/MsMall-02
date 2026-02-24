@@ -1813,7 +1813,8 @@ def _resolve_local_explorer_path(requested_path: Optional[str]) -> str:
 
     normalized = os.path.abspath(raw)
     cwd_path = os.path.abspath(os.getcwd())
-    default_markers = {".", "./", "/", "/app", cwd_path}
+    # Keep "/" navigable (clicking ".." from /Users or /home should reach filesystem root).
+    default_markers = {".", "./", "/app", cwd_path}
 
     # When the UI opens the browser for the first time it often sends '.' which becomes /app
     # in containerized environments. Prefer a user-friendly root for LOCAL browsing.

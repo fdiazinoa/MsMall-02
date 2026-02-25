@@ -227,8 +227,8 @@ export const SalesCube: React.FC = () => {
                         onChange={(e) => setMetric(e.target.value as any)}
                         className="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full p-2.5 outline-none"
                     >
-                        <option value="total_neto">Venta Bruta (Base)</option>
-                        <option value="total_bruto">Venta Neta (Total)</option>
+                        <option value="total_bruto">Total Bruto (Base)</option>
+                        <option value="total_neto">Total Neto (Total)</option>
                         <option value="transacciones">Transacciones</option>
                     </select>
                 </div>

@@ -12,6 +12,7 @@ import { ReporteAuditoriaTable } from './ReporteAuditoriaTable';
 export const SalesReport: React.FC = () => {
   const { currentMall, session } = useAuth();
   const { format } = useFormatCurrency();
+  const DEFAULT_RAILWAY_BASE_URL = 'https://msmall-02-production.up.railway.app';
 
   const [data, setData] = useState<SaleReport[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -39,6 +40,25 @@ export const SalesReport: React.FC = () => {
   // Stores state
   const [stores, setStores] = useState<any[]>([]);
   const [selectedLocal, setSelectedLocal] = useState<string>('');
+
+  const normalizeApiRoot = (value: string): string => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return '';
+    return trimmed.replace(/\/+$/, '').replace(/\/api\/v1$/i, '').replace(/\/api$/i, '');
+  };
+
+  const getExportBaseCandidates = (): string[] => {
+    const configuredApiBase = normalizeApiRoot(import.meta.env.VITE_API_URL || '');
+    const directApiBase = normalizeApiRoot(import.meta.env.VITE_DIRECT_BACKEND_BASE_URL || '');
+    const isVercelHost = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
+
+    return Array.from(new Set([
+      configuredApiBase,
+      directApiBase,
+      ...(isVercelHost ? [DEFAULT_RAILWAY_BASE_URL] : []),
+      '' // Relative fallback via Vercel rewrite
+    ]));
+  };
 
   const fetchData = async () => {
     if (!currentMall) return;
@@ -87,14 +107,52 @@ export const SalesReport: React.FC = () => {
         'X-Mall-Id': currentMall.id
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
+      headers['Accept'] = exportFormat === 'excel'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/octet-stream'
+        : 'application/pdf, application/octet-stream';
 
-      const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/export/sales-report/${endpoint}?${params.toString()}`, {
-        headers
-      });
+      let blob: Blob | null = null;
+      let lastError = 'No se pudo exportar el reporte.';
 
-      if (!response.ok) throw new Error("Export failed");
+      for (const base of getExportBaseCandidates()) {
+        const exportUrl = `${base}/api/v1/export/sales-report/${endpoint}?${params.toString()}`;
+        try {
+          const response = await fetch(exportUrl, { headers });
+          if (!response.ok) {
+            lastError = `Export failed (${response.status})`;
+            continue;
+          }
 
-      const blob = await response.blob();
+          const contentType = (response.headers.get('content-type') || '').toLowerCase();
+          const candidateBlob = await response.blob();
+
+          const looksLikeExpectedFile = exportFormat === 'excel'
+            ? contentType.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') ||
+              contentType.includes('application/octet-stream')
+            : contentType.includes('application/pdf') ||
+              contentType.includes('application/octet-stream');
+
+          if (!looksLikeExpectedFile) {
+            const previewText = (await candidateBlob.text()).slice(0, 200).toLowerCase();
+            if (previewText.includes('<!doctype html') || previewText.includes('<html')) {
+              lastError = 'El servidor devolvió HTML en lugar del archivo exportable. Verifica la URL del backend/rewrite.';
+              continue;
+            }
+            if (previewText.startsWith('{')) {
+              lastError = `La API devolvió una respuesta inesperada al exportar.`;
+              continue;
+            }
+          }
+
+          blob = candidateBlob;
+          break;
+        } catch (err: any) {
+          lastError = err?.message || lastError;
+        }
+      }
+
+      if (!blob) throw new Error(lastError);
+
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

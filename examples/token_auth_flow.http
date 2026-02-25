@@ -41,6 +41,16 @@ Content-Type: application/json
   "rows": []
 }
 
+### Ejecutar endpoint real de importación manual (exporter)
+POST http://localhost:8000/api/v1/remote/execute-manual/exporter
+Authorization: Bearer {{exporter_access_token}}
+Content-Type: application/json
+
+{
+  "config_id": "00000000-0000-0000-0000-000000000010",
+  "filename": "ventas_2026-02-25.csv"
+}
+
 ### Refresh (rotación obligatoria)
 POST http://localhost:8000/auth/refresh
 Content-Type: application/json

@@ -21,6 +21,7 @@
 - `PATCH /tokens/:id/status` activa/desactiva
 - `POST /tokens/:id/regenerate` regenera (revoca anterior)
 - `POST /service-accounts` crea credenciales exporter (one-time reveal `client_secret`)
+- `POST /api/v1/remote/execute-manual/exporter` ejecuta importación manual real usando token exporter (valida `config_id` contra `mall_id/local_id` del token)
 
 ## Integración MsExportador (recomendado)
 1. Provisionar `service-account` por local (`mall_id` + `local_id`).

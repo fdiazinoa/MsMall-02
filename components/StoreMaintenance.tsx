@@ -154,6 +154,18 @@ export const StoreMaintenance: React.FC = () => {
     return matchesSearch && matchesFloor && matchesMts && matchesBusinessType;
   });
 
+  const sortedFilteredStores = [...filteredStores].sort((a, b) => {
+    const byName = normalizeText(a.nombre).localeCompare(normalizeText(b.nombre), undefined, {
+      sensitivity: 'base',
+      numeric: true,
+    });
+    if (byName !== 0) return byName;
+    return normalizeText(a.codigo_interno).localeCompare(normalizeText(b.codigo_interno), undefined, {
+      sensitivity: 'base',
+      numeric: true,
+    });
+  });
+
   const hasActiveFilters =
     Boolean(searchTerm.trim()) ||
     floorFilter !== 'ALL' ||
@@ -349,7 +361,7 @@ export const StoreMaintenance: React.FC = () => {
             </div>
             <div className="flex items-center gap-2">
               <div className="text-xs text-slate-500 font-medium whitespace-nowrap">
-                Mostrando {filteredStores.length} de {stores.length} locales
+                Mostrando {sortedFilteredStores.length} de {stores.length} locales
               </div>
               {hasActiveFilters && (
                 <button
@@ -429,8 +441,8 @@ export const StoreMaintenance: React.FC = () => {
                     </div>
                   </td>
                 </tr>
-              ) : filteredStores.length > 0 ? (
-                filteredStores.map((store) => (
+              ) : sortedFilteredStores.length > 0 ? (
+                sortedFilteredStores.map((store) => (
                   <tr key={store.id} className="hover:bg-slate-50/80 transition-colors group">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">

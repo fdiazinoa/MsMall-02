@@ -3591,7 +3591,7 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         while True:
             sales_res = (
                 supabase.table("ventas")
-                .select("local_id, fecha, total_bruto, total_impuestos, total_neto, id")
+                .select("*")
                 .in_("local_id", allowed_local_ids)
                 .gte("fecha", request.fecha_inicio)
                 .lte("fecha", request.fecha_fin)

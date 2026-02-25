@@ -24,6 +24,13 @@ import stat
 from worker_importacion import run_worker_async
 from analytics import generate_sales_cube
 from routers import recipes, comparisons, admin_tools
+from routers.token_auth import (
+    AuthContext as TokenAuthContext,
+    TOKEN_TYPE_EXPORTER,
+    create_router as create_token_auth_router,
+    require_token_auth,
+    validate_exporter_payload_mapping,
+)
 from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
 from services.connection_monitor_service import (
     ConnectionMonitorService,
@@ -225,6 +232,7 @@ async def diagnose_file_endpoint(file: UploadFile = File(...)):
 app.include_router(recipes.router)
 app.include_router(comparisons.router)
 app.include_router(admin_tools.router)
+app.include_router(create_token_auth_router())
 _api_scheduler_task = None
 
 async def scheduler_loop():
@@ -500,6 +508,32 @@ def _load_local_config_with_access(local_id: str, operator_ctx: Dict[str, Any]) 
         raise HTTPException(status_code=404, detail="Configuración no encontrada")
 
     _ensure_operator_can_access_mall(operator_ctx, local_cfg.get("mall_id"))
+    return local_cfg
+
+def _load_local_config_for_exporter(local_id: str, exporter_ctx: TokenAuthContext) -> Dict[str, Any]:
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    try:
+        res = (
+            supabase.table("locales")
+            .select("*")
+            .eq("id", local_id)
+            .maybe_single()
+            .execute()
+        )
+        local_cfg = res.data
+    except Exception as e:
+        logger.error(f"Error consultando local {local_id} para exporter: {e}")
+        raise HTTPException(status_code=500, detail="Error consultando configuración del local")
+
+    if not local_cfg:
+        raise HTTPException(status_code=404, detail="Configuración no encontrada")
+
+    validate_exporter_payload_mapping(
+        str(local_cfg.get("mall_id") or ""),
+        str(local_cfg.get("id") or local_id),
+        exporter_ctx,
+    )
     return local_cfg
 
 def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config: Optional[Any]) -> Dict[str, Any]:
@@ -3264,10 +3298,10 @@ async def list_files_endpoint(
         logger.error(f"Error listing files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/remote/execute-manual")
-async def execute_manual_endpoint(
+async def _execute_manual_endpoint_impl(
     req: ExecuteManualRequest,
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+    operator_ctx: Optional[Dict[str, Any]] = None,
+    exporter_ctx: Optional[TokenAuthContext] = None
 ):
     logger.info(f"Ejecutando manual para {req.config_id} - Archivo: {req.filename}")
     batch_id = str(uuid4())
@@ -3297,7 +3331,12 @@ async def execute_manual_endpoint(
             return payload
 
         # Source of truth: config del local desde DB + overrides permitidos del request.
-        config_data = _load_local_config_with_access(req.config_id, operator_ctx)
+        if exporter_ctx:
+            config_data = _load_local_config_for_exporter(req.config_id, exporter_ctx)
+        else:
+            if not operator_ctx:
+                raise HTTPException(status_code=401, detail="Se requiere autenticación para ejecutar importación manual")
+            config_data = _load_local_config_with_access(req.config_id, operator_ctx)
         config_data = _apply_runtime_import_overrides(config_data, req.config)
         config_data = _normalize_import_config_payload(config_data)
 
@@ -3544,6 +3583,24 @@ async def execute_manual_endpoint(
         if request_id and manual_exec_lock_acquired:
             with _INFLIGHT_MANUAL_EXEC_LOCK:
                 _INFLIGHT_MANUAL_EXEC.discard(request_id)
+
+
+@app.post("/api/v1/remote/execute-manual")
+async def execute_manual_endpoint(
+    req: ExecuteManualRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    return await _execute_manual_endpoint_impl(req=req, operator_ctx=operator_ctx)
+
+
+@app.post("/api/v1/remote/execute-manual/exporter")
+async def execute_manual_exporter_endpoint(
+    req: ExecuteManualRequest,
+    exporter_ctx: TokenAuthContext = Depends(
+        require_token_auth("export:write", token_types={TOKEN_TYPE_EXPORTER})
+    )
+):
+    return await _execute_manual_endpoint_impl(req=req, exporter_ctx=exporter_ctx)
 
 
 @app.post("/api/v1/analytics/cubo")

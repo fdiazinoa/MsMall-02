@@ -1,7 +1,8 @@
+import asyncio
 import os
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import httpx
 
 from routers.token_auth import (
     InMemoryTokenStore,
@@ -11,6 +12,19 @@ from routers.token_auth import (
 )
 
 
+class ASGITestClient:
+    def __init__(self, app):
+        self.app = app
+        self.base_url = "http://testserver"
+
+    def post(self, path, **kwargs):
+        async def _run():
+            transport = httpx.ASGITransport(app=self.app)
+            async with httpx.AsyncClient(transport=transport, base_url=self.base_url) as client:
+                return await client.post(path, **kwargs)
+        return asyncio.run(_run())
+
+
 def build_test_client():
     os.environ.setdefault("MSMALL_TOKEN_JWT_SECRET", "test-secret-123")
     app = FastAPI()
@@ -18,7 +32,7 @@ def build_test_client():
     svc = TokenService(store=store)
     app.include_router(create_router())
     app.dependency_overrides[get_token_service] = lambda: svc
-    return TestClient(app), svc, store
+    return ASGITestClient(app), svc, store
 
 
 def bootstrap_manage_token(client, svc, store):

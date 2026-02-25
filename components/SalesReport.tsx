@@ -82,7 +82,7 @@ export const SalesReport: React.FC = () => {
     setShowExportModal(true);
   };
 
-  const handleExport = async (type: 'detailed' | 'summary') => {
+  const handleExport = async (type: 'detailed' | 'summary' | 'missing_days') => {
     if (!exportFormat || !currentMall) return;
     setIsExporting(true);
     setShowExportModal(false);
@@ -221,7 +221,7 @@ export const SalesReport: React.FC = () => {
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 transform transition-all scale-100">
             <h3 className="text-lg font-bold text-slate-800 mb-2">Seleccionar Tipo de Reporte</h3>
             <p className="text-slate-500 text-sm mb-6">
-              ¿Desea descargar un resumen consolidado o incluir el detalle de todas las facturas? {exportFormat?.toUpperCase()}
+              Elija el formato del informe a descargar usando los filtros actuales (fechas y local). {exportFormat?.toUpperCase()}
             </p>
 
             <div className="flex flex-col gap-3">
@@ -243,6 +243,17 @@ export const SalesReport: React.FC = () => {
                 <div className="text-left">
                   <span className="block font-bold text-slate-700 group-hover:text-indigo-700">Detallado</span>
                   <span className="text-xs text-slate-400">Totales + Lista de Facturas</span>
+                </div>
+                <div className="h-2 w-2 rounded-full bg-slate-300 group-hover:bg-indigo-500"></div>
+              </button>
+
+              <button
+                onClick={() => handleExport('missing_days')}
+                className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 hover:border-indigo-500 hover:bg-indigo-50 transition-colors group"
+              >
+                <div className="text-left">
+                  <span className="block font-bold text-slate-700 group-hover:text-indigo-700">Días Faltantes</span>
+                  <span className="text-xs text-slate-400">Solo brechas de ventas según fechas/local</span>
                 </div>
                 <div className="h-2 w-2 rounded-full bg-slate-300 group-hover:bg-indigo-500"></div>
               </button>

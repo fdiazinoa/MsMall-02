@@ -4457,8 +4457,17 @@ async def export_sales_report_excel(
     current_mall: str = Depends(get_current_mall)
 ):
     try:
-        if type not in ['detailed', 'summary']: type = 'detailed'
-        data = await export_service.generate_sales_report_excel(fecha_inicio, fecha_fin, local_id, type)
+        if type not in ['detailed', 'summary', 'missing_days']:
+            type = 'detailed'
+        if type == 'missing_days':
+            data = await export_service.generate_missing_days_report_excel(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                mall_id=current_mall,
+                local_id=local_id,
+            )
+        else:
+            data = await export_service.generate_sales_report_excel(fecha_inicio, fecha_fin, local_id, type)
         return StreamingResponse(
             data,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -4477,7 +4486,8 @@ async def export_sales_report_pdf(
     current_mall: str = Depends(get_current_mall)
 ):
     try:
-        if type not in ['detailed', 'summary']: type = 'detailed'
+        if type not in ['detailed', 'summary', 'missing_days']:
+            type = 'detailed'
         
         # Fetch Mall Name
         mall_name = "MS MALL"
@@ -4488,8 +4498,17 @@ async def export_sales_report_pdf(
         except Exception:
             logger.warning(f"Could not fetch mall name for {current_mall}, using default.")
 
-        logger.info(f"Exporting PDF for Mall: {mall_name} ({current_mall})")
-        data = await export_service.generate_sales_report_pdf(fecha_inicio, fecha_fin, local_id, type, mall_name=mall_name)
+        logger.info(f"Exporting PDF for Mall: {mall_name} ({current_mall}) type={type}")
+        if type == 'missing_days':
+            data = await export_service.generate_missing_days_report_pdf(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                mall_id=current_mall,
+                local_id=local_id,
+                mall_name=mall_name,
+            )
+        else:
+            data = await export_service.generate_sales_report_pdf(fecha_inicio, fecha_fin, local_id, type, mall_name=mall_name)
         return StreamingResponse(
             data,
             media_type="application/pdf",

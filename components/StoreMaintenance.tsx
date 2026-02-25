@@ -12,6 +12,10 @@ export const StoreMaintenance: React.FC = () => {
   const { currentMall, isAdmin, isTic, session } = useAuth();
   const canManageStores = isAdmin || isTic;
   const [stores, setStores] = useState<Store[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [floorFilter, setFloorFilter] = useState('ALL');
+  const [mtsFilter, setMtsFilter] = useState('ALL');
+  const [businessTypeFilter, setBusinessTypeFilter] = useState('ALL');
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [newStore, setNewStore] = useState<Partial<Store>>({
@@ -95,6 +99,73 @@ export const StoreMaintenance: React.FC = () => {
   useEffect(() => {
     loadStores();
   }, [currentMall]);
+
+  const normalizeText = (value: any) => String(value || '').trim();
+  const normalizeSearch = (value: any) =>
+    normalizeText(value)
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+  const storeFloorValue = (store: Store) => normalizeText(store.piso);
+  const storeMtsValue = (store: Store) => normalizeText(store.mts);
+  const storeBusinessTypeValue = (store: Store) => normalizeText(store.tipo_negocio) || 'General';
+
+  const floorOptions = Array.from(
+    new Set(
+      stores
+        .map((store) => storeFloorValue(store))
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+  const mtsOptions = Array.from(
+    new Set(
+      stores
+        .map((store) => storeMtsValue(store))
+        .filter(Boolean)
+    )
+  ).sort((a, b) => {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  });
+
+  const businessTypeOptions = Array.from(
+    new Set(stores.map((store) => storeBusinessTypeValue(store)).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+  const filteredStores = stores.filter((store) => {
+    const matchesSearch = !searchTerm || [
+      store.nombre,
+      store.codigo_interno,
+      store.responsable,
+      store.contrato_no,
+      store.piso,
+      store.tipo_negocio,
+    ].some((value) => normalizeSearch(value).includes(normalizeSearch(searchTerm)));
+
+    const matchesFloor = floorFilter === 'ALL' || storeFloorValue(store) === floorFilter;
+    const matchesMts = mtsFilter === 'ALL' || storeMtsValue(store) === mtsFilter;
+    const matchesBusinessType =
+      businessTypeFilter === 'ALL' || storeBusinessTypeValue(store) === businessTypeFilter;
+
+    return matchesSearch && matchesFloor && matchesMts && matchesBusinessType;
+  });
+
+  const hasActiveFilters =
+    Boolean(searchTerm.trim()) ||
+    floorFilter !== 'ALL' ||
+    mtsFilter !== 'ALL' ||
+    businessTypeFilter !== 'ALL';
+
+  const resetFilters = () => {
+    setSearchTerm('');
+    setFloorFilter('ALL');
+    setMtsFilter('ALL');
+    setBusinessTypeFilter('ALL');
+  };
 
   if (!canManageStores) {
     return (
@@ -264,13 +335,76 @@ export const StoreMaintenance: React.FC = () => {
       )}
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-          <div className="flex items-center gap-3 flex-1 max-w-md">
-            <Search size={18} className="text-slate-400" />
-            <input type="text" placeholder="Buscar por nombre, responsable o código..." className="bg-transparent border-none outline-none text-sm w-full" />
+        <div className="p-4 border-b border-slate-100 bg-slate-50/50 space-y-3">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+            <div className="flex items-center gap-3 flex-1 min-w-0 lg:max-w-xl bg-white border border-slate-200 rounded-xl px-3 py-2.5">
+              <Search size={18} className="text-slate-400 shrink-0" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Buscar local por nombre, código o responsable..."
+                className="bg-transparent border-none outline-none text-sm w-full"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="text-xs text-slate-500 font-medium whitespace-nowrap">
+                Mostrando {filteredStores.length} de {stores.length} locales
+              </div>
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 text-xs font-semibold hover:bg-white transition-colors"
+                >
+                  Limpiar filtros
+                </button>
+              )}
+            </div>
           </div>
-          <div className="text-xs text-slate-400 font-medium">
-            Mostrando {stores.length} locales registrados
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Piso</label>
+              <select
+                value={floorFilter}
+                onChange={(e) => setFloorFilter(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="ALL">Todos los pisos</option>
+                {floorOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Mts²</label>
+              <select
+                value={mtsFilter}
+                onChange={(e) => setMtsFilter(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="ALL">Todos los metrajes</option>
+                {mtsOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Tipo de Negocio</label>
+              <select
+                value={businessTypeFilter}
+                onChange={(e) => setBusinessTypeFilter(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="ALL">Todos los tipos</option>
+                {businessTypeOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
         <div className="overflow-x-auto">
@@ -295,8 +429,8 @@ export const StoreMaintenance: React.FC = () => {
                     </div>
                   </td>
                 </tr>
-              ) : stores.length > 0 ? (
-                stores.map((store) => (
+              ) : filteredStores.length > 0 ? (
+                filteredStores.map((store) => (
                   <tr key={store.id} className="hover:bg-slate-50/80 transition-colors group">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">

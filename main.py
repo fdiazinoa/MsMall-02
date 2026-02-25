@@ -3552,6 +3552,19 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
     Endpoint para generar el Cubo de Ventas (Matriz) usando datos reales de Supabase (Service Role).
     """
     try:
+        def _normalize_cube_totals_row(row: Dict[str, Any]) -> Dict[str, Any]:
+            bruto = float(row.get("total_bruto") or 0)
+            impuestos = float(row.get("total_impuestos") or 0) if row.get("total_impuestos") is not None else 0.0
+            neto = float(row.get("total_neto") or 0)
+
+            eps = 0.05
+            as_is_delta = abs(neto - (bruto + impuestos))
+            swapped_delta = abs(bruto - (neto + impuestos))
+            if swapped_delta + eps < as_is_delta:
+                row["total_bruto"] = neto
+                row["total_neto"] = bruto
+            return row
+
         # 1. Fetch Locales (Store Map) - Filtered by Mall
         stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
         stores = stores_res.data or []
@@ -3578,7 +3591,7 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         while True:
             sales_res = (
                 supabase.table("ventas")
-                .select("local_id, fecha, total_bruto, total_neto, id")
+                .select("local_id, fecha, total_bruto, total_impuestos, total_neto, id")
                 .in_("local_id", allowed_local_ids)
                 .gte("fecha", request.fecha_inicio)
                 .lte("fecha", request.fecha_fin)
@@ -3589,7 +3602,7 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
             chunk = sales_res.data or []
             if not chunk:
                 break
-            sales_data.extend(chunk)
+            sales_data.extend(_normalize_cube_totals_row(dict(row)) for row in chunk)
             if len(chunk) < page_size:
                 break
             page += 1

@@ -29,6 +29,19 @@ class ExportService:
         if value is None: return "$0.00"
         return f"${value:,.2f}"
 
+    def _normalize_sale_totals_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        bruto = float(row.get('total_bruto') or 0)
+        impuestos = float(row.get('total_impuestos') or 0) if row.get('total_impuestos') is not None else 0.0
+        neto = float(row.get('total_neto') or 0)
+
+        eps = 0.05
+        as_is_delta = abs(neto - (bruto + impuestos))
+        swapped_delta = abs(bruto - (neto + impuestos))
+        if swapped_delta + eps < as_is_delta:
+            row['total_bruto'] = neto
+            row['total_neto'] = bruto
+        return row
+
     def _get_pdf_styles(self):
         styles = getSampleStyleSheet()
         title = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=18, textColor=colors.HexColor('#1F4788'), spaceAfter=12, alignment=TA_CENTER, fontName='Helvetica-Bold')
@@ -524,7 +537,7 @@ class ExportService:
                 chunk = res.data or []
                 if not chunk:
                     break
-                sales.extend(chunk)
+                sales.extend(self._normalize_sale_totals_row(dict(row)) for row in chunk)
                 if len(chunk) < page_size:
                     break
                 page += 1

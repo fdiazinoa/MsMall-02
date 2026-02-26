@@ -16,6 +16,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from supabase import Client
+from analytics import generate_sales_cube
 
 class ExportService:
     def __init__(self, supabase_client: Client):
@@ -555,75 +556,94 @@ class ExportService:
         else:
             df = pd.DataFrame(sales)
             df['local_id'] = df['local_id'].astype(str)
-            df['nombre_local'] = df['local_id'].map(store_map).fillna(df['local_id'])
+            df['local_nombre'] = df['local_id'].map(store_map).fillna(df['local_id'])
             df['fecha'] = pd.to_datetime(df['fecha'])
             
-            # Metric selection
-            # Remember User Terminology: metrica parameter might come as 'total_neto' (user clicked 'Venta Bruta')
-            # But the pivot should show the value of that column.
-            # If user asks for 'transacciones', count rows.
-            
-            if agrupacion == 'dia':
-                df['grupo'] = df['fecha'].dt.strftime('%Y-%m-%d')
-            elif agrupacion == 'semana':
-                df['grupo'] = df['fecha'].dt.to_period('W').astype(str)
-            elif agrupacion == 'mes':
-                df['grupo'] = df['fecha'].dt.to_period('M').astype(str)
-            
-            val_col = metrica
-            agg = 'sum'
-            if metrica == 'transacciones':
-                val_col = 'id' # Any col
-                agg = 'count'
-            else:
-                 # Ensure numeric
-                 df[val_col] = pd.to_numeric(df[val_col], errors='coerce').fillna(0)
-            
-            pivot = df.pivot_table(index='grupo', columns='nombre_local', values=val_col, aggfunc=agg, fill_value=0)
-            
-            # Write Headers
-            ws.cell(row=4, column=1, value=agrupacion.capitalize())
+            # Match the exact orientation used by the UI matrix:
+            # rows = locales, columns = periodos (dias/semanas/meses)
+            df['total_bruto'] = pd.to_numeric(df['total_bruto'], errors='coerce').fillna(0)
+            df['total_neto'] = pd.to_numeric(df['total_neto'], errors='coerce').fillna(0)
+            df['transacciones'] = 1
+
+            cube = generate_sales_cube(
+                ventas_df=df,
+                grouping=agrupacion,
+                metric=metrica,
+                start_date=fecha_inicio,
+                end_date=fecha_fin,
+            )
+
+            columns = list(cube.get('columns') or [])
+            rows = list(cube.get('data') or [])
+            grand_totals = dict(cube.get('grand_totals') or {})
+
+            if not columns:
+                columns = ['local_nombre', 'TOTAL_FILA']
+
             fill, font = self._get_header_style()
-            ws.cell(row=4, column=1).fill = fill
-            ws.cell(row=4, column=1).font = font
-            
-            col_idx = 2
-            for col_name in pivot.columns:
-                c = ws.cell(row=4, column=col_idx, value=col_name)
+
+            def _display_col_label(col_name: str) -> str:
+                if col_name == 'local_nombre':
+                    return 'LOCAL'
+                if col_name == 'TOTAL_FILA':
+                    return 'TOTAL'
+                return str(col_name)
+
+            def _coerce_excel_value(value: Any):
+                if value is None:
+                    return None
+                if hasattr(value, "item"):
+                    try:
+                        return value.item()
+                    except Exception:
+                        pass
+                return value
+
+            # Write headers (same order shown by UI)
+            for col_idx, col_name in enumerate(columns, start=1):
+                c = ws.cell(row=4, column=col_idx, value=_display_col_label(col_name))
                 c.fill = fill
                 c.font = font
-                col_idx += 1
-            # Total Column Header
-            c = ws.cell(row=4, column=col_idx, value="TOTAL")
-            c.fill = fill
-            c.font = font
-            
-            # Write Data
+                c.alignment = Alignment(horizontal='center')
+
+            # Write matrix data
+            number_format = '$#,##0.00' if metrica != 'transacciones' else '0'
             row_idx = 5
-            for idx, row in pivot.iterrows():
-                ws.cell(row=row_idx, column=1, value=str(idx))
-                c_idx = 2
-                row_sum = 0
-                for col_name in pivot.columns:
-                    val = row[col_name]
-                    ws.cell(row=row_idx, column=c_idx, value=val).number_format = '$#,##0.00' if metrica != 'transacciones' else '0'
-                    row_sum += val
-                    c_idx += 1
-                ws.cell(row=row_idx, column=c_idx, value=row_sum).number_format = '$#,##0.00' if metrica != 'transacciones' else '0'
-                ws.cell(row=row_idx, column=c_idx).font = Font(bold=True)
+            for row in rows:
+                for col_idx, col_name in enumerate(columns, start=1):
+                    value = _coerce_excel_value(row.get(col_name))
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    if col_idx == 1:
+                        cell.font = Font(bold=True)
+                    else:
+                        if value in (None, ""):
+                            cell.value = 0
+                        cell.number_format = number_format
+                        cell.alignment = Alignment(horizontal='right')
+                        if col_name == 'TOTAL_FILA':
+                            cell.font = Font(bold=True)
                 row_idx += 1
-            
-            # Total Row
-            ws.cell(row=row_idx, column=1, value="TOTAL").font = Font(bold=True)
-            c_idx = 2
-            grand_total = 0
-            for col_name in pivot.columns:
-                col_sum = pivot[col_name].sum()
-                ws.cell(row=row_idx, column=c_idx, value=col_sum).number_format = '$#,##0.00' if metrica != 'transacciones' else '0'
-                ws.cell(row=row_idx, column=c_idx).font = Font(bold=True)
-                grand_total += col_sum
-                c_idx += 1
-            ws.cell(row=row_idx, column=c_idx, value=grand_total).number_format = '$#,##0.00' if metrica != 'transacciones' else '0'
+
+            # Grand totals row (same semantics as UI footer)
+            total_fill = PatternFill(start_color="E2E8F0", end_color="E2E8F0", fill_type="solid")
+            for col_idx, col_name in enumerate(columns, start=1):
+                if col_idx == 1:
+                    cell = ws.cell(row=row_idx, column=col_idx, value='TOTAL GENERAL')
+                    cell.font = Font(bold=True)
+                else:
+                    total_value = _coerce_excel_value(grand_totals.get(col_name, 0))
+                    cell = ws.cell(row=row_idx, column=col_idx, value=total_value)
+                    cell.number_format = number_format
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal='right')
+                cell.fill = total_fill
+
+            # Basic usability formatting
+            ws.freeze_panes = "B5"
+            ws.column_dimensions['A'].width = 34
+            for col_idx in range(2, len(columns) + 1):
+                col_letter = ws.cell(row=4, column=col_idx).column_letter
+                ws.column_dimensions[col_letter].width = 16
 
         output = io.BytesIO()
         wb.save(output)

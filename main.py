@@ -39,11 +39,13 @@ from routers.token_auth import (
     RevokeLocalRequest as TokenRevokeLocalRequest,
     RevokeRequest as TokenRevokeRequest,
     RevokeServiceAccountTokensRequest as TokenRevokeServiceAccountTokensRequest,
+    UpsertExporterWebserviceConfigRequest as TokenUpsertExporterWebserviceConfigRequest,
     _hash_token as token_auth_hash_token,
     _parse_scopes as token_auth_parse_scopes,
     build_default_service as build_token_auth_service,
     create_router as create_token_auth_router,
     require_token_auth,
+    sanitize_exporter_webservice_config_row as sanitize_token_exporter_webservice_config_row,
     sanitize_service_account_row as sanitize_token_service_account_row,
     sanitize_token_row as sanitize_token_auth_row,
     utcnow as token_auth_utcnow,
@@ -4905,6 +4907,86 @@ async def security_list_token_audit(
     rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
     rows = _security_text_search(rows, q, ["event_type", "mall_id", "local_id", "ip", "ua", "token_id"])
     return rows
+
+@app.get("/api/v1/security/exporter/configs")
+async def security_list_exporter_webservice_configs(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    enabled: Optional[bool] = None,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if mall_id:
+        _ensure_operator_can_access_mall(operator_ctx, mall_id)
+        if local_id:
+            _security_validate_local_alignment(local_id, mall_id, operator_ctx)
+    elif local_id:
+        local_cfg = _load_local_config_with_access(local_id, operator_ctx)
+        mall_id = str(local_cfg.get("mall_id") or "") or None
+
+    svc = _security_token_service()
+    lister = getattr(svc.store, "list_exporter_webservice_configs", None)
+    if not callable(lister):
+        raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+
+    rows = lister({"mall_id": mall_id, "local_id": local_id, "enabled": enabled})
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    return [sanitize_token_exporter_webservice_config_row(row) for row in rows]
+
+
+@app.get("/api/v1/security/exporter/configs/{local_id}")
+async def security_get_exporter_webservice_config(
+    local_id: str,
+    mall_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    _security_validate_local_alignment(local_id, mall_id, operator_ctx)
+
+    svc = _security_token_service()
+    getter = getattr(svc.store, "get_exporter_webservice_config", None)
+    if not callable(getter):
+        raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+
+    row = getter(mall_id, local_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Configuracion exporter webservice no encontrada")
+    return sanitize_token_exporter_webservice_config_row(row)
+
+
+@app.put("/api/v1/security/exporter/configs/{local_id}")
+async def security_put_exporter_webservice_config(
+    local_id: str,
+    payload: TokenUpsertExporterWebserviceConfigRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(local_id, payload.mall_id, operator_ctx)
+
+    svc = _security_token_service()
+    upserter = getattr(svc.store, "upsert_exporter_webservice_config", None)
+    if not callable(upserter):
+        raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+
+    granularity = str(payload.default_granularity or "transaction").strip().lower()
+    if granularity == "daily_summary":
+        granularity = "daily"
+
+    row = upserter({
+        "mall_id": payload.mall_id,
+        "local_id": local_id,
+        "enabled": payload.enabled,
+        "contract_type": payload.contract_type,
+        "default_granularity": granularity,
+        "allow_transaction": payload.allow_transaction,
+        "allow_daily": payload.allow_daily,
+        "strict_validation": payload.strict_validation,
+        "notes": payload.notes.strip() if payload.notes else None,
+        "updated_by": operator_ctx.get("user_id"),
+    })
+    if not row:
+        raise HTTPException(status_code=500, detail="No se pudo guardar la configuracion exporter webservice")
+    return sanitize_token_exporter_webservice_config_row(row)
+
 
 @router_export.get("/sales-report/excel")
 async def export_sales_report_excel(

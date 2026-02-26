@@ -249,6 +249,32 @@ export const ImportManager: React.FC = () => {
     return `${store.nombre} (${store.codigo_interno || 'sin código'})`;
   };
 
+  const exporterWsRowsByLocal = useMemo(() => {
+    const byLocal = new Map<string, SecurityExporterWebserviceConfig>();
+    (exporterWsConfigs || []).forEach((row) => {
+      if (!row?.local_id) return;
+      byLocal.set(String(row.local_id), row);
+    });
+
+    const storeRows = [...(availableStores || [])]
+      .sort((a, b) => String(a?.nombre || '').localeCompare(String(b?.nombre || '')))
+      .map((store) => {
+        const localId = String(store?.id || '');
+        return { localId, store, config: byLocal.get(localId) || null };
+      });
+
+    const knownIds = new Set(storeRows.map((row) => row.localId));
+    const orphanRows = (exporterWsConfigs || [])
+      .filter((row) => row?.local_id && !knownIds.has(String(row.local_id)))
+      .map((row) => ({
+        localId: String(row.local_id),
+        store: null,
+        config: row,
+      }));
+
+    return [...storeRows, ...orphanRows];
+  }, [availableStores, exporterWsConfigs]);
+
   const saveExporterWebserviceConfig = async () => {
     if (!currentMall?.id) {
       alert('Debe seleccionar un mall antes de configurar webservice ERP.');
@@ -292,6 +318,220 @@ export const ImportManager: React.FC = () => {
       setExporterWsSaving(false);
     }
   };
+
+  const renderExporterWebservicePanel = () => (
+    <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-4">
+      <div className="bg-white border border-emerald-100 rounded-2xl shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-emerald-50 bg-gradient-to-r from-emerald-50 to-white">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <ArrowRightLeft size={16} className="text-emerald-600" />
+                ERP Webservice (MsExportador)
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Configura por local la recepción de ventas vía webservice. Este canal es independiente de FTP/SFTP.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadExporterWebserviceConfigs}
+              disabled={exporterWsLoading || !currentMall?.id || !authToken}
+              className="px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50 flex items-center gap-2"
+            >
+              <RefreshCw size={13} className={exporterWsLoading ? 'animate-spin' : ''} />
+              Recargar
+            </button>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {exporterWsError && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span>{exporterWsError}</span>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+              Local
+            </label>
+            <select
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-emerald-500"
+              value={selectedExporterLocalId}
+              onChange={(e) => setSelectedExporterLocalId(e.target.value)}
+            >
+              <option value="">-- Seleccionar local --</option>
+              {(availableStores || []).map((store) => (
+                <option key={store.id} value={store.id}>
+                  {store.nombre} ({store.codigo_interno || 'sin código'})
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-slate-500 mt-2">
+              Se guarda por local. Selecciona un local, guarda y luego cambia al siguiente para configurarlo.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.enabled}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, enabled: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <span className="text-sm font-medium text-slate-700">Canal habilitado</span>
+            </label>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                Granularidad por defecto
+              </label>
+              <select
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-emerald-500"
+                value={exporterWsDraft.default_granularity}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, default_granularity: e.target.value as 'transaction' | 'daily' }))}
+              >
+                <option value="transaction">Transacción</option>
+                <option value="daily">Resumen diario</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.allow_transaction}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, allow_transaction: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Permitir transacción
+            </label>
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.allow_daily}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, allow_daily: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Permitir resumen diario
+            </label>
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.strict_validation}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, strict_validation: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Validación estricta
+            </label>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+              Notas
+            </label>
+            <textarea
+              rows={3}
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white text-sm focus:ring-2 focus:ring-emerald-500"
+              placeholder="Ej: ERP activo desde marzo, envío por transacción."
+              value={exporterWsDraft.notes}
+              onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, notes: e.target.value }))}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-2">
+            <div className="text-xs text-slate-500">
+              Contrato fijo: <span className="font-semibold text-slate-700">msmall_sales_v1</span>
+            </div>
+            <button
+              type="button"
+              onClick={saveExporterWebserviceConfig}
+              disabled={exporterWsSaving || !selectedExporterLocalId || !currentMall?.id || !authToken}
+              className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2"
+              title={selectedExporterLocalId ? `Guardar para ${getStoreLabel(selectedExporterLocalId)}` : 'Seleccione un local'}
+            >
+              {exporterWsSaving ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+              {exporterWsSaving ? 'Guardando...' : 'Guardar Configuración'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/80">
+          <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+            <Database size={15} className="text-slate-500" />
+            Estado Webservice por Local
+          </h3>
+          <p className="text-xs text-slate-500 mt-1">
+            Se configura un local a la vez. Haz click en cualquier local para cargar su configuración en el formulario.
+          </p>
+        </div>
+
+        <div className="p-4">
+          {exporterWsLoading ? (
+            <div className="text-sm text-slate-500 flex items-center gap-2">
+              <RefreshCw size={14} className="animate-spin" />
+              Cargando configuración webservice...
+            </div>
+          ) : exporterWsRowsByLocal.length === 0 ? (
+            <div className="text-sm text-slate-500 border border-dashed border-slate-200 rounded-xl p-4">
+              No hay locales disponibles para configurar en este mall.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+              {exporterWsRowsByLocal.map((row) => {
+                const { localId, store, config } = row;
+                const isSelected = String(localId) === String(selectedExporterLocalId);
+                const storeLabel = store
+                  ? `${store.nombre} (${store.codigo_interno || 'sin código'})`
+                  : `${localId} (local no encontrado)`;
+                return (
+                  <button
+                    key={`erpws-${localId}`}
+                    type="button"
+                    onClick={() => setSelectedExporterLocalId(String(localId))}
+                    className={`w-full text-left rounded-xl border px-3 py-3 transition-all ${
+                      isSelected ? 'border-emerald-300 bg-emerald-50/70' : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-800">{storeLabel}</div>
+                        <div className="text-[11px] text-slate-500 mt-1">
+                          {config
+                            ? `${config.allow_transaction ? 'Transacción' : 'Sin transacción'} · ${config.allow_daily ? 'Daily' : 'Sin daily'} · Default ${config.default_granularity}`
+                            : 'Sin configuración webservice guardada'}
+                        </div>
+                      </div>
+                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-[10px] font-bold ${
+                        !config
+                          ? 'bg-slate-100 text-slate-600'
+                          : config.enabled
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : 'bg-amber-100 text-amber-700'
+                      }`}>
+                        {!config ? 'SIN CONFIG' : config.enabled ? 'HABILITADO' : 'DESHABILITADO'}
+                      </span>
+                    </div>
+                    {config?.notes && (
+                      <div className="mt-2 text-xs text-slate-600 line-clamp-2">
+                        {config.notes}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 
   const closeFormDrawer = () => {
     setShowForm(false);
@@ -1203,204 +1443,6 @@ export const ImportManager: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-4">
-        <div className="bg-white border border-emerald-100 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-emerald-50 bg-gradient-to-r from-emerald-50 to-white">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                  <ArrowRightLeft size={16} className="text-emerald-600" />
-                  ERP Webservice (MsExportador)
-                </h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  Configura por local la recepción de ventas vía webservice. Este canal es independiente de FTP/SFTP.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={loadExporterWebserviceConfigs}
-                disabled={exporterWsLoading || !currentMall?.id || !authToken}
-                className="px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50 flex items-center gap-2"
-              >
-                <RefreshCw size={13} className={exporterWsLoading ? 'animate-spin' : ''} />
-                Recargar
-              </button>
-            </div>
-          </div>
-
-          <div className="p-5 space-y-4">
-            {exporterWsError && (
-              <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                <span>{exporterWsError}</span>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                Local
-              </label>
-              <select
-                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-emerald-500"
-                value={selectedExporterLocalId}
-                onChange={(e) => setSelectedExporterLocalId(e.target.value)}
-              >
-                <option value="">-- Seleccionar local --</option>
-                {(availableStores || []).map((store) => (
-                  <option key={store.id} value={store.id}>
-                    {store.nombre} ({store.codigo_interno || 'sin código'})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <label className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
-                <input
-                  type="checkbox"
-                  checked={exporterWsDraft.enabled}
-                  onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, enabled: e.target.checked }))}
-                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-                <span className="text-sm font-medium text-slate-700">Canal habilitado</span>
-              </label>
-
-              <div>
-                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                  Granularidad por defecto
-                </label>
-                <select
-                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-emerald-500"
-                  value={exporterWsDraft.default_granularity}
-                  onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, default_granularity: e.target.value as 'transaction' | 'daily' }))}
-                >
-                  <option value="transaction">Transacción</option>
-                  <option value="daily">Resumen diario</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={exporterWsDraft.allow_transaction}
-                  onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, allow_transaction: e.target.checked }))}
-                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-                Permitir transacción
-              </label>
-              <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={exporterWsDraft.allow_daily}
-                  onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, allow_daily: e.target.checked }))}
-                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-                Permitir resumen diario
-              </label>
-              <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={exporterWsDraft.strict_validation}
-                  onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, strict_validation: e.target.checked }))}
-                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-                Validación estricta
-              </label>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                Notas
-              </label>
-              <textarea
-                rows={3}
-                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white text-sm focus:ring-2 focus:ring-emerald-500"
-                placeholder="Ej: ERP activo desde marzo, envío por transacción."
-                value={exporterWsDraft.notes}
-                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, notes: e.target.value }))}
-              />
-            </div>
-
-            <div className="flex items-center justify-between gap-3 pt-2">
-              <div className="text-xs text-slate-500">
-                Contrato fijo: <span className="font-semibold text-slate-700">msmall_sales_v1</span>
-              </div>
-              <button
-                type="button"
-                onClick={saveExporterWebserviceConfig}
-                disabled={exporterWsSaving || !selectedExporterLocalId || !currentMall?.id || !authToken}
-                className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2"
-              >
-                {exporterWsSaving ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                {exporterWsSaving ? 'Guardando...' : 'Guardar Configuración'}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/80">
-            <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-              <Database size={15} className="text-slate-500" />
-              Configuraciones Webservice por Local
-            </h3>
-            <p className="text-xs text-slate-500 mt-1">
-              Estado actual del canal webservice ERP para el mall seleccionado.
-            </p>
-          </div>
-
-          <div className="p-4">
-            {exporterWsLoading ? (
-              <div className="text-sm text-slate-500 flex items-center gap-2">
-                <RefreshCw size={14} className="animate-spin" />
-                Cargando configuración webservice...
-              </div>
-            ) : exporterWsConfigs.length === 0 ? (
-              <div className="text-sm text-slate-500 border border-dashed border-slate-200 rounded-xl p-4">
-                No hay configuraciones webservice guardadas para este mall.
-              </div>
-            ) : (
-              <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
-                {exporterWsConfigs.map((row) => {
-                  const isSelected = String(row.local_id) === String(selectedExporterLocalId);
-                  return (
-                    <button
-                      key={`${row.mall_id}-${row.local_id}`}
-                      type="button"
-                      onClick={() => setSelectedExporterLocalId(String(row.local_id))}
-                      className={`w-full text-left rounded-xl border px-3 py-3 transition-all ${
-                        isSelected ? 'border-emerald-300 bg-emerald-50/70' : 'border-slate-200 bg-white hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-semibold text-slate-800">{getStoreLabel(row.local_id)}</div>
-                          <div className="text-[11px] text-slate-500 mt-1">
-                            {row.allow_transaction ? 'Transacción' : 'Sin transacción'} · {row.allow_daily ? 'Daily' : 'Sin daily'} · Default {row.default_granularity}
-                          </div>
-                        </div>
-                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-[10px] font-bold ${
-                          row.enabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
-                        }`}>
-                          {row.enabled ? 'HABILITADO' : 'DESHABILITADO'}
-                        </span>
-                      </div>
-                      {row.notes && (
-                        <div className="mt-2 text-xs text-slate-600 line-clamp-2">
-                          {row.notes}
-                        </div>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
       {showForm && (
         <div className="fixed inset-0 z-[105] bg-black/40 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="absolute inset-0 flex justify-end" onClick={closeFormDrawer}>
@@ -2304,6 +2346,8 @@ export const ImportManager: React.FC = () => {
           </div>
         </div>
       )}
+
+      {renderExporterWebservicePanel()}
 
       {/* Manual Execution Modal */}
       {showManualModal && (

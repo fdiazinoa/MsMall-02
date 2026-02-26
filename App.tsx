@@ -15,7 +15,7 @@ console.error = (...args: any[]) => {
 };
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security'>('analytics');
+  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'erp-webservice' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security'>('analytics');
   const { session, loading } = useAuth();
 
   // Estados para el login
@@ -136,7 +136,7 @@ const App: React.FC = () => {
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
               </div>
             }>
-              <Dashboard activeTab={activeTab} />
+          <Dashboard activeTab={activeTab} setActiveTab={setActiveTab} />
             </Suspense>
           </div>
         </main>

@@ -52,6 +52,6 @@
 - Ver `examples/token_auth_flow.http`
 
 ## Notas de compatibilidad
-- No reemplaza el auth actual del ERP; agrega backend central de tokens.
+- No reemplaza el auth actual de MsMall Web; agrega backend central de tokens.
 - `token_type=app` intenta reutilizar login existente de Supabase (`sign_in_with_password`).
 - Si el flujo real de usuarios difiere, ajustar integración en `routers/token_auth.py` (`authenticate_app_user`).

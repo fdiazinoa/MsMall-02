@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, SecurityApiToken, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -203,6 +203,12 @@ const normalizeCsvSaleDate = (raw: any, preferredFormat: CsvDateFormatPreference
   let text = String(raw).trim();
   if (!text) return null;
   text = text.replace(/^"(.*)"$/, '$1').trim().replace(/^'(.*)'$/, '$1').trim();
+  // Common POS/Excel exports append a zeroed time to the date field. Keep only the date part
+  // before applying the format-specific parser (e.g. "2026-01-02 00:00:00.000").
+  text = text.replace(
+    /^((?:\d{4}[-/]\d{2}[-/]\d{2})|(?:\d{2}[-/]\d{2}[-/]\d{2,4}))(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/,
+    '$1'
+  );
   const pref = String(preferredFormat || 'auto').toLowerCase() as CsvDateFormatPreference;
 
   let m: RegExpMatchArray | null;
@@ -265,6 +271,44 @@ const normalizeCsvSaleDate = (raw: any, preferredFormat: CsvDateFormatPreference
   m = text.match(/^(\d{4})(\d{2})(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?$/); // YYYYmmDD[ time]
   if (m) {
     return toYmdIfValid(Number(m[1]), Number(m[2]), Number(m[3]));
+  }
+
+  return null;
+};
+
+const normalizeCsvSaleTime = (raw: any): string | null => {
+  if (raw === null || raw === undefined) return null;
+  let text = String(raw).trim();
+  if (!text) return null;
+  text = text.replace(/^"(.*)"$/, '$1').trim().replace(/^'(.*)'$/, '$1').trim();
+
+  let m = text.match(/\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/);
+  if (m) {
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
+    const ss = Number(m[3] || '0');
+    if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59 && ss >= 0 && ss <= 59) {
+      return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
+    }
+  }
+
+  m = text.match(/^(\d{2})(\d{2})(\d{2})$/); // HHMMSS
+  if (m) {
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
+    const ss = Number(m[3]);
+    if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59 && ss >= 0 && ss <= 59) {
+      return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
+    }
+  }
+
+  m = text.match(/^(\d{2})(\d{2})$/); // HHMM
+  if (m) {
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
+    if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) {
+      return `${pad2(hh)}:${pad2(mm)}:00`;
+    }
   }
 
   return null;
@@ -930,11 +974,13 @@ export const ApiService = {
       const query = new URLSearchParams();
       if (mallId) query.set('mall_id', mallId);
       const suffix = query.toString() ? `?${query.toString()}` : '';
+      const headers: Record<string, string> = { 'Accept': 'application/json' };
+      if (mallId) headers['X-Mall-Id'] = mallId;
       return await fetchJsonWithBaseFallback<any[]>(
         `/load-logs${suffix}`,
         {
           method: 'GET',
-          headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+          headers: withAuthHeaders(token, headers)
         },
         'Error cargando historial de cargas'
       );
@@ -983,7 +1029,8 @@ export const ApiService = {
       {
         method: 'DELETE',
         headers: withAuthHeaders(token, {
-          'Accept': 'application/json'
+          'Accept': 'application/json',
+          'X-Mall-Id': mallId
         })
       },
       "Error limpiando historial de cargas"
@@ -1334,6 +1381,8 @@ export const ApiService = {
               const bruto = parseCsvAmount(columns[3]);
               const impuestos = parseCsvAmount(columns[4]);
               const neto = parseCsvAmount(columns[5]);
+              const horaRaw = (columns[6] ?? '').trim();
+              const hora = horaRaw ? normalizeCsvSaleTime(horaRaw) : null;
 
               if (!fecha) {
                 lineErrors.push({
@@ -1347,6 +1396,14 @@ export const ApiService = {
                 lineErrors.push({
                   linea: i + 1,
                   error: `Montos inválidos. bruto='${columns[3] ?? ''}', impuestos='${columns[4] ?? ''}', neto='${columns[5] ?? ''}'`
+                });
+                continue;
+              }
+
+              if (horaRaw && !hora) {
+                lineErrors.push({
+                  linea: i + 1,
+                  error: `Formato de hora inválido: ${horaRaw}`
                 });
                 continue;
               }
@@ -1371,7 +1428,7 @@ export const ApiService = {
                 local_id: store.id,
                 mall_id: store.mall_id,  // Include mall_id from store
                 fecha: fecha,
-                hora: '12:00:00',
+                hora: hora || '12:00:00',
                 total_bruto: bruto,
                 total_impuestos: impuestos,
                 total_neto: neto,
@@ -1991,6 +2048,63 @@ export const ApiService = {
       `/security/token-audit${qs ? `?${qs}` : ''}`,
       { method: 'GET', headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
       "No se pudo cargar la auditoría de tokens."
+    );
+  },
+
+  async getSecurityExporterWebserviceConfigs(
+    token: string,
+    filters: { mall_id?: string; local_id?: string; enabled?: boolean } = {}
+  ): Promise<SecurityExporterWebserviceConfig[]> {
+    const params = new URLSearchParams();
+    if (filters.mall_id) params.set('mall_id', filters.mall_id);
+    if (filters.local_id) params.set('local_id', filters.local_id);
+    if (typeof filters.enabled === 'boolean') params.set('enabled', String(filters.enabled));
+    const qs = params.toString();
+    return fetchJsonWithBaseFallback<SecurityExporterWebserviceConfig[]>(
+      `/security/exporter/configs${qs ? `?${qs}` : ''}`,
+      { method: 'GET', headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      "No se pudieron cargar las configuraciones de webservice ERP."
+    );
+  },
+
+  async getSecurityExporterWebserviceConfig(
+    localId: string,
+    mallId: string,
+    token: string
+  ): Promise<SecurityExporterWebserviceConfig> {
+    const qs = new URLSearchParams({ mall_id: mallId }).toString();
+    return fetchJsonWithBaseFallback<SecurityExporterWebserviceConfig>(
+      `/security/exporter/configs/${encodeURIComponent(localId)}?${qs}`,
+      { method: 'GET', headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      "No se pudo cargar la configuración de webservice ERP."
+    );
+  },
+
+  async upsertSecurityExporterWebserviceConfig(
+    localId: string,
+    payload: {
+      mall_id: string;
+      enabled: boolean;
+      contract_type?: 'msmall_sales_v1';
+      default_granularity: 'transaction' | 'daily' | 'daily_summary';
+      allow_transaction: boolean;
+      allow_daily: boolean;
+      strict_validation: boolean;
+      notes?: string | null;
+    },
+    token: string
+  ): Promise<SecurityExporterWebserviceConfig> {
+    return fetchJsonWithBaseFallback<SecurityExporterWebserviceConfig>(
+      `/security/exporter/configs/${encodeURIComponent(localId)}`,
+      {
+        method: 'PUT',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify({
+          contract_type: 'msmall_sales_v1',
+          ...payload,
+        }),
+      },
+      "No se pudo guardar la configuración de webservice ERP."
     );
   },
 };

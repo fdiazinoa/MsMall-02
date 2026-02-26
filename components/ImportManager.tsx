@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 // Fix: Import types from '../types' instead of '../api'
-import { ImportConfig, ImportProtocol, RemoteConnection } from '../types';
+import { ImportConfig, ImportProtocol, RemoteConnection, SecurityExporterWebserviceConfig } from '../types';
 import { SmartMappingModal } from './SmartMappingModal';
 import MappingModal from './MappingModal';
 import {
@@ -50,7 +50,21 @@ const createDefaultImportConfig = (): ImportConfig => ({
   password: ''
 });
 
-export const ImportManager: React.FC = () => {
+const createDefaultExporterWebserviceDraft = () => ({
+  enabled: true,
+  contract_type: 'msmall_sales_v1' as const,
+  default_granularity: 'transaction' as 'transaction' | 'daily',
+  allow_transaction: true,
+  allow_daily: true,
+  strict_validation: true,
+  notes: ''
+});
+
+interface ImportManagerProps {
+  initialSection?: 'ftp' | 'webservice';
+}
+
+export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = 'ftp' }) => {
   const { currentMall, isAdmin, isTic, session } = useAuth();
   const canManageImports = isAdmin || isTic;
   const authToken = session?.access_token || '';
@@ -118,6 +132,7 @@ export const ImportManager: React.FC = () => {
   }>(initialBatchProgress);
   const batchCancelRef = useRef(false);
   const browserFilesInputRef = useRef<HTMLInputElement | null>(null);
+  const exporterWebservicePanelRef = useRef<HTMLDivElement | null>(null);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
 
   // Progress Modal State
@@ -139,6 +154,12 @@ export const ImportManager: React.FC = () => {
   const [editingConfig, setEditingConfig] = useState<ImportConfig>(createDefaultImportConfig());
 
   const [availableStores, setAvailableStores] = useState<any[]>([]);
+  const [exporterWsConfigs, setExporterWsConfigs] = useState<SecurityExporterWebserviceConfig[]>([]);
+  const [exporterWsLoading, setExporterWsLoading] = useState(false);
+  const [exporterWsSaving, setExporterWsSaving] = useState(false);
+  const [selectedExporterLocalId, setSelectedExporterLocalId] = useState('');
+  const [exporterWsDraft, setExporterWsDraft] = useState(createDefaultExporterWebserviceDraft());
+  const [exporterWsError, setExporterWsError] = useState<string | null>(null);
 
   const loadConfigs = async () => {
     if (!currentMall?.id) return;
@@ -164,6 +185,25 @@ export const ImportManager: React.FC = () => {
     }
   };
 
+  const loadExporterWebserviceConfigs = async () => {
+    if (!currentMall?.id || !authToken) {
+      setExporterWsConfigs([]);
+      return;
+    }
+    setExporterWsLoading(true);
+    setExporterWsError(null);
+    try {
+      const rows = await ApiService.getSecurityExporterWebserviceConfigs(authToken, { mall_id: currentMall.id });
+      setExporterWsConfigs(rows);
+    } catch (error: any) {
+      console.error("Error loading exporter webservice configs:", error);
+      setExporterWsConfigs([]);
+      setExporterWsError(error?.message || 'No se pudo cargar la configuración webservice ERP.');
+    } finally {
+      setExporterWsLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (currentMall) {
       loadConfigs();
@@ -171,6 +211,340 @@ export const ImportManager: React.FC = () => {
       loadRemoteConnections();
     }
   }, [currentMall]);
+
+  useEffect(() => {
+    if (currentMall?.id && authToken) {
+      loadExporterWebserviceConfigs();
+    } else {
+      setExporterWsConfigs([]);
+    }
+  }, [currentMall?.id, authToken]);
+
+  useEffect(() => {
+    if (initialSection !== 'webservice') return;
+    const id = window.setTimeout(() => {
+      exporterWebservicePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [initialSection, loading, configs.length]);
+
+  useEffect(() => {
+    if (!selectedExporterLocalId && availableStores.length > 0) {
+      setSelectedExporterLocalId(String(availableStores[0].id || ''));
+    }
+  }, [availableStores, selectedExporterLocalId]);
+
+  useEffect(() => {
+    if (!selectedExporterLocalId) {
+      setExporterWsDraft(createDefaultExporterWebserviceDraft());
+      return;
+    }
+    const existing = exporterWsConfigs.find((row) => String(row.local_id) === String(selectedExporterLocalId));
+    if (!existing) {
+      setExporterWsDraft(createDefaultExporterWebserviceDraft());
+      return;
+    }
+    setExporterWsDraft({
+      enabled: !!existing.enabled,
+      contract_type: 'msmall_sales_v1',
+      default_granularity: existing.default_granularity === 'daily' ? 'daily' : 'transaction',
+      allow_transaction: existing.allow_transaction !== false,
+      allow_daily: existing.allow_daily !== false,
+      strict_validation: existing.strict_validation !== false,
+      notes: existing.notes || ''
+    });
+  }, [selectedExporterLocalId, exporterWsConfigs]);
+
+  const getStoreLabel = (localId?: string | null) => {
+    if (!localId) return 'Local no definido';
+    const store = (availableStores || []).find((s) => String(s.id) === String(localId));
+    if (!store) return localId;
+    return `${store.nombre} (${store.codigo_interno || 'sin código'})`;
+  };
+
+  const exporterWsRowsByLocal = useMemo(() => {
+    const byLocal = new Map<string, SecurityExporterWebserviceConfig>();
+    (exporterWsConfigs || []).forEach((row) => {
+      if (!row?.local_id) return;
+      byLocal.set(String(row.local_id), row);
+    });
+
+    const storeRows = [...(availableStores || [])]
+      .sort((a, b) => String(a?.nombre || '').localeCompare(String(b?.nombre || '')))
+      .map((store) => {
+        const localId = String(store?.id || '');
+        return { localId, store, config: byLocal.get(localId) || null };
+      });
+
+    const knownIds = new Set(storeRows.map((row) => row.localId));
+    const orphanRows = (exporterWsConfigs || [])
+      .filter((row) => row?.local_id && !knownIds.has(String(row.local_id)))
+      .map((row) => ({
+        localId: String(row.local_id),
+        store: null,
+        config: row,
+      }));
+
+    return [...storeRows, ...orphanRows];
+  }, [availableStores, exporterWsConfigs]);
+
+  const saveExporterWebserviceConfig = async () => {
+    if (!currentMall?.id) {
+      alert('Debe seleccionar un mall antes de configurar webservice ERP.');
+      return;
+    }
+    if (!authToken) {
+      alert('No hay sesión activa para guardar la configuración webservice ERP.');
+      return;
+    }
+    if (!selectedExporterLocalId) {
+      alert('Seleccione un local para configurar el webservice ERP.');
+      return;
+    }
+    setExporterWsSaving(true);
+    try {
+      const saved = await ApiService.upsertSecurityExporterWebserviceConfig(
+        selectedExporterLocalId,
+        {
+          mall_id: currentMall.id,
+          enabled: exporterWsDraft.enabled,
+          contract_type: 'msmall_sales_v1',
+          default_granularity: exporterWsDraft.default_granularity,
+          allow_transaction: exporterWsDraft.allow_transaction,
+          allow_daily: exporterWsDraft.allow_daily,
+          strict_validation: exporterWsDraft.strict_validation,
+          notes: (exporterWsDraft.notes || '').trim() || null
+        },
+        authToken
+      );
+      setExporterWsConfigs((prev) => {
+        const next = prev.filter((row) => String(row.local_id) !== String(saved.local_id));
+        return [saved, ...next];
+      });
+      setExporterWsError(null);
+      alert(`Configuración webservice ERP guardada para ${getStoreLabel(saved.local_id)}.`);
+    } catch (error: any) {
+      console.error("Error saving exporter webservice config:", error);
+      setExporterWsError(error?.message || 'No se pudo guardar la configuración webservice ERP.');
+      alert(error?.message || 'No se pudo guardar la configuración webservice ERP.');
+    } finally {
+      setExporterWsSaving(false);
+    }
+  };
+
+  const renderExporterWebservicePanel = () => (
+    <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-4">
+      <div className="bg-white border border-emerald-100 rounded-2xl shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-emerald-50 bg-gradient-to-r from-emerald-50 to-white">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <ArrowRightLeft size={16} className="text-emerald-600" />
+                ERP Webservice (MsExportador)
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Configura por local la recepción de ventas vía webservice. Este canal es independiente de FTP/SFTP.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadExporterWebserviceConfigs}
+              disabled={exporterWsLoading || !currentMall?.id || !authToken}
+              className="px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50 flex items-center gap-2"
+            >
+              <RefreshCw size={13} className={exporterWsLoading ? 'animate-spin' : ''} />
+              Recargar
+            </button>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {exporterWsError && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span>{exporterWsError}</span>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+              Local
+            </label>
+            <select
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-emerald-500"
+              value={selectedExporterLocalId}
+              onChange={(e) => setSelectedExporterLocalId(e.target.value)}
+            >
+              <option value="">-- Seleccionar local --</option>
+              {(availableStores || []).map((store) => (
+                <option key={store.id} value={store.id}>
+                  {store.nombre} ({store.codigo_interno || 'sin código'})
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-slate-500 mt-2">
+              Se guarda por local. Selecciona un local, guarda y luego cambia al siguiente para configurarlo.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.enabled}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, enabled: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <span className="text-sm font-medium text-slate-700">Canal habilitado</span>
+            </label>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                Granularidad por defecto
+              </label>
+              <select
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-emerald-500"
+                value={exporterWsDraft.default_granularity}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, default_granularity: e.target.value as 'transaction' | 'daily' }))}
+              >
+                <option value="transaction">Transacción</option>
+                <option value="daily">Resumen diario</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.allow_transaction}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, allow_transaction: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Permitir transacción
+            </label>
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.allow_daily}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, allow_daily: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Permitir resumen diario
+            </label>
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.strict_validation}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, strict_validation: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Validación estricta
+            </label>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+              Notas
+            </label>
+            <textarea
+              rows={3}
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white text-sm focus:ring-2 focus:ring-emerald-500"
+              placeholder="Ej: ERP activo desde marzo, envío por transacción."
+              value={exporterWsDraft.notes}
+              onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, notes: e.target.value }))}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-2">
+            <div className="text-xs text-slate-500">
+              Contrato fijo: <span className="font-semibold text-slate-700">msmall_sales_v1</span>
+            </div>
+            <button
+              type="button"
+              onClick={saveExporterWebserviceConfig}
+              disabled={exporterWsSaving || !selectedExporterLocalId || !currentMall?.id || !authToken}
+              className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2"
+              title={selectedExporterLocalId ? `Guardar para ${getStoreLabel(selectedExporterLocalId)}` : 'Seleccione un local'}
+            >
+              {exporterWsSaving ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+              {exporterWsSaving ? 'Guardando...' : 'Guardar Configuración'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/80">
+          <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+            <Database size={15} className="text-slate-500" />
+            Estado Webservice por Local
+          </h3>
+          <p className="text-xs text-slate-500 mt-1">
+            Se configura un local a la vez. Haz click en cualquier local para cargar su configuración en el formulario.
+          </p>
+        </div>
+
+        <div className="p-4">
+          {exporterWsLoading ? (
+            <div className="text-sm text-slate-500 flex items-center gap-2">
+              <RefreshCw size={14} className="animate-spin" />
+              Cargando configuración webservice...
+            </div>
+          ) : exporterWsRowsByLocal.length === 0 ? (
+            <div className="text-sm text-slate-500 border border-dashed border-slate-200 rounded-xl p-4">
+              No hay locales disponibles para configurar en este mall.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+              {exporterWsRowsByLocal.map((row) => {
+                const { localId, store, config } = row;
+                const isSelected = String(localId) === String(selectedExporterLocalId);
+                const storeLabel = store
+                  ? `${store.nombre} (${store.codigo_interno || 'sin código'})`
+                  : `${localId} (local no encontrado)`;
+                return (
+                  <button
+                    key={`erpws-${localId}`}
+                    type="button"
+                    onClick={() => setSelectedExporterLocalId(String(localId))}
+                    className={`w-full text-left rounded-xl border px-3 py-3 transition-all ${
+                      isSelected ? 'border-emerald-300 bg-emerald-50/70' : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-800">{storeLabel}</div>
+                        <div className="text-[11px] text-slate-500 mt-1">
+                          {config
+                            ? `${config.allow_transaction ? 'Transacción' : 'Sin transacción'} · ${config.allow_daily ? 'Daily' : 'Sin daily'} · Default ${config.default_granularity}`
+                            : 'Sin configuración webservice guardada'}
+                        </div>
+                      </div>
+                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-[10px] font-bold ${
+                        !config
+                          ? 'bg-slate-100 text-slate-600'
+                          : config.enabled
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : 'bg-amber-100 text-amber-700'
+                      }`}>
+                        {!config ? 'SIN CONFIG' : config.enabled ? 'HABILITADO' : 'DESHABILITADO'}
+                      </span>
+                    </div>
+                    {config?.notes && (
+                      <div className="mt-2 text-xs text-slate-600 line-clamp-2">
+                        {config.notes}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 
   const closeFormDrawer = () => {
     setShowForm(false);
@@ -1985,6 +2359,10 @@ export const ImportManager: React.FC = () => {
           </div>
         </div>
       )}
+
+      <div ref={exporterWebservicePanelRef}>
+        {renderExporterWebservicePanel()}
+      </div>
 
       {/* Manual Execution Modal */}
       {showManualModal && (

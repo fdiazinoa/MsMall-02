@@ -253,3 +253,19 @@ export interface SecurityTokenAuditLogEntry {
   metadata?: Record<string, any>;
   created_at: string;
 }
+
+export interface SecurityExporterWebserviceConfig {
+  id?: string;
+  mall_id: string;
+  local_id: string;
+  enabled: boolean;
+  contract_type: 'msmall_sales_v1' | string;
+  default_granularity: 'transaction' | 'daily' | string;
+  allow_transaction: boolean;
+  allow_daily: boolean;
+  strict_validation: boolean;
+  notes?: string | null;
+  updated_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}

@@ -17,9 +17,10 @@ import { SecurityTokenAdmin } from './SecurityTokenAdmin';
 
 interface DashboardProps {
   activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'erp-webservice' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security';
+  setActiveTab: (tab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'erp-webservice' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security') => void;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab }) => {
   switch (activeTab) {
     case 'analytics':
       return <DashboardKPIs />;
@@ -36,7 +37,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
     case 'auto-import':
       return <ImportManager initialSection="ftp" />;
     case 'erp-webservice':
-      return <ImportManager initialSection="webservice" />;
+      return <ImportManager initialSection="webservice" onCloseWebserviceModal={() => setActiveTab('auto-import')} />;
     case 'monitor':
       return <LoadMonitor />;
     case 'financial':

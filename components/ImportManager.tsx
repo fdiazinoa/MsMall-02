@@ -62,9 +62,10 @@ const createDefaultExporterWebserviceDraft = () => ({
 
 interface ImportManagerProps {
   initialSection?: 'ftp' | 'webservice';
+  onCloseWebserviceModal?: () => void;
 }
 
-export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = 'ftp' }) => {
+export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = 'ftp', onCloseWebserviceModal }) => {
   const { currentMall, isAdmin, isTic, session } = useAuth();
   const canManageImports = isAdmin || isTic;
   const authToken = session?.access_token || '';
@@ -134,6 +135,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const browserFilesInputRef = useRef<HTMLInputElement | null>(null);
   const exporterWebservicePanelRef = useRef<HTMLDivElement | null>(null);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
+  const isWebserviceModalMode = initialSection === 'webservice';
 
   // Progress Modal State
   const [showProgressModal, setShowProgressModal] = useState(false);
@@ -1415,6 +1417,36 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     );
   }
 
+  if (isWebserviceModalMode) {
+    return (
+      <div className="fixed inset-0 z-[120] bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+        <div
+          className="absolute inset-0"
+          onClick={() => {
+            if (onCloseWebserviceModal) onCloseWebserviceModal();
+          }}
+        />
+        <div className="relative h-full w-full p-4 md:p-6 lg:p-8 flex items-center justify-center">
+          <div className="relative w-full max-w-7xl max-h-[92vh] overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => {
+                if (onCloseWebserviceModal) onCloseWebserviceModal();
+              }}
+              className="absolute right-3 top-3 z-10 rounded-full bg-white/95 border border-slate-200 text-slate-500 hover:text-slate-700 hover:bg-white p-2 shadow-sm"
+              title="Cerrar ERP Webservice"
+            >
+              <XCircle size={20} />
+            </button>
+            <div ref={exporterWebservicePanelRef}>
+              {renderExporterWebservicePanel()}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -2359,10 +2391,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           </div>
         </div>
       )}
-
-      <div ref={exporterWebservicePanelRef}>
-        {renderExporterWebservicePanel()}
-      </div>
 
       {/* Manual Execution Modal */}
       {showManualModal && (

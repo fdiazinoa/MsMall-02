@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, SecurityApiToken, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -2048,6 +2048,63 @@ export const ApiService = {
       `/security/token-audit${qs ? `?${qs}` : ''}`,
       { method: 'GET', headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
       "No se pudo cargar la auditoría de tokens."
+    );
+  },
+
+  async getSecurityExporterWebserviceConfigs(
+    token: string,
+    filters: { mall_id?: string; local_id?: string; enabled?: boolean } = {}
+  ): Promise<SecurityExporterWebserviceConfig[]> {
+    const params = new URLSearchParams();
+    if (filters.mall_id) params.set('mall_id', filters.mall_id);
+    if (filters.local_id) params.set('local_id', filters.local_id);
+    if (typeof filters.enabled === 'boolean') params.set('enabled', String(filters.enabled));
+    const qs = params.toString();
+    return fetchJsonWithBaseFallback<SecurityExporterWebserviceConfig[]>(
+      `/security/exporter/configs${qs ? `?${qs}` : ''}`,
+      { method: 'GET', headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      "No se pudieron cargar las configuraciones de webservice ERP."
+    );
+  },
+
+  async getSecurityExporterWebserviceConfig(
+    localId: string,
+    mallId: string,
+    token: string
+  ): Promise<SecurityExporterWebserviceConfig> {
+    const qs = new URLSearchParams({ mall_id: mallId }).toString();
+    return fetchJsonWithBaseFallback<SecurityExporterWebserviceConfig>(
+      `/security/exporter/configs/${encodeURIComponent(localId)}?${qs}`,
+      { method: 'GET', headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      "No se pudo cargar la configuración de webservice ERP."
+    );
+  },
+
+  async upsertSecurityExporterWebserviceConfig(
+    localId: string,
+    payload: {
+      mall_id: string;
+      enabled: boolean;
+      contract_type?: 'msmall_sales_v1';
+      default_granularity: 'transaction' | 'daily' | 'daily_summary';
+      allow_transaction: boolean;
+      allow_daily: boolean;
+      strict_validation: boolean;
+      notes?: string | null;
+    },
+    token: string
+  ): Promise<SecurityExporterWebserviceConfig> {
+    return fetchJsonWithBaseFallback<SecurityExporterWebserviceConfig>(
+      `/security/exporter/configs/${encodeURIComponent(localId)}`,
+      {
+        method: 'PUT',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify({
+          contract_type: 'msmall_sales_v1',
+          ...payload,
+        }),
+      },
+      "No se pudo guardar la configuración de webservice ERP."
     );
   },
 };

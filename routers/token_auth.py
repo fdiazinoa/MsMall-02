@@ -155,6 +155,14 @@ class SupabaseTokenStore:
         res = self.db.table("service_accounts").update(updates).eq("id", service_account_id).execute()
         return (res.data or [None])[0]
 
+    def list_service_accounts(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        self._require_db()
+        q = self.db.table("service_accounts").select("*").order("created_at", desc=True)
+        for key in ["mall_id", "local_id", "token_type", "status"]:
+            if filters.get(key):
+                q = q.eq(key, filters[key])
+        return q.execute().data or []
+
     def create_api_token(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_db()
         return self.db.table("api_tokens").insert(payload).execute().data[0]
@@ -177,10 +185,27 @@ class SupabaseTokenStore:
     def list_tokens(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         self._require_db()
         q = self.db.table("api_tokens").select("*").order("created_at", desc=True)
-        for key in ["mall_id", "local_id", "token_type", "status"]:
+        for key in ["mall_id", "local_id", "token_type", "status", "service_account_id"]:
             if filters.get(key):
                 q = q.eq(key, filters[key])
         return q.execute().data or []
+
+    def revoke_tokens_by_service_account(self, service_account_id: str, *, revoked_by: Optional[str] = None, reason: str = "service_account_bulk_revoke") -> int:
+        self._require_db()
+        res = (
+            self.db.table("api_tokens")
+            .update({
+                "status": REVOKED,
+                "revoked_at": utcnow().isoformat(),
+                "revoked_by": revoked_by,
+                "revoke_reason": reason,
+                "updated_at": utcnow().isoformat(),
+            })
+            .eq("service_account_id", service_account_id)
+            .in_("status", [ACTIVE, DISABLED])
+            .execute()
+        )
+        return len(res.data or [])
 
     def revoke_tokens_by_scope(self, *, mall_id: Optional[str] = None, local_id: Optional[str] = None, revoked_by: Optional[str] = None, reason: str = "bulk revoke") -> int:
         self._require_db()
@@ -202,6 +227,14 @@ class SupabaseTokenStore:
     def audit(self, payload: Dict[str, Any]) -> None:
         self._require_db()
         self.db.table("token_audit_log").insert(payload).execute()
+
+    def list_audit_logs(self, filters: Dict[str, Any], limit: int = 200) -> List[Dict[str, Any]]:
+        self._require_db()
+        q = self.db.table("token_audit_log").select("*").order("created_at", desc=True).limit(limit)
+        for key in ["event_type", "mall_id", "local_id", "token_id"]:
+            if filters.get(key):
+                q = q.eq(key, filters[key])
+        return q.execute().data or []
 
 
 class InMemoryTokenStore:
@@ -225,6 +258,13 @@ class InMemoryTokenStore:
     def update_service_account(self, service_account_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         self.service_accounts[service_account_id].update(updates)
         return self.service_accounts[service_account_id]
+
+    def list_service_accounts(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        out = list(self.service_accounts.values())
+        for k, v in filters.items():
+            if v is not None:
+                out = [x for x in out if x.get(k) == v]
+        return sorted(out, key=lambda x: x.get("created_at", ""), reverse=True)
 
     def create_api_token(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = dict(payload)
@@ -264,8 +304,33 @@ class InMemoryTokenStore:
             n += 1
         return n
 
+    def revoke_tokens_by_service_account(self, service_account_id: str, *, revoked_by: Optional[str] = None, reason: str = "service_account_bulk_revoke") -> int:
+        n = 0
+        for token in self.api_tokens.values():
+            if token.get("service_account_id") != service_account_id:
+                continue
+            if token.get("status") == REVOKED:
+                continue
+            token.update({
+                "status": REVOKED,
+                "revoked_at": utcnow().isoformat(),
+                "revoked_by": revoked_by,
+                "revoke_reason": reason,
+                "updated_at": utcnow().isoformat(),
+            })
+            n += 1
+        return n
+
     def audit(self, payload: Dict[str, Any]) -> None:
         self.audit_logs.append(dict(payload))
+
+    def list_audit_logs(self, filters: Dict[str, Any], limit: int = 200) -> List[Dict[str, Any]]:
+        out = list(self.audit_logs)
+        for k, v in filters.items():
+            if v is not None:
+                out = [x for x in out if x.get(k) == v]
+        out = sorted(out, key=lambda x: x.get("created_at", ""), reverse=True)
+        return out[:limit]
 
 
 @dataclass
@@ -336,11 +401,25 @@ class TokenService:
         except Exception as e:
             raise HTTPException(status_code=401, detail=f"Auth app falló: {e}")
 
-    def _issue_pair(self, *, mall_id: str, local_id: Optional[str], token_type: str, scopes: List[str], created_by: Optional[str], service_account_id: Optional[str], request: Optional[Request]) -> Dict[str, Any]:
+    def _issue_pair(
+        self,
+        *,
+        mall_id: str,
+        local_id: Optional[str],
+        token_type: str,
+        scopes: List[str],
+        created_by: Optional[str],
+        service_account_id: Optional[str],
+        request: Optional[Request],
+        access_ttl_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
         if token_type == TOKEN_TYPE_EXPORTER and not local_id:
             raise HTTPException(status_code=400, detail="Exporter token requiere local_id")
         now = utcnow()
-        access_exp = now + self.config.access_ttl(token_type)
+        access_ttl = self.config.access_ttl(token_type)
+        if access_ttl_seconds is not None and int(access_ttl_seconds) > 0:
+            access_ttl = timedelta(seconds=int(access_ttl_seconds))
+        access_exp = now + access_ttl
         refresh_exp = now + self.config.refresh_ttl(token_type)
         refresh_plain = secrets.token_urlsafe(48)
         token_row = self.store.create_api_token({
@@ -372,7 +451,7 @@ class TokenService:
             "access_token": access_token,
             "refresh_token": refresh_plain,
             "token_type": "bearer",
-            "expires_in": int(self.config.access_ttl(token_type).total_seconds()),
+            "expires_in": int(access_ttl.total_seconds()),
             "refresh_expires_in": int(self.config.refresh_ttl(token_type).total_seconds()),
             "token_id": token_row["id"],
             "jti": token_row["jti"],
@@ -526,6 +605,7 @@ class CreateTokenRequest(BaseModel):
 
 
 class CreateServiceAccountRequest(BaseModel):
+    name: Optional[str] = None
     mall_id: str
     local_id: Optional[str] = None
     token_type: str = Field(default=TOKEN_TYPE_EXPORTER, pattern="^(exporter)$")
@@ -534,6 +614,14 @@ class CreateServiceAccountRequest(BaseModel):
 
 class PatchTokenStatusRequest(BaseModel):
     status: str = Field(..., pattern="^(active|disabled)$")
+
+
+class PatchServiceAccountStatusRequest(BaseModel):
+    status: str = Field(..., pattern="^(active|disabled)$")
+
+
+class RevokeServiceAccountTokensRequest(BaseModel):
+    reason: str = "service_account_bulk_revoke"
 
 
 def build_default_service() -> TokenService:
@@ -568,6 +656,22 @@ def validate_exporter_payload_mapping(payload_mall_id: str, payload_local_id: st
         raise HTTPException(status_code=403, detail="Se requiere token exporter")
     if ctx.mall_id != payload_mall_id or ctx.local_id != payload_local_id:
         raise HTTPException(status_code=403, detail="mall_id/local_id del payload no coincide con el token")
+
+
+def sanitize_token_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not row:
+        return row
+    safe = dict(row)
+    safe.pop("refresh_token_hash", None)
+    return safe
+
+
+def sanitize_service_account_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not row:
+        return row
+    safe = dict(row)
+    safe.pop("client_secret_hash", None)
+    return safe
 
 
 def create_router() -> APIRouter:
@@ -614,12 +718,47 @@ def create_router() -> APIRouter:
         svc: TokenService = Depends(get_token_service),
     ):
         rows = svc.store.list_tokens({"mall_id": mall_id, "local_id": local_id, "token_type": token_type, "status": status_filter})
-        sanitized = []
+        return [sanitize_token_row(row) for row in rows]
+
+    @router.get("/service-accounts")
+    async def list_service_accounts(
+        mall_id: Optional[str] = None,
+        local_id: Optional[str] = None,
+        token_type: Optional[str] = None,
+        status_filter: Optional[str] = Query(None, alias="status"),
+        _: AuthContext = Depends(require_token_auth("tokens:manage")),
+        svc: TokenService = Depends(get_token_service),
+    ):
+        rows = svc.store.list_service_accounts({"mall_id": mall_id, "local_id": local_id, "token_type": token_type, "status": status_filter})
+        tokens = svc.store.list_tokens({"mall_id": mall_id, "local_id": local_id, "token_type": TOKEN_TYPE_EXPORTER})
+        usage_by_sa: Dict[str, Dict[str, Any]] = {}
+        for token in tokens:
+            sa_id = token.get("service_account_id")
+            if not sa_id:
+                continue
+            entry = usage_by_sa.setdefault(sa_id, {"last_used_at": None, "last_used_ip": None, "last_used_ua": None, "active_tokens": 0, "total_tokens": 0})
+            entry["total_tokens"] += 1
+            if token.get("status") == ACTIVE:
+                entry["active_tokens"] += 1
+            last_used_at = token.get("last_used_at")
+            if last_used_at and (not entry["last_used_at"] or str(last_used_at) > str(entry["last_used_at"])):
+                entry["last_used_at"] = last_used_at
+                entry["last_used_ip"] = token.get("last_used_ip")
+                entry["last_used_ua"] = token.get("last_used_ua")
+
+        out: List[Dict[str, Any]] = []
         for row in rows:
-            r = dict(row)
-            r.pop("refresh_token_hash", None)
-            sanitized.append(r)
-        return sanitized
+            safe = sanitize_service_account_row(row)
+            usage = usage_by_sa.get(safe.get("id"), {})
+            safe.update({
+                "last_used_at": usage.get("last_used_at"),
+                "last_used_ip": usage.get("last_used_ip"),
+                "last_used_ua": usage.get("last_used_ua"),
+                "active_tokens": usage.get("active_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            })
+            out.append(safe)
+        return out
 
     @router.post("/tokens")
     async def create_token_manual(payload: CreateTokenRequest, request: Request, ctx: AuthContext = Depends(require_token_auth("tokens:manage")), svc: TokenService = Depends(get_token_service)):
@@ -628,7 +767,16 @@ def create_router() -> APIRouter:
         scopes = _parse_scopes(payload.scopes)
         if not scopes:
             raise HTTPException(status_code=400, detail="scopes requeridos")
-        return svc._issue_pair(mall_id=payload.mall_id, local_id=payload.local_id, token_type=payload.token_type, scopes=scopes, created_by=ctx.token_id, service_account_id=payload.service_account_id, request=request)
+        return svc._issue_pair(
+            mall_id=payload.mall_id,
+            local_id=payload.local_id,
+            token_type=payload.token_type,
+            scopes=scopes,
+            created_by=ctx.token_id,
+            service_account_id=payload.service_account_id,
+            request=request,
+            access_ttl_seconds=payload.expires_in,
+        )
 
     @router.post("/service-accounts")
     async def create_service_account(payload: CreateServiceAccountRequest, ctx: AuthContext = Depends(require_token_auth("tokens:manage")), svc: TokenService = Depends(get_token_service)):
@@ -637,6 +785,7 @@ def create_router() -> APIRouter:
         client_id = f"msa_{secrets.token_hex(8)}"
         client_secret = secrets.token_urlsafe(32)
         row = svc.store.create_service_account({
+            "name": payload.name.strip() if payload.name else None,
             "mall_id": payload.mall_id,
             "local_id": payload.local_id,
             "token_type": payload.token_type,
@@ -648,19 +797,48 @@ def create_router() -> APIRouter:
             "created_at": utcnow().isoformat(),
             "updated_at": utcnow().isoformat(),
         })
-        safe_row = dict(row)
-        safe_row.pop("client_secret_hash", None)
+        safe_row = sanitize_service_account_row(row) or {}
         safe_row["client_secret"] = client_secret  # one-time reveal
         return safe_row
+
+    @router.patch("/service-accounts/{service_account_id}/status")
+    async def patch_service_account_status(service_account_id: str, payload: PatchServiceAccountStatusRequest, _: AuthContext = Depends(require_token_auth("tokens:manage")), svc: TokenService = Depends(get_token_service)):
+        row = svc.store.update_service_account(service_account_id, {"status": payload.status, "updated_at": utcnow().isoformat()})
+        if not row:
+            raise HTTPException(status_code=404, detail="Service account no encontrado")
+        return sanitize_service_account_row(row)
+
+    @router.post("/service-accounts/{service_account_id}/regenerate")
+    async def regenerate_service_account_secret(service_account_id: str, ctx: AuthContext = Depends(require_token_auth("tokens:manage")), svc: TokenService = Depends(get_token_service)):
+        base = svc.store.get_service_account(service_account_id)
+        if not base:
+            raise HTTPException(status_code=404, detail="Service account no encontrado")
+        client_secret = secrets.token_urlsafe(32)
+        row = svc.store.update_service_account(service_account_id, {
+            "client_secret_hash": _hash_token(client_secret),
+            "updated_at": utcnow().isoformat(),
+            "status": ACTIVE,
+        })
+        safe_row = sanitize_service_account_row(row) or {}
+        safe_row["client_secret"] = client_secret
+        safe_row["warning"] = "Este secreto no volverá a mostrarse completo."
+        svc.store.revoke_tokens_by_service_account(service_account_id, revoked_by=ctx.token_id, reason="service_account_secret_regenerated")
+        return safe_row
+
+    @router.post("/service-accounts/{service_account_id}/revoke-tokens")
+    async def revoke_service_account_tokens(service_account_id: str, payload: RevokeServiceAccountTokensRequest, ctx: AuthContext = Depends(require_token_auth("tokens:manage")), svc: TokenService = Depends(get_token_service)):
+        base = svc.store.get_service_account(service_account_id)
+        if not base:
+            raise HTTPException(status_code=404, detail="Service account no encontrado")
+        count = svc.store.revoke_tokens_by_service_account(service_account_id, revoked_by=ctx.token_id, reason=payload.reason)
+        return {"revoked_count": count, "service_account_id": service_account_id}
 
     @router.patch("/tokens/{token_id}/status")
     async def patch_token_status(token_id: str, payload: PatchTokenStatusRequest, _: AuthContext = Depends(require_token_auth("tokens:manage")), svc: TokenService = Depends(get_token_service)):
         row = svc.store.update_api_token(token_id, {"status": payload.status, "updated_at": utcnow().isoformat()})
         if not row:
             raise HTTPException(status_code=404, detail="Token no encontrado")
-        row = dict(row)
-        row.pop("refresh_token_hash", None)
-        return row
+        return sanitize_token_row(row)
 
     @router.post("/tokens/{token_id}/regenerate")
     async def regenerate_token(token_id: str, request: Request, ctx: AuthContext = Depends(require_token_auth("tokens:manage")), svc: TokenService = Depends(get_token_service)):
@@ -668,7 +846,27 @@ def create_router() -> APIRouter:
         if not base:
             raise HTTPException(status_code=404, detail="Token no encontrado")
         svc.store.update_api_token(token_id, {"status": REVOKED, "revoked_at": utcnow().isoformat(), "revoked_by": ctx.token_id, "revoke_reason": "regenerated", "updated_at": utcnow().isoformat()})
-        return svc._issue_pair(mall_id=base["mall_id"], local_id=base.get("local_id"), token_type=base["token_type"], scopes=_parse_scopes(base.get("scopes")), created_by=ctx.token_id, service_account_id=base.get("service_account_id"), request=request)
+        return svc._issue_pair(
+            mall_id=base["mall_id"],
+            local_id=base.get("local_id"),
+            token_type=base["token_type"],
+            scopes=_parse_scopes(base.get("scopes")),
+            created_by=ctx.token_id,
+            service_account_id=base.get("service_account_id"),
+            request=request,
+        )
+
+    @router.get("/token-audit")
+    async def list_token_audit(
+        mall_id: Optional[str] = None,
+        local_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        token_id: Optional[str] = None,
+        limit: int = Query(200, ge=1, le=1000),
+        _: AuthContext = Depends(require_token_auth("tokens:manage")),
+        svc: TokenService = Depends(get_token_service),
+    ):
+        return svc.store.list_audit_logs({"mall_id": mall_id, "local_id": local_id, "event_type": event_type, "token_id": token_id}, limit=limit)
 
     @router.post("/api/v1/exporter/sync/ingest")
     async def exporter_sync_ingest(payload: Dict[str, Any], ctx: AuthContext = Depends(require_token_auth("export:write", token_types={TOKEN_TYPE_EXPORTER}))):

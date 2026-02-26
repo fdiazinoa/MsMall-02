@@ -23,10 +23,15 @@
 - `POST /service-accounts` crea credenciales exporter (one-time reveal `client_secret`)
 - `POST /api/v1/remote/execute-manual/exporter` ejecuta importación manual real usando token exporter (valida `config_id` contra `mall_id/local_id` del token)
 
+## Rutas recomendadas por cliente
+- `MsMall Web` (usuario + token `app`): usar rutas actuales de usuario como `/api/v1/ingesta` y `/api/v1/remote/execute-manual`.
+- `MsExportador` (servicio local + token `exporter`): usar rutas dedicadas `/api/v1/exporter/sync/ingest` y `/api/v1/remote/execute-manual/exporter`.
+- `MsExportador` no debe usar `/api/v1/ingesta` (esa ruta mantiene el flujo de usuario de MsMall Web).
+
 ## Integración MsExportador (recomendado)
 1. Provisionar `service-account` por local (`mall_id` + `local_id`).
 2. Pedir token exporter con `client_id/client_secret` en `/auth/token`.
-3. Usar `Bearer access_token` en endpoints de sync/ingesta.
+3. Usar `Bearer access_token` en rutas dedicadas de exporter (`/api/v1/exporter/sync/ingest`, `/api/v1/remote/execute-manual/exporter`).
 4. Renovar con `/auth/refresh` cuando falte ~20% de vida del access token.
 5. Persistir solo `refresh_token` y rotarlo siempre (reemplazar el anterior).
 
@@ -47,6 +52,12 @@
 - `404` token no encontrado
 - `429` rate limit
 - `500` configuración faltante (JWT/Supabase)
+
+## Ejemplos de errores esperados (MsExportador)
+- `401` `{"detail":"Bearer token requerido"}`: falta header `Authorization: Bearer ...`
+- `401` `{"detail":"Access token expirado"}` o `{"detail":"Access token inválido"}`: token expirado/incorrecto
+- `403` `{"detail":"mall_id/local_id del payload no coincide con el token"}`: intento de enviar data de otro local
+- `429` `{"detail":"Rate limit exceeded"}`: demasiados intentos en `/auth/token`, `/auth/refresh` o `/auth/revoke*`
 
 ## Ejemplos
 - Ver `examples/token_auth_flow.http`

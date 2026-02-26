@@ -5007,7 +5007,13 @@ async def export_sales_report_excel(
                 local_id=local_id,
             )
         else:
-            data = await export_service.generate_sales_report_excel(fecha_inicio, fecha_fin, local_id, type)
+            data = await export_service.generate_sales_report_excel(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                local_id=local_id,
+                report_type=type,
+                mall_id=current_mall,
+            )
         return StreamingResponse(
             data,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -5048,7 +5054,14 @@ async def export_sales_report_pdf(
                 mall_name=mall_name,
             )
         else:
-            data = await export_service.generate_sales_report_pdf(fecha_inicio, fecha_fin, local_id, type, mall_name=mall_name)
+            data = await export_service.generate_sales_report_pdf(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                local_id=local_id,
+                report_type=type,
+                mall_name=mall_name,
+                mall_id=current_mall,
+            )
         return StreamingResponse(
             data,
             media_type="application/pdf",

@@ -125,3 +125,110 @@ def test_bulk_revoke_local_and_mall():
     assert a2b.status_code == 401
     a3 = client.post("/api/v1/exporter/sync/ingest", headers={"Authorization": f"Bearer {t3['access_token']}"}, json={"mall_id": "mall-2", "local_id": "local-3"})
     assert a3.status_code == 200
+
+
+def _issue_exporter_access_for_local(client, svc, store, mall_id: str, local_id: str) -> str:
+    admin_access = bootstrap_manage_token(client, svc, store)
+    sa = client.post(
+        "/service-accounts",
+        headers={"Authorization": f"Bearer {admin_access}"},
+        json={"mall_id": mall_id, "local_id": local_id, "token_type": "exporter", "scopes": ["export:write"]},
+    )
+    assert sa.status_code == 200, sa.text
+    sa_json = sa.json()
+    issue = client.post(
+        "/auth/token",
+        json={"token_type": "exporter", "client_id": sa_json["client_id"], "client_secret": sa_json["client_secret"]},
+    )
+    assert issue.status_code == 200, issue.text
+    return issue.json()["access_token"]
+
+
+def test_exporter_sync_ingest_transaction_persists_and_dedups():
+    client, svc, store = build_test_client()
+    store.local_codes[("mall-1", "local-1")] = "CLI-001"
+    access_token = _issue_exporter_access_for_local(client, svc, store, "mall-1", "local-1")
+
+    payload = {
+        "mall_id": "mall-1",
+        "local_id": "local-1",
+        "rows": [
+            {
+                "factura_numero": "F-1001",
+                "fecha_venta": "2026-02-26",
+                "hora_venta": "10:20:30",
+                "total_bruto": "100.00",
+                "total_impuestos": "19.00",
+                "total_neto": "81.00",
+            }
+        ],
+        "meta": {"granularity": "transaction", "batch_id": "b1", "chunk_index": 1, "chunk_total": 1},
+    }
+    r1 = client.post("/api/v1/exporter/sync/ingest", headers={"Authorization": f"Bearer {access_token}"}, json=payload)
+    assert r1.status_code == 200, r1.text
+    j1 = r1.json()
+    assert j1["accepted"] is True
+    assert j1["codigo_cliente"] == "CLI-001"
+    assert j1["inserted"] == 1
+    assert j1["updated"] == 0
+
+    rows_after_first = store.list_exporter_ingest_rows()
+    assert len(rows_after_first) == 1
+    assert rows_after_first[0]["documento_numero"] == "F-1001"
+    assert rows_after_first[0]["documento_tipo"] == "factura"
+    assert rows_after_first[0]["codigo_cliente"] == "CLI-001"
+
+    payload["rows"][0]["total_neto"] = "82.00"
+    r2 = client.post("/api/v1/exporter/sync/ingest", headers={"Authorization": f"Bearer {access_token}"}, json=payload)
+    assert r2.status_code == 200, r2.text
+    j2 = r2.json()
+    assert j2["inserted"] == 0
+    assert j2["updated"] == 1
+
+    rows_after_second = store.list_exporter_ingest_rows()
+    assert len(rows_after_second) == 1
+    assert rows_after_second[0]["total_neto"] == 82.0
+
+
+def test_exporter_sync_ingest_daily_requires_resumen_id_when_no_documento():
+    client, svc, store = build_test_client()
+    store.local_codes[("mall-1", "local-1")] = "CLI-001"
+    access_token = _issue_exporter_access_for_local(client, svc, store, "mall-1", "local-1")
+
+    bad = client.post(
+        "/api/v1/exporter/sync/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "mall_id": "mall-1",
+            "local_id": "local-1",
+            "rows": [{"fecha_venta": "2026-02-26", "total_bruto": 1000, "total_impuesto": 190, "total_neto": 810}],
+            "meta": {"granularity": "daily"},
+        },
+    )
+    assert bad.status_code == 422
+
+    ok = client.post(
+        "/api/v1/exporter/sync/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "mall_id": "mall-1",
+            "local_id": "local-1",
+            "rows": [{
+                "fecha_venta": "2026-02-26",
+                "total_bruto": 1000,
+                "total_impuesto": 190,
+                "total_neto": 810,
+                "resumen_id": "local-1-2026-02-26",
+                "cantidad_documentos": 12,
+            }],
+            "meta": {"granularity": "daily"},
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    j = ok.json()
+    assert j["granularity"] == "daily"
+    assert j["inserted"] == 1
+    rows = store.list_exporter_ingest_rows()
+    assert len(rows) == 1
+    assert rows[0]["hora_venta"] is None
+    assert rows[0]["resumen_id"] == "local-1-2026-02-26"

@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -236,12 +236,52 @@ class SupabaseTokenStore:
                 q = q.eq(key, filters[key])
         return q.execute().data or []
 
+    def get_local_exporter_code(self, mall_id: str, local_id: str) -> Optional[Dict[str, Any]]:
+        self._require_db()
+        res = (
+            self.db.table("locales")
+            .select("id, mall_id, codigo_interno")
+            .eq("mall_id", mall_id)
+            .eq("id", local_id)
+            .maybe_single()
+            .execute()
+        )
+        row = res.data or None
+        if not row:
+            return None
+        return {
+            "mall_id": row.get("mall_id"),
+            "local_id": row.get("id"),
+            "codigo_cliente": row.get("codigo_interno"),
+        }
+
+    def upsert_exporter_ingest_rows(self, rows: List[Dict[str, Any]]) -> Dict[str, int]:
+        self._require_db()
+        if not rows:
+            return {"inserted": 0, "updated": 0}
+        dedup_keys = [str(r.get("dedup_key")) for r in rows if r.get("dedup_key")]
+        existing: Set[str] = set()
+        if dedup_keys:
+            existing_res = (
+                self.db.table("exporter_sales_ingest")
+                .select("dedup_key")
+                .in_("dedup_key", dedup_keys)
+                .execute()
+            )
+            existing = {str(x.get("dedup_key")) for x in (existing_res.data or []) if x.get("dedup_key")}
+        stamped_rows = [{**row, "updated_at": utcnow().isoformat()} for row in rows]
+        self.db.table("exporter_sales_ingest").upsert(stamped_rows, on_conflict="dedup_key").execute()
+        inserted = sum(1 for key in dedup_keys if key not in existing)
+        return {"inserted": inserted, "updated": len(dedup_keys) - inserted}
+
 
 class InMemoryTokenStore:
     def __init__(self) -> None:
         self.service_accounts: Dict[str, Dict[str, Any]] = {}
         self.api_tokens: Dict[str, Dict[str, Any]] = {}
         self.audit_logs: List[Dict[str, Any]] = []
+        self.local_codes: Dict[Tuple[str, str], str] = {}
+        self.exporter_ingest_rows: Dict[str, Dict[str, Any]] = {}
 
     def create_service_account(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = dict(payload)
@@ -331,6 +371,31 @@ class InMemoryTokenStore:
                 out = [x for x in out if x.get(k) == v]
         out = sorted(out, key=lambda x: x.get("created_at", ""), reverse=True)
         return out[:limit]
+
+    def get_local_exporter_code(self, mall_id: str, local_id: str) -> Optional[Dict[str, Any]]:
+        code = self.local_codes.get((mall_id, local_id))
+        if not code:
+            return None
+        return {"mall_id": mall_id, "local_id": local_id, "codigo_cliente": code}
+
+    def upsert_exporter_ingest_rows(self, rows: List[Dict[str, Any]]) -> Dict[str, int]:
+        inserted = 0
+        updated = 0
+        for row in rows:
+            key = str(row.get("dedup_key") or "")
+            if not key:
+                continue
+            now_iso = utcnow().isoformat()
+            if key in self.exporter_ingest_rows:
+                self.exporter_ingest_rows[key].update({**row, "updated_at": now_iso})
+                updated += 1
+            else:
+                self.exporter_ingest_rows[key] = {**row, "id": str(uuid.uuid4()), "created_at": now_iso, "updated_at": now_iso}
+                inserted += 1
+        return {"inserted": inserted, "updated": updated}
+
+    def list_exporter_ingest_rows(self) -> List[Dict[str, Any]]:
+        return list(self.exporter_ingest_rows.values())
 
 
 @dataclass
@@ -658,6 +723,240 @@ def validate_exporter_payload_mapping(payload_mall_id: str, payload_local_id: st
         raise HTTPException(status_code=403, detail="mall_id/local_id del payload no coincide con el token")
 
 
+def _has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ""
+    return True
+
+
+def _as_str_or_none(value: Any) -> Optional[str]:
+    if not _has_value(value):
+        return None
+    return str(value).strip()
+
+
+def _pick_first_value(row: Dict[str, Any], *field_names: str) -> Tuple[Any, Optional[str]]:
+    for field_name in field_names:
+        if field_name not in row:
+            continue
+        value = row.get(field_name)
+        if not _has_value(value):
+            continue
+        return value, field_name
+    return None, None
+
+
+def _normalize_granularity(value: Any) -> str:
+    granularity = str(value or "transaction").strip().lower()
+    if granularity in {"daily", "daily_summary"}:
+        return "daily"
+    return "transaction"
+
+
+def _coerce_numeric(value: Any, *, row_idx: int, field_name: str, errors: List[str]) -> Optional[float]:
+    if not _has_value(value):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    raw = str(value).strip()
+    normalized = raw.replace(",", ".") if ("," in raw and "." not in raw) else raw
+    try:
+        return float(normalized)
+    except Exception:
+        errors.append(f"row {row_idx}: '{field_name}' debe ser numerico (valor='{raw}')")
+        return None
+
+
+def _coerce_int(value: Any, *, row_idx: int, field_name: str, errors: List[str]) -> Optional[int]:
+    if not _has_value(value):
+        return None
+    try:
+        return int(float(str(value).strip()))
+    except Exception:
+        errors.append(f"row {row_idx}: '{field_name}' debe ser entero")
+        return None
+
+
+def _normalize_date_text(value: Any) -> Optional[str]:
+    if not _has_value(value):
+        return None
+    text = str(value).strip()
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    return text
+
+
+def _normalize_time_text(value: Any) -> Optional[str]:
+    if not _has_value(value):
+        return None
+    text = str(value).strip()
+    if "T" in text:
+        text = text.split("T", 1)[1]
+    if " " in text:
+        text = text.split()[-1]
+    return text[:8] if len(text) >= 8 else text
+
+
+def _canonicalize_exporter_row(row: Dict[str, Any], *, row_idx: int, granularity: str, errors: List[str]) -> Dict[str, Any]:
+    documento_numero_val, documento_numero_field = _pick_first_value(
+        row, "documento_numero", "factura_numero", "ticket_numero", "InvoiceNo", "TicketNo"
+    )
+    documento_tipo_val, _ = _pick_first_value(row, "documento_tipo", "tipo_documento", "DocumentType")
+    fecha_venta_val, _ = _pick_first_value(row, "fecha_venta", "SaleDate", "sale_date", "fecha")
+    hora_venta_val, _ = _pick_first_value(row, "hora_venta", "SaleTime", "sale_time", "hora")
+    total_bruto_val, _ = _pick_first_value(row, "total_bruto", "totalBruto", "GrossTotal", "gross_total")
+    total_impuesto_val, _ = _pick_first_value(row, "total_impuesto", "total_impuestos", "TaxTotal", "tax_total")
+    total_neto_val, _ = _pick_first_value(row, "total_neto", "NetTotal", "net_total")
+    resumen_id_val, _ = _pick_first_value(row, "resumen_id", "summary_id")
+    cantidad_docs_val, _ = _pick_first_value(row, "cantidad_documentos", "document_count")
+
+    documento_numero = _as_str_or_none(documento_numero_val)
+    documento_tipo = _as_str_or_none(documento_tipo_val)
+    if not documento_tipo and documento_numero_field:
+        f = documento_numero_field.lower()
+        if "factura" in f or "invoice" in f:
+            documento_tipo = "factura"
+        elif "ticket" in f:
+            documento_tipo = "ticket"
+
+    normalized = {
+        "documento_numero": documento_numero,
+        "documento_tipo": documento_tipo,
+        "fecha_venta": _normalize_date_text(fecha_venta_val),
+        "hora_venta": _normalize_time_text(hora_venta_val) if granularity == "transaction" else (_normalize_time_text(hora_venta_val) if _has_value(hora_venta_val) else None),
+        "total_bruto": _coerce_numeric(total_bruto_val, row_idx=row_idx, field_name="total_bruto", errors=errors),
+        "total_impuesto": _coerce_numeric(total_impuesto_val, row_idx=row_idx, field_name="total_impuesto", errors=errors),
+        "total_neto": _coerce_numeric(total_neto_val, row_idx=row_idx, field_name="total_neto", errors=errors),
+        "resumen_id": _as_str_or_none(resumen_id_val),
+        "cantidad_documentos": _coerce_int(cantidad_docs_val, row_idx=row_idx, field_name="cantidad_documentos", errors=errors),
+    }
+
+    required_fields = ["fecha_venta", "total_bruto", "total_impuesto", "total_neto"]
+    if granularity == "transaction":
+        required_fields.extend(["documento_numero", "hora_venta"])
+    for field_name in required_fields:
+        if not _has_value(normalized.get(field_name)):
+            errors.append(f"row {row_idx}: falta '{field_name}' para granularity='{granularity}'")
+    if granularity == "daily" and not _has_value(normalized.get("documento_numero")) and not _has_value(normalized.get("resumen_id")):
+        errors.append(f"row {row_idx}: en granularity='daily' se requiere 'resumen_id' si no hay 'documento_numero'")
+    return normalized
+
+
+def _build_exporter_dedup_key(*, mall_id: str, local_id: str, granularity: str, normalized_row: Dict[str, Any]) -> str:
+    if granularity == "daily":
+        resumen_id = _as_str_or_none(normalized_row.get("resumen_id")) or "_"
+        return "|".join([mall_id, local_id, "daily", str(normalized_row.get("fecha_venta") or ""), resumen_id])
+    return "|".join([
+        mall_id,
+        local_id,
+        "transaction",
+        str(normalized_row.get("fecha_venta") or ""),
+        _as_str_or_none(normalized_row.get("documento_tipo")) or "_",
+        _as_str_or_none(normalized_row.get("documento_numero")) or "",
+    ])
+
+
+def _parse_exporter_rows(payload: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    rows = payload.get("rows")
+    if rows is None:
+        rows = []
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="rows debe ser un arreglo")
+    meta = payload.get("meta") or {}
+    if not isinstance(meta, dict):
+        raise HTTPException(status_code=400, detail="meta debe ser un objeto")
+    return rows, meta
+
+
+def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenService", ctx: AuthContext) -> Dict[str, Any]:
+    payload_mall_id = str(payload.get("mall_id") or "")
+    payload_local_id = str(payload.get("local_id") or "")
+    if not payload_mall_id or not payload_local_id:
+        raise HTTPException(status_code=400, detail="mall_id y local_id son requeridos")
+    validate_exporter_payload_mapping(payload_mall_id, payload_local_id, ctx)
+
+    rows, meta = _parse_exporter_rows(payload)
+    granularity = _normalize_granularity(meta.get("granularity"))
+
+    if not rows:
+        return {
+            "accepted": True,
+            "mall_id": payload_mall_id,
+            "local_id": payload_local_id,
+            "granularity": granularity,
+            "received": 0,
+            "inserted": 0,
+            "updated": 0,
+            "probe": bool(meta.get("probe")),
+        }
+
+    local_info = getattr(svc.store, "get_local_exporter_code", lambda *_: None)(payload_mall_id, payload_local_id)
+    if not local_info:
+        raise HTTPException(status_code=422, detail="Local no encontrado en MsMall para mall_id/local_id")
+    codigo_cliente = _as_str_or_none(local_info.get("codigo_cliente") or local_info.get("codigo_interno"))
+    if not codigo_cliente:
+        raise HTTPException(status_code=422, detail="El local existe pero no tiene codigo_interno configurado en MsMall")
+
+    errors: List[str] = []
+    persist_rows: List[Dict[str, Any]] = []
+    contract_type = _as_str_or_none(meta.get("contract_type")) or "msmall_sales_v1"
+    batch_id = _as_str_or_none(meta.get("batch_id"))
+    chunk_index = _coerce_int(meta.get("chunk_index"), row_idx=0, field_name="chunk_index", errors=[])
+    chunk_total = _coerce_int(meta.get("chunk_total"), row_idx=0, field_name="chunk_total", errors=[])
+
+    for idx, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            errors.append(f"row {idx}: cada elemento de rows debe ser objeto")
+            continue
+        normalized = _canonicalize_exporter_row(row, row_idx=idx, granularity=granularity, errors=errors)
+        persist_rows.append({
+            "mall_id": payload_mall_id,
+            "local_id": payload_local_id,
+            "codigo_cliente": codigo_cliente,
+            "contract_type": contract_type,
+            "granularity": granularity,
+            "batch_id": batch_id,
+            "chunk_index": chunk_index,
+            "chunk_total": chunk_total,
+            "row_index": idx,
+            "dedup_key": _build_exporter_dedup_key(mall_id=payload_mall_id, local_id=payload_local_id, granularity=granularity, normalized_row=normalized),
+            "documento_tipo": normalized.get("documento_tipo"),
+            "documento_numero": normalized.get("documento_numero"),
+            "resumen_id": normalized.get("resumen_id"),
+            "cantidad_documentos": normalized.get("cantidad_documentos"),
+            "fecha_venta": normalized.get("fecha_venta"),
+            "hora_venta": normalized.get("hora_venta"),
+            "total_bruto": normalized.get("total_bruto"),
+            "total_impuesto": normalized.get("total_impuesto"),
+            "total_neto": normalized.get("total_neto"),
+            "raw_row": row,
+            "raw_meta": meta,
+        })
+
+    if errors:
+        details = "; ".join(errors[:10])
+        if len(errors) > 10:
+            details += f" (+{len(errors) - 10} mas)"
+        raise HTTPException(status_code=422, detail=f"Payload exporter invalido: {details}")
+
+    upsert_result = getattr(svc.store, "upsert_exporter_ingest_rows", None)
+    if not callable(upsert_result):
+        raise HTTPException(status_code=500, detail="Store no soporta persistencia de ingest exporter")
+    stats = upsert_result(persist_rows) or {}
+    return {
+        "accepted": True,
+        "mall_id": payload_mall_id,
+        "local_id": payload_local_id,
+        "codigo_cliente": codigo_cliente,
+        "granularity": granularity,
+        "received": len(rows),
+        "inserted": int(stats.get("inserted") or 0),
+        "updated": int(stats.get("updated") or 0),
+    }
+
+
 def sanitize_token_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not row:
         return row
@@ -869,12 +1168,11 @@ def create_router() -> APIRouter:
         return svc.store.list_audit_logs({"mall_id": mall_id, "local_id": local_id, "event_type": event_type, "token_id": token_id}, limit=limit)
 
     @router.post("/api/v1/exporter/sync/ingest")
-    async def exporter_sync_ingest(payload: Dict[str, Any], ctx: AuthContext = Depends(require_token_auth("export:write", token_types={TOKEN_TYPE_EXPORTER}))):
-        payload_mall_id = str(payload.get("mall_id") or "")
-        payload_local_id = str(payload.get("local_id") or "")
-        if not payload_mall_id or not payload_local_id:
-            raise HTTPException(status_code=400, detail="mall_id y local_id son requeridos")
-        validate_exporter_payload_mapping(payload_mall_id, payload_local_id, ctx)
-        return {"accepted": True, "mall_id": payload_mall_id, "local_id": payload_local_id}
+    async def exporter_sync_ingest(
+        payload: Dict[str, Any],
+        ctx: AuthContext = Depends(require_token_auth("export:write", token_types={TOKEN_TYPE_EXPORTER})),
+        svc: TokenService = Depends(get_token_service),
+    ):
+        return _process_exporter_sync_ingest_payload(payload, svc, ctx)
 
     return router

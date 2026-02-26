@@ -13,9 +13,10 @@ import { FinancialDashboard } from './FinancialDashboard';
 import { SalesCube } from './SalesCube';
 import { MallManager } from './MallManager';
 import { PeriodComparison } from './PeriodComparison';
+import { SecurityTokenAdmin } from './SecurityTokenAdmin';
 
 interface DashboardProps {
-  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
+  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security';
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
@@ -30,6 +31,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
       return <StoreMaintenance />;
     case 'users':
       return <UserManagement />;
+    case 'security':
+      return <SecurityTokenAdmin />;
     case 'auto-import':
       return <ImportManager />;
     case 'monitor':

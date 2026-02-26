@@ -6,6 +6,7 @@ import logging
 import time
 import threading
 import re
+import secrets
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from uuid import uuid4
@@ -27,8 +28,25 @@ from routers import recipes, comparisons, admin_tools
 from routers.token_auth import (
     AuthContext as TokenAuthContext,
     TOKEN_TYPE_EXPORTER,
+    ACTIVE as TOKEN_ACTIVE,
+    DISABLED as TOKEN_DISABLED,
+    REVOKED as TOKEN_REVOKED,
+    CreateServiceAccountRequest as TokenCreateServiceAccountRequest,
+    CreateTokenRequest as TokenCreateTokenRequest,
+    PatchServiceAccountStatusRequest as TokenPatchServiceAccountStatusRequest,
+    PatchTokenStatusRequest as TokenPatchTokenStatusRequest,
+    RevokeMallRequest as TokenRevokeMallRequest,
+    RevokeLocalRequest as TokenRevokeLocalRequest,
+    RevokeRequest as TokenRevokeRequest,
+    RevokeServiceAccountTokensRequest as TokenRevokeServiceAccountTokensRequest,
+    _hash_token as token_auth_hash_token,
+    _parse_scopes as token_auth_parse_scopes,
+    build_default_service as build_token_auth_service,
     create_router as create_token_auth_router,
     require_token_auth,
+    sanitize_service_account_row as sanitize_token_service_account_row,
+    sanitize_token_row as sanitize_token_auth_row,
+    utcnow as token_auth_utcnow,
     validate_exporter_payload_mapping,
 )
 from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
@@ -4517,6 +4535,376 @@ async def admin_update_user(
     except Exception as e:
         logger.error(f"Error updating user {target_user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _security_token_service():
+    return build_token_auth_service()
+
+
+def _security_allowed_mall_ids(operator_ctx: Dict[str, Any]) -> Optional[set]:
+    if operator_ctx.get("role") == "admin":
+        return None
+    return set(_get_user_mall_ids(operator_ctx.get("user_id")))
+
+
+def _security_filter_rows_by_mall_access(rows: List[Dict[str, Any]], operator_ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    allowed = _security_allowed_mall_ids(operator_ctx)
+    if allowed is None:
+        return rows
+    return [row for row in rows if row.get("mall_id") in allowed]
+
+
+def _security_ensure_row_access(operator_ctx: Dict[str, Any], row: Optional[Dict[str, Any]], not_found_detail: str):
+    if not row:
+        raise HTTPException(status_code=404, detail=not_found_detail)
+    _ensure_operator_can_access_mall(operator_ctx, row.get("mall_id"))
+    return row
+
+
+def _security_validate_local_alignment(local_id: Optional[str], mall_id: str, operator_ctx: Dict[str, Any]) -> None:
+    if not local_id:
+        return
+    local_cfg = _load_local_config_with_access(local_id, operator_ctx)
+    local_mall_id = str(local_cfg.get("mall_id") or "")
+    if local_mall_id and str(mall_id) != local_mall_id:
+        raise HTTPException(status_code=400, detail="local_id no pertenece al mall_id indicado")
+
+
+def _security_text_search(rows: List[Dict[str, Any]], q: Optional[str], fields: List[str]) -> List[Dict[str, Any]]:
+    term = (q or "").strip().lower()
+    if not term:
+        return rows
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        haystack = " ".join(str(row.get(field) or "") for field in fields).lower()
+        if term in haystack:
+            out.append(row)
+    return out
+
+
+@app.get("/api/v1/security/service-accounts")
+async def security_list_service_accounts(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    token_type: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    q: Optional[str] = None,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    rows = svc.store.list_service_accounts({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "token_type": token_type,
+        "status": status_filter,
+    })
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    rows = _security_text_search(rows, q, ["name", "client_id", "created_by", "mall_id", "local_id"])
+
+    tokens = svc.store.list_tokens({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "token_type": TOKEN_TYPE_EXPORTER,
+    })
+    tokens = _security_filter_rows_by_mall_access(tokens, operator_ctx)
+    usage_by_sa: Dict[str, Dict[str, Any]] = {}
+    for token in tokens:
+        sa_id = token.get("service_account_id")
+        if not sa_id:
+            continue
+        usage = usage_by_sa.setdefault(sa_id, {
+            "last_used_at": None,
+            "last_used_ip": None,
+            "last_used_ua": None,
+            "active_tokens": 0,
+            "total_tokens": 0,
+        })
+        usage["total_tokens"] += 1
+        if token.get("status") == TOKEN_ACTIVE:
+            usage["active_tokens"] += 1
+        last_used_at = token.get("last_used_at")
+        if last_used_at and (not usage["last_used_at"] or str(last_used_at) > str(usage["last_used_at"])):
+            usage["last_used_at"] = last_used_at
+            usage["last_used_ip"] = token.get("last_used_ip")
+            usage["last_used_ua"] = token.get("last_used_ua")
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        safe = sanitize_token_service_account_row(row) or {}
+        usage = usage_by_sa.get(safe.get("id"), {})
+        safe.update({
+            "last_used_at": usage.get("last_used_at"),
+            "last_used_ip": usage.get("last_used_ip"),
+            "last_used_ua": usage.get("last_used_ua"),
+            "active_tokens": usage.get("active_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        })
+        out.append(safe)
+    return out
+
+
+@app.post("/api/v1/security/service-accounts")
+async def security_create_service_account(
+    payload: TokenCreateServiceAccountRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if payload.token_type == TOKEN_TYPE_EXPORTER and not payload.local_id:
+        raise HTTPException(status_code=400, detail="local_id requerido para exporter")
+    if not (payload.name or "").strip():
+        raise HTTPException(status_code=400, detail="name es requerido")
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(payload.local_id, payload.mall_id, operator_ctx)
+
+    svc = _security_token_service()
+    client_id = f"msa_{secrets.token_hex(8)}"
+    client_secret = secrets.token_urlsafe(32)
+    row = svc.store.create_service_account({
+        "name": payload.name.strip(),
+        "mall_id": payload.mall_id,
+        "local_id": payload.local_id,
+        "token_type": payload.token_type,
+        "client_id": client_id,
+        "client_secret_hash": token_auth_hash_token(client_secret),
+        "scopes": token_auth_parse_scopes(payload.scopes),
+        "status": TOKEN_ACTIVE,
+        "created_by": operator_ctx.get("user_id"),
+        "created_at": token_auth_utcnow().isoformat(),
+        "updated_at": token_auth_utcnow().isoformat(),
+    })
+    safe = sanitize_token_service_account_row(row) or {}
+    safe["client_secret"] = client_secret
+    safe["warning"] = "Este secreto no volverá a mostrarse completo."
+    return safe
+
+
+@app.patch("/api/v1/security/service-accounts/{service_account_id}/status")
+async def security_patch_service_account_status(
+    service_account_id: str,
+    payload: TokenPatchServiceAccountStatusRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(
+        operator_ctx,
+        svc.store.get_service_account(service_account_id),
+        "Service account no encontrado",
+    )
+    row = svc.store.update_service_account(base["id"], {"status": payload.status, "updated_at": token_auth_utcnow().isoformat()})
+    return sanitize_token_service_account_row(row)
+
+
+@app.post("/api/v1/security/service-accounts/{service_account_id}/regenerate")
+async def security_regenerate_service_account(
+    service_account_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(
+        operator_ctx,
+        svc.store.get_service_account(service_account_id),
+        "Service account no encontrado",
+    )
+    client_secret = secrets.token_urlsafe(32)
+    row = svc.store.update_service_account(base["id"], {
+        "client_secret_hash": token_auth_hash_token(client_secret),
+        "status": TOKEN_ACTIVE,
+        "updated_at": token_auth_utcnow().isoformat(),
+    })
+    svc.store.revoke_tokens_by_service_account(base["id"], revoked_by=operator_ctx.get("user_id"), reason="service_account_secret_regenerated")
+    safe = sanitize_token_service_account_row(row) or {}
+    safe["client_secret"] = client_secret
+    safe["warning"] = "Este secreto no volverá a mostrarse completo."
+    return safe
+
+
+@app.post("/api/v1/security/service-accounts/{service_account_id}/revoke-tokens")
+async def security_revoke_service_account_tokens(
+    service_account_id: str,
+    payload: TokenRevokeServiceAccountTokensRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(
+        operator_ctx,
+        svc.store.get_service_account(service_account_id),
+        "Service account no encontrado",
+    )
+    count = svc.store.revoke_tokens_by_service_account(base["id"], revoked_by=operator_ctx.get("user_id"), reason=payload.reason)
+    return {"revoked_count": count, "service_account_id": base["id"]}
+
+
+@app.get("/api/v1/security/tokens")
+async def security_list_tokens(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    token_type: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    q: Optional[str] = None,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    rows = svc.store.list_tokens({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "token_type": token_type,
+        "status": status_filter,
+    })
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    rows = _security_text_search(rows, q, ["jti", "created_by", "mall_id", "local_id", "token_type", "status"])
+    return [sanitize_token_auth_row(row) for row in rows]
+
+
+@app.post("/api/v1/security/tokens")
+async def security_create_token(
+    payload: TokenCreateTokenRequest,
+    request: Request,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if payload.token_type == TOKEN_TYPE_EXPORTER and not payload.local_id:
+        raise HTTPException(status_code=400, detail="local_id requerido para exporter")
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(payload.local_id, payload.mall_id, operator_ctx)
+    scopes = token_auth_parse_scopes(payload.scopes)
+    if not scopes:
+        raise HTTPException(status_code=400, detail="scopes requeridos")
+
+    svc = _security_token_service()
+    if payload.service_account_id:
+        sa = _security_ensure_row_access(operator_ctx, svc.store.get_service_account(payload.service_account_id), "Service account no encontrado")
+        if sa.get("mall_id") != payload.mall_id or sa.get("local_id") != payload.local_id:
+            raise HTTPException(status_code=400, detail="service_account_id no coincide con mall_id/local_id")
+
+    return svc._issue_pair(
+        mall_id=payload.mall_id,
+        local_id=payload.local_id,
+        token_type=payload.token_type,
+        scopes=scopes,
+        created_by=operator_ctx.get("user_id"),
+        service_account_id=payload.service_account_id,
+        request=request,
+        access_ttl_seconds=payload.expires_in,
+    )
+
+
+@app.patch("/api/v1/security/tokens/{token_id}/status")
+async def security_patch_token_status(
+    token_id: str,
+    payload: TokenPatchTokenStatusRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(operator_ctx, svc.store.get_token_by_id(token_id), "Token no encontrado")
+    row = svc.store.update_api_token(base["id"], {"status": payload.status, "updated_at": token_auth_utcnow().isoformat()})
+    return sanitize_token_auth_row(row)
+
+
+@app.post("/api/v1/security/tokens/{token_id}/regenerate")
+async def security_regenerate_token(
+    token_id: str,
+    request: Request,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(operator_ctx, svc.store.get_token_by_id(token_id), "Token no encontrado")
+    svc.store.update_api_token(base["id"], {
+        "status": TOKEN_REVOKED,
+        "revoked_at": token_auth_utcnow().isoformat(),
+        "revoked_by": operator_ctx.get("user_id"),
+        "revoke_reason": "regenerated",
+        "updated_at": token_auth_utcnow().isoformat(),
+    })
+    return svc._issue_pair(
+        mall_id=base["mall_id"],
+        local_id=base.get("local_id"),
+        token_type=base["token_type"],
+        scopes=token_auth_parse_scopes(base.get("scopes")),
+        created_by=operator_ctx.get("user_id"),
+        service_account_id=base.get("service_account_id"),
+        request=request,
+    )
+
+
+@app.post("/api/v1/security/tokens/revoke")
+async def security_revoke_token(
+    payload: TokenRevokeRequest,
+    request: Request,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    target = None
+    if payload.token_id:
+        target = svc.store.get_token_by_id(payload.token_id)
+    elif payload.jti:
+        target = svc.store.get_token_by_jti(payload.jti)
+    _security_ensure_row_access(operator_ctx, target, "Token no encontrado")
+    return svc.revoke(
+        token_id=payload.token_id,
+        jti=payload.jti,
+        actor=operator_ctx.get("user_id"),
+        reason=payload.reason,
+        current_ctx=None,
+        request=request,
+    )
+
+
+@app.post("/api/v1/security/tokens/revoke/local")
+async def security_revoke_tokens_by_local(
+    payload: TokenRevokeLocalRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(payload.local_id, payload.mall_id, operator_ctx)
+    svc = _security_token_service()
+    count = svc.store.revoke_tokens_by_scope(
+        mall_id=payload.mall_id,
+        local_id=payload.local_id,
+        revoked_by=operator_ctx.get("user_id"),
+        reason=payload.reason,
+    )
+    return {"revoked_count": count}
+
+
+@app.post("/api/v1/security/tokens/revoke/mall")
+async def security_revoke_tokens_by_mall(
+    payload: TokenRevokeMallRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    svc = _security_token_service()
+    count = svc.store.revoke_tokens_by_scope(
+        mall_id=payload.mall_id,
+        revoked_by=operator_ctx.get("user_id"),
+        reason=payload.reason,
+    )
+    return {"revoked_count": count}
+
+
+@app.get("/api/v1/security/token-audit")
+async def security_list_token_audit(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+    token_id: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=1000),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if mall_id:
+        _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    elif operator_ctx.get("role") != "admin":
+        # For IT users without explicit mall filter, restrict to their first allowed mall set in-memory after query.
+        pass
+
+    svc = _security_token_service()
+    rows = svc.store.list_audit_logs({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "event_type": event_type,
+        "token_id": token_id,
+    }, limit=limit)
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    rows = _security_text_search(rows, q, ["event_type", "mall_id", "local_id", "ip", "ua", "token_id"])
+    return rows
 
 @router_export.get("/sales-report/excel")
 async def export_sales_report_excel(

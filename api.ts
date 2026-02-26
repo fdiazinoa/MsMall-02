@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, SecurityApiToken, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -1866,5 +1866,188 @@ export const ApiService = {
       console.error("📡 [API] Error purging sales:", error);
       return { success: false, message: error.message || "Error desconocido" };
     }
+  },
+
+  async getSecurityServiceAccounts(
+    token: string,
+    filters: { mall_id?: string; local_id?: string; token_type?: string; status?: string; q?: string } = {}
+  ): Promise<SecurityServiceAccount[]> {
+    const params = new URLSearchParams();
+    if (filters.mall_id) params.set('mall_id', filters.mall_id);
+    if (filters.local_id) params.set('local_id', filters.local_id);
+    if (filters.token_type) params.set('token_type', filters.token_type);
+    if (filters.status) params.set('status', filters.status);
+    if (filters.q) params.set('q', filters.q);
+    const qs = params.toString();
+    return fetchJsonWithBaseFallback<SecurityServiceAccount[]>(
+      `/security/service-accounts${qs ? `?${qs}` : ''}`,
+      { method: 'GET', headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      "No se pudieron cargar los service accounts."
+    );
+  },
+
+  async createSecurityServiceAccount(
+    payload: { name: string; mall_id: string; local_id: string; token_type?: 'exporter'; scopes: string[] },
+    token: string
+  ): Promise<SecurityServiceAccount> {
+    return fetchJsonWithBaseFallback<SecurityServiceAccount>(
+      '/security/service-accounts',
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify({ ...payload, token_type: payload.token_type || 'exporter' }),
+      },
+      "No se pudo crear el service account."
+    );
+  },
+
+  async updateSecurityServiceAccountStatus(
+    serviceAccountId: string,
+    status: 'active' | 'disabled',
+    token: string
+  ): Promise<SecurityServiceAccount> {
+    return fetchJsonWithBaseFallback<SecurityServiceAccount>(
+      `/security/service-accounts/${encodeURIComponent(serviceAccountId)}/status`,
+      {
+        method: 'PATCH',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify({ status }),
+      },
+      "No se pudo actualizar el estado del service account."
+    );
+  },
+
+  async regenerateSecurityServiceAccount(serviceAccountId: string, token: string): Promise<SecurityServiceAccount> {
+    return fetchJsonWithBaseFallback<SecurityServiceAccount>(
+      `/security/service-accounts/${encodeURIComponent(serviceAccountId)}/regenerate`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' }),
+      },
+      "No se pudo regenerar el secreto del service account."
+    );
+  },
+
+  async revokeTokensBySecurityServiceAccount(serviceAccountId: string, token: string, reason?: string): Promise<{ revoked_count: number }> {
+    return fetchJsonWithBaseFallback<{ revoked_count: number }>(
+      `/security/service-accounts/${encodeURIComponent(serviceAccountId)}/revoke-tokens`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify({ reason: reason || 'ui_service_account_bulk_revoke' }),
+      },
+      "No se pudieron revocar los tokens del service account."
+    );
+  },
+
+  async getSecurityTokens(
+    token: string,
+    filters: { mall_id?: string; local_id?: string; token_type?: string; status?: string; q?: string } = {}
+  ): Promise<SecurityApiToken[]> {
+    const params = new URLSearchParams();
+    if (filters.mall_id) params.set('mall_id', filters.mall_id);
+    if (filters.local_id) params.set('local_id', filters.local_id);
+    if (filters.token_type) params.set('token_type', filters.token_type);
+    if (filters.status) params.set('status', filters.status);
+    if (filters.q) params.set('q', filters.q);
+    const qs = params.toString();
+    return fetchJsonWithBaseFallback<SecurityApiToken[]>(
+      `/security/tokens${qs ? `?${qs}` : ''}`,
+      { method: 'GET', headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      "No se pudieron cargar los tokens."
+    );
+  },
+
+  async createSecurityToken(
+    payload: { token_type: 'app' | 'exporter'; mall_id: string; local_id?: string; scopes: string[]; expires_in?: number; service_account_id?: string },
+    token: string
+  ): Promise<SecurityTokenPairReveal> {
+    return fetchJsonWithBaseFallback<SecurityTokenPairReveal>(
+      '/security/tokens',
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify(payload),
+      },
+      "No se pudo crear el token."
+    );
+  },
+
+  async updateSecurityTokenStatus(tokenId: string, status: 'active' | 'disabled', token: string): Promise<SecurityApiToken> {
+    return fetchJsonWithBaseFallback<SecurityApiToken>(
+      `/security/tokens/${encodeURIComponent(tokenId)}/status`,
+      {
+        method: 'PATCH',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify({ status }),
+      },
+      "No se pudo actualizar el estado del token."
+    );
+  },
+
+  async regenerateSecurityToken(tokenId: string, token: string): Promise<SecurityTokenPairReveal> {
+    return fetchJsonWithBaseFallback<SecurityTokenPairReveal>(
+      `/security/tokens/${encodeURIComponent(tokenId)}/regenerate`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' }),
+      },
+      "No se pudo regenerar el token."
+    );
+  },
+
+  async revokeSecurityToken(payload: { token_id?: string; jti?: string; reason?: string }, token: string): Promise<{ revoked: boolean; token_id: string }> {
+    return fetchJsonWithBaseFallback<{ revoked: boolean; token_id: string }>(
+      '/security/tokens/revoke',
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify({ ...payload, reason: payload.reason || 'ui_manual_revoke' }),
+      },
+      "No se pudo revocar el token."
+    );
+  },
+
+  async revokeSecurityTokensByLocal(payload: { mall_id: string; local_id: string; reason?: string }, token: string): Promise<{ revoked_count: number }> {
+    return fetchJsonWithBaseFallback<{ revoked_count: number }>(
+      '/security/tokens/revoke/local',
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify({ ...payload, reason: payload.reason || 'ui_local_bulk_revoke' }),
+      },
+      "No se pudieron revocar los tokens del local."
+    );
+  },
+
+  async revokeSecurityTokensByMall(payload: { mall_id: string; reason?: string }, token: string): Promise<{ revoked_count: number }> {
+    return fetchJsonWithBaseFallback<{ revoked_count: number }>(
+      '/security/tokens/revoke/mall',
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify({ ...payload, reason: payload.reason || 'ui_mall_bulk_revoke' }),
+      },
+      "No se pudieron revocar los tokens del mall."
+    );
+  },
+
+  async getSecurityTokenAudit(
+    token: string,
+    filters: { mall_id?: string; local_id?: string; event_type?: string; token_id?: string; q?: string; limit?: number } = {}
+  ): Promise<SecurityTokenAuditLogEntry[]> {
+    const params = new URLSearchParams();
+    if (filters.mall_id) params.set('mall_id', filters.mall_id);
+    if (filters.local_id) params.set('local_id', filters.local_id);
+    if (filters.event_type) params.set('event_type', filters.event_type);
+    if (filters.token_id) params.set('token_id', filters.token_id);
+    if (filters.q) params.set('q', filters.q);
+    if (typeof filters.limit === 'number' && Number.isFinite(filters.limit)) params.set('limit', String(filters.limit));
+    const qs = params.toString();
+    return fetchJsonWithBaseFallback<SecurityTokenAuditLogEntry[]>(
+      `/security/token-audit${qs ? `?${qs}` : ''}`,
+      { method: 'GET', headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      "No se pudo cargar la auditoría de tokens."
+    );
   },
 };

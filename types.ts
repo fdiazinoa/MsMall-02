@@ -181,3 +181,75 @@ export interface ConnectionRetryBatchResponse {
   skipped: number;
   results: any[];
 }
+
+export type SecurityTokenType = 'app' | 'exporter';
+export type SecurityTokenStatus = 'active' | 'disabled' | 'revoked';
+
+export interface SecurityServiceAccount {
+  id: string;
+  name?: string | null;
+  mall_id: string;
+  local_id?: string | null;
+  token_type: 'exporter';
+  client_id: string;
+  scopes: string[] | string;
+  status: SecurityTokenStatus;
+  created_by?: string | null;
+  created_at: string;
+  updated_at?: string;
+  last_used_at?: string | null;
+  last_used_ip?: string | null;
+  last_used_ua?: string | null;
+  active_tokens?: number;
+  total_tokens?: number;
+  client_secret?: string; // one-time reveal only
+  warning?: string;
+}
+
+export interface SecurityApiToken {
+  id: string;
+  mall_id: string;
+  local_id?: string | null;
+  token_type: SecurityTokenType;
+  scopes: string[] | string;
+  jti: string;
+  access_expires_at?: string | null;
+  refresh_expires_at?: string | null;
+  status: SecurityTokenStatus;
+  created_by?: string | null;
+  service_account_id?: string | null;
+  last_used_at?: string | null;
+  last_used_ip?: string | null;
+  last_used_ua?: string | null;
+  revoked_at?: string | null;
+  revoked_by?: string | null;
+  revoke_reason?: string | null;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface SecurityTokenPairReveal {
+  access_token: string;
+  refresh_token?: string;
+  token_type: string;
+  expires_in: number;
+  refresh_expires_in?: number;
+  token_id: string;
+  jti: string;
+  scope: string[] | string;
+  mall_id: string;
+  local_id?: string | null;
+  token_kind: SecurityTokenType;
+}
+
+export interface SecurityTokenAuditLogEntry {
+  id: number | string;
+  token_id?: string | null;
+  event_type: 'issued' | 'refreshed' | 'revoked' | 'used' | 'failed' | string;
+  mall_id?: string | null;
+  local_id?: string | null;
+  ip?: string | null;
+  ua?: string | null;
+  metadata?: Record<string, any>;
+  created_at: string;
+}

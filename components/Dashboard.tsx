@@ -16,7 +16,7 @@ import { PeriodComparison } from './PeriodComparison';
 import { SecurityTokenAdmin } from './SecurityTokenAdmin';
 
 interface DashboardProps {
-  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security';
+  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'erp-webservice' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security';
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
@@ -34,7 +34,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
     case 'security':
       return <SecurityTokenAdmin />;
     case 'auto-import':
-      return <ImportManager />;
+      return <ImportManager initialSection="ftp" />;
+    case 'erp-webservice':
+      return <ImportManager initialSection="webservice" />;
     case 'monitor':
       return <LoadMonitor />;
     case 'financial':

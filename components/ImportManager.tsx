@@ -60,7 +60,11 @@ const createDefaultExporterWebserviceDraft = () => ({
   notes: ''
 });
 
-export const ImportManager: React.FC = () => {
+interface ImportManagerProps {
+  initialSection?: 'ftp' | 'webservice';
+}
+
+export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = 'ftp' }) => {
   const { currentMall, isAdmin, isTic, session } = useAuth();
   const canManageImports = isAdmin || isTic;
   const authToken = session?.access_token || '';
@@ -128,6 +132,7 @@ export const ImportManager: React.FC = () => {
   }>(initialBatchProgress);
   const batchCancelRef = useRef(false);
   const browserFilesInputRef = useRef<HTMLInputElement | null>(null);
+  const exporterWebservicePanelRef = useRef<HTMLDivElement | null>(null);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
 
   // Progress Modal State
@@ -214,6 +219,14 @@ export const ImportManager: React.FC = () => {
       setExporterWsConfigs([]);
     }
   }, [currentMall?.id, authToken]);
+
+  useEffect(() => {
+    if (initialSection !== 'webservice') return;
+    const id = window.setTimeout(() => {
+      exporterWebservicePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [initialSection, loading, configs.length]);
 
   useEffect(() => {
     if (!selectedExporterLocalId && availableStores.length > 0) {
@@ -2347,7 +2360,9 @@ export const ImportManager: React.FC = () => {
         </div>
       )}
 
-      {renderExporterWebservicePanel()}
+      <div ref={exporterWebservicePanelRef}>
+        {renderExporterWebservicePanel()}
+      </div>
 
       {/* Manual Execution Modal */}
       {showManualModal && (

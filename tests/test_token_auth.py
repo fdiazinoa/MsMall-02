@@ -17,12 +17,21 @@ class ASGITestClient:
         self.app = app
         self.base_url = "http://testserver"
 
-    def post(self, path, **kwargs):
+    def _request(self, method, path, **kwargs):
         async def _run():
             transport = httpx.ASGITransport(app=self.app)
             async with httpx.AsyncClient(transport=transport, base_url=self.base_url) as client:
-                return await client.post(path, **kwargs)
+                return await client.request(method, path, **kwargs)
         return asyncio.run(_run())
+
+    def post(self, path, **kwargs):
+        return self._request("POST", path, **kwargs)
+
+    def get(self, path, **kwargs):
+        return self._request("GET", path, **kwargs)
+
+    def put(self, path, **kwargs):
+        return self._request("PUT", path, **kwargs)
 
 
 def build_test_client():
@@ -232,3 +241,109 @@ def test_exporter_sync_ingest_daily_requires_resumen_id_when_no_documento():
     assert len(rows) == 1
     assert rows[0]["hora_venta"] is None
     assert rows[0]["resumen_id"] == "local-1-2026-02-26"
+
+
+def test_exporter_webservice_config_crud_endpoints():
+    client, svc, store = build_test_client()
+    admin_access = bootstrap_manage_token(client, svc, store)
+
+    put = client.put(
+        "/api/v1/exporter/configs/local-1",
+        headers={"Authorization": f"Bearer {admin_access}"},
+        json={
+            "mall_id": "mall-1",
+            "enabled": True,
+            "contract_type": "msmall_sales_v1",
+            "default_granularity": "daily",
+            "allow_transaction": False,
+            "allow_daily": True,
+            "strict_validation": True,
+            "notes": "ERP via webservice",
+        },
+    )
+    assert put.status_code == 200, put.text
+    cfg = put.json()
+    assert cfg["mall_id"] == "mall-1"
+    assert cfg["local_id"] == "local-1"
+    assert cfg["default_granularity"] == "daily"
+    assert cfg["allow_transaction"] is False
+
+    get_one = client.get(
+        "/api/v1/exporter/configs/local-1",
+        headers={"Authorization": f"Bearer {admin_access}"},
+        params={"mall_id": "mall-1"},
+    )
+    assert get_one.status_code == 200, get_one.text
+    assert get_one.json()["notes"] == "ERP via webservice"
+
+    get_list = client.get(
+        "/api/v1/exporter/configs",
+        headers={"Authorization": f"Bearer {admin_access}"},
+        params={"mall_id": "mall-1"},
+    )
+    assert get_list.status_code == 200, get_list.text
+    rows = get_list.json()
+    assert len(rows) == 1
+    assert rows[0]["local_id"] == "local-1"
+
+
+def test_exporter_sync_ingest_respects_webservice_config():
+    client, svc, store = build_test_client()
+    admin_access = bootstrap_manage_token(client, svc, store)
+    store.local_codes[("mall-1", "local-1")] = "CLI-001"
+    access_token = _issue_exporter_access_for_local(client, svc, store, "mall-1", "local-1")
+
+    cfg_put = client.put(
+        "/api/v1/exporter/configs/local-1",
+        headers={"Authorization": f"Bearer {admin_access}"},
+        json={
+            "mall_id": "mall-1",
+            "enabled": True,
+            "contract_type": "msmall_sales_v1",
+            "default_granularity": "transaction",
+            "allow_transaction": True,
+            "allow_daily": False,
+            "strict_validation": True,
+        },
+    )
+    assert cfg_put.status_code == 200, cfg_put.text
+
+    daily_blocked = client.post(
+        "/api/v1/exporter/sync/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "mall_id": "mall-1",
+            "local_id": "local-1",
+            "rows": [{
+                "fecha_venta": "2026-02-26",
+                "total_bruto": 1000,
+                "total_impuesto": 190,
+                "total_neto": 810,
+                "resumen_id": "loc-1-2026-02-26",
+            }],
+            "meta": {"granularity": "daily"},
+        },
+    )
+    assert daily_blocked.status_code == 422, daily_blocked.text
+
+    tx_ok = client.post(
+        "/api/v1/exporter/sync/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "mall_id": "mall-1",
+            "local_id": "local-1",
+            "rows": [{
+                "factura_numero": "F-2001",
+                "fecha_venta": "2026-02-26",
+                "hora_venta": "09:15:00",
+                "total_bruto": 200,
+                "total_impuesto": 38,
+                "total_neto": 162,
+            }],
+            "meta": {"batch_id": "cfgtest-1"},
+        },
+    )
+    assert tx_ok.status_code == 200, tx_ok.text
+    tx_json = tx_ok.json()
+    assert tx_json["webservice_config_applied"] is True
+    assert tx_json["granularity"] == "transaction"

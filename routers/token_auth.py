@@ -274,6 +274,42 @@ class SupabaseTokenStore:
         inserted = sum(1 for key in dedup_keys if key not in existing)
         return {"inserted": inserted, "updated": len(dedup_keys) - inserted}
 
+    def get_exporter_webservice_config(self, mall_id: str, local_id: str) -> Optional[Dict[str, Any]]:
+        self._require_db()
+        res = (
+            self.db.table("exporter_webservice_configs")
+            .select("*")
+            .eq("mall_id", mall_id)
+            .eq("local_id", local_id)
+            .maybe_single()
+            .execute()
+        )
+        return res.data or None
+
+    def list_exporter_webservice_configs(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        self._require_db()
+        q = self.db.table("exporter_webservice_configs").select("*").order("updated_at", desc=True)
+        if filters.get("mall_id"):
+            q = q.eq("mall_id", filters["mall_id"])
+        if filters.get("local_id"):
+            q = q.eq("local_id", filters["local_id"])
+        if filters.get("enabled") is not None:
+            q = q.eq("enabled", bool(filters["enabled"]))
+        return q.execute().data or []
+
+    def upsert_exporter_webservice_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_db()
+        now_iso = utcnow().isoformat()
+        mall_id = str(payload.get("mall_id") or "")
+        local_id = str(payload.get("local_id") or "")
+        current = self.get_exporter_webservice_config(mall_id, local_id) if (mall_id and local_id) else None
+        data = {**payload, "updated_at": now_iso}
+        if current and current.get("id"):
+            data["id"] = current.get("id")
+        data["created_at"] = current.get("created_at") if current and current.get("created_at") else now_iso
+        res = self.db.table("exporter_webservice_configs").upsert(data, on_conflict="local_id").execute()
+        return (res.data or [None])[0]
+
 
 class InMemoryTokenStore:
     def __init__(self) -> None:
@@ -282,6 +318,7 @@ class InMemoryTokenStore:
         self.audit_logs: List[Dict[str, Any]] = []
         self.local_codes: Dict[Tuple[str, str], str] = {}
         self.exporter_ingest_rows: Dict[str, Dict[str, Any]] = {}
+        self.exporter_webservice_configs: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     def create_service_account(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = dict(payload)
@@ -396,6 +433,45 @@ class InMemoryTokenStore:
 
     def list_exporter_ingest_rows(self) -> List[Dict[str, Any]]:
         return list(self.exporter_ingest_rows.values())
+
+    def get_exporter_webservice_config(self, mall_id: str, local_id: str) -> Optional[Dict[str, Any]]:
+        row = self.exporter_webservice_configs.get((mall_id, local_id))
+        return dict(row) if row else None
+
+    def list_exporter_webservice_configs(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        out = [dict(x) for x in self.exporter_webservice_configs.values()]
+        for key, value in filters.items():
+            if value is None:
+                continue
+            out = [x for x in out if x.get(key) == value]
+        return sorted(out, key=lambda x: x.get("updated_at", ""), reverse=True)
+
+    def upsert_exporter_webservice_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        mall_id = str(payload.get("mall_id") or "")
+        local_id = str(payload.get("local_id") or "")
+        key = (mall_id, local_id)
+        now_iso = utcnow().isoformat()
+        base = self.exporter_webservice_configs.get(key, {})
+        row = {
+            "id": base.get("id") or str(uuid.uuid4()),
+            "mall_id": mall_id,
+            "local_id": local_id,
+            "enabled": bool(payload.get("enabled", True)),
+            "contract_type": payload.get("contract_type") or "msmall_sales_v1",
+            "default_granularity": payload.get("default_granularity") or "transaction",
+            "allow_transaction": bool(payload.get("allow_transaction", True)),
+            "allow_daily": bool(payload.get("allow_daily", True)),
+            "strict_validation": bool(payload.get("strict_validation", True)),
+            "notes": payload.get("notes"),
+            "created_at": base.get("created_at") or now_iso,
+            "updated_at": now_iso,
+            "last_ingest_at": base.get("last_ingest_at"),
+            "last_ingest_status": base.get("last_ingest_status"),
+            "last_ingest_message": base.get("last_ingest_message"),
+            "last_ingest_granularity": base.get("last_ingest_granularity"),
+        }
+        self.exporter_webservice_configs[key] = row
+        return dict(row)
 
 
 @dataclass
@@ -689,6 +765,17 @@ class RevokeServiceAccountTokensRequest(BaseModel):
     reason: str = "service_account_bulk_revoke"
 
 
+class UpsertExporterWebserviceConfigRequest(BaseModel):
+    mall_id: str
+    enabled: bool = True
+    contract_type: str = Field(default="msmall_sales_v1", pattern="^(msmall_sales_v1)$")
+    default_granularity: str = Field(default="transaction", pattern="^(transaction|daily|daily_summary)$")
+    allow_transaction: bool = True
+    allow_daily: bool = True
+    strict_validation: bool = True
+    notes: Optional[str] = None
+
+
 def build_default_service() -> TokenService:
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
@@ -880,12 +967,25 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
     rows, meta = _parse_exporter_rows(payload)
     granularity = _normalize_granularity(meta.get("granularity"))
 
+    exporter_cfg_get = getattr(svc.store, "get_exporter_webservice_config", None)
+    exporter_cfg = exporter_cfg_get(payload_mall_id, payload_local_id) if callable(exporter_cfg_get) else None
+    if exporter_cfg:
+        if exporter_cfg.get("enabled") is False:
+            raise HTTPException(status_code=409, detail="Webservice exporter deshabilitado para este local en MsMall")
+        if not _has_value(meta.get("granularity")) and _has_value(exporter_cfg.get("default_granularity")):
+            granularity = _normalize_granularity(exporter_cfg.get("default_granularity"))
+        if granularity == "transaction" and exporter_cfg.get("allow_transaction") is False:
+            raise HTTPException(status_code=422, detail="Granularity 'transaction' no permitido para este local")
+        if granularity == "daily" and exporter_cfg.get("allow_daily") is False:
+            raise HTTPException(status_code=422, detail="Granularity 'daily' no permitido para este local")
+
     if not rows:
         return {
             "accepted": True,
             "mall_id": payload_mall_id,
             "local_id": payload_local_id,
             "granularity": granularity,
+            "webservice_config_applied": bool(exporter_cfg),
             "received": 0,
             "inserted": 0,
             "updated": 0,
@@ -901,7 +1001,11 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
 
     errors: List[str] = []
     persist_rows: List[Dict[str, Any]] = []
-    contract_type = _as_str_or_none(meta.get("contract_type")) or "msmall_sales_v1"
+    contract_type = (
+        _as_str_or_none(meta.get("contract_type"))
+        or _as_str_or_none((exporter_cfg or {}).get("contract_type"))
+        or "msmall_sales_v1"
+    )
     batch_id = _as_str_or_none(meta.get("batch_id"))
     chunk_index = _coerce_int(meta.get("chunk_index"), row_idx=0, field_name="chunk_index", errors=[])
     chunk_total = _coerce_int(meta.get("chunk_total"), row_idx=0, field_name="chunk_total", errors=[])
@@ -951,6 +1055,7 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
         "local_id": payload_local_id,
         "codigo_cliente": codigo_cliente,
         "granularity": granularity,
+        "webservice_config_applied": bool(exporter_cfg),
         "received": len(rows),
         "inserted": int(stats.get("inserted") or 0),
         "updated": int(stats.get("updated") or 0),
@@ -970,6 +1075,15 @@ def sanitize_service_account_row(row: Optional[Dict[str, Any]]) -> Optional[Dict
         return row
     safe = dict(row)
     safe.pop("client_secret_hash", None)
+    return safe
+
+
+def sanitize_exporter_webservice_config_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not row:
+        return row
+    safe = dict(row)
+    if safe.get("default_granularity"):
+        safe["default_granularity"] = _normalize_granularity(safe.get("default_granularity"))
     return safe
 
 
@@ -1166,6 +1280,61 @@ def create_router() -> APIRouter:
         svc: TokenService = Depends(get_token_service),
     ):
         return svc.store.list_audit_logs({"mall_id": mall_id, "local_id": local_id, "event_type": event_type, "token_id": token_id}, limit=limit)
+
+    @router.get("/api/v1/exporter/configs")
+    async def list_exporter_webservice_configs(
+        mall_id: Optional[str] = None,
+        local_id: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        _: AuthContext = Depends(require_token_auth("tokens:manage")),
+        svc: TokenService = Depends(get_token_service),
+    ):
+        lister = getattr(svc.store, "list_exporter_webservice_configs", None)
+        if not callable(lister):
+            raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+        rows = lister({"mall_id": mall_id, "local_id": local_id, "enabled": enabled})
+        return [sanitize_exporter_webservice_config_row(row) for row in rows]
+
+    @router.get("/api/v1/exporter/configs/{local_id}")
+    async def get_exporter_webservice_config(
+        local_id: str,
+        mall_id: str,
+        _: AuthContext = Depends(require_token_auth("tokens:manage")),
+        svc: TokenService = Depends(get_token_service),
+    ):
+        getter = getattr(svc.store, "get_exporter_webservice_config", None)
+        if not callable(getter):
+            raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+        row = getter(mall_id, local_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Configuracion exporter webservice no encontrada")
+        return sanitize_exporter_webservice_config_row(row)
+
+    @router.put("/api/v1/exporter/configs/{local_id}")
+    async def put_exporter_webservice_config(
+        local_id: str,
+        payload: UpsertExporterWebserviceConfigRequest,
+        ctx: AuthContext = Depends(require_token_auth("tokens:manage")),
+        svc: TokenService = Depends(get_token_service),
+    ):
+        upserter = getattr(svc.store, "upsert_exporter_webservice_config", None)
+        if not callable(upserter):
+            raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+        row = upserter({
+            "mall_id": payload.mall_id,
+            "local_id": local_id,
+            "enabled": payload.enabled,
+            "contract_type": payload.contract_type,
+            "default_granularity": _normalize_granularity(payload.default_granularity),
+            "allow_transaction": payload.allow_transaction,
+            "allow_daily": payload.allow_daily,
+            "strict_validation": payload.strict_validation,
+            "notes": payload.notes.strip() if payload.notes else None,
+            "updated_by": ctx.token_id,
+        })
+        if not row:
+            raise HTTPException(status_code=500, detail="No se pudo guardar la configuracion exporter webservice")
+        return sanitize_exporter_webservice_config_row(row)
 
     @router.post("/api/v1/exporter/sync/ingest")
     async def exporter_sync_ingest(

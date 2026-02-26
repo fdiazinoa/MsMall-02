@@ -1,11 +1,11 @@
 
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthProvider';
-import { CreditCard, BarChart3, Store as StoreIcon, Grid, KeyRound } from 'lucide-react';
+import { ArrowRightLeft, CreditCard, BarChart3, Store as StoreIcon, Grid, KeyRound } from 'lucide-react';
 
 interface SidebarProps {
-  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security';
-  setActiveTab: (tab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security') => void;
+  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'erp-webservice' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security';
+  setActiveTab: (tab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'erp-webservice' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security') => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
@@ -240,6 +240,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12V7H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5" /><path d="M16 5l4 4-4 4" /><path d="M20 9H8a4 4 0 0 0 0 8" /></svg>
               Importación FTP
+            </button>
+
+            <button
+              onClick={() => setActiveTab('erp-webservice')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'erp-webservice' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
+            >
+              <ArrowRightLeft className="w-5 h-5" />
+              ERP Webservice
             </button>
 
             <button

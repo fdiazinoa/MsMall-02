@@ -15,7 +15,7 @@ console.error = (...args: any[]) => {
 };
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security'>('analytics');
+  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'erp-webservice' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security'>('analytics');
   const { session, loading } = useAuth();
 
   // Estados para el login

@@ -66,6 +66,14 @@ const parseErrorDetail = async (response: Response, fallbackMessage: string): Pr
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
       if (typeof parsed.detail === 'string' && parsed.detail.trim()) return parsed.detail;
+      if (Array.isArray(parsed.detail) && parsed.detail.length > 0) {
+        const first = parsed.detail[0];
+        if (typeof first === 'string' && first.trim()) return first;
+        if (first && typeof first === 'object') {
+          if (typeof first.msg === 'string' && first.msg.trim()) return first.msg;
+          if (typeof first.message === 'string' && first.message.trim()) return first.message;
+        }
+      }
       if (typeof parsed.message === 'string' && parsed.message.trim()) return parsed.message;
     }
   } catch {

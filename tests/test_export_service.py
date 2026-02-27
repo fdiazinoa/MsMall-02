@@ -64,8 +64,8 @@ class _TableQuery:
         if self._range is not None:
             start, end = self._range
             rows = rows[start:end + 1]
-        elif self.table_name == "ventas":
-            # Simula el límite por defecto de PostgREST/Supabase cuando no se pagina.
+        if self.table_name == "ventas":
+            # Simula límite duro por request de PostgREST/Supabase, incluso con range.
             rows = rows[:1000]
 
         return _FakeResponse(rows)

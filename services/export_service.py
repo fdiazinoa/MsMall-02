@@ -59,7 +59,8 @@ class ExportService:
         mall_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
-        page_size = 2000
+        # Supabase/PostgREST commonly caps responses around 1000 rows per request.
+        page_size = 1000
         page = 0
 
         while True:

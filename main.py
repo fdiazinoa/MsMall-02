@@ -4971,18 +4971,31 @@ async def security_put_exporter_webservice_config(
     if granularity == "daily_summary":
         granularity = "daily"
 
-    row = upserter({
-        "mall_id": payload.mall_id,
-        "local_id": local_id,
-        "enabled": payload.enabled,
-        "contract_type": payload.contract_type,
-        "default_granularity": granularity,
-        "allow_transaction": payload.allow_transaction,
-        "allow_daily": payload.allow_daily,
-        "strict_validation": payload.strict_validation,
-        "notes": payload.notes.strip() if payload.notes else None,
-        "updated_by": operator_ctx.get("user_id"),
-    })
+    try:
+        row = upserter({
+            "mall_id": payload.mall_id,
+            "local_id": local_id,
+            "enabled": payload.enabled,
+            "contract_type": payload.contract_type,
+            "default_granularity": granularity,
+            "allow_transaction": payload.allow_transaction,
+            "allow_daily": payload.allow_daily,
+            "strict_validation": payload.strict_validation,
+            "notes": payload.notes.strip() if payload.notes else None,
+            "updated_by": operator_ctx.get("user_id"),
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error guardando exporter webservice config mall=%s local=%s user=%s: %s",
+            payload.mall_id,
+            local_id,
+            operator_ctx.get("user_id"),
+            e,
+        )
+        detail = str(e).strip() or "No se pudo guardar la configuracion exporter webservice"
+        raise HTTPException(status_code=500, detail=detail)
     if not row:
         raise HTTPException(status_code=500, detail="No se pudo guardar la configuracion exporter webservice")
     return sanitize_token_exporter_webservice_config_row(row)

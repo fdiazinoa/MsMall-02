@@ -59,20 +59,29 @@ const withAuthHeaders = (token?: string, headers: Record<string, string> = {}): 
 
 const parseErrorDetail = async (response: Response, fallbackMessage: string): Promise<string> => {
   const raw = await response.text().catch(() => '');
-  if (!raw) return fallbackMessage;
-  if (raw.trim().startsWith('<')) return fallbackMessage;
+  const fallbackWithStatus = `${fallbackMessage} (HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''})`;
+  if (!raw) return fallbackWithStatus;
+  if (raw.trim().startsWith('<')) return fallbackWithStatus;
 
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
       if (typeof parsed.detail === 'string' && parsed.detail.trim()) return parsed.detail;
+      if (Array.isArray(parsed.detail) && parsed.detail.length > 0) {
+        const first = parsed.detail[0];
+        if (typeof first === 'string' && first.trim()) return first;
+        if (first && typeof first === 'object') {
+          if (typeof first.msg === 'string' && first.msg.trim()) return first.msg;
+          if (typeof first.message === 'string' && first.message.trim()) return first.message;
+        }
+      }
       if (typeof parsed.message === 'string' && parsed.message.trim()) return parsed.message;
     }
   } catch {
     // Ignore parse errors and use fallback.
   }
 
-  return fallbackMessage;
+  return fallbackWithStatus;
 };
 
 const normalizeErrorMessage = (error: any, fallbackMessage: string): string => {

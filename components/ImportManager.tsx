@@ -171,9 +171,23 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     setLoading(false);
   };
 
-  const loadStores = async () => {
-    const stores = await ApiService.getStores();
-    setAvailableStores(stores);
+  const loadStores = async (mallId?: string) => {
+    if (!mallId) {
+      setAvailableStores([]);
+      setSelectedExporterLocalId('');
+      return;
+    }
+    try {
+      const stores = await ApiService.getStores(mallId);
+      // Avoid stale async overwrite when mall changes quickly.
+      if (String(currentMall?.id || '') !== String(mallId)) {
+        return;
+      }
+      setAvailableStores(stores || []);
+    } catch (error) {
+      console.error("Error loading stores:", error);
+      setAvailableStores([]);
+    }
   };
 
   const loadRemoteConnections = async () => {
@@ -207,12 +221,16 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   };
 
   useEffect(() => {
-    if (currentMall) {
+    const mallId = currentMall?.id;
+    if (mallId) {
       loadConfigs();
-      loadStores();
+      loadStores(mallId);
       loadRemoteConnections();
+    } else {
+      setAvailableStores([]);
+      setSelectedExporterLocalId('');
     }
-  }, [currentMall]);
+  }, [currentMall?.id, authToken]);
 
   useEffect(() => {
     if (currentMall?.id && authToken) {
@@ -233,6 +251,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   useEffect(() => {
     if (!selectedExporterLocalId && availableStores.length > 0) {
       setSelectedExporterLocalId(String(availableStores[0].id || ''));
+    }
+  }, [availableStores, selectedExporterLocalId]);
+
+  useEffect(() => {
+    if (!selectedExporterLocalId) return;
+    const existsInMall = (availableStores || []).some((store) => String(store?.id) === String(selectedExporterLocalId));
+    if (!existsInMall) {
+      setSelectedExporterLocalId('');
     }
   }, [availableStores, selectedExporterLocalId]);
 
@@ -303,12 +329,24 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       alert('Seleccione un local para configurar el webservice ERP.');
       return;
     }
+    const selectedStore = (availableStores || []).find((store) => String(store?.id) === String(selectedExporterLocalId));
+    const selectedStoreMallId = String(selectedStore?.mall_id || '');
+    if (selectedStoreMallId && selectedStoreMallId !== String(currentMall.id)) {
+      setExporterWsError('El local seleccionado no pertenece al mall activo. Recargue la lista e intente nuevamente.');
+      alert('El local seleccionado no pertenece al mall activo. Recargue la lista e intente nuevamente.');
+      return;
+    }
+    const targetMallId = selectedStoreMallId || String(currentMall.id || '');
+    if (!targetMallId) {
+      alert('No se pudo determinar el mall del local seleccionado.');
+      return;
+    }
     setExporterWsSaving(true);
     try {
       const saved = await ApiService.upsertSecurityExporterWebserviceConfig(
         selectedExporterLocalId,
         {
-          mall_id: currentMall.id,
+          mall_id: targetMallId,
           enabled: exporterWsDraft.enabled,
           contract_type: 'msmall_sales_v1',
           default_granularity: exporterWsDraft.default_granularity,

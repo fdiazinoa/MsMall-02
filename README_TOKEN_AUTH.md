@@ -62,6 +62,9 @@
 4. Renovar con `/auth/refresh` cuando falte ~20% de vida del access token.
 5. Persistir solo `refresh_token` y rotarlo siempre (reemplazar el anterior).
 
+## Guia operativa completa
+- Ver `GUIA_CONFIG_MSEXPORTADOR_MSMALL_TOKENS_WEBSERVICE.md` para setup paso a paso (MsMall + MsExportador), checklist de habilitacion y troubleshooting.
+
 ## Reglas de seguridad implementadas
 - Claims: `mall_id`, `local_id` (exporter), `token_type`, `scope`, `jti`, `iat`, `exp`
 - Refresh token guardado con hash (no plaintext)

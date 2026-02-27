@@ -136,6 +136,12 @@ class SupabaseTokenStore:
         if not self.db:
             raise HTTPException(status_code=500, detail="Supabase no configurado para token auth")
 
+    def _extract_data(self, response: Any, *, operation: str):
+        # Defensive guard: in some failure modes SDK can return None instead of a response object.
+        if response is None:
+            raise HTTPException(status_code=502, detail=f"Respuesta vacia de Supabase en {operation}")
+        return getattr(response, "data", None)
+
     def create_service_account(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_db()
         return self.db.table("service_accounts").insert(payload).execute().data[0]
@@ -284,7 +290,7 @@ class SupabaseTokenStore:
             .maybe_single()
             .execute()
         )
-        return res.data or None
+        return self._extract_data(res, operation="get_exporter_webservice_config") or None
 
     def list_exporter_webservice_configs(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         self._require_db()
@@ -295,7 +301,8 @@ class SupabaseTokenStore:
             q = q.eq("local_id", filters["local_id"])
         if filters.get("enabled") is not None:
             q = q.eq("enabled", bool(filters["enabled"]))
-        return q.execute().data or []
+        res = q.execute()
+        return self._extract_data(res, operation="list_exporter_webservice_configs") or []
 
     def upsert_exporter_webservice_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_db()
@@ -308,7 +315,13 @@ class SupabaseTokenStore:
             data["id"] = current.get("id")
         data["created_at"] = current.get("created_at") if current and current.get("created_at") else now_iso
         res = self.db.table("exporter_webservice_configs").upsert(data, on_conflict="local_id").execute()
-        return (res.data or [None])[0]
+        rows = self._extract_data(res, operation="upsert_exporter_webservice_config") or []
+        if rows:
+            return rows[0]
+        refreshed = self.get_exporter_webservice_config(mall_id, local_id)
+        if refreshed:
+            return refreshed
+        return {}
 
 
 class InMemoryTokenStore:

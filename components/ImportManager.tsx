@@ -172,8 +172,18 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   };
 
   const loadStores = async () => {
-    const stores = await ApiService.getStores();
-    setAvailableStores(stores);
+    if (!currentMall?.id) {
+      setAvailableStores([]);
+      setSelectedExporterLocalId('');
+      return;
+    }
+    try {
+      const stores = await ApiService.getStores(currentMall.id);
+      setAvailableStores(stores || []);
+    } catch (error) {
+      console.error("Error loading stores:", error);
+      setAvailableStores([]);
+    }
   };
 
   const loadRemoteConnections = async () => {
@@ -233,6 +243,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   useEffect(() => {
     if (!selectedExporterLocalId && availableStores.length > 0) {
       setSelectedExporterLocalId(String(availableStores[0].id || ''));
+    }
+  }, [availableStores, selectedExporterLocalId]);
+
+  useEffect(() => {
+    if (!selectedExporterLocalId) return;
+    const existsInMall = (availableStores || []).some((store) => String(store?.id) === String(selectedExporterLocalId));
+    if (!existsInMall) {
+      setSelectedExporterLocalId('');
     }
   }, [availableStores, selectedExporterLocalId]);
 

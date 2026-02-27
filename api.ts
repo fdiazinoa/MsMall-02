@@ -59,8 +59,9 @@ const withAuthHeaders = (token?: string, headers: Record<string, string> = {}): 
 
 const parseErrorDetail = async (response: Response, fallbackMessage: string): Promise<string> => {
   const raw = await response.text().catch(() => '');
-  if (!raw) return fallbackMessage;
-  if (raw.trim().startsWith('<')) return fallbackMessage;
+  const fallbackWithStatus = `${fallbackMessage} (HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''})`;
+  if (!raw) return fallbackWithStatus;
+  if (raw.trim().startsWith('<')) return fallbackWithStatus;
 
   try {
     const parsed = JSON.parse(raw);
@@ -80,7 +81,7 @@ const parseErrorDetail = async (response: Response, fallbackMessage: string): Pr
     // Ignore parse errors and use fallback.
   }
 
-  return fallbackMessage;
+  return fallbackWithStatus;
 };
 
 const normalizeErrorMessage = (error: any, fallbackMessage: string): string => {

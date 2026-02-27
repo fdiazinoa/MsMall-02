@@ -50,6 +50,47 @@ class ExportService:
         header = ParagraphStyle('SectionHeader', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor('#1F4788'), spaceBefore=12, spaceAfter=6, fontName='Helvetica-Bold')
         return title, subtitle, header, styles['Normal']
 
+    def _fetch_sales_rows_paginated(
+        self,
+        fecha_inicio: str,
+        fecha_fin: str,
+        select_fields: str,
+        local_id: Optional[str] = None,
+        mall_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        # Supabase/PostgREST commonly caps responses around 1000 rows per request.
+        page_size = 1000
+        page = 0
+
+        while True:
+            query = (
+                self.supabase.table('ventas')
+                .select(select_fields)
+                .gte('fecha', fecha_inicio)
+                .lte('fecha', fecha_fin)
+            )
+            if mall_id:
+                query = query.eq('mall_id', mall_id)
+            if local_id:
+                query = query.eq('local_id', local_id)
+
+            chunk = (
+                query
+                .order('id')
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            ).data or []
+
+            if not chunk:
+                break
+            rows.extend(chunk)
+            if len(chunk) < page_size:
+                break
+            page += 1
+
+        return rows
+
     def _normalize_sales_date(self, raw_value: Any) -> Optional[str]:
         if raw_value is None:
             return None
@@ -181,15 +222,21 @@ class ExportService:
 
     # --- SALES REPORT ---
 
-    async def generate_sales_report_excel(self, fecha_inicio: str, fecha_fin: str, local_id: Optional[str] = None, report_type: str = 'detailed') -> io.BytesIO:
-        # 1. Fetch Data
-        query = self.supabase.table('ventas').select('local_id, locales(nombre), fecha, hora, factura_no, total_neto, total_impuestos, total_bruto').gte('fecha', fecha_inicio).lte('fecha', fecha_fin)
-        if local_id:
-            query = query.eq('local_id', local_id)
-        response = query.execute()
-        data = response.data
-        if not data:
-            data = []
+    async def generate_sales_report_excel(
+        self,
+        fecha_inicio: str,
+        fecha_fin: str,
+        local_id: Optional[str] = None,
+        report_type: str = 'detailed',
+        mall_id: Optional[str] = None,
+    ) -> io.BytesIO:
+        data = self._fetch_sales_rows_paginated(
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            select_fields='local_id, locales(nombre), fecha, hora, factura_no, total_neto, total_impuestos, total_bruto',
+            local_id=local_id,
+            mall_id=mall_id,
+        )
 
         df = pd.DataFrame(data)
         # Flatten locales(nombre)
@@ -247,7 +294,7 @@ class ExportService:
                     'total_neto': 'sum',
                     'total_impuestos': 'sum',
                     'total_bruto': 'sum'
-                }).reset_index()
+                }).reset_index().sort_values(by=['nombre_local'])
                 
                 row_idx = 5
                 for _, row in resumen.iterrows():
@@ -271,14 +318,27 @@ class ExportService:
         output.seek(0)
         return output
 
-    async def generate_sales_report_pdf(self, fecha_inicio: str, fecha_fin: str, local_id: Optional[str] = None, report_type: str = 'detailed', mall_name: str = "CENTRO COMERCIAL MS MALL") -> io.BytesIO:
-        # Fetch Data (Reuse logic? For now duplicate for speed)
-        query = self.supabase.table('ventas').select('local_id, locales(nombre), fecha, total_neto, total_impuestos, total_bruto').gte('fecha', fecha_inicio).lte('fecha', fecha_fin)
-        if local_id: query = query.eq('local_id', local_id)
-        data = query.execute().data
+    async def generate_sales_report_pdf(
+        self,
+        fecha_inicio: str,
+        fecha_fin: str,
+        local_id: Optional[str] = None,
+        report_type: str = 'detailed',
+        mall_name: str = "CENTRO COMERCIAL MS MALL",
+        mall_id: Optional[str] = None,
+    ) -> io.BytesIO:
+        data = self._fetch_sales_rows_paginated(
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            select_fields='local_id, locales(nombre), fecha, total_neto, total_impuestos, total_bruto',
+            local_id=local_id,
+            mall_id=mall_id,
+        )
         df = pd.DataFrame(data or [])
         if not df.empty:
             df['nombre_local'] = df['locales'].apply(lambda x: x.get('nombre') if x else '?')
+        else:
+            df = pd.DataFrame(columns=['local_id', 'nombre_local', 'total_neto', 'total_impuestos', 'total_bruto'])
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -314,9 +374,10 @@ class ExportService:
         elements.append(t_summary)
         elements.append(Spacer(1, 24))
         
-        # Tabla Detalle (ONLY IF DETAILED)
-        if report_type == 'detailed' and not df.empty:
-            elements.append(Paragraph("DETALLE POR LOCAL", header_style))
+        # Tabla Resumen por Local
+        if not df.empty:
+            section_title = "RESUMEN POR LOCAL" if report_type == 'summary' else "DETALLE POR LOCAL"
+            elements.append(Paragraph(section_title, header_style))
             resumen = df.groupby(['local_id', 'nombre_local']).agg({'total_neto':'sum', 'total_impuestos':'sum', 'total_bruto':'sum'}).reset_index()
             
             table_data = [['Local', 'Ventas Brutas', 'Impuestos', 'Ventas Netas']]
@@ -330,7 +391,7 @@ class ExportService:
             # Footer
             table_data.append(['TOTAL', self._format_currency(total_base), self._format_currency(total_tax), self._format_currency(total_final)])
             
-            t = Table(table_data, colWidths=[150, 100, 100, 100])
+            t = Table(table_data, colWidths=[150, 100, 100, 100], repeatRows=1)
             t.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1F4788')),
                 ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
@@ -341,6 +402,9 @@ class ExportService:
                 ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
             ]))
             elements.append(t)
+        else:
+            elements.append(Paragraph("RESUMEN POR LOCAL", header_style))
+            elements.append(Paragraph("No hay ventas para el período seleccionado.", normal_style))
 
         doc.build(elements)
         buffer.seek(0)

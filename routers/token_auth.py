@@ -309,18 +309,39 @@ class SupabaseTokenStore:
         now_iso = utcnow().isoformat()
         mall_id = str(payload.get("mall_id") or "")
         local_id = str(payload.get("local_id") or "")
-        current = self.get_exporter_webservice_config(mall_id, local_id) if (mall_id and local_id) else None
+        current = None
+        if mall_id and local_id:
+            try:
+                current = self.get_exporter_webservice_config(mall_id, local_id)
+            except HTTPException as e:
+                # Continue with blind upsert if Supabase answered without payload for the pre-read.
+                if e.status_code in {404, 502}:
+                    logger.warning(
+                        "exporter_webservice_config pre-read skipped mall=%s local=%s detail=%s",
+                        mall_id,
+                        local_id,
+                        str(e.detail),
+                    )
+                else:
+                    raise
         data = {**payload, "updated_at": now_iso}
         if current and current.get("id"):
             data["id"] = current.get("id")
-        data["created_at"] = current.get("created_at") if current and current.get("created_at") else now_iso
+        # Keep original created_at when available; otherwise let DB default/current row value apply.
+        if current and current.get("created_at"):
+            data["created_at"] = current.get("created_at")
         res = self.db.table("exporter_webservice_configs").upsert(data, on_conflict="local_id").execute()
         rows = self._extract_data(res, operation="upsert_exporter_webservice_config") or []
         if rows:
             return rows[0]
-        refreshed = self.get_exporter_webservice_config(mall_id, local_id)
-        if refreshed:
-            return refreshed
+        if mall_id and local_id:
+            try:
+                refreshed = self.get_exporter_webservice_config(mall_id, local_id)
+                if refreshed:
+                    return refreshed
+            except HTTPException as e:
+                if e.status_code not in {404, 502}:
+                    raise
         return {}
 
 

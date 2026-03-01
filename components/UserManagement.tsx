@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import {
-  UserPlus, Shield, ShieldCheck, ShieldAlert, CheckCircle2, UserCog
+  UserPlus, Shield, ShieldCheck, ShieldAlert, CheckCircle2, UserCog, Building2
 } from 'lucide-react';
 
 const ROLE_STYLES: Record<string, { label: string, color: string, icon: any }> = {
@@ -20,6 +20,7 @@ export const UserManagement: React.FC = () => {
   const { session, isAdmin } = useAuth();
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedMallFilter, setSelectedMallFilter] = useState('ALL');
 
   // Mall Assignment State
   const [availableMalls, setAvailableMalls] = useState<any[]>([]);
@@ -64,6 +65,11 @@ export const UserManagement: React.FC = () => {
     loadUsers();
     loadMalls();
   }, [session]);
+
+  const filteredUsers = users.filter((user) => {
+    if (selectedMallFilter === 'ALL') return true;
+    return (user.malls || []).some((mall: any) => mall.mall_id === selectedMallFilter);
+  });
 
   const openCreateModal = () => {
     setNewEmail('');
@@ -170,6 +176,33 @@ export const UserManagement: React.FC = () => {
           <UserPlus size={18} />
           Nuevo Usuario
         </button>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+          <div className="w-full lg:max-w-sm">
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+              Filtrar por Mall
+            </label>
+            <div className="relative">
+              <Building2 size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <select
+                value={selectedMallFilter}
+                onChange={(e) => setSelectedMallFilter(e.target.value)}
+                className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="ALL">Todos los malls</option>
+                {availableMalls.map((mall) => (
+                  <option key={mall.id} value={mall.id}>{mall.nombre}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="text-xs text-slate-500 font-medium whitespace-nowrap">
+            Mostrando {filteredUsers.length} de {users.length} usuarios
+          </div>
+        </div>
       </div>
 
       {createModalOpen && (
@@ -307,7 +340,7 @@ export const UserManagement: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr><td colSpan={5} className="px-6 py-12 text-center text-slate-400 italic">Cargando usuarios...</td></tr>
-              ) : users.map(user => (
+              ) : filteredUsers.length > 0 ? filteredUsers.map(user => (
                 <tr key={user.id} className="hover:bg-slate-50 transition-colors group">
                   <td className="px-6 py-4">
                     <div>
@@ -335,7 +368,13 @@ export const UserManagement: React.FC = () => {
                     </button>
                   </td>
                 </tr>
-              ))}
+              )) : (
+                <tr>
+                  <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">
+                    No se encontraron usuarios para este mall.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

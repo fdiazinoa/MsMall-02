@@ -1,32 +1,31 @@
 import React, { useEffect, useState } from 'react';
-import {
-  ApiService,
-  DEFAULT_STORE_CATALOG_VALUES,
-  Store,
-  StoreCatalogFieldName,
-  StoreCatalogOption,
-} from '../api';
+import { ApiService, Store, StoreCatalogOption } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import {
-  Store as StoreIcon,
-  Plus,
-  Search,
+  buildStoreCatalogValues,
+  loadStoreCatalogOptions,
+  normalizeStoreCatalogKey,
+  normalizeStoreCatalogText,
+  STORE_CATALOG_MIGRATION_FILE,
+} from '../utils/storeCatalog';
+import {
   Building2,
-  User,
   FileText,
   MapPin,
-  Tag,
   Maximize2,
   Percent,
+  Plus,
+  Search,
+  Store as StoreIcon,
+  Tag,
+  User,
   X,
-  Pencil,
-  Trash2,
-  Save,
-  Loader2,
 } from 'lucide-react';
 import { SalesPurge } from './SalesPurge';
 
-const STORE_CATALOG_MIGRATION_FILE = '20260301_store_field_options.sql';
+interface StoreMaintenanceProps {
+  onOpenCatalogs?: () => void;
+}
 
 const createEmptyStore = (mallId = ''): Partial<Store> => ({
   nombre: '',
@@ -41,131 +40,25 @@ const createEmptyStore = (mallId = ''): Partial<Store> => ({
   rubro: '',
 });
 
-const CATALOG_META: Record<StoreCatalogFieldName, {
-  title: string;
-  description: string;
-  label: string;
-  placeholder: string;
-  emptyMessage: string;
-}> = {
-  tipo_negocio: {
-    title: 'Tipos de Negocio',
-    description: 'Lista maestra por mall para clasificar el modelo comercial del local.',
-    label: 'Tipo de Negocio',
-    placeholder: 'Ej. RETAIL',
-    emptyMessage: 'No hay tipos de negocio configurados todavía.',
-  },
-  rubro: {
-    title: 'Rubros Generales',
-    description: 'Lista maestra por mall para clasificar la categoría principal del local.',
-    label: 'Rubro General',
-    placeholder: 'Ej. ZAPATERIA',
-    emptyMessage: 'No hay rubros configurados todavía.',
-  },
-};
-
-const INITIAL_CATALOG_DRAFTS: Record<StoreCatalogFieldName, string> = {
-  tipo_negocio: '',
-  rubro: '',
-};
-
-const INITIAL_CATALOG_EDITING: Record<StoreCatalogFieldName, { original: string | null; draft: string }> = {
-  tipo_negocio: { original: null, draft: '' },
-  rubro: { original: null, draft: '' },
-};
-
-export const StoreMaintenance: React.FC = () => {
+export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalogs }) => {
   const { currentMall, isAdmin, isTic, session } = useAuth();
   const canManageStores = isAdmin || isTic;
   const [stores, setStores] = useState<Store[]>([]);
   const [catalogOptions, setCatalogOptions] = useState<StoreCatalogOption[]>([]);
+  const [catalogTableAvailable, setCatalogTableAvailable] = useState<boolean | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [floorFilter, setFloorFilter] = useState('ALL');
   const [mtsFilter, setMtsFilter] = useState('ALL');
   const [businessTypeFilter, setBusinessTypeFilter] = useState('ALL');
   const [loading, setLoading] = useState(true);
-  const [catalogLoading, setCatalogLoading] = useState(true);
-  const [catalogTableAvailable, setCatalogTableAvailable] = useState<boolean | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [newStore, setNewStore] = useState<Partial<Store>>(createEmptyStore());
-  const [catalogDrafts, setCatalogDrafts] = useState(INITIAL_CATALOG_DRAFTS);
-  const [catalogEditing, setCatalogEditing] = useState(INITIAL_CATALOG_EDITING);
-  const [catalogBusyKey, setCatalogBusyKey] = useState<string | null>(null);
 
-  const normalizeText = (value: any) => String(value || '').trim().replace(/\s+/g, ' ');
-  const normalizeSearch = (value: any) =>
-    normalizeText(value)
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
+  const normalizeText = normalizeStoreCatalogText;
+  const normalizeSearch = normalizeStoreCatalogKey;
 
-  const catalogKey = (value: any) => normalizeSearch(value);
-
-  const getStoreFieldValue = (store: Partial<Store>, fieldName: StoreCatalogFieldName) =>
-    normalizeText(fieldName === 'tipo_negocio' ? store.tipo_negocio : store.rubro);
-
-  const updateNewStoreField = (fieldName: StoreCatalogFieldName, value: string) => {
+  const updateNewStoreField = (fieldName: 'tipo_negocio' | 'rubro', value: string) => {
     setNewStore((prev) => ({ ...prev, [fieldName]: value }));
-  };
-
-  const resetCatalogEditing = (fieldName?: StoreCatalogFieldName) => {
-    if (fieldName) {
-      setCatalogEditing((prev) => ({
-        ...prev,
-        [fieldName]: INITIAL_CATALOG_EDITING[fieldName],
-      }));
-      return;
-    }
-    setCatalogEditing(INITIAL_CATALOG_EDITING);
-  };
-
-  const getCatalogOptionRow = (fieldName: StoreCatalogFieldName, value: string) =>
-    catalogOptions.find(
-      (option) => option.field_name === fieldName && catalogKey(option.value) === catalogKey(value)
-    );
-
-  const buildCatalogValues = (fieldName: StoreCatalogFieldName) => {
-    const ordered = new Map<string, string>();
-    const sources = [
-      ...(catalogTableAvailable === true ? [] : DEFAULT_STORE_CATALOG_VALUES[fieldName]),
-      ...catalogOptions
-        .filter((option) => option.field_name === fieldName)
-        .map((option) => option.value),
-      ...stores.map((store) => getStoreFieldValue(store, fieldName)),
-      getStoreFieldValue(newStore, fieldName),
-    ];
-
-    sources.forEach((value) => {
-      const cleanValue = normalizeText(value);
-      const key = catalogKey(cleanValue);
-      if (!cleanValue || !key || ordered.has(key)) return;
-      ordered.set(key, cleanValue);
-    });
-
-    return Array.from(ordered.values()).sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true })
-    );
-  };
-
-  const buildUsageMap = (fieldName: StoreCatalogFieldName) => {
-    const usageMap = new Map<string, number>();
-    stores.forEach((store) => {
-      const value = getStoreFieldValue(store, fieldName);
-      const key = catalogKey(value);
-      if (!key) return;
-      usageMap.set(key, (usageMap.get(key) || 0) + 1);
-    });
-    return usageMap;
-  };
-
-  const catalogValuesByField = {
-    tipo_negocio: buildCatalogValues('tipo_negocio'),
-    rubro: buildCatalogValues('rubro'),
-  };
-
-  const catalogUsageByField = {
-    tipo_negocio: buildUsageMap('tipo_negocio'),
-    rubro: buildUsageMap('rubro'),
   };
 
   const loadStores = async () => {
@@ -179,8 +72,9 @@ export const StoreMaintenance: React.FC = () => {
     try {
       const data = await ApiService.getStores(currentMall.id);
       setStores(data);
-    } catch (e) {
-      console.error(e);
+    } catch (error) {
+      console.error(error);
+      alert('Error cargando locales.');
     } finally {
       setLoading(false);
     }
@@ -190,40 +84,17 @@ export const StoreMaintenance: React.FC = () => {
     if (!currentMall?.id) {
       setCatalogOptions([]);
       setCatalogTableAvailable(null);
-      setCatalogLoading(false);
       return;
     }
 
-    setCatalogLoading(true);
     try {
-      const result = await ApiService.getStoreCatalogOptions(currentMall.id);
-
-      if (!result.available) {
-        setCatalogOptions([]);
-        setCatalogTableAvailable(false);
-        return;
-      }
-
-      setCatalogTableAvailable(true);
-
-      if (result.options.length === 0) {
-        await ApiService.seedStoreCatalogDefaults(currentMall.id);
-        const seededResult = await ApiService.getStoreCatalogOptions(currentMall.id);
-        setCatalogOptions(seededResult.options);
-        return;
-      }
-
+      const result = await loadStoreCatalogOptions(currentMall.id);
       setCatalogOptions(result.options);
-    } catch (e: any) {
-      console.error(e);
-      alert(`Error cargando catálogos: ${e.message || e}`);
-    } finally {
-      setCatalogLoading(false);
+      setCatalogTableAvailable(result.available);
+    } catch (error: any) {
+      console.error(error);
+      alert(`Error cargando catalogos: ${error.message || error}`);
     }
-  };
-
-  const reloadStoresAndCatalogs = async () => {
-    await Promise.all([loadStores(), loadCatalogs()]);
   };
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -244,20 +115,21 @@ export const StoreMaintenance: React.FC = () => {
       setShowForm(false);
       setNewStore(createEmptyStore(currentMall.id));
       await loadStores();
-    } catch (e: any) {
-      console.error(e);
-      alert('Error al guardar: ' + (e.message || e));
+    } catch (error: any) {
+      console.error(error);
+      alert('Error al guardar: ' + (error.message || error));
     }
   };
 
   const handleDelete = async (id: string, nombre: string) => {
     if (!confirm(`¿Está seguro de que desea eliminar el local "${nombre}"?\nEsta acción no se puede deshacer.`)) return;
+
     try {
       await ApiService.deleteStore(id);
       await loadStores();
-    } catch (e: any) {
-      console.error(e);
-      alert('Error al eliminar: ' + (e.message || e));
+    } catch (error: any) {
+      console.error(error);
+      alert('Error al eliminar: ' + (error.message || error));
     }
   };
 
@@ -272,151 +144,9 @@ export const StoreMaintenance: React.FC = () => {
       setNewStore(createEmptyStore(currentMall?.id || ''));
       return;
     }
+
     setNewStore(createEmptyStore(currentMall?.id || ''));
     setShowForm(true);
-  };
-
-  const handleAddCatalogOption = async (fieldName: StoreCatalogFieldName) => {
-    if (!currentMall?.id) {
-      alert('Seleccione un mall antes de editar catálogos.');
-      return;
-    }
-
-    if (!catalogTableAvailable) {
-      alert(`Para guardar catálogos editables debe ejecutar el script SQL ${STORE_CATALOG_MIGRATION_FILE}.`);
-      return;
-    }
-
-    const newValue = normalizeText(catalogDrafts[fieldName]);
-    if (!newValue) {
-      alert(`Ingrese un valor para ${CATALOG_META[fieldName].label}.`);
-      return;
-    }
-
-    if (catalogValuesByField[fieldName].some((option) => catalogKey(option) === catalogKey(newValue))) {
-      alert('Ese valor ya existe en la lista.');
-      return;
-    }
-
-    setCatalogBusyKey(`create:${fieldName}`);
-    try {
-      await ApiService.createStoreCatalogOption({
-        mall_id: currentMall.id,
-        field_name: fieldName,
-        value: newValue,
-        sort_order: catalogValuesByField[fieldName].length + 1,
-      });
-      setCatalogDrafts((prev) => ({ ...prev, [fieldName]: '' }));
-      await loadCatalogs();
-    } catch (e: any) {
-      console.error(e);
-      alert(`Error guardando ${CATALOG_META[fieldName].label}: ${e.message || e}`);
-    } finally {
-      setCatalogBusyKey(null);
-    }
-  };
-
-  const handleStartCatalogEdit = (fieldName: StoreCatalogFieldName, value: string) => {
-    setCatalogEditing((prev) => ({
-      ...prev,
-      [fieldName]: { original: value, draft: value },
-    }));
-  };
-
-  const handleSaveCatalogEdit = async (fieldName: StoreCatalogFieldName) => {
-    if (!currentMall?.id) {
-      alert('Seleccione un mall antes de editar catálogos.');
-      return;
-    }
-
-    if (!catalogTableAvailable) {
-      alert(`Para guardar catálogos editables debe ejecutar el script SQL ${STORE_CATALOG_MIGRATION_FILE}.`);
-      return;
-    }
-
-    const { original, draft } = catalogEditing[fieldName];
-    const previousValue = normalizeText(original);
-    const nextValue = normalizeText(draft);
-
-    if (!previousValue) return;
-    if (!nextValue) {
-      alert(`Ingrese un valor para ${CATALOG_META[fieldName].label}.`);
-      return;
-    }
-
-    const sourceOption = getCatalogOptionRow(fieldName, previousValue);
-    const targetOption = getCatalogOptionRow(fieldName, nextValue);
-    const operationKey = `edit:${fieldName}:${catalogKey(previousValue)}`;
-
-    setCatalogBusyKey(operationKey);
-    try {
-      if (previousValue !== nextValue) {
-        await ApiService.bulkReplaceStoreFieldValue(currentMall.id, fieldName, previousValue, nextValue);
-      }
-
-      if (sourceOption) {
-        if (targetOption && targetOption.id !== sourceOption.id) {
-          await ApiService.deleteStoreCatalogOption(sourceOption.id);
-        } else if (sourceOption.value !== nextValue) {
-          await ApiService.updateStoreCatalogOption(sourceOption.id, { value: nextValue });
-        }
-      } else if (!targetOption) {
-        await ApiService.createStoreCatalogOption({
-          mall_id: currentMall.id,
-          field_name: fieldName,
-          value: nextValue,
-          sort_order: catalogValuesByField[fieldName].length + 1,
-        });
-      }
-
-      const currentSelectedValue = getStoreFieldValue(newStore, fieldName);
-      if (catalogKey(currentSelectedValue) === catalogKey(previousValue)) {
-        updateNewStoreField(fieldName, nextValue);
-      }
-
-      resetCatalogEditing(fieldName);
-      await reloadStoresAndCatalogs();
-    } catch (e: any) {
-      console.error(e);
-      alert(`Error actualizando ${CATALOG_META[fieldName].label}: ${e.message || e}`);
-    } finally {
-      setCatalogBusyKey(null);
-    }
-  };
-
-  const handleDeleteCatalogOption = async (fieldName: StoreCatalogFieldName, value: string) => {
-    if (!catalogTableAvailable) {
-      alert(`Para guardar catálogos editables debe ejecutar el script SQL ${STORE_CATALOG_MIGRATION_FILE}.`);
-      return;
-    }
-
-    const usageCount = catalogUsageByField[fieldName].get(catalogKey(value)) || 0;
-    if (usageCount > 0) {
-      alert(`No se puede eliminar "${value}" porque ${usageCount} local(es) lo usan actualmente.`);
-      return;
-    }
-
-    const option = getCatalogOptionRow(fieldName, value);
-    if (!option) return;
-
-    if (!confirm(`¿Eliminar "${value}" de ${CATALOG_META[fieldName].title}?`)) return;
-
-    setCatalogBusyKey(`delete:${fieldName}:${catalogKey(value)}`);
-    try {
-      await ApiService.deleteStoreCatalogOption(option.id);
-
-      const currentSelectedValue = getStoreFieldValue(newStore, fieldName);
-      if (catalogKey(currentSelectedValue) === catalogKey(value)) {
-        updateNewStoreField(fieldName, '');
-      }
-
-      await loadCatalogs();
-    } catch (e: any) {
-      console.error(e);
-      alert(`Error eliminando ${CATALOG_META[fieldName].label}: ${e.message || e}`);
-    } finally {
-      setCatalogBusyKey(null);
-    }
   };
 
   useEffect(() => {
@@ -425,7 +155,6 @@ export const StoreMaintenance: React.FC = () => {
       setCatalogOptions([]);
       setCatalogTableAvailable(null);
       setLoading(false);
-      setCatalogLoading(false);
       setNewStore(createEmptyStore());
       return;
     }
@@ -433,9 +162,24 @@ export const StoreMaintenance: React.FC = () => {
     setNewStore((prev) => ({ ...prev, mall_id: currentMall.id }));
     loadStores();
     loadCatalogs();
-    setCatalogDrafts(INITIAL_CATALOG_DRAFTS);
-    resetCatalogEditing();
   }, [currentMall?.id]);
+
+  const catalogValuesByField = {
+    tipo_negocio: buildStoreCatalogValues({
+      fieldName: 'tipo_negocio',
+      catalogOptions,
+      catalogTableAvailable,
+      stores,
+      selectedValue: newStore.tipo_negocio || '',
+    }),
+    rubro: buildStoreCatalogValues({
+      fieldName: 'rubro',
+      catalogOptions,
+      catalogTableAvailable,
+      stores,
+      selectedValue: newStore.rubro || '',
+    }),
+  };
 
   const storeFloorValue = (store: Store) => normalizeText(store.piso);
   const storeMtsValue = (store: Store) => normalizeText(store.mts);
@@ -513,157 +257,6 @@ export const StoreMaintenance: React.FC = () => {
     setBusinessTypeFilter('ALL');
   };
 
-  const renderCatalogCard = (fieldName: StoreCatalogFieldName) => {
-    const options = catalogValuesByField[fieldName];
-    const usageMap = catalogUsageByField[fieldName];
-    const editingState = catalogEditing[fieldName];
-    const hasPersistedCatalog = catalogTableAvailable === true;
-
-    return (
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/70">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="text-base font-bold text-slate-800">{CATALOG_META[fieldName].title}</h3>
-              <p className="text-sm text-slate-500">{CATALOG_META[fieldName].description}</p>
-            </div>
-            {catalogLoading && <Loader2 size={18} className="animate-spin text-indigo-500 shrink-0 mt-0.5" />}
-          </div>
-          {catalogTableAvailable === false && (
-            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              Catálogo persistente pendiente. Ejecuta <span className="font-mono">{STORE_CATALOG_MIGRATION_FILE}</span>.
-              Mientras tanto se usan valores por defecto y valores ya presentes en los locales.
-            </div>
-          )}
-        </div>
-
-        <div className="p-5 space-y-4">
-          <div className="flex flex-col sm:flex-row gap-2">
-            <input
-              type="text"
-              value={catalogDrafts[fieldName]}
-              onChange={(e) => setCatalogDrafts((prev) => ({ ...prev, [fieldName]: e.target.value }))}
-              className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-slate-100 disabled:text-slate-400"
-              placeholder={CATALOG_META[fieldName].placeholder}
-              disabled={!hasPersistedCatalog || catalogLoading || Boolean(catalogBusyKey)}
-            />
-            <button
-              type="button"
-              onClick={() => handleAddCatalogOption(fieldName)}
-              disabled={!hasPersistedCatalog || catalogLoading || Boolean(catalogBusyKey)}
-              className="px-4 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
-            >
-              Agregar
-            </button>
-          </div>
-
-          <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-            {options.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-400 text-center">
-                {CATALOG_META[fieldName].emptyMessage}
-              </div>
-            ) : (
-              options.map((option) => {
-                const optionRow = getCatalogOptionRow(fieldName, option);
-                const usageCount = usageMap.get(catalogKey(option)) || 0;
-                const optionBusyPrefix = `${fieldName}:${catalogKey(option)}`;
-                const isEditing =
-                  editingState.original !== null &&
-                  catalogKey(editingState.original) === catalogKey(option);
-                const isBusy =
-                  catalogBusyKey === `edit:${optionBusyPrefix}` ||
-                  catalogBusyKey === `delete:${optionBusyPrefix}`;
-
-                return (
-                  <div
-                    key={`${fieldName}:${catalogKey(option)}`}
-                    className="rounded-xl border border-slate-200 px-3 py-3 bg-white"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        {isEditing ? (
-                          <input
-                            type="text"
-                            value={editingState.draft}
-                            onChange={(e) =>
-                              setCatalogEditing((prev) => ({
-                                ...prev,
-                                [fieldName]: { original: option, draft: e.target.value },
-                              }))
-                            }
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
-                            disabled={isBusy}
-                          />
-                        ) : (
-                          <div className="text-sm font-semibold text-slate-800 truncate">{option}</div>
-                        )}
-
-                        <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-500">
-                          <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold">
-                            {usageCount} local(es)
-                          </span>
-                          <span className={`px-2 py-0.5 rounded-full font-semibold ${optionRow ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                            {optionRow ? 'Catalogo' : 'Heredado'}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1 shrink-0">
-                        {isEditing ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleSaveCatalogEdit(fieldName)}
-                              disabled={isBusy}
-                              className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
-                              title="Guardar"
-                            >
-                              <Save size={16} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => resetCatalogEditing(fieldName)}
-                              disabled={isBusy}
-                              className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-50"
-                              title="Cancelar"
-                            >
-                              <X size={16} />
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleStartCatalogEdit(fieldName, option)}
-                              disabled={!hasPersistedCatalog || isBusy || catalogLoading}
-                              className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                              title="Editar"
-                            >
-                              <Pencil size={16} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteCatalogOption(fieldName, option)}
-                              disabled={!hasPersistedCatalog || isBusy || catalogLoading}
-                              className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                              title="Eliminar"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
   if (!canManageStores) {
     return (
       <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm font-medium">
@@ -674,35 +267,69 @@ export const StoreMaintenance: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
         <div>
           <h2 className="text-2xl font-bold text-slate-800">Mantenimiento de Locales</h2>
-          <p className="text-slate-500">Gestione la configuración contractual, física y catálogos maestros de las tiendas.</p>
+          <p className="text-slate-500">Gestione la configuracion contractual y fisica de las tiendas.</p>
         </div>
-        <button
-          onClick={handleToggleForm}
-          className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-md active:scale-95 font-medium"
-        >
-          {showForm ? <X size={18} /> : <Plus size={18} />}
-          {showForm ? 'Cancelar Registro' : 'Registrar Nuevo Local'}
-        </button>
+
+        <div className="flex flex-col sm:flex-row gap-3 w-full xl:w-auto">
+          {onOpenCatalogs && (
+            <button
+              type="button"
+              onClick={onOpenCatalogs}
+              className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 font-medium hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+            >
+              <Tag size={16} className="text-indigo-500" />
+              Gestionar Catalogos
+            </button>
+          )}
+          <button
+            onClick={handleToggleForm}
+            className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 hover:bg-indigo-700 transition-all shadow-md active:scale-95 font-medium"
+          >
+            {showForm ? <X size={18} /> : <Plus size={18} />}
+            {showForm ? 'Cancelar Registro' : 'Registrar Nuevo Local'}
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {renderCatalogCard('tipo_negocio')}
-        {renderCatalogCard('rubro')}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Catalogos Separados</h3>
+            <p className="text-sm text-slate-500 mt-1">
+              Los tipos de negocio y rubros generales ahora se administran desde una seccion propia en el sidebar.
+            </p>
+          </div>
+          {onOpenCatalogs && (
+            <button
+              type="button"
+              onClick={onOpenCatalogs}
+              className="px-4 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800 transition-colors"
+            >
+              Abrir Catalogos Locales
+            </button>
+          )}
+        </div>
+
+        {catalogTableAvailable === false && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Catalogo persistente pendiente. Ejecute <span className="font-mono">{STORE_CATALOG_MIGRATION_FILE}</span> en Supabase.
+          </div>
+        )}
       </div>
 
       {showForm && (
         <div className="bg-white p-8 rounded-2xl border border-indigo-100 shadow-xl animate-in zoom-in-95 duration-200">
           <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
             <StoreIcon className="text-indigo-600" size={20} />
-            {newStore.id ? 'Editar Local' : 'Información del Nuevo Local'}
+            {newStore.id ? 'Editar Local' : 'Informacion del Nuevo Local'}
           </h3>
           <form onSubmit={handleCreate} className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="space-y-4">
-                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Básico</h4>
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Basico</h4>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Nombre Comercial</label>
                   <input
@@ -715,7 +342,7 @@ export const StoreMaintenance: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Código Interno</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Codigo Interno</label>
                   <input
                     type="text"
                     required
@@ -728,7 +355,7 @@ export const StoreMaintenance: React.FC = () => {
                 <div>
                   <div className="flex items-center justify-between gap-3 mb-1">
                     <label className="block text-sm font-medium text-slate-700">Tipo de Negocio</label>
-                    <span className="text-[11px] font-medium text-slate-400">Catálogo por mall</span>
+                    <span className="text-[11px] font-medium text-slate-400">Catalogo por mall</span>
                   </div>
                   <select
                     value={newStore.tipo_negocio || ''}
@@ -741,7 +368,7 @@ export const StoreMaintenance: React.FC = () => {
                     ))}
                   </select>
                   <p className="text-[11px] text-slate-400 mt-1">
-                    Si falta una opción, agréguela en el catálogo superior antes de guardar.
+                    Si falta una opcion, gestionela desde Catalogos Locales.
                   </p>
                 </div>
               </div>
@@ -785,9 +412,9 @@ export const StoreMaintenance: React.FC = () => {
               </div>
 
               <div className="space-y-4">
-                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Ubicación y Espacio</h4>
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Ubicacion y Espacio</h4>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Piso / Ubicación</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Piso / Ubicacion</label>
                   <input
                     type="text"
                     value={newStore.piso}
@@ -813,7 +440,7 @@ export const StoreMaintenance: React.FC = () => {
                 <div>
                   <div className="flex items-center justify-between gap-3 mb-1">
                     <label className="block text-sm font-medium text-slate-700">Rubro General</label>
-                    <span className="text-[11px] font-medium text-slate-400">Catálogo por mall</span>
+                    <span className="text-[11px] font-medium text-slate-400">Catalogo por mall</span>
                   </div>
                   <select
                     value={newStore.rubro || ''}
@@ -826,7 +453,7 @@ export const StoreMaintenance: React.FC = () => {
                     ))}
                   </select>
                   <p className="text-[11px] text-slate-400 mt-1">
-                    Si falta una opción, agréguela en el catálogo superior antes de guardar.
+                    Si falta una opcion, gestionela desde Catalogos Locales.
                   </p>
                 </div>
                 <div className="pt-2">
@@ -842,7 +469,7 @@ export const StoreMaintenance: React.FC = () => {
                     </div>
                     <span className="text-sm font-medium text-slate-700 group-hover:text-indigo-600 transition-colors">Activar Sobrescritura (Upsert)</span>
                   </label>
-                  <p className="text-[10px] text-slate-400 mt-1 ml-13">Permite corregir facturas del mismo día sobrescribiendo datos existentes.</p>
+                  <p className="text-[10px] text-slate-400 mt-1 ml-13">Permite corregir facturas del mismo dia sobrescribiendo datos existentes.</p>
                 </div>
               </div>
             </div>
@@ -875,7 +502,7 @@ export const StoreMaintenance: React.FC = () => {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Buscar local por nombre, código, responsable o rubro..."
+                placeholder="Buscar local por nombre, codigo, responsable o rubro..."
                 className="bg-transparent border-none outline-none text-sm w-full"
               />
             </div>
@@ -939,13 +566,14 @@ export const StoreMaintenance: React.FC = () => {
             </div>
           </div>
         </div>
+
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead className="bg-slate-50/50 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
               <tr>
-                <th className="px-6 py-4">Información Local</th>
+                <th className="px-6 py-4">Informacion Local</th>
                 <th className="px-6 py-4">Responsable</th>
-                <th className="px-6 py-4">Ubicación (Piso)</th>
+                <th className="px-6 py-4">Ubicacion (Piso)</th>
                 <th className="px-6 py-4 text-center">Metraje (Mts²)</th>
                 <th className="px-6 py-4 text-center">Renta %</th>
                 <th className="px-6 py-4 text-right">Acciones</th>
@@ -1020,12 +648,12 @@ export const StoreMaintenance: React.FC = () => {
                         {store.processing_status === 'SUSPENDED_AUTH_ERROR' ? (
                           <button
                             onClick={async () => {
-                              if (confirm('¿Reactivar este local? Se restablecerá el contador de fallos.')) {
+                              if (confirm('¿Reactivar este local? Se restablecera el contador de fallos.')) {
                                 try {
                                   await ApiService.reactivateStore(store.id, session?.access_token);
                                   await loadStores();
-                                } catch (e) {
-                                  alert('Error: ' + e);
+                                } catch (error) {
+                                  alert('Error: ' + error);
                                 }
                               }
                             }}

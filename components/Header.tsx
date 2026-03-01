@@ -2,8 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { Building, ChevronDown, Activity, AlertCircle, KeyRound } from 'lucide-react';
 import { supabase } from '../api';
-
-type AppTab = 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'erp-webservice' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security';
+import { AppTab } from './appTabs';
 
 interface HeaderProps {
   activeTab: AppTab;
@@ -29,6 +28,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     { id: 'reports', label: 'Auditoría Ventas', visible: isAdmin || isTic },
     { id: 'monitor', label: 'Monitor de Cargas', visible: isAdmin || isTic },
     { id: 'stores', label: 'Mantenimiento', visible: isAdmin || isTic },
+    { id: 'store-catalogs', label: 'Catálogos Locales', visible: isAdmin || isTic },
     { id: 'auto-import', label: 'Importación FTP', visible: isAdmin || isTic },
     { id: 'erp-webservice', label: 'ERP Webservice', visible: isAdmin || isTic },
     { id: 'upload', label: 'Ingesta CSV', visible: isAdmin || isTic },

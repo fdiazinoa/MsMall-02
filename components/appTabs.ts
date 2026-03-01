@@ -1,0 +1,16 @@
+export type AppTab =
+  | 'upload'
+  | 'reports'
+  | 'analytics'
+  | 'stores'
+  | 'store-catalogs'
+  | 'users'
+  | 'auto-import'
+  | 'erp-webservice'
+  | 'monitor'
+  | 'insights'
+  | 'financial'
+  | 'cube'
+  | 'malls'
+  | 'comparisons'
+  | 'security';

@@ -2,6 +2,7 @@ import React, { useState, Suspense } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
+import { AppTab } from './components/appTabs';
 import { useAuth } from './context/AuthProvider';
 import { supabase } from './api';
 
@@ -15,7 +16,7 @@ console.error = (...args: any[]) => {
 };
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'erp-webservice' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons' | 'security'>('analytics');
+  const [activeTab, setActiveTab] = useState<AppTab>('analytics');
   const { session, loading } = useAuth();
 
   // Estados para el login
@@ -142,7 +143,7 @@ const App: React.FC = () => {
         </main>
 
         <footer className="border-t border-slate-200 py-4 px-6 text-center text-sm text-slate-500">
-          &copy; {new Date().getFullYear()} MSMALL Audit Systems - Prototipo MVP
+          &copy; MercaSend, SRL. MsMall v.20
         </footer>
       </div>
     </div>

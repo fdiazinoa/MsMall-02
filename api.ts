@@ -411,6 +411,96 @@ export interface Store {
   consecutive_failures?: number;
 }
 
+export type StoreCatalogFieldName = 'tipo_negocio' | 'rubro';
+
+export interface StoreCatalogOption {
+  id: string;
+  mall_id: string;
+  field_name: StoreCatalogFieldName;
+  value: string;
+  value_key?: string;
+  sort_order?: number | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface StoreCatalogOptionsResult {
+  options: StoreCatalogOption[];
+  available: boolean;
+}
+
+export const DEFAULT_STORE_CATALOG_VALUES: Record<StoreCatalogFieldName, string[]> = {
+  tipo_negocio: [
+    'RETAIL',
+    'GASTRONOMIA',
+    'SERVICIOS',
+    'ENTRETENIMIENTO',
+    'SALUD',
+    'BELLEZA',
+    'HOGAR',
+    'TECNOLOGIA',
+    'SUPERMERCADO',
+    'DEPARTAMENTAL',
+    'FINANCIERO',
+    'EDUCACION',
+    'AUTOMOTRIZ',
+    'DEPORTES',
+    'OTROS',
+  ],
+  rubro: [
+    'MODA',
+    'ZAPATERIA',
+    'DEPORTES',
+    'FAST FOOD',
+    'RESTAURANTE',
+    'CAFETERIA',
+    'HELADERIA',
+    'JOYERIA',
+    'TECNOLOGIA',
+    'HOGAR Y DECORACION',
+    'SALUD Y FARMACIA',
+    'BELLEZA Y COSMETICA',
+    'SERVICIOS FINANCIEROS',
+    'ENTRETENIMIENTO',
+    'LIBRERIA',
+    'INFANTIL',
+    'SUPERMERCADO',
+    'TELECOMUNICACIONES',
+    'OPTICA',
+    'OTROS',
+  ],
+};
+
+const STORE_CATALOG_TABLE = 'store_field_options';
+const STORE_CATALOG_MIGRATION_FILE = '20260301_store_field_options.sql';
+
+const normalizeCatalogText = (value: any): string => String(value || '').trim().replace(/\s+/g, ' ');
+
+const isMissingStoreCatalogTableError = (error: any): boolean => {
+  const message = String(error?.message || error?.details || '');
+  return (
+    error?.code === '42P01' ||
+    error?.code === 'PGRST205' ||
+    (
+      message.includes(STORE_CATALOG_TABLE) &&
+      (
+        message.toLowerCase().includes('does not exist') ||
+        message.toLowerCase().includes('schema cache')
+      )
+    )
+  );
+};
+
+const toStoreCatalogError = (error: any, fallbackMessage: string): Error => {
+  if (isMissingStoreCatalogTableError(error)) {
+    return new Error(`La base de datos no está actualizada: ejecute el script '${STORE_CATALOG_MIGRATION_FILE}'.`);
+  }
+  if (error?.code === '23505') {
+    return new Error('Ese valor ya existe en la lista.');
+  }
+  return error instanceof Error ? error : new Error(normalizeErrorMessage(error, fallbackMessage));
+};
+
 export const ApiService = {
   // --- MÉTODOS DE IMPORTACIÓN AUTOMATIZADA ---
   async getImportConfigs(mallId?: string): Promise<ImportConfig[]> {
@@ -1255,6 +1345,167 @@ export const ApiService = {
     } catch (error) {
       console.error('Error fetching stores:', error);
       return [];
+    }
+  },
+
+  async getStoreCatalogOptions(mallId: string): Promise<StoreCatalogOptionsResult> {
+    if (!supabase) return { options: [], available: false };
+
+    try {
+      const { data, error } = await supabase
+        .from(STORE_CATALOG_TABLE)
+        .select('*')
+        .eq('mall_id', mallId)
+        .order('field_name', { ascending: true })
+        .order('sort_order', { ascending: true })
+        .order('value', { ascending: true });
+
+      if (error) {
+        if (isMissingStoreCatalogTableError(error)) {
+          return { options: [], available: false };
+        }
+        throw error;
+      }
+
+      return {
+        options: (data as StoreCatalogOption[]) || [],
+        available: true,
+      };
+    } catch (error) {
+      console.error('Error fetching store catalog options:', error);
+      throw toStoreCatalogError(error, 'Error cargando catálogos de locales');
+    }
+  },
+
+  async seedStoreCatalogDefaults(mallId: string): Promise<StoreCatalogOption[]> {
+    if (!supabase) throw new Error("Supabase no está configurado");
+
+    const rows = (Object.entries(DEFAULT_STORE_CATALOG_VALUES) as Array<[StoreCatalogFieldName, string[]]>)
+      .flatMap(([fieldName, values]) =>
+        values.map((value, index) => ({
+          mall_id: mallId,
+          field_name: fieldName,
+          value,
+          sort_order: index + 1,
+        }))
+      );
+
+    try {
+      const { data, error } = await supabase
+        .from(STORE_CATALOG_TABLE)
+        .upsert(rows, { onConflict: 'mall_id,field_name,value_key' })
+        .select('*');
+
+      if (error) throw error;
+      return (data as StoreCatalogOption[]) || [];
+    } catch (error) {
+      console.error('Error seeding store catalog defaults:', error);
+      throw toStoreCatalogError(error, 'Error cargando valores por defecto del catálogo');
+    }
+  },
+
+  async createStoreCatalogOption(option: {
+    mall_id: string;
+    field_name: StoreCatalogFieldName;
+    value: string;
+    sort_order?: number | null;
+  }): Promise<StoreCatalogOption> {
+    if (!supabase) throw new Error("Supabase no está configurado");
+
+    const value = normalizeCatalogText(option.value);
+    if (!value) {
+      throw new Error('El valor no puede estar vacío.');
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from(STORE_CATALOG_TABLE)
+        .insert([{
+          ...option,
+          value,
+        }])
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data as StoreCatalogOption;
+    } catch (error) {
+      console.error('Error creating store catalog option:', error);
+      throw toStoreCatalogError(error, 'Error creando valor del catálogo');
+    }
+  },
+
+  async updateStoreCatalogOption(
+    id: string,
+    updates: Partial<Pick<StoreCatalogOption, 'value' | 'sort_order'>>
+  ): Promise<StoreCatalogOption> {
+    if (!supabase) throw new Error("Supabase no está configurado");
+
+    const payload: Record<string, any> = { ...updates };
+    if (payload.value !== undefined) {
+      payload.value = normalizeCatalogText(payload.value);
+      if (!payload.value) {
+        throw new Error('El valor no puede estar vacío.');
+      }
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from(STORE_CATALOG_TABLE)
+        .update(payload)
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data as StoreCatalogOption;
+    } catch (error) {
+      console.error('Error updating store catalog option:', error);
+      throw toStoreCatalogError(error, 'Error actualizando valor del catálogo');
+    }
+  },
+
+  async deleteStoreCatalogOption(id: string): Promise<void> {
+    if (!supabase) throw new Error("Supabase no está configurado");
+
+    try {
+      const { error } = await supabase
+        .from(STORE_CATALOG_TABLE)
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error deleting store catalog option:', error);
+      throw toStoreCatalogError(error, 'Error eliminando valor del catálogo');
+    }
+  },
+
+  async bulkReplaceStoreFieldValue(
+    mallId: string,
+    fieldName: StoreCatalogFieldName,
+    previousValue: string,
+    nextValue: string
+  ): Promise<void> {
+    if (!supabase) throw new Error("Supabase no está configurado");
+
+    const cleanPreviousValue = normalizeCatalogText(previousValue);
+    const cleanNextValue = normalizeCatalogText(nextValue);
+    if (!cleanPreviousValue || !cleanNextValue || cleanPreviousValue === cleanNextValue) {
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('locales')
+        .update({ [fieldName]: cleanNextValue } as any)
+        .eq('mall_id', mallId)
+        .eq(fieldName, cleanPreviousValue);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error(`Error replacing store field value for ${fieldName}:`, error);
+      throw error instanceof Error ? error : new Error('Error actualizando locales asociados');
     }
   },
 

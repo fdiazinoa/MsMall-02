@@ -51,7 +51,8 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   const [mtsFilter, setMtsFilter] = useState('ALL');
   const [businessTypeFilter, setBusinessTypeFilter] = useState('ALL');
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
+  const [showFormDrawer, setShowFormDrawer] = useState(false);
+  const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create');
   const [newStore, setNewStore] = useState<Partial<Store>>(createEmptyStore());
 
   const normalizeText = normalizeStoreCatalogText;
@@ -97,7 +98,19 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
     }
   };
 
-  const handleCreate = async (e: React.FormEvent) => {
+  const closeFormDrawer = () => {
+    setShowFormDrawer(false);
+    setDrawerMode('create');
+    setNewStore(createEmptyStore(currentMall?.id || ''));
+  };
+
+  const openCreateDrawer = () => {
+    setDrawerMode('create');
+    setNewStore(createEmptyStore(currentMall?.id || ''));
+    setShowFormDrawer(true);
+  };
+
+  const handleSaveStore = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentMall?.id) {
       alert('Error: No se ha seleccionado un Mall.');
@@ -112,8 +125,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
       } else {
         await ApiService.createStore(storeToSave);
       }
-      setShowForm(false);
-      setNewStore(createEmptyStore(currentMall.id));
+      closeFormDrawer();
       await loadStores();
     } catch (error: any) {
       console.error(error);
@@ -134,19 +146,9 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   };
 
   const handleEdit = (store: Store) => {
+    setDrawerMode('edit');
     setNewStore({ ...createEmptyStore(currentMall?.id || ''), ...store });
-    setShowForm(true);
-  };
-
-  const handleToggleForm = () => {
-    if (showForm) {
-      setShowForm(false);
-      setNewStore(createEmptyStore(currentMall?.id || ''));
-      return;
-    }
-
-    setNewStore(createEmptyStore(currentMall?.id || ''));
-    setShowForm(true);
+    setShowFormDrawer(true);
   };
 
   useEffect(() => {
@@ -155,10 +157,14 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
       setCatalogOptions([]);
       setCatalogTableAvailable(null);
       setLoading(false);
+      setShowFormDrawer(false);
+      setDrawerMode('create');
       setNewStore(createEmptyStore());
       return;
     }
 
+    setShowFormDrawer(false);
+    setDrawerMode('create');
     setNewStore((prev) => ({ ...prev, mall_id: currentMall.id }));
     loadStores();
     loadCatalogs();
@@ -285,11 +291,11 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
             </button>
           )}
           <button
-            onClick={handleToggleForm}
+            onClick={() => (showFormDrawer ? closeFormDrawer() : openCreateDrawer())}
             className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 hover:bg-indigo-700 transition-all shadow-md active:scale-95 font-medium"
           >
-            {showForm ? <X size={18} /> : <Plus size={18} />}
-            {showForm ? 'Cancelar Registro' : 'Registrar Nuevo Local'}
+            {showFormDrawer ? <X size={18} /> : <Plus size={18} />}
+            {showFormDrawer ? 'Cerrar Panel' : 'Registrar Nuevo Local'}
           </button>
         </div>
       </div>
@@ -320,176 +326,212 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
         )}
       </div>
 
-      {showForm && (
-        <div className="bg-white p-8 rounded-2xl border border-indigo-100 shadow-xl animate-in zoom-in-95 duration-200">
-          <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
-            <StoreIcon className="text-indigo-600" size={20} />
-            {newStore.id ? 'Editar Local' : 'Informacion del Nuevo Local'}
-          </h3>
-          <form onSubmit={handleCreate} className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-4">
-                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Basico</h4>
+      {showFormDrawer && (
+        <div className="fixed inset-0 z-[105] bg-black/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="absolute inset-0 flex justify-end" onClick={closeFormDrawer}>
+            <div
+              className="w-full lg:w-[760px] h-full bg-white border-l border-indigo-100 shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="bg-slate-50 border-b border-slate-100 p-6 flex justify-between items-center sticky top-0 z-10">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Nombre Comercial</label>
-                  <input
-                    type="text"
-                    required
-                    value={newStore.nombre}
-                    onChange={(e) => setNewStore({ ...newStore, nombre: e.target.value })}
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    placeholder="Ej. Adidas Store"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Codigo Interno</label>
-                  <input
-                    type="text"
-                    required
-                    value={newStore.codigo_interno}
-                    onChange={(e) => setNewStore({ ...newStore, codigo_interno: e.target.value })}
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    placeholder="L001"
-                  />
-                </div>
-                <div>
-                  <div className="flex items-center justify-between gap-3 mb-1">
-                    <label className="block text-sm font-medium text-slate-700">Tipo de Negocio</label>
-                    <span className="text-[11px] font-medium text-slate-400">Catalogo por mall</span>
+                  <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest mb-1">
+                    {drawerMode === 'edit' ? 'Edicion de Local' : 'Nuevo Local'}
                   </div>
-                  <select
-                    value={newStore.tipo_negocio || ''}
-                    onChange={(e) => updateNewStoreField('tipo_negocio', e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                  >
-                    <option value="">Seleccione un tipo</option>
-                    {catalogValuesByField.tipo_negocio.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
-                  <p className="text-[11px] text-slate-400 mt-1">
-                    Si falta una opcion, gestionela desde Catalogos Locales.
+                  <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                    <StoreIcon className="text-indigo-600" size={20} />
+                    {drawerMode === 'edit' ? (newStore.nombre || 'Editar Local') : 'Registrar Nuevo Local'}
+                  </h3>
+                  <p className="text-sm text-slate-500 mt-1">
+                    {currentMall?.nombre || 'Mall sin seleccionar'}
                   </p>
                 </div>
+                <button onClick={closeFormDrawer} className="text-slate-400 hover:text-slate-600 transition-colors">
+                  <X size={20} />
+                </button>
               </div>
 
-              <div className="space-y-4">
-                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Contractual</h4>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Responsable</label>
-                  <input
-                    type="text"
-                    value={newStore.responsable}
-                    onChange={(e) => setNewStore({ ...newStore, responsable: e.target.value })}
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    placeholder="Nombre del encargado"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Nº Contrato</label>
-                  <input
-                    type="text"
-                    value={newStore.contrato_no}
-                    onChange={(e) => setNewStore({ ...newStore, contrato_no: e.target.value })}
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    placeholder="99-88-11"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">% Renta Variable</label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={newStore.porciento_renta}
-                      onChange={(e) => setNewStore({ ...newStore, porciento_renta: e.target.value })}
-                      className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none pr-8"
-                      placeholder="5.00"
-                    />
-                    <Percent size={14} className="absolute right-3 top-3 text-slate-400" />
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Ubicacion y Espacio</h4>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Piso / Ubicacion</label>
-                  <input
-                    type="text"
-                    value={newStore.piso}
-                    onChange={(e) => setNewStore({ ...newStore, piso: e.target.value })}
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    placeholder="P2-L01"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Metros Cuadrados (Mts2)</label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={newStore.mts}
-                      onChange={(e) => setNewStore({ ...newStore, mts: e.target.value })}
-                      className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none pr-10"
-                      placeholder="100.00"
-                    />
-                    <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">m²</span>
-                  </div>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between gap-3 mb-1">
-                    <label className="block text-sm font-medium text-slate-700">Rubro General</label>
-                    <span className="text-[11px] font-medium text-slate-400">Catalogo por mall</span>
-                  </div>
-                  <select
-                    value={newStore.rubro || ''}
-                    onChange={(e) => updateNewStoreField('rubro', e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                  >
-                    <option value="">Seleccione un rubro</option>
-                    {catalogValuesByField.rubro.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
-                  <p className="text-[11px] text-slate-400 mt-1">
-                    Si falta una opcion, gestionela desde Catalogos Locales.
-                  </p>
-                </div>
-                <div className="pt-2">
-                  <label className="flex items-center gap-3 cursor-pointer group">
-                    <div className="relative">
-                      <input
-                        type="checkbox"
-                        checked={newStore.upsert_activo}
-                        onChange={(e) => setNewStore({ ...newStore, upsert_activo: e.target.checked })}
-                        className="sr-only peer"
-                      />
-                      <div className="w-10 h-5 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+              <div className="flex-1 overflow-y-auto">
+                <form id="store-maintenance-form" onSubmit={handleSaveStore} className="p-8 space-y-6">
+                  <div className="bg-indigo-50/60 border border-indigo-100 rounded-2xl p-4">
+                    <h4 className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest mb-2">Contexto</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                      <div className="rounded-xl bg-white border border-indigo-100 px-4 py-3">
+                        <div className="text-slate-400 text-[10px] uppercase tracking-widest mb-1">Mall</div>
+                        <div className="font-semibold text-slate-800">{currentMall?.nombre || 'Sin mall'}</div>
+                      </div>
+                      <div className="rounded-xl bg-white border border-indigo-100 px-4 py-3">
+                        <div className="text-slate-400 text-[10px] uppercase tracking-widest mb-1">Modo</div>
+                        <div className="font-semibold text-slate-800">{drawerMode === 'edit' ? 'Editar existente' : 'Crear nuevo local'}</div>
+                      </div>
                     </div>
-                    <span className="text-sm font-medium text-slate-700 group-hover:text-indigo-600 transition-colors">Activar Sobrescritura (Upsert)</span>
-                  </label>
-                  <p className="text-[10px] text-slate-400 mt-1 ml-13">Permite corregir facturas del mismo dia sobrescribiendo datos existentes.</p>
-                </div>
+                  </div>
+
+                  <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Basico</h4>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Nombre Comercial</label>
+                      <input
+                        type="text"
+                        required
+                        value={newStore.nombre}
+                        onChange={(e) => setNewStore({ ...newStore, nombre: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
+                        placeholder="Ej. Adidas Store"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Codigo Interno</label>
+                      <input
+                        type="text"
+                        required
+                        value={newStore.codigo_interno}
+                        onChange={(e) => setNewStore({ ...newStore, codigo_interno: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
+                        placeholder="L001"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between gap-3 mb-1">
+                        <label className="block text-sm font-medium text-slate-700">Tipo de Negocio</label>
+                        <span className="text-[11px] font-medium text-slate-400">Catalogo por mall</span>
+                      </div>
+                      <select
+                        value={newStore.tipo_negocio || ''}
+                        onChange={(e) => updateNewStoreField('tipo_negocio', e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      >
+                        <option value="">Seleccione un tipo</option>
+                        {catalogValuesByField.tipo_negocio.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Si falta una opcion, gestionela desde Catalogos Locales.
+                      </p>
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Contractual</h4>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Responsable</label>
+                      <input
+                        type="text"
+                        value={newStore.responsable}
+                        onChange={(e) => setNewStore({ ...newStore, responsable: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
+                        placeholder="Nombre del encargado"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Nº Contrato</label>
+                      <input
+                        type="text"
+                        value={newStore.contrato_no}
+                        onChange={(e) => setNewStore({ ...newStore, contrato_no: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
+                        placeholder="99-88-11"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">% Renta Variable</label>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={newStore.porciento_renta}
+                          onChange={(e) => setNewStore({ ...newStore, porciento_renta: e.target.value })}
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none pr-8"
+                          placeholder="5.00"
+                        />
+                        <Percent size={14} className="absolute right-3 top-3.5 text-slate-400" />
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Ubicacion y Espacio</h4>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Piso / Ubicacion</label>
+                      <input
+                        type="text"
+                        value={newStore.piso}
+                        onChange={(e) => setNewStore({ ...newStore, piso: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
+                        placeholder="P2-L01"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Metros Cuadrados (Mts2)</label>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={newStore.mts}
+                          onChange={(e) => setNewStore({ ...newStore, mts: e.target.value })}
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none pr-10"
+                          placeholder="100.00"
+                        />
+                        <span className="absolute right-3 top-3 text-xs text-slate-400 font-bold">m²</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between gap-3 mb-1">
+                        <label className="block text-sm font-medium text-slate-700">Rubro General</label>
+                        <span className="text-[11px] font-medium text-slate-400">Catalogo por mall</span>
+                      </div>
+                      <select
+                        value={newStore.rubro || ''}
+                        onChange={(e) => updateNewStoreField('rubro', e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      >
+                        <option value="">Seleccione un rubro</option>
+                        {catalogValuesByField.rubro.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Si falta una opcion, gestionela desde Catalogos Locales.
+                      </p>
+                    </div>
+                    <div className="pt-2">
+                      <label className="flex items-center gap-3 cursor-pointer group">
+                        <div className="relative">
+                          <input
+                            type="checkbox"
+                            checked={newStore.upsert_activo}
+                            onChange={(e) => setNewStore({ ...newStore, upsert_activo: e.target.checked })}
+                            className="sr-only peer"
+                          />
+                          <div className="w-10 h-5 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+                        </div>
+                        <span className="text-sm font-medium text-slate-700 group-hover:text-indigo-600 transition-colors">Activar Sobrescritura (Upsert)</span>
+                      </label>
+                      <p className="text-[10px] text-slate-400 mt-1 ml-13">Permite corregir facturas del mismo dia sobrescribiendo datos existentes.</p>
+                    </div>
+                  </section>
+                </form>
+              </div>
+
+              <div className="border-t border-slate-100 flex justify-end gap-3 px-8 py-5 bg-white">
+                <button
+                  type="button"
+                  onClick={closeFormDrawer}
+                  className="px-6 py-2.5 text-slate-500 font-medium hover:text-slate-800 transition-colors"
+                >
+                  Cerrar
+                </button>
+                <button
+                  type="submit"
+                  form="store-maintenance-form"
+                  className="bg-indigo-600 text-white px-10 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 active:scale-95 transition-all"
+                >
+                  {drawerMode === 'edit' ? 'Guardar Cambios' : 'Guardar Local'}
+                </button>
               </div>
             </div>
-
-            <div className="pt-6 border-t border-slate-100 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={handleToggleForm}
-                className="px-6 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                className="px-10 py-2.5 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-600/20 active:scale-95 transition-all"
-              >
-                Guardar Local
-              </button>
-            </div>
-          </form>
+          </div>
         </div>
       )}
 

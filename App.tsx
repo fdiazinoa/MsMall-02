@@ -143,7 +143,7 @@ const App: React.FC = () => {
         </main>
 
         <footer className="border-t border-slate-200 py-4 px-6 text-center text-sm text-slate-500">
-          &copy; {new Date().getFullYear()} MSMALL Audit Systems - Prototipo MVP
+          &copy; MercaSend, SRL. MsMall v.20
         </footer>
       </div>
     </div>

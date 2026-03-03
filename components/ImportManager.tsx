@@ -1996,8 +1996,9 @@ export const ImportManager: React.FC = () => {
                     <tbody className="divide-y divide-slate-50">
                       {(manualFiles || []).map((file) => {
                         const isServerMarkedProcessed = file.nombre.startsWith('PR_');
+                        const isServerMarkedErrored = file.nombre.startsWith('ERR_');
                         const isProcessed = isServerMarkedProcessed || fileStatuses[file.nombre] === 'success';
-                        const isErrored = !isProcessed && fileStatuses[file.nombre] === 'error';
+                        const isErrored = isServerMarkedErrored || (!isProcessed && fileStatuses[file.nombre] === 'error');
 
                         return (
                         <tr key={file.nombre} className="hover:bg-indigo-50/30 transition-colors group">

@@ -268,3 +268,65 @@ def test_load_logs_cleanup_requires_it_or_admin(monkeypatch):
 
     assert res.status_code == 403
 
+
+def test_list_load_logs_falls_back_to_legacy_rows_when_primary_empty():
+    fake_db = _FakeSupabase({
+        "locales": [
+            {"id": "loc-1", "mall_id": "mall-a", "nombre": "Subway"},
+        ],
+        "logs_carga": [
+            {
+                "id": "log-legacy-1",
+                "mall_id": None,
+                "local_id": None,
+                "local_nombre": "Subway",
+                "archivo": "ventas.csv",
+                "estado": "exito",
+                "mensaje": "Carga exitosa",
+                "fecha_hora": "2026-02-24T10:00:00Z",
+            }
+        ],
+    })
+    logger = SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None)
+    service = SensitiveOpsService(fake_db, logger)
+
+    rows = service.list_load_logs(
+        operator_ctx={"user_id": "u1", "role": "it", "allowed_malls": ["mall-a"]},
+        ensure_operator_can_access_mall=_tenant_guard,
+        mall_id="mall-a",
+        limit=50,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "log-legacy-1"
+    assert rows[0]["local_nombre"] == "Subway"
+
+
+def test_load_logs_endpoint_accepts_mall_query_without_current_mall_dependency(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    class _Svc:
+        def list_load_logs(self, **kwargs):
+            assert kwargs["mall_id"] == "mall-a"
+            return [{
+                "id": "log1",
+                "fecha_hora": "2026-02-24T10:00:00Z",
+                "local_nombre": "Subway",
+                "archivo": "ventas.csv",
+                "estado": "exito",
+                "mensaje": "ok",
+                "detalles": [],
+            }]
+
+    main.app.dependency_overrides[main.require_audit_read_access] = lambda: {"user_id": "u1", "role": "auditor"}
+    monkeypatch.setattr(main, "_sensitive_ops_service", lambda: _Svc())
+
+    try:
+        res = _request(main.app, "GET", "/api/v1/load-logs?mall_id=mall-a")
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert res.status_code == 200
+    body = res.json()
+    assert isinstance(body, list)
+    assert body[0]["id"] == "log1"

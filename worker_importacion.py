@@ -14,6 +14,8 @@ import csv
 import json
 import posixpath
 from typing import Optional, Sequence, Tuple
+from services.connection_monitor_service import ConnectionMonitorService
+from services.sensitive_ops_service import sanitize_error_text
 
 # Setup Logging
 logging.basicConfig(
@@ -41,6 +43,9 @@ else:
 
 AUTO_SUCCESS_PREFIX = "PR_"
 AUTO_ERROR_PREFIX = "ERR_"
+
+def _connection_monitor_service() -> ConnectionMonitorService:
+    return ConnectionMonitorService(supabase, logger)
 
 def insert_load_log(
     local_nombre: str,
@@ -722,6 +727,27 @@ async def clear_cron_error():
     except Exception as e:
         logger.error(f"Error clearing CRON_LAST_ERROR: {e}")
 
+async def run_connection_monitor_nightly_if_due():
+    if not supabase:
+        return {"executed": False, "reason": "supabase_not_configured"}
+    try:
+        result = await asyncio.to_thread(_connection_monitor_service().run_nightly_monitor_if_due)
+        if result.get("executed"):
+            summary = (result.get("summary") or {})
+            logger.info(
+                "🔎 Connection monitor nightly executed total=%s ok=%s fail=%s partial=%s",
+                summary.get("total", 0),
+                summary.get("ok", 0),
+                summary.get("fail", 0),
+                summary.get("partial", 0),
+            )
+        else:
+            logger.info("🔎 Connection monitor nightly skipped: %s", result.get("reason"))
+        return result
+    except Exception as e:
+        logger.error(f"Connection monitor nightly failed: {sanitize_error_text(e)}")
+        return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
+
 async def process_local_safe(local, semaphore):
     """
     Wraps the synchronous process_local_files in a semaphore and async thread,
@@ -886,6 +912,7 @@ async def run_worker_async():
 
         if not tasks_to_run:
             logger.info("😴 No active tasks for this hour.")
+            await run_connection_monitor_nightly_if_due()
             await update_cron_success()
             await clear_cron_error()
             return
@@ -900,6 +927,7 @@ async def run_worker_async():
         await asyncio.gather(*tasks)
         
         logger.info("🏁 Cycle finished.")
+        await run_connection_monitor_nightly_if_due()
         await update_cron_success()
         await clear_cron_error()
         

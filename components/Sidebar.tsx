@@ -1,11 +1,12 @@
 
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthProvider';
-import { CreditCard, BarChart3, Store as StoreIcon, Grid, KeyRound } from 'lucide-react';
+import { ArrowRightLeft, CreditCard, BarChart3, Store as StoreIcon, Grid, KeyRound, Tag } from 'lucide-react';
+import { AppTab } from './appTabs';
 
 interface SidebarProps {
-  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
-  setActiveTab: (tab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons') => void;
+  activeTab: AppTab;
+  setActiveTab: (tab: AppTab) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
@@ -197,6 +198,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
               Mantenimiento
             </button>
 
+            <button
+              onClick={() => setActiveTab('store-catalogs')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'store-catalogs' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
+            >
+              <Tag className="w-5 h-5" />
+              Catálogos Locales
+            </button>
+
             {isAdmin && (
               <>
                 <button
@@ -215,6 +225,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                   Usuarios y Roles
                 </button>
+                <button
+                  onClick={() => setActiveTab('security')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'security' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                    }`}
+                >
+                  <KeyRound className="w-5 h-5" />
+                  Seguridad Tokens
+                </button>
               </>
             )}
           </>
@@ -232,6 +250,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12V7H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5" /><path d="M16 5l4 4-4 4" /><path d="M20 9H8a4 4 0 0 0 0 8" /></svg>
               Importación FTP
+            </button>
+
+            <button
+              onClick={() => setActiveTab('erp-webservice')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'erp-webservice' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
+            >
+              <ArrowRightLeft className="w-5 h-5" />
+              ERP Webservice
             </button>
 
             <button

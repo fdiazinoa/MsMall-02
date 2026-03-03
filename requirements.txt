@@ -12,3 +12,5 @@ paramiko
 xmltodict
 openpyxl
 reportlab
+PyJWT
+pytest

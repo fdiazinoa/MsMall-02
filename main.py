@@ -6,11 +6,12 @@ import logging
 import time
 import threading
 import re
+import secrets
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, status, Body
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, Request, status, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -24,7 +25,37 @@ import stat
 from worker_importacion import run_worker_async
 from analytics import generate_sales_cube
 from routers import recipes, comparisons, admin_tools
+from routers.token_auth import (
+    AuthContext as TokenAuthContext,
+    TOKEN_TYPE_EXPORTER,
+    ACTIVE as TOKEN_ACTIVE,
+    DISABLED as TOKEN_DISABLED,
+    REVOKED as TOKEN_REVOKED,
+    CreateServiceAccountRequest as TokenCreateServiceAccountRequest,
+    CreateTokenRequest as TokenCreateTokenRequest,
+    PatchServiceAccountStatusRequest as TokenPatchServiceAccountStatusRequest,
+    PatchTokenStatusRequest as TokenPatchTokenStatusRequest,
+    RevokeMallRequest as TokenRevokeMallRequest,
+    RevokeLocalRequest as TokenRevokeLocalRequest,
+    RevokeRequest as TokenRevokeRequest,
+    RevokeServiceAccountTokensRequest as TokenRevokeServiceAccountTokensRequest,
+    UpsertExporterWebserviceConfigRequest as TokenUpsertExporterWebserviceConfigRequest,
+    _hash_token as token_auth_hash_token,
+    _parse_scopes as token_auth_parse_scopes,
+    build_default_service as build_token_auth_service,
+    create_router as create_token_auth_router,
+    require_token_auth,
+    sanitize_exporter_webservice_config_row as sanitize_token_exporter_webservice_config_row,
+    sanitize_service_account_row as sanitize_token_service_account_row,
+    sanitize_token_row as sanitize_token_auth_row,
+    utcnow as token_auth_utcnow,
+    validate_exporter_payload_mapping,
+)
 from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
+from services.connection_monitor_service import (
+    ConnectionMonitorService,
+    RetryPolicyBlocked,
+)
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -68,6 +99,9 @@ IT_ROLES = {"it", "tic"}
 
 def _sensitive_ops_service() -> SensitiveOpsService:
     return SensitiveOpsService(supabase, logger)
+
+def _connection_monitor_service() -> ConnectionMonitorService:
+    return ConnectionMonitorService(supabase, logger)
 
 
 # --- LIGHTWEIGHT IN-MEMORY CACHE (TTL) ---
@@ -218,6 +252,7 @@ async def diagnose_file_endpoint(file: UploadFile = File(...)):
 app.include_router(recipes.router)
 app.include_router(comparisons.router)
 app.include_router(admin_tools.router)
+app.include_router(create_token_auth_router())
 _api_scheduler_task = None
 
 async def scheduler_loop():
@@ -493,6 +528,32 @@ def _load_local_config_with_access(local_id: str, operator_ctx: Dict[str, Any]) 
         raise HTTPException(status_code=404, detail="Configuración no encontrada")
 
     _ensure_operator_can_access_mall(operator_ctx, local_cfg.get("mall_id"))
+    return local_cfg
+
+def _load_local_config_for_exporter(local_id: str, exporter_ctx: TokenAuthContext) -> Dict[str, Any]:
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    try:
+        res = (
+            supabase.table("locales")
+            .select("*")
+            .eq("id", local_id)
+            .maybe_single()
+            .execute()
+        )
+        local_cfg = res.data
+    except Exception as e:
+        logger.error(f"Error consultando local {local_id} para exporter: {e}")
+        raise HTTPException(status_code=500, detail="Error consultando configuración del local")
+
+    if not local_cfg:
+        raise HTTPException(status_code=404, detail="Configuración no encontrada")
+
+    validate_exporter_payload_mapping(
+        str(local_cfg.get("mall_id") or ""),
+        str(local_cfg.get("id") or local_id),
+        exporter_ctx,
+    )
     return local_cfg
 
 def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config: Optional[Any]) -> Dict[str, Any]:
@@ -1023,6 +1084,41 @@ class RemoteConnectionResponse(BaseModel):
     ruta_base: Optional[str] = None
     created_at: Optional[str] = None
 
+class ConnectionRunSchema(BaseModel):
+    id: str
+    mall_id: str
+    local_id: Optional[str] = None
+    connection_id: Optional[str] = None
+    run_type: str
+    status: str
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    started_at: str
+    finished_at: str
+    duration_ms: int = 0
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+class ConnectionStatusResponse(BaseModel):
+    mall_id: str
+    summary: Dict[str, int]
+    recent_runs: List[Dict[str, Any]]
+    connections: List[Dict[str, Any]]
+
+class ConnectionFailuresResponse(BaseModel):
+    mall_id: str
+    date: str
+    count: int
+    failures: List[Dict[str, Any]]
+
+class ConnectionRetryResponse(BaseModel):
+    status: str
+    connection_id: str
+    mall_id: Optional[str] = None
+    run: Dict[str, Any]
+    retry_attempt: Optional[Dict[str, Any]] = None
+    policy: Dict[str, Any]
+
 class ImportConfigSchema(BaseModel):
     id: Optional[str] = None
     nombre: Optional[str] = None
@@ -1335,6 +1431,16 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                      errors.append({"linea": line_no, "error": "Falta fecha_venta"})
                      continue
 
+                local_code = str(record.get('local_codigo') or "").strip().strip("'\"")
+                if not local_code:
+                    errors.append({
+                        "linea": line_no,
+                        "error": "Falta local_codigo. No se puede cargar una venta sin un código de local válido."
+                    })
+                    continue
+                record['local_codigo'] = local_code
+                record['_source_line'] = line_no
+
                 # Normalize Date with format-specific or comprehensive support
                 raw_date = str(record['fecha_venta']).strip().strip("'\"")
                 parsed_date = None
@@ -1482,6 +1588,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         # 2. Transform Keys
         for r in records_to_insert:
             new_r = r.copy()
+            source_line = int(new_r.pop('_source_line', 0) or 0)
             
             # Map System Fields -> DB Columns
             if 'factura_numero' in new_r:
@@ -1559,14 +1666,14 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         f"Código local '{l_code}' no encontrado"
                         f"{f' en el mall {effective_mall_id}' if effective_mall_id else ''}."
                     )
-                    errors.append({"linea": 0, "error": msg})
+                    errors.append({"linea": source_line, "error": msg})
                     logger.warning(msg)
                     continue
             else:
-                # If no local_codigo provided, use context mall_id
-                if effective_mall_id:
-                    new_r['mall_id'] = effective_mall_id
-                    logger.info(f"Using context mall_id: {effective_mall_id} (no local_codigo provided)") 
+                msg = "Falta local_codigo. No se puede cargar una venta sin un código de local válido."
+                errors.append({"linea": source_line, "error": msg})
+                logger.warning(msg)
+                continue
             
             final_records.append(new_r)
         
@@ -1739,23 +1846,66 @@ async def ingesta_ventas(
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- EXPLORACIÓN DE DIRECTORIOS LOCALES ---
+def _default_local_explorer_root() -> str:
+    import os
+    import sys
+
+    # Optional override for local installs / containers.
+    env_root = str(os.getenv("LOCAL_EXPLORER_ROOT") or "").strip()
+    if env_root and os.path.isdir(env_root):
+        return os.path.abspath(env_root)
+
+    if os.name == "nt":
+        system_drive = str(os.getenv("SystemDrive") or "C:").rstrip("\\/")
+        candidate = f"{system_drive}\\"
+        return candidate if os.path.isdir(candidate) else "C:\\"
+
+    if sys.platform == "darwin" and os.path.isdir("/Users"):
+        return "/Users"
+
+    for candidate in ["/home", os.path.expanduser("~"), "/"]:
+        if candidate and os.path.isdir(candidate):
+            return os.path.abspath(candidate)
+    return "/"
+
+
+def _resolve_local_explorer_path(requested_path: Optional[str]) -> str:
+    import os
+
+    raw = str(requested_path or "").strip()
+    if not raw:
+        return _default_local_explorer_root()
+
+    normalized = os.path.abspath(raw)
+    cwd_path = os.path.abspath(os.getcwd())
+    # Keep "/" navigable (clicking ".." from /Users or /home should reach filesystem root).
+    default_markers = {".", "./", "/app", cwd_path}
+
+    # When the UI opens the browser for the first time it often sends '.' which becomes /app
+    # in containerized environments. Prefer a user-friendly root for LOCAL browsing.
+    if raw in default_markers or normalized in default_markers:
+        return _default_local_explorer_root()
+
+    if os.path.exists(normalized):
+        return normalized
+
+    # If requested path doesn't exist, fall back to a sensible root instead of /app.
+    return _default_local_explorer_root()
+
+
 @app.get("/api/v1/explorar-directorio")
 async def explorar_directorio(
-    path: str = Query("/", alias="ruta"),
+    path: Optional[str] = Query(None, alias="ruta"),
     operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
 ):
     """
     Endpoint para listar directorios locales. 
     Permite al usuario navegar por carpetas para configurar la importación.
     """
-    import os
     try:
-        # Normalizar ruta para el OS actual
-        target_path = os.path.abspath(path)
-        
-        if not os.path.exists(target_path):
-            # Si no existe, intentar con el home del usuario o raíz
-            target_path = os.path.expanduser("~")
+        import os
+        # Resolver ruta inicial amigable según OS (evita caer en /app por defecto).
+        target_path = _resolve_local_explorer_path(path)
             
         items = []
         # Añadir opción para subir de nivel
@@ -2047,10 +2197,16 @@ async def get_load_logs_secure(
     end_date: Optional[str] = Query(None, alias="end_date"),
     limit: int = Query(50, ge=1, le=200),
     operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
-    current_mall: str = Depends(get_current_mall)
 ):
     try:
-        effective_mall_id = mall_id or current_mall
+        effective_mall_id = mall_id
+        if not effective_mall_id:
+            user_malls = _get_user_mall_ids(operator_ctx.get("user_id"))
+            if len(user_malls) == 1:
+                effective_mall_id = user_malls[0]
+            elif len(user_malls) > 1:
+                raise HTTPException(status_code=400, detail="Ambiguous context. Please select a mall (mall_id).")
+            raise HTTPException(status_code=403, detail="No mall assigned to user.")
         return _sensitive_ops_service().list_load_logs(
             operator_ctx=operator_ctx,
             ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
@@ -2120,6 +2276,105 @@ async def reactivate_local_processing(
     except Exception as e:
         logger.error(f"Error reactivating local {local_id}: {sanitize_sensitive_ops_error(e)}")
         raise HTTPException(status_code=500, detail="No se pudo reactivar el local.")
+
+@app.get("/api/v1/connections/status", response_model=ConnectionStatusResponse)
+async def get_connections_status(
+    mall_id: str = Query(..., alias="mall_id"),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access)
+):
+    try:
+        return _connection_monitor_service().get_status_summary(
+            mall_id=mall_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting connection status for mall {mall_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo obtener el estado de conexiones.")
+
+@app.get("/api/v1/connections/failures", response_model=ConnectionFailuresResponse)
+async def get_connections_failures(
+    mall_id: str = Query(..., alias="mall_id"),
+    date_str: str = Query(..., alias="date"),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access)
+):
+    try:
+        return _connection_monitor_service().get_failures_by_date(
+            mall_id=mall_id,
+            run_date=date_str,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting connection failures mall={mall_id} date={date_str}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron cargar las fallas de conexiones.")
+
+@app.post("/api/v1/connections/retry-failed", status_code=status.HTTP_200_OK)
+async def retry_failed_connections_batch(
+    mall_id: str = Query(..., alias="mall_id"),
+    date_str: str = Query(..., alias="date"),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return await asyncio.to_thread(
+            _connection_monitor_service().execute_batch_retry_failed,
+            mall_id=mall_id,
+            run_date=date_str,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RetryPolicyBlocked as e:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": e.message,
+                "reason": e.code,
+                "retry_after_seconds": e.retry_after_seconds,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error batch retry failed connections mall={mall_id} date={date_str}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron ejecutar los reintentos en lote.")
+
+@app.post("/api/v1/connections/{connection_id}/retry", response_model=ConnectionRetryResponse)
+async def retry_connection_manual(
+    connection_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return await asyncio.to_thread(
+            _connection_monitor_service().execute_manual_retry,
+            connection_id=connection_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conexión remota no encontrada.")
+    except RetryPolicyBlocked as e:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": e.message,
+                "reason": e.code,
+                "retry_after_seconds": e.retry_after_seconds,
+                "attempt_no": e.attempt_no,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error manual retry connection {connection_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo ejecutar el reintento de conexión.")
 
 def _read_remote_headers_sync(req: RemoteRequest):
     content = ""
@@ -3123,10 +3378,10 @@ async def list_files_endpoint(
         logger.error(f"Error listing files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/remote/execute-manual")
-async def execute_manual_endpoint(
+async def _execute_manual_endpoint_impl(
     req: ExecuteManualRequest,
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+    operator_ctx: Optional[Dict[str, Any]] = None,
+    exporter_ctx: Optional[TokenAuthContext] = None
 ):
     logger.info(f"Ejecutando manual para {req.config_id} - Archivo: {req.filename}")
     batch_id = str(uuid4())
@@ -3156,7 +3411,12 @@ async def execute_manual_endpoint(
             return payload
 
         # Source of truth: config del local desde DB + overrides permitidos del request.
-        config_data = _load_local_config_with_access(req.config_id, operator_ctx)
+        if exporter_ctx:
+            config_data = _load_local_config_for_exporter(req.config_id, exporter_ctx)
+        else:
+            if not operator_ctx:
+                raise HTTPException(status_code=401, detail="Se requiere autenticación para ejecutar importación manual")
+            config_data = _load_local_config_with_access(req.config_id, operator_ctx)
         config_data = _apply_runtime_import_overrides(config_data, req.config)
         config_data = _normalize_import_config_payload(config_data)
 
@@ -3405,12 +3665,43 @@ async def execute_manual_endpoint(
                 _INFLIGHT_MANUAL_EXEC.discard(request_id)
 
 
+@app.post("/api/v1/remote/execute-manual")
+async def execute_manual_endpoint(
+    req: ExecuteManualRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    return await _execute_manual_endpoint_impl(req=req, operator_ctx=operator_ctx)
+
+
+@app.post("/api/v1/remote/execute-manual/exporter")
+async def execute_manual_exporter_endpoint(
+    req: ExecuteManualRequest,
+    exporter_ctx: TokenAuthContext = Depends(
+        require_token_auth("export:write", token_types={TOKEN_TYPE_EXPORTER})
+    )
+):
+    return await _execute_manual_endpoint_impl(req=req, exporter_ctx=exporter_ctx)
+
+
 @app.post("/api/v1/analytics/cubo")
 async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_current_mall)):
     """
     Endpoint para generar el Cubo de Ventas (Matriz) usando datos reales de Supabase (Service Role).
     """
     try:
+        def _normalize_cube_totals_row(row: Dict[str, Any]) -> Dict[str, Any]:
+            bruto = float(row.get("total_bruto") or 0)
+            impuestos = float(row.get("total_impuestos") or 0) if row.get("total_impuestos") is not None else 0.0
+            neto = float(row.get("total_neto") or 0)
+
+            eps = 0.05
+            as_is_delta = abs(neto - (bruto + impuestos))
+            swapped_delta = abs(bruto - (neto + impuestos))
+            if swapped_delta + eps < as_is_delta:
+                row["total_bruto"] = neto
+                row["total_neto"] = bruto
+            return row
+
         # 1. Fetch Locales (Store Map) - Filtered by Mall
         stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
         stores = stores_res.data or []
@@ -3437,7 +3728,7 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         while True:
             sales_res = (
                 supabase.table("ventas")
-                .select("local_id, fecha, total_bruto, total_neto, id")
+                .select("*")
                 .in_("local_id", allowed_local_ids)
                 .gte("fecha", request.fecha_inicio)
                 .lte("fecha", request.fecha_fin)
@@ -3448,7 +3739,7 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
             chunk = sales_res.data or []
             if not chunk:
                 break
-            sales_data.extend(chunk)
+            sales_data.extend(_normalize_cube_totals_row(dict(row)) for row in chunk)
             if len(chunk) < page_size:
                 break
             page += 1
@@ -3711,68 +4002,68 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached
-    
-    try:
-        # Fast path: Use DB-side aggregation function (RPC) for better scalability.
-        rpc_res = supabase.rpc("get_dashboard_kpis", {
-            "mall_id_param": mall_id,
-            "start_date_param": start_date,
-            "end_date_param": end_date
-        }).execute()
-
-        if rpc_res.data and len(rpc_res.data) > 0:
-            row = rpc_res.data[0]
-            result = {
-                "ventas_totales_bruto": float(row.get("ventas_totales_bruto") or 0),
-                "ventas_totales_neto": float(row.get("ventas_totales_neto") or 0),
-                "transacciones": int(row.get("transacciones") or 0),
-                "ticket_promedio": float(row.get("ticket_promedio") or 0),
-                "variacion_ventas": float(row.get("variacion_ventas") or 0),
-                "top_locales": row.get("top_locales") or [],
-                "ventas_por_dia": row.get("ventas_por_dia") or [],
-                "ventas_por_rubro": row.get("ventas_por_rubro") or [],
-                "ventas_por_tienda_completo": row.get("ventas_por_tienda_completo") or {}
-            }
-            _cache_set(cache_key, result, TTL_DASHBOARD)
-            return result
-    except Exception as rpc_err:
-        # Fallback path keeps endpoint functional while RPC is being rolled out.
-        logger.warning(f"Dashboard RPC unavailable, fallback to python aggregation: {rpc_err}")
 
     try:
-        # 1. Fetch Sales
-        # Note: 'fecha' in DB is likely YYYY-MM-DD or timestamp. If timestamp, string comparison might be tricky.
-        # Assuming YYYY-MM-DD string or compatible date type.
-        sales_res = (
-            supabase.table("ventas")
-            .select("local_id, fecha, total_bruto, total_neto")
-            .eq("mall_id", mall_id)
-            .gte("fecha", start_date)
-            .lte("fecha", end_date)
-            .execute()
-        )
-        sales = sales_res.data or []
-        
-        # 2. Fetch Stores
         stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
         stores = stores_res.data or []
-        store_map = {s['id']: s['nombre'] for s in stores}
-        
-        # 3. Aggregate
+        store_map = {str(s['id']): s['nombre'] for s in stores if s.get('id')}
+        allowed_local_ids = list(store_map.keys())
+        empty_result = {
+            "ventas_totales_bruto": 0,
+            "ventas_totales_neto": 0,
+            "transacciones": 0,
+            "ticket_promedio": 0,
+            "variacion_ventas": 0,
+            "top_locales": [],
+            "ventas_por_dia": [],
+            "ventas_por_rubro": [],
+            "ventas_por_tienda_completo": {}
+        }
+
+        if not allowed_local_ids:
+            _cache_set(cache_key, empty_result, TTL_DASHBOARD)
+            return empty_result
+
+        # Source of truth: only sales linked to valid locales for the current mall.
+        # Filtering by ventas.mall_id alone allows legacy/orphan rows to leak into KPIs as "Desconocido".
+        sales = []
+        page_size = 1000
+        page = 0
+        while True:
+            sales_res = (
+                supabase.table("ventas")
+                .select("local_id, fecha, total_bruto, total_neto")
+                .in_("local_id", allowed_local_ids)
+                .gte("fecha", start_date)
+                .lte("fecha", end_date)
+                .order("fecha")
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            chunk = sales_res.data or []
+            if not chunk:
+                break
+            sales.extend(chunk)
+            if len(chunk) < page_size:
+                break
+            page += 1
+
         sales_by_store = {}
         total_bruto = 0
         total_neto = 0
         sales_by_day = {}
         
         for s in sales:
+            lid = str(s.get('local_id') or "")
+            s_name = store_map.get(lid)
+            if not s_name:
+                continue
+
             bruto = float(s.get('total_bruto') or 0)
             neto = float(s.get('total_neto') or 0)
             total_bruto += bruto
             total_neto += neto
-            
-            lid = s.get('local_id')
-            s_name = store_map.get(lid, "Desconocido")
-            
+
             sales_by_store[s_name] = sales_by_store.get(s_name, 0) + bruto
             
             day = s.get('fecha')
@@ -4258,6 +4549,469 @@ async def admin_update_user(
         logger.error(f"Error updating user {target_user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+def _security_token_service():
+    return build_token_auth_service()
+
+
+def _security_allowed_mall_ids(operator_ctx: Dict[str, Any]) -> Optional[set]:
+    if operator_ctx.get("role") == "admin":
+        return None
+    return set(_get_user_mall_ids(operator_ctx.get("user_id")))
+
+
+def _security_filter_rows_by_mall_access(rows: List[Dict[str, Any]], operator_ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    allowed = _security_allowed_mall_ids(operator_ctx)
+    if allowed is None:
+        return rows
+    return [row for row in rows if row.get("mall_id") in allowed]
+
+
+def _security_ensure_row_access(operator_ctx: Dict[str, Any], row: Optional[Dict[str, Any]], not_found_detail: str):
+    if not row:
+        raise HTTPException(status_code=404, detail=not_found_detail)
+    _ensure_operator_can_access_mall(operator_ctx, row.get("mall_id"))
+    return row
+
+
+def _security_validate_local_alignment(local_id: Optional[str], mall_id: str, operator_ctx: Dict[str, Any]) -> None:
+    if not local_id:
+        return
+    local_cfg = _load_local_config_with_access(local_id, operator_ctx)
+    local_mall_id = str(local_cfg.get("mall_id") or "")
+    if local_mall_id and str(mall_id) != local_mall_id:
+        raise HTTPException(status_code=400, detail="local_id no pertenece al mall_id indicado")
+
+
+def _security_text_search(rows: List[Dict[str, Any]], q: Optional[str], fields: List[str]) -> List[Dict[str, Any]]:
+    term = (q or "").strip().lower()
+    if not term:
+        return rows
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        haystack = " ".join(str(row.get(field) or "") for field in fields).lower()
+        if term in haystack:
+            out.append(row)
+    return out
+
+
+@app.get("/api/v1/security/service-accounts")
+async def security_list_service_accounts(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    token_type: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    q: Optional[str] = None,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    rows = svc.store.list_service_accounts({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "token_type": token_type,
+        "status": status_filter,
+    })
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    rows = _security_text_search(rows, q, ["name", "client_id", "created_by", "mall_id", "local_id"])
+
+    tokens = svc.store.list_tokens({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "token_type": TOKEN_TYPE_EXPORTER,
+    })
+    tokens = _security_filter_rows_by_mall_access(tokens, operator_ctx)
+    usage_by_sa: Dict[str, Dict[str, Any]] = {}
+    for token in tokens:
+        sa_id = token.get("service_account_id")
+        if not sa_id:
+            continue
+        usage = usage_by_sa.setdefault(sa_id, {
+            "last_used_at": None,
+            "last_used_ip": None,
+            "last_used_ua": None,
+            "active_tokens": 0,
+            "total_tokens": 0,
+        })
+        usage["total_tokens"] += 1
+        if token.get("status") == TOKEN_ACTIVE:
+            usage["active_tokens"] += 1
+        last_used_at = token.get("last_used_at")
+        if last_used_at and (not usage["last_used_at"] or str(last_used_at) > str(usage["last_used_at"])):
+            usage["last_used_at"] = last_used_at
+            usage["last_used_ip"] = token.get("last_used_ip")
+            usage["last_used_ua"] = token.get("last_used_ua")
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        safe = sanitize_token_service_account_row(row) or {}
+        usage = usage_by_sa.get(safe.get("id"), {})
+        safe.update({
+            "last_used_at": usage.get("last_used_at"),
+            "last_used_ip": usage.get("last_used_ip"),
+            "last_used_ua": usage.get("last_used_ua"),
+            "active_tokens": usage.get("active_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        })
+        out.append(safe)
+    return out
+
+
+@app.post("/api/v1/security/service-accounts")
+async def security_create_service_account(
+    payload: TokenCreateServiceAccountRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if payload.token_type == TOKEN_TYPE_EXPORTER and not payload.local_id:
+        raise HTTPException(status_code=400, detail="local_id requerido para exporter")
+    if not (payload.name or "").strip():
+        raise HTTPException(status_code=400, detail="name es requerido")
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(payload.local_id, payload.mall_id, operator_ctx)
+
+    svc = _security_token_service()
+    client_id = f"msa_{secrets.token_hex(8)}"
+    client_secret = secrets.token_urlsafe(32)
+    row = svc.store.create_service_account({
+        "name": payload.name.strip(),
+        "mall_id": payload.mall_id,
+        "local_id": payload.local_id,
+        "token_type": payload.token_type,
+        "client_id": client_id,
+        "client_secret_hash": token_auth_hash_token(client_secret),
+        "scopes": token_auth_parse_scopes(payload.scopes),
+        "status": TOKEN_ACTIVE,
+        "created_by": operator_ctx.get("user_id"),
+        "created_at": token_auth_utcnow().isoformat(),
+        "updated_at": token_auth_utcnow().isoformat(),
+    })
+    safe = sanitize_token_service_account_row(row) or {}
+    safe["client_secret"] = client_secret
+    safe["warning"] = "Este secreto no volverá a mostrarse completo."
+    return safe
+
+
+@app.patch("/api/v1/security/service-accounts/{service_account_id}/status")
+async def security_patch_service_account_status(
+    service_account_id: str,
+    payload: TokenPatchServiceAccountStatusRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(
+        operator_ctx,
+        svc.store.get_service_account(service_account_id),
+        "Service account no encontrado",
+    )
+    row = svc.store.update_service_account(base["id"], {"status": payload.status, "updated_at": token_auth_utcnow().isoformat()})
+    return sanitize_token_service_account_row(row)
+
+
+@app.post("/api/v1/security/service-accounts/{service_account_id}/regenerate")
+async def security_regenerate_service_account(
+    service_account_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(
+        operator_ctx,
+        svc.store.get_service_account(service_account_id),
+        "Service account no encontrado",
+    )
+    client_secret = secrets.token_urlsafe(32)
+    row = svc.store.update_service_account(base["id"], {
+        "client_secret_hash": token_auth_hash_token(client_secret),
+        "status": TOKEN_ACTIVE,
+        "updated_at": token_auth_utcnow().isoformat(),
+    })
+    svc.store.revoke_tokens_by_service_account(base["id"], revoked_by=operator_ctx.get("user_id"), reason="service_account_secret_regenerated")
+    safe = sanitize_token_service_account_row(row) or {}
+    safe["client_secret"] = client_secret
+    safe["warning"] = "Este secreto no volverá a mostrarse completo."
+    return safe
+
+
+@app.post("/api/v1/security/service-accounts/{service_account_id}/revoke-tokens")
+async def security_revoke_service_account_tokens(
+    service_account_id: str,
+    payload: TokenRevokeServiceAccountTokensRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(
+        operator_ctx,
+        svc.store.get_service_account(service_account_id),
+        "Service account no encontrado",
+    )
+    count = svc.store.revoke_tokens_by_service_account(base["id"], revoked_by=operator_ctx.get("user_id"), reason=payload.reason)
+    return {"revoked_count": count, "service_account_id": base["id"]}
+
+
+@app.get("/api/v1/security/tokens")
+async def security_list_tokens(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    token_type: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    q: Optional[str] = None,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    rows = svc.store.list_tokens({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "token_type": token_type,
+        "status": status_filter,
+    })
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    rows = _security_text_search(rows, q, ["jti", "created_by", "mall_id", "local_id", "token_type", "status"])
+    return [sanitize_token_auth_row(row) for row in rows]
+
+
+@app.post("/api/v1/security/tokens")
+async def security_create_token(
+    payload: TokenCreateTokenRequest,
+    request: Request,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if payload.token_type == TOKEN_TYPE_EXPORTER and not payload.local_id:
+        raise HTTPException(status_code=400, detail="local_id requerido para exporter")
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(payload.local_id, payload.mall_id, operator_ctx)
+    scopes = token_auth_parse_scopes(payload.scopes)
+    if not scopes:
+        raise HTTPException(status_code=400, detail="scopes requeridos")
+
+    svc = _security_token_service()
+    if payload.service_account_id:
+        sa = _security_ensure_row_access(operator_ctx, svc.store.get_service_account(payload.service_account_id), "Service account no encontrado")
+        if sa.get("mall_id") != payload.mall_id or sa.get("local_id") != payload.local_id:
+            raise HTTPException(status_code=400, detail="service_account_id no coincide con mall_id/local_id")
+
+    return svc._issue_pair(
+        mall_id=payload.mall_id,
+        local_id=payload.local_id,
+        token_type=payload.token_type,
+        scopes=scopes,
+        created_by=operator_ctx.get("user_id"),
+        service_account_id=payload.service_account_id,
+        request=request,
+        access_ttl_seconds=payload.expires_in,
+    )
+
+
+@app.patch("/api/v1/security/tokens/{token_id}/status")
+async def security_patch_token_status(
+    token_id: str,
+    payload: TokenPatchTokenStatusRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(operator_ctx, svc.store.get_token_by_id(token_id), "Token no encontrado")
+    row = svc.store.update_api_token(base["id"], {"status": payload.status, "updated_at": token_auth_utcnow().isoformat()})
+    return sanitize_token_auth_row(row)
+
+
+@app.post("/api/v1/security/tokens/{token_id}/regenerate")
+async def security_regenerate_token(
+    token_id: str,
+    request: Request,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(operator_ctx, svc.store.get_token_by_id(token_id), "Token no encontrado")
+    svc.store.update_api_token(base["id"], {
+        "status": TOKEN_REVOKED,
+        "revoked_at": token_auth_utcnow().isoformat(),
+        "revoked_by": operator_ctx.get("user_id"),
+        "revoke_reason": "regenerated",
+        "updated_at": token_auth_utcnow().isoformat(),
+    })
+    return svc._issue_pair(
+        mall_id=base["mall_id"],
+        local_id=base.get("local_id"),
+        token_type=base["token_type"],
+        scopes=token_auth_parse_scopes(base.get("scopes")),
+        created_by=operator_ctx.get("user_id"),
+        service_account_id=base.get("service_account_id"),
+        request=request,
+    )
+
+
+@app.post("/api/v1/security/tokens/revoke")
+async def security_revoke_token(
+    payload: TokenRevokeRequest,
+    request: Request,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    target = None
+    if payload.token_id:
+        target = svc.store.get_token_by_id(payload.token_id)
+    elif payload.jti:
+        target = svc.store.get_token_by_jti(payload.jti)
+    _security_ensure_row_access(operator_ctx, target, "Token no encontrado")
+    return svc.revoke(
+        token_id=payload.token_id,
+        jti=payload.jti,
+        actor=operator_ctx.get("user_id"),
+        reason=payload.reason,
+        current_ctx=None,
+        request=request,
+    )
+
+
+@app.post("/api/v1/security/tokens/revoke/local")
+async def security_revoke_tokens_by_local(
+    payload: TokenRevokeLocalRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(payload.local_id, payload.mall_id, operator_ctx)
+    svc = _security_token_service()
+    count = svc.store.revoke_tokens_by_scope(
+        mall_id=payload.mall_id,
+        local_id=payload.local_id,
+        revoked_by=operator_ctx.get("user_id"),
+        reason=payload.reason,
+    )
+    return {"revoked_count": count}
+
+
+@app.post("/api/v1/security/tokens/revoke/mall")
+async def security_revoke_tokens_by_mall(
+    payload: TokenRevokeMallRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    svc = _security_token_service()
+    count = svc.store.revoke_tokens_by_scope(
+        mall_id=payload.mall_id,
+        revoked_by=operator_ctx.get("user_id"),
+        reason=payload.reason,
+    )
+    return {"revoked_count": count}
+
+
+@app.get("/api/v1/security/token-audit")
+async def security_list_token_audit(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+    token_id: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=1000),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if mall_id:
+        _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    elif operator_ctx.get("role") != "admin":
+        # For IT users without explicit mall filter, restrict to their first allowed mall set in-memory after query.
+        pass
+
+    svc = _security_token_service()
+    rows = svc.store.list_audit_logs({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "event_type": event_type,
+        "token_id": token_id,
+    }, limit=limit)
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    rows = _security_text_search(rows, q, ["event_type", "mall_id", "local_id", "ip", "ua", "token_id"])
+    return rows
+
+@app.get("/api/v1/security/exporter/configs")
+async def security_list_exporter_webservice_configs(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    enabled: Optional[bool] = None,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if mall_id:
+        _ensure_operator_can_access_mall(operator_ctx, mall_id)
+        if local_id:
+            _security_validate_local_alignment(local_id, mall_id, operator_ctx)
+    elif local_id:
+        local_cfg = _load_local_config_with_access(local_id, operator_ctx)
+        mall_id = str(local_cfg.get("mall_id") or "") or None
+
+    svc = _security_token_service()
+    lister = getattr(svc.store, "list_exporter_webservice_configs", None)
+    if not callable(lister):
+        raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+
+    rows = lister({"mall_id": mall_id, "local_id": local_id, "enabled": enabled})
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    return [sanitize_token_exporter_webservice_config_row(row) for row in rows]
+
+
+@app.get("/api/v1/security/exporter/configs/{local_id}")
+async def security_get_exporter_webservice_config(
+    local_id: str,
+    mall_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    _security_validate_local_alignment(local_id, mall_id, operator_ctx)
+
+    svc = _security_token_service()
+    getter = getattr(svc.store, "get_exporter_webservice_config", None)
+    if not callable(getter):
+        raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+
+    row = getter(mall_id, local_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Configuracion exporter webservice no encontrada")
+    return sanitize_token_exporter_webservice_config_row(row)
+
+
+@app.put("/api/v1/security/exporter/configs/{local_id}")
+async def security_put_exporter_webservice_config(
+    local_id: str,
+    payload: TokenUpsertExporterWebserviceConfigRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(local_id, payload.mall_id, operator_ctx)
+
+    svc = _security_token_service()
+    upserter = getattr(svc.store, "upsert_exporter_webservice_config", None)
+    if not callable(upserter):
+        raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+
+    granularity = str(payload.default_granularity or "transaction").strip().lower()
+    if granularity == "daily_summary":
+        granularity = "daily"
+
+    try:
+        row = upserter({
+            "mall_id": payload.mall_id,
+            "local_id": local_id,
+            "enabled": payload.enabled,
+            "contract_type": payload.contract_type,
+            "default_granularity": granularity,
+            "allow_transaction": payload.allow_transaction,
+            "allow_daily": payload.allow_daily,
+            "strict_validation": payload.strict_validation,
+            "notes": payload.notes.strip() if payload.notes else None,
+            "updated_by": operator_ctx.get("user_id"),
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error guardando exporter webservice config mall=%s local=%s user=%s: %s",
+            payload.mall_id,
+            local_id,
+            operator_ctx.get("user_id"),
+            e,
+        )
+        detail = str(e).strip() or "No se pudo guardar la configuracion exporter webservice"
+        raise HTTPException(status_code=500, detail=detail)
+    if not row:
+        raise HTTPException(status_code=500, detail="No se pudo guardar la configuracion exporter webservice")
+    return sanitize_token_exporter_webservice_config_row(row)
+
+
 @router_export.get("/sales-report/excel")
 async def export_sales_report_excel(
     fecha_inicio: str, 
@@ -4267,8 +5021,23 @@ async def export_sales_report_excel(
     current_mall: str = Depends(get_current_mall)
 ):
     try:
-        if type not in ['detailed', 'summary']: type = 'detailed'
-        data = await export_service.generate_sales_report_excel(fecha_inicio, fecha_fin, local_id, type)
+        if type not in ['detailed', 'summary', 'missing_days']:
+            type = 'detailed'
+        if type == 'missing_days':
+            data = await export_service.generate_missing_days_report_excel(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                mall_id=current_mall,
+                local_id=local_id,
+            )
+        else:
+            data = await export_service.generate_sales_report_excel(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                local_id=local_id,
+                report_type=type,
+                mall_id=current_mall,
+            )
         return StreamingResponse(
             data,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -4287,7 +5056,8 @@ async def export_sales_report_pdf(
     current_mall: str = Depends(get_current_mall)
 ):
     try:
-        if type not in ['detailed', 'summary']: type = 'detailed'
+        if type not in ['detailed', 'summary', 'missing_days']:
+            type = 'detailed'
         
         # Fetch Mall Name
         mall_name = "MS MALL"
@@ -4298,8 +5068,24 @@ async def export_sales_report_pdf(
         except Exception:
             logger.warning(f"Could not fetch mall name for {current_mall}, using default.")
 
-        logger.info(f"Exporting PDF for Mall: {mall_name} ({current_mall})")
-        data = await export_service.generate_sales_report_pdf(fecha_inicio, fecha_fin, local_id, type, mall_name=mall_name)
+        logger.info(f"Exporting PDF for Mall: {mall_name} ({current_mall}) type={type}")
+        if type == 'missing_days':
+            data = await export_service.generate_missing_days_report_pdf(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                mall_id=current_mall,
+                local_id=local_id,
+                mall_name=mall_name,
+            )
+        else:
+            data = await export_service.generate_sales_report_pdf(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                local_id=local_id,
+                report_type=type,
+                mall_name=mall_name,
+                mall_id=current_mall,
+            )
         return StreamingResponse(
             data,
             media_type="application/pdf",

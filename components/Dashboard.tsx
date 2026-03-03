@@ -1,9 +1,11 @@
 
 import React from 'react';
+import { AppTab } from './appTabs';
 import { UploadForm } from './UploadForm';
 import { SalesReport } from './SalesReport';
 import { DashboardKPIs } from './DashboardKPIs';
 import { StoreMaintenance } from './StoreMaintenance';
+import { StoreCatalogManager } from './StoreCatalogManager';
 import { UserManagement } from './UserManagement';
 import { ImportManager } from './ImportManager';
 
@@ -13,12 +15,14 @@ import { FinancialDashboard } from './FinancialDashboard';
 import { SalesCube } from './SalesCube';
 import { MallManager } from './MallManager';
 import { PeriodComparison } from './PeriodComparison';
+import { SecurityTokenAdmin } from './SecurityTokenAdmin';
 
 interface DashboardProps {
-  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
+  activeTab: AppTab;
+  setActiveTab: (tab: AppTab) => void;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab }) => {
   switch (activeTab) {
     case 'analytics':
       return <DashboardKPIs />;
@@ -27,11 +31,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
     case 'upload':
       return <UploadForm />;
     case 'stores':
-      return <StoreMaintenance />;
+      return <StoreMaintenance onOpenCatalogs={() => setActiveTab('store-catalogs')} />;
+    case 'store-catalogs':
+      return <StoreCatalogManager />;
     case 'users':
       return <UserManagement />;
+    case 'security':
+      return <SecurityTokenAdmin />;
     case 'auto-import':
-      return <ImportManager />;
+      return <ImportManager initialSection="ftp" />;
+    case 'erp-webservice':
+      return <ImportManager initialSection="webservice" onCloseWebserviceModal={() => setActiveTab('auto-import')} />;
     case 'monitor':
       return <LoadMonitor />;
     case 'financial':

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronRight, ChevronDown, Loader2 } from 'lucide-react';
+import { ChevronRight, ChevronDown, Loader2, ArrowUpDown } from 'lucide-react';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
 interface ReporteAuditoriaTableProps {
@@ -20,6 +20,80 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
     expandedLocalId
 }) => {
     const { format, formatAmount } = useFormatCurrency();
+    const [detailSort, setDetailSort] = useState<{
+        key: 'fecha' | 'factura_no' | 'total_bruto' | 'total_impuestos' | 'total_neto';
+        direction: 'asc' | 'desc';
+    }>({
+        key: 'fecha',
+        direction: 'desc'
+    });
+
+    const toggleDetailSort = (key: 'fecha' | 'factura_no' | 'total_bruto' | 'total_impuestos' | 'total_neto') => {
+        setDetailSort((prev) => (
+            prev.key === key
+                ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+                : { key, direction: key === 'fecha' ? 'desc' : 'asc' }
+        ));
+    };
+
+    const getSortValue = (detail: any, key: 'fecha' | 'factura_no' | 'total_bruto' | 'total_impuestos' | 'total_neto') => {
+        if (key === 'fecha') {
+            const fecha = String(detail?.fecha || '');
+            const hora = String(detail?.hora || '');
+            return `${fecha} ${hora}`;
+        }
+        if (key === 'factura_no') {
+            const raw = String(detail?.factura_no || '').trim();
+            const asNumber = Number(raw);
+            return Number.isFinite(asNumber) ? asNumber : raw.toLowerCase();
+        }
+        return Number(detail?.[key] ?? 0);
+    };
+
+    const sortDetails = (details: any[]) => {
+        const sorted = [...details];
+        sorted.sort((a, b) => {
+            const av = getSortValue(a, detailSort.key);
+            const bv = getSortValue(b, detailSort.key);
+            let cmp = 0;
+            if (typeof av === 'number' && typeof bv === 'number') {
+                cmp = av - bv;
+            } else {
+                cmp = String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+            }
+            return detailSort.direction === 'asc' ? cmp : -cmp;
+        });
+        return sorted;
+    };
+
+    const SortableDetailHeader = ({
+        label,
+        sortKey,
+        align = 'left'
+    }: {
+        label: string;
+        sortKey: 'fecha' | 'factura_no' | 'total_bruto' | 'total_impuestos' | 'total_neto';
+        align?: 'left' | 'right';
+    }) => {
+        const isActive = detailSort.key === sortKey;
+        const arrow = isActive ? (detailSort.direction === 'asc' ? '↑' : '↓') : '';
+
+        return (
+            <button
+                type="button"
+                onClick={() => toggleDetailSort(sortKey)}
+                className={`w-full inline-flex items-center gap-1.5 hover:text-indigo-600 transition-colors ${align === 'right' ? 'justify-end' : 'justify-start'}`}
+                title={`Ordenar por ${label}`}
+            >
+                <span>{label}</span>
+                {isActive ? (
+                    <span className="text-indigo-600 text-[10px] font-black leading-none">{arrow}</span>
+                ) : (
+                    <ArrowUpDown size={11} className="text-slate-400" />
+                )}
+            </button>
+        );
+    };
 
     return (
         <div className="overflow-x-auto">
@@ -42,6 +116,7 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                     ) : data.length > 0 ? (
                         data.map((row) => {
                             const details = detailsData[row.local_id] || [];
+                            const sortedDetails = sortDetails(details);
                             const subTotalBruto = details.reduce((sum, d) => sum + d.total_bruto, 0);
                             const subTotalImpuestos = details.reduce((sum, d) => sum + d.total_impuestos, 0);
                             const subTotalNeto = details.reduce((sum, d) => sum + d.total_neto, 0);
@@ -80,12 +155,22 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                                         <table className="w-full text-left text-xs">
                                                             <thead className="bg-slate-100/80 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-tighter">
                                                                 <tr>
-                                                                    <th className="px-4 py-3">Fecha</th>
+                                                                    <th className="px-4 py-3">
+                                                                        <SortableDetailHeader label="Fecha" sortKey="fecha" />
+                                                                    </th>
                                                                     <th className="px-4 py-3">Hora</th>
-                                                                    <th className="px-4 py-3">Nro Factura</th>
-                                                                    <th className="px-4 py-3 text-right">Bruto</th>
-                                                                    <th className="px-4 py-3 text-right">Impuesto</th>
-                                                                    <th className="px-4 py-3 text-right">Neto</th>
+                                                                    <th className="px-4 py-3">
+                                                                        <SortableDetailHeader label="Nro Factura" sortKey="factura_no" />
+                                                                    </th>
+                                                                    <th className="px-4 py-3 text-right">
+                                                                        <SortableDetailHeader label="Bruto" sortKey="total_bruto" align="right" />
+                                                                    </th>
+                                                                    <th className="px-4 py-3 text-right">
+                                                                        <SortableDetailHeader label="Impuesto" sortKey="total_impuestos" align="right" />
+                                                                    </th>
+                                                                    <th className="px-4 py-3 text-right">
+                                                                        <SortableDetailHeader label="Neto" sortKey="total_neto" align="right" />
+                                                                    </th>
                                                                 </tr>
                                                             </thead>
                                                             <tbody className="divide-y divide-slate-100">
@@ -97,7 +182,7 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                                                     </tr>
                                                                 ) : details.length > 0 ? (
                                                                     <>
-                                                                        {details.map((detail) => {
+                                                                        {sortedDetails.map((detail) => {
                                                                             const isNegative = detail.total_neto < 0;
                                                                             return (
                                                                                 <tr key={detail.id} className={`hover:bg-slate-50/80 transition-colors ${isNegative ? 'bg-red-50/50' : ''}`}>

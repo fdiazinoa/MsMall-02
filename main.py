@@ -1335,6 +1335,16 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                      errors.append({"linea": line_no, "error": "Falta fecha_venta"})
                      continue
 
+                local_code = str(record.get('local_codigo') or "").strip().strip("'\"")
+                if not local_code:
+                    errors.append({
+                        "linea": line_no,
+                        "error": "Falta local_codigo. No se puede cargar una venta sin un código de local válido."
+                    })
+                    continue
+                record['local_codigo'] = local_code
+                record['_source_line'] = line_no
+
                 # Normalize Date with format-specific or comprehensive support
                 raw_date = str(record['fecha_venta']).strip().strip("'\"")
                 parsed_date = None
@@ -1482,6 +1492,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         # 2. Transform Keys
         for r in records_to_insert:
             new_r = r.copy()
+            source_line = int(new_r.pop('_source_line', 0) or 0)
             
             # Map System Fields -> DB Columns
             if 'factura_numero' in new_r:
@@ -1559,14 +1570,14 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         f"Código local '{l_code}' no encontrado"
                         f"{f' en el mall {effective_mall_id}' if effective_mall_id else ''}."
                     )
-                    errors.append({"linea": 0, "error": msg})
+                    errors.append({"linea": source_line, "error": msg})
                     logger.warning(msg)
                     continue
             else:
-                # If no local_codigo provided, use context mall_id
-                if effective_mall_id:
-                    new_r['mall_id'] = effective_mall_id
-                    logger.info(f"Using context mall_id: {effective_mall_id} (no local_codigo provided)") 
+                msg = "Falta local_codigo. No se puede cargar una venta sin un código de local válido."
+                errors.append({"linea": source_line, "error": msg})
+                logger.warning(msg)
+                continue
             
             final_records.append(new_r)
         
@@ -3711,68 +3722,68 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached
-    
-    try:
-        # Fast path: Use DB-side aggregation function (RPC) for better scalability.
-        rpc_res = supabase.rpc("get_dashboard_kpis", {
-            "mall_id_param": mall_id,
-            "start_date_param": start_date,
-            "end_date_param": end_date
-        }).execute()
-
-        if rpc_res.data and len(rpc_res.data) > 0:
-            row = rpc_res.data[0]
-            result = {
-                "ventas_totales_bruto": float(row.get("ventas_totales_bruto") or 0),
-                "ventas_totales_neto": float(row.get("ventas_totales_neto") or 0),
-                "transacciones": int(row.get("transacciones") or 0),
-                "ticket_promedio": float(row.get("ticket_promedio") or 0),
-                "variacion_ventas": float(row.get("variacion_ventas") or 0),
-                "top_locales": row.get("top_locales") or [],
-                "ventas_por_dia": row.get("ventas_por_dia") or [],
-                "ventas_por_rubro": row.get("ventas_por_rubro") or [],
-                "ventas_por_tienda_completo": row.get("ventas_por_tienda_completo") or {}
-            }
-            _cache_set(cache_key, result, TTL_DASHBOARD)
-            return result
-    except Exception as rpc_err:
-        # Fallback path keeps endpoint functional while RPC is being rolled out.
-        logger.warning(f"Dashboard RPC unavailable, fallback to python aggregation: {rpc_err}")
 
     try:
-        # 1. Fetch Sales
-        # Note: 'fecha' in DB is likely YYYY-MM-DD or timestamp. If timestamp, string comparison might be tricky.
-        # Assuming YYYY-MM-DD string or compatible date type.
-        sales_res = (
-            supabase.table("ventas")
-            .select("local_id, fecha, total_bruto, total_neto")
-            .eq("mall_id", mall_id)
-            .gte("fecha", start_date)
-            .lte("fecha", end_date)
-            .execute()
-        )
-        sales = sales_res.data or []
-        
-        # 2. Fetch Stores
         stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
         stores = stores_res.data or []
-        store_map = {s['id']: s['nombre'] for s in stores}
-        
-        # 3. Aggregate
+        store_map = {str(s['id']): s['nombre'] for s in stores if s.get('id')}
+        allowed_local_ids = list(store_map.keys())
+        empty_result = {
+            "ventas_totales_bruto": 0,
+            "ventas_totales_neto": 0,
+            "transacciones": 0,
+            "ticket_promedio": 0,
+            "variacion_ventas": 0,
+            "top_locales": [],
+            "ventas_por_dia": [],
+            "ventas_por_rubro": [],
+            "ventas_por_tienda_completo": {}
+        }
+
+        if not allowed_local_ids:
+            _cache_set(cache_key, empty_result, TTL_DASHBOARD)
+            return empty_result
+
+        # Source of truth: only sales linked to valid locales for the current mall.
+        # Filtering by ventas.mall_id alone allows legacy/orphan rows to leak into KPIs as "Desconocido".
+        sales = []
+        page_size = 1000
+        page = 0
+        while True:
+            sales_res = (
+                supabase.table("ventas")
+                .select("local_id, fecha, total_bruto, total_neto")
+                .in_("local_id", allowed_local_ids)
+                .gte("fecha", start_date)
+                .lte("fecha", end_date)
+                .order("fecha")
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            chunk = sales_res.data or []
+            if not chunk:
+                break
+            sales.extend(chunk)
+            if len(chunk) < page_size:
+                break
+            page += 1
+
         sales_by_store = {}
         total_bruto = 0
         total_neto = 0
         sales_by_day = {}
         
         for s in sales:
+            lid = str(s.get('local_id') or "")
+            s_name = store_map.get(lid)
+            if not s_name:
+                continue
+
             bruto = float(s.get('total_bruto') or 0)
             neto = float(s.get('total_neto') or 0)
             total_bruto += bruto
             total_neto += neto
-            
-            lid = s.get('local_id')
-            s_name = store_map.get(lid, "Desconocido")
-            
+
             sales_by_store[s_name] = sales_by_store.get(s_name, 0) + bruto
             
             day = s.get('fecha')

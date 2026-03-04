@@ -65,6 +65,8 @@ const TOKEN_PRESETS: Record<'app' | 'exporter', Array<{ label: string; seconds: 
   ],
 };
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const formatIso = (value?: string | null) => {
   if (!value) return '—';
   try {
@@ -88,6 +90,8 @@ const parseScopes = (value: string[] | string | undefined | null): string[] => {
     .map((x) => x.trim())
     .filter(Boolean);
 };
+
+const isUuid = (value?: string | null) => UUID_REGEX.test(String(value || '').trim());
 
 const badgeClasses = (status?: string) => {
   switch ((status || '').toLowerCase()) {
@@ -317,6 +321,8 @@ export const SecurityTokenAdmin: React.FC = () => {
   const [showCreateSaModal, setShowCreateSaModal] = useState(false);
   const [showCreateTokenModal, setShowCreateTokenModal] = useState(false);
   const [savingAction, setSavingAction] = useState(false);
+  const [createServiceAccountError, setCreateServiceAccountError] = useState<string | null>(null);
+  const [createTokenError, setCreateTokenError] = useState<string | null>(null);
   const [selectedTokenDetail, setSelectedTokenDetail] = useState<SecurityApiToken | null>(null);
   const [revealState, setRevealState] = useState<RevealState | null>(null);
 
@@ -435,6 +441,7 @@ export const SecurityTokenAdmin: React.FC = () => {
   }, [tokens]);
 
   const resetServiceAccountForm = () => {
+    setCreateServiceAccountError(null);
     setServiceAccountForm({
       name: '',
       mall_id: selectedMallId || '',
@@ -444,6 +451,7 @@ export const SecurityTokenAdmin: React.FC = () => {
   };
 
   const resetTokenForm = () => {
+    setCreateTokenError(null);
     setTokenForm({
       token_type: 'exporter',
       mall_id: selectedMallId || '',
@@ -459,16 +467,27 @@ export const SecurityTokenAdmin: React.FC = () => {
   const handleCreateServiceAccount = async () => {
     if (!token) return;
     const name = serviceAccountForm.name.trim();
+    const mallId = serviceAccountForm.mall_id.trim();
+    const localId = serviceAccountForm.local_id.trim();
+    setCreateServiceAccountError(null);
     if (!name) {
-      notify('El nombre es requerido.', 'error');
+      setCreateServiceAccountError('El nombre es requerido.');
       return;
     }
-    if (!serviceAccountForm.mall_id.trim() || !serviceAccountForm.local_id.trim()) {
-      notify('mall_id y local_id son requeridos.', 'error');
+    if (!mallId || !localId) {
+      setCreateServiceAccountError('mall_id y local_id son requeridos.');
+      return;
+    }
+    if (!isUuid(mallId)) {
+      setCreateServiceAccountError('mall_id debe ser un UUID válido del mall.');
+      return;
+    }
+    if (!isUuid(localId)) {
+      setCreateServiceAccountError('local_id debe ser el UUID real de la tabla locales.id. Valores como L001 no son válidos.');
       return;
     }
     if (serviceAccountForm.scopes.length === 0) {
-      notify('Debe seleccionar al menos un scope.', 'error');
+      setCreateServiceAccountError('Debe seleccionar al menos un scope.');
       return;
     }
     if (!window.confirm('¿Crear Service Account para MsExportador?')) return;
@@ -478,8 +497,8 @@ export const SecurityTokenAdmin: React.FC = () => {
       const created = await ApiService.createSecurityServiceAccount(
         {
           name,
-          mall_id: serviceAccountForm.mall_id.trim(),
-          local_id: serviceAccountForm.local_id.trim(),
+          mall_id: mallId,
+          local_id: localId,
           scopes: serviceAccountForm.scopes,
         },
         token
@@ -496,7 +515,9 @@ export const SecurityTokenAdmin: React.FC = () => {
       notify('Service Account creado correctamente.');
       await loadData({ silent: true });
     } catch (err: any) {
-      notify(err?.message || 'No se pudo crear el service account.', 'error');
+      const message = err?.message || 'No se pudo crear el service account.';
+      setCreateServiceAccountError(message);
+      notify(message, 'error');
     } finally {
       setSavingAction(false);
     }
@@ -515,21 +536,30 @@ export const SecurityTokenAdmin: React.FC = () => {
     if (!token) return;
     const mallId = tokenForm.mall_id.trim();
     const localId = tokenForm.local_id.trim();
+    setCreateTokenError(null);
     if (!mallId) {
-      notify('mall_id es requerido.', 'error');
+      setCreateTokenError('mall_id es requerido.');
+      return;
+    }
+    if (!isUuid(mallId)) {
+      setCreateTokenError('mall_id debe ser un UUID válido del mall.');
       return;
     }
     if (tokenForm.token_type === 'exporter' && !localId) {
-      notify('local_id es requerido para token exporter.', 'error');
+      setCreateTokenError('local_id es requerido para token exporter.');
+      return;
+    }
+    if (tokenForm.token_type === 'exporter' && !isUuid(localId)) {
+      setCreateTokenError('local_id debe ser el UUID real de la tabla locales.id. Valores como L001 no son válidos.');
       return;
     }
     if (tokenForm.scopes.length === 0) {
-      notify('Debe seleccionar al menos un scope.', 'error');
+      setCreateTokenError('Debe seleccionar al menos un scope.');
       return;
     }
     const expiresIn = resolveTokenExpiresIn();
     if (tokenForm.expires_in === 'custom' && !expiresIn) {
-      notify('expires_in personalizado inválido.', 'error');
+      setCreateTokenError('expires_in personalizado inválido.');
       return;
     }
     if (!window.confirm(`¿Crear token ${tokenForm.token_type} para ${mallId}${localId ? ` / ${localId}` : ''}?`)) return;
@@ -559,7 +589,9 @@ export const SecurityTokenAdmin: React.FC = () => {
       notify('Token creado correctamente.');
       await loadData({ silent: true });
     } catch (err: any) {
-      notify(err?.message || 'No se pudo crear el token.', 'error');
+      const message = err?.message || 'No se pudo crear el token.';
+      setCreateTokenError(message);
+      notify(message, 'error');
     } finally {
       setSavingAction(false);
     }
@@ -1115,12 +1147,22 @@ export const SecurityTokenAdmin: React.FC = () => {
         widthClass="max-w-2xl"
       >
         <div className="space-y-4">
+          {createServiceAccountError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              <div className="font-semibold mb-1">No se pudo crear el Service Account</div>
+              <div>{createServiceAccountError}</div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="md:col-span-2">
               <label className="block text-sm font-medium text-slate-700 mb-1">Nombre *</label>
               <input
                 value={serviceAccountForm.name}
-                onChange={(e) => setServiceAccountForm((prev) => ({ ...prev, name: e.target.value }))}
+                onChange={(e) => {
+                  setCreateServiceAccountError(null);
+                  setServiceAccountForm((prev) => ({ ...prev, name: e.target.value }));
+                }}
                 placeholder="Ej: Exportador Local 01"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2"
               />
@@ -1129,7 +1171,10 @@ export const SecurityTokenAdmin: React.FC = () => {
               <label className="block text-sm font-medium text-slate-700 mb-1">mall_id *</label>
               <input
                 value={serviceAccountForm.mall_id}
-                onChange={(e) => setServiceAccountForm((prev) => ({ ...prev, mall_id: e.target.value }))}
+                onChange={(e) => {
+                  setCreateServiceAccountError(null);
+                  setServiceAccountForm((prev) => ({ ...prev, mall_id: e.target.value }));
+                }}
                 placeholder="UUID mall"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
               />
@@ -1138,10 +1183,16 @@ export const SecurityTokenAdmin: React.FC = () => {
               <label className="block text-sm font-medium text-slate-700 mb-1">local_id *</label>
               <input
                 value={serviceAccountForm.local_id}
-                onChange={(e) => setServiceAccountForm((prev) => ({ ...prev, local_id: e.target.value }))}
+                onChange={(e) => {
+                  setCreateServiceAccountError(null);
+                  setServiceAccountForm((prev) => ({ ...prev, local_id: e.target.value }));
+                }}
                 placeholder="UUID local"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
               />
+              <p className="mt-1 text-xs text-slate-500">
+                Debe ser el <span className="font-mono">UUID</span> de <span className="font-mono">locales.id</span>, no el código del local. Ejemplo inválido: <span className="font-mono">L001</span>.
+              </p>
             </div>
           </div>
 
@@ -1176,6 +1227,13 @@ export const SecurityTokenAdmin: React.FC = () => {
         widthClass="max-w-3xl"
       >
         <div className="space-y-4">
+          {createTokenError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              <div className="font-semibold mb-1">No se pudo crear el token</div>
+              <div>{createTokenError}</div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">token_type *</label>
@@ -1183,6 +1241,7 @@ export const SecurityTokenAdmin: React.FC = () => {
                 value={tokenForm.token_type}
                 onChange={(e) => {
                   const nextType = e.target.value as 'app' | 'exporter';
+                  setCreateTokenError(null);
                   setTokenForm((prev) => ({
                     ...prev,
                     token_type: nextType,
@@ -1202,7 +1261,10 @@ export const SecurityTokenAdmin: React.FC = () => {
               <label className="block text-sm font-medium text-slate-700 mb-1">mall_id *</label>
               <input
                 value={tokenForm.mall_id}
-                onChange={(e) => setTokenForm((prev) => ({ ...prev, mall_id: e.target.value }))}
+                onChange={(e) => {
+                  setCreateTokenError(null);
+                  setTokenForm((prev) => ({ ...prev, mall_id: e.target.value }));
+                }}
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
                 placeholder="UUID mall"
               />
@@ -1213,10 +1275,18 @@ export const SecurityTokenAdmin: React.FC = () => {
               </label>
               <input
                 value={tokenForm.local_id}
-                onChange={(e) => setTokenForm((prev) => ({ ...prev, local_id: e.target.value }))}
+                onChange={(e) => {
+                  setCreateTokenError(null);
+                  setTokenForm((prev) => ({ ...prev, local_id: e.target.value }));
+                }}
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
                 placeholder="UUID local"
               />
+              {tokenForm.token_type === 'exporter' && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Usa el <span className="font-mono">UUID</span> real de <span className="font-mono">locales.id</span>. Códigos como <span className="font-mono">L001</span> no son válidos.
+                </p>
+              )}
             </div>
 
             <div>

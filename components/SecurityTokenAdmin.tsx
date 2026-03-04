@@ -507,15 +507,15 @@ export const SecurityTokenAdmin: React.FC = () => {
       return;
     }
     if (!mallId || !localId) {
-      setCreateServiceAccountError('mall_id y local_id son requeridos.');
+      setCreateServiceAccountError('Mall y local son requeridos.');
       return;
     }
     if (!isUuid(mallId)) {
-      setCreateServiceAccountError('mall_id debe ser un UUID válido del mall.');
+      setCreateServiceAccountError('Mall inválido. Selecciona un mall válido.');
       return;
     }
     if (!isUuid(localId)) {
-      setCreateServiceAccountError('local_id debe ser el UUID real de la tabla locales.id. Valores como L001 no son válidos.');
+      setCreateServiceAccountError('Local inválido. Debes seleccionar un local real del mall.');
       return;
     }
     if (serviceAccountForm.scopes.length === 0) {
@@ -570,19 +570,19 @@ export const SecurityTokenAdmin: React.FC = () => {
     const localId = tokenForm.local_id.trim();
     setCreateTokenError(null);
     if (!mallId) {
-      setCreateTokenError('mall_id es requerido.');
+      setCreateTokenError('Mall es requerido.');
       return;
     }
     if (!isUuid(mallId)) {
-      setCreateTokenError('mall_id debe ser un UUID válido del mall.');
+      setCreateTokenError('Mall inválido. Selecciona un mall válido.');
       return;
     }
     if (tokenForm.token_type === 'exporter' && !localId) {
-      setCreateTokenError('local_id es requerido para token exporter.');
+      setCreateTokenError('Local es requerido para token exporter.');
       return;
     }
     if (tokenForm.token_type === 'exporter' && !isUuid(localId)) {
-      setCreateTokenError('local_id debe ser el UUID real de la tabla locales.id. Valores como L001 no son válidos.');
+      setCreateTokenError('Local inválido. Debes seleccionar un local real del mall.');
       return;
     }
     if (tokenForm.scopes.length === 0) {
@@ -729,7 +729,7 @@ export const SecurityTokenAdmin: React.FC = () => {
   const handleBulkRevokeByLocal = async () => {
     if (!token) return;
     if (!filters.mall_id || !filters.local_id) {
-      notify('Para revocar por local debe indicar mall_id y local_id en los filtros.', 'error');
+      notify('Para revocar por local debe indicar mall y local en los filtros.', 'error');
       return;
     }
     if (!window.confirm(`¿Revocar todos los tokens del local ${filters.local_id}?`)) return;
@@ -745,7 +745,7 @@ export const SecurityTokenAdmin: React.FC = () => {
   const handleBulkRevokeByMall = async () => {
     if (!token) return;
     if (!filters.mall_id) {
-      notify('Para revocar por mall debe indicar mall_id en los filtros.', 'error');
+      notify('Para revocar por mall debe indicar mall en los filtros.', 'error');
       return;
     }
     if (!window.confirm(`¿Revocar todos los tokens del mall ${filters.mall_id}?`)) return;
@@ -930,7 +930,7 @@ export const SecurityTokenAdmin: React.FC = () => {
               {activeTab === 'service_accounts' && (
                 <div className="space-y-4">
                   <div className="text-sm text-slate-500">
-                    Service Accounts para MsExportador por <span className="font-mono">mall_id + local_id</span>, con client secret one-time reveal.
+                    Service Accounts para MsExportador por mall + local, con client secret one-time reveal.
                   </div>
                   <div className="overflow-x-auto rounded-xl border border-slate-200">
                     <table className="w-full text-left min-w-[1100px]">
@@ -1175,7 +1175,7 @@ export const SecurityTokenAdmin: React.FC = () => {
         open={showCreateSaModal}
         onClose={() => setShowCreateSaModal(false)}
         title="Crear Service Account (MsExportador)"
-        subtitle="Vinculado a mall_id + local_id. El client_secret se mostrará una sola vez."
+        subtitle="Vinculado a un mall y un local. El client_secret se mostrará una sola vez."
         widthClass="max-w-2xl"
       >
         <div className="space-y-4">
@@ -1200,7 +1200,7 @@ export const SecurityTokenAdmin: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">mall_id *</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Mall *</label>
               <select
                 value={serviceAccountForm.mall_id}
                 onChange={(e) => {
@@ -1219,7 +1219,7 @@ export const SecurityTokenAdmin: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">local_id *</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Local *</label>
               <select
                 value={serviceAccountForm.local_id}
                 onChange={(e) => {
@@ -1318,7 +1318,7 @@ export const SecurityTokenAdmin: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">mall_id *</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Mall *</label>
               <select
                 value={tokenForm.mall_id}
                 onChange={(e) => {
@@ -1338,7 +1338,7 @@ export const SecurityTokenAdmin: React.FC = () => {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
-                local_id {tokenForm.token_type === 'exporter' ? '*' : '(opcional)'}
+                Local {tokenForm.token_type === 'exporter' ? '*' : '(opcional)'}
               </label>
               <select
                 value={tokenForm.local_id}
@@ -1439,7 +1439,7 @@ export const SecurityTokenAdmin: React.FC = () => {
 
           {tokenForm.token_type === 'exporter' && !tokenForm.local_id.trim() && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-              Exporter token requiere <span className="font-mono">local_id</span>. El submit está bloqueado hasta completarlo.
+              Exporter token requiere seleccionar un <span className="font-medium">local</span>. El submit está bloqueado hasta completarlo.
             </div>
           )}
 

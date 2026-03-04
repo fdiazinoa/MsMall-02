@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ApiService } from '../api';
+import { ApiService, Store } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import { SecurityApiToken, SecurityServiceAccount, SecurityTokenAuditLogEntry } from '../types';
 import {
@@ -323,6 +323,9 @@ export const SecurityTokenAdmin: React.FC = () => {
   const [savingAction, setSavingAction] = useState(false);
   const [createServiceAccountError, setCreateServiceAccountError] = useState<string | null>(null);
   const [createTokenError, setCreateTokenError] = useState<string | null>(null);
+  const [storeOptionsByMall, setStoreOptionsByMall] = useState<Record<string, Store[]>>({});
+  const [storesLoadingMall, setStoresLoadingMall] = useState<string | null>(null);
+  const [storesLoadError, setStoresLoadError] = useState<string | null>(null);
   const [selectedTokenDetail, setSelectedTokenDetail] = useState<SecurityApiToken | null>(null);
   const [revealState, setRevealState] = useState<RevealState | null>(null);
 
@@ -345,6 +348,8 @@ export const SecurityTokenAdmin: React.FC = () => {
   });
 
   const selectedMallId = filters.mall_id || currentMall?.id || '';
+  const serviceAccountStoreOptions = storeOptionsByMall[serviceAccountForm.mall_id] || [];
+  const tokenStoreOptions = storeOptionsByMall[tokenForm.mall_id] || [];
 
   useEffect(() => {
     if (currentMall?.id) {
@@ -353,6 +358,33 @@ export const SecurityTokenAdmin: React.FC = () => {
       setTokenForm((prev) => (prev.mall_id ? prev : { ...prev, mall_id: currentMall.id }));
     }
   }, [currentMall?.id]);
+
+  const loadStoresForMall = async (mallId: string) => {
+    const normalizedMallId = String(mallId || '').trim();
+    if (!normalizedMallId || storeOptionsByMall[normalizedMallId]) return;
+    setStoresLoadingMall(normalizedMallId);
+    setStoresLoadError(null);
+    try {
+      const stores = await ApiService.getStores(normalizedMallId);
+      setStoreOptionsByMall((prev) => ({ ...prev, [normalizedMallId]: stores || [] }));
+    } catch (err: any) {
+      setStoresLoadError(err?.message || 'No se pudieron cargar los locales del mall seleccionado.');
+    } finally {
+      setStoresLoadingMall((prev) => (prev === normalizedMallId ? null : prev));
+    }
+  };
+
+  useEffect(() => {
+    if (showCreateSaModal && isUuid(serviceAccountForm.mall_id)) {
+      loadStoresForMall(serviceAccountForm.mall_id);
+    }
+  }, [showCreateSaModal, serviceAccountForm.mall_id]);
+
+  useEffect(() => {
+    if (showCreateTokenModal && isUuid(tokenForm.mall_id)) {
+      loadStoresForMall(tokenForm.mall_id);
+    }
+  }, [showCreateTokenModal, tokenForm.mall_id]);
 
   useEffect(() => {
     if (!flash) return;
@@ -1169,32 +1201,60 @@ export const SecurityTokenAdmin: React.FC = () => {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">mall_id *</label>
-              <input
+              <select
                 value={serviceAccountForm.mall_id}
                 onChange={(e) => {
                   setCreateServiceAccountError(null);
-                  setServiceAccountForm((prev) => ({ ...prev, mall_id: e.target.value }));
+                  setStoresLoadError(null);
+                  setServiceAccountForm((prev) => ({ ...prev, mall_id: e.target.value, local_id: '' }));
                 }}
-                placeholder="UUID mall"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
-              />
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white"
+              >
+                <option value="">Selecciona un mall</option>
+                {(malls || []).map((mall: any) => (
+                  <option key={mall.id} value={mall.id}>
+                    {mall.nombre} ({truncateMiddle(mall.id, 8, 4)})
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">local_id *</label>
-              <input
+              <select
                 value={serviceAccountForm.local_id}
                 onChange={(e) => {
                   setCreateServiceAccountError(null);
                   setServiceAccountForm((prev) => ({ ...prev, local_id: e.target.value }));
                 }}
-                placeholder="UUID local"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
-              />
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white"
+                disabled={!serviceAccountForm.mall_id || storesLoadingMall === serviceAccountForm.mall_id}
+              >
+                <option value="">
+                  {!serviceAccountForm.mall_id
+                    ? 'Selecciona un mall primero'
+                    : storesLoadingMall === serviceAccountForm.mall_id
+                      ? 'Cargando locales...'
+                      : serviceAccountStoreOptions.length === 0
+                        ? 'No hay locales disponibles'
+                        : 'Selecciona un local'}
+                </option>
+                {serviceAccountStoreOptions.map((store) => (
+                  <option key={store.id} value={store.id}>
+                    {store.nombre} {store.codigo_interno ? `(${store.codigo_interno})` : ''} · {truncateMiddle(store.id, 8, 4)}
+                  </option>
+                ))}
+              </select>
               <p className="mt-1 text-xs text-slate-500">
-                Debe ser el <span className="font-mono">UUID</span> de <span className="font-mono">locales.id</span>, no el código del local. Ejemplo inválido: <span className="font-mono">L001</span>.
+                Selecciona el local por nombre/código. Internamente se usará el <span className="font-mono">UUID</span> real de <span className="font-mono">locales.id</span>.
               </p>
             </div>
           </div>
+
+          {storesLoadError && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              {storesLoadError}
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">Scopes por defecto</label>
@@ -1259,32 +1319,56 @@ export const SecurityTokenAdmin: React.FC = () => {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">mall_id *</label>
-              <input
+              <select
                 value={tokenForm.mall_id}
                 onChange={(e) => {
                   setCreateTokenError(null);
-                  setTokenForm((prev) => ({ ...prev, mall_id: e.target.value }));
+                  setStoresLoadError(null);
+                  setTokenForm((prev) => ({ ...prev, mall_id: e.target.value, local_id: '', service_account_id: '' }));
                 }}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
-                placeholder="UUID mall"
-              />
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white"
+              >
+                <option value="">Selecciona un mall</option>
+                {(malls || []).map((mall: any) => (
+                  <option key={mall.id} value={mall.id}>
+                    {mall.nombre} ({truncateMiddle(mall.id, 8, 4)})
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 local_id {tokenForm.token_type === 'exporter' ? '*' : '(opcional)'}
               </label>
-              <input
+              <select
                 value={tokenForm.local_id}
                 onChange={(e) => {
                   setCreateTokenError(null);
                   setTokenForm((prev) => ({ ...prev, local_id: e.target.value }));
                 }}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
-                placeholder="UUID local"
-              />
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white"
+                disabled={tokenForm.token_type !== 'exporter' || !tokenForm.mall_id || storesLoadingMall === tokenForm.mall_id}
+              >
+                <option value="">
+                  {tokenForm.token_type !== 'exporter'
+                    ? 'No requerido para token app'
+                    : !tokenForm.mall_id
+                      ? 'Selecciona un mall primero'
+                      : storesLoadingMall === tokenForm.mall_id
+                        ? 'Cargando locales...'
+                        : tokenStoreOptions.length === 0
+                          ? 'No hay locales disponibles'
+                          : 'Selecciona un local'}
+                </option>
+                {tokenStoreOptions.map((store) => (
+                  <option key={store.id} value={store.id}>
+                    {store.nombre} {store.codigo_interno ? `(${store.codigo_interno})` : ''} · {truncateMiddle(store.id, 8, 4)}
+                  </option>
+                ))}
+              </select>
               {tokenForm.token_type === 'exporter' && (
                 <p className="mt-1 text-xs text-slate-500">
-                  Usa el <span className="font-mono">UUID</span> real de <span className="font-mono">locales.id</span>. Códigos como <span className="font-mono">L001</span> no son válidos.
+                  Selecciona el local por nombre/código. Internamente se usará el <span className="font-mono">UUID</span> real de <span className="font-mono">locales.id</span>.
                 </p>
               )}
             </div>

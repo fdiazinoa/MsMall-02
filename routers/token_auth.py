@@ -149,7 +149,9 @@ class SupabaseTokenStore:
     def find_service_account_by_client_id(self, client_id: str) -> Optional[Dict[str, Any]]:
         self._require_db()
         res = self.db.table("service_accounts").select("*").eq("client_id", client_id).maybe_single().execute()
-        return res.data
+        if res is None:
+            return None
+        return getattr(res, "data", None)
 
     def get_service_account(self, service_account_id: str) -> Optional[Dict[str, Any]]:
         self._require_db()
@@ -590,6 +592,9 @@ class TokenService:
     ) -> Dict[str, Any]:
         if token_type == TOKEN_TYPE_EXPORTER and not local_id:
             raise HTTPException(status_code=400, detail="Exporter token requiere local_id")
+        # Validate JWT configuration before writing token rows to avoid partial issuance.
+        _jwt_secret()
+        _jwt_alg()
         now = utcnow()
         access_ttl = self.config.access_ttl(token_type)
         if access_ttl_seconds is not None and int(access_ttl_seconds) > 0:
@@ -648,13 +653,56 @@ class TokenService:
 
         client_id = payload.get("client_id")
         client_secret = payload.get("client_secret")
-        sa = self.store.find_service_account_by_client_id(client_id)
-        if not sa or sa.get("status") != ACTIVE or not _verify_hash(client_secret or "", sa.get("client_secret_hash", "")):
+        try:
+            sa = self.store.find_service_account_by_client_id(client_id)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Exporter auth lookup failed for client_id=%s: %s", client_id, e)
+            raise HTTPException(status_code=503, detail="Autenticacion exporter temporalmente no disponible")
+
+        if not isinstance(sa, dict) or sa.get("status") != ACTIVE or not _verify_hash(client_secret or "", str(sa.get("client_secret_hash") or "")):
             self._audit(event_type="failed", token=None, request=request, metadata={"mall_id": payload.get("mall_id"), "local_id": payload.get("local_id"), "reason": "bad exporter credentials"})
             raise HTTPException(status_code=401, detail="Credenciales exporter inválidas")
         if sa.get("token_type") != TOKEN_TYPE_EXPORTER:
             raise HTTPException(status_code=400, detail="Service account no corresponde a exporter")
-        return self._issue_pair(mall_id=sa["mall_id"], local_id=sa.get("local_id"), token_type=TOKEN_TYPE_EXPORTER, scopes=_parse_scopes(sa.get("scopes")), created_by=payload.get("requested_by"), service_account_id=sa["id"], request=request)
+
+        service_account_id = str(sa.get("id") or "").strip()
+        mall_id = str(sa.get("mall_id") or "").strip()
+        local_id = str(sa.get("local_id") or "").strip()
+        if not service_account_id or not mall_id or not local_id:
+            self._audit(
+                event_type="failed",
+                token=None,
+                request=request,
+                metadata={
+                    "mall_id": mall_id or payload.get("mall_id"),
+                    "local_id": local_id or payload.get("local_id"),
+                    "reason": "misconfigured exporter service account",
+                },
+            )
+            raise HTTPException(status_code=400, detail="Service account exporter incompleta (id/mall_id/local_id)")
+
+        try:
+            return self._issue_pair(
+                mall_id=mall_id,
+                local_id=local_id,
+                token_type=TOKEN_TYPE_EXPORTER,
+                scopes=_parse_scopes(sa.get("scopes")),
+                created_by=payload.get("requested_by"),
+                service_account_id=service_account_id,
+                request=request,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(
+                "Exporter token issue failed for client_id=%s service_account_id=%s: %s",
+                client_id,
+                service_account_id,
+                e,
+            )
+            raise HTTPException(status_code=503, detail="Emision de token exporter temporalmente no disponible")
 
     def refresh(self, refresh_token: str, request: Optional[Request]) -> Dict[str, Any]:
         self.ratelimiter.hit(f"refresh:{request.client.host if request and request.client else 'na'}", 30, 60)

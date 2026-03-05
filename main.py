@@ -1060,6 +1060,8 @@ class RemoteConnectionCreateRequest(BaseModel):
     usuario: str
     password: str
     ruta_base: Optional[str] = None
+    schedule_frequency: str = "manual"
+    schedule_time: Optional[str] = None
 
 class RemoteConnectionUpdateRequest(BaseModel):
     nombre: Optional[str] = None
@@ -1069,6 +1071,8 @@ class RemoteConnectionUpdateRequest(BaseModel):
     usuario: Optional[str] = None
     password: Optional[str] = None
     ruta_base: Optional[str] = None
+    schedule_frequency: Optional[str] = None
+    schedule_time: Optional[str] = None
 
 class RemoteConnectionResponse(BaseModel):
     id: str
@@ -1082,6 +1086,8 @@ class RemoteConnectionResponse(BaseModel):
     password_masked: Optional[str] = ""
     has_password: bool = False
     ruta_base: Optional[str] = None
+    schedule_frequency: str = "manual"
+    schedule_time: Optional[str] = None
     created_at: Optional[str] = None
 
 class ConnectionRunSchema(BaseModel):
@@ -2163,6 +2169,8 @@ async def update_remote_connection(
         )
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except KeyError:
         raise HTTPException(status_code=404, detail="Conexión remota no encontrada.")
     except Exception as e:

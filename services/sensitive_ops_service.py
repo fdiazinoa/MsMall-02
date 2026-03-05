@@ -14,12 +14,89 @@ def mask_secret(value: Optional[Any]) -> str:
     return f"{text[:2]}***{text[-2:]}"
 
 
+ALLOWED_CONNECTION_SCHEDULES = {"manual", "cada_hora", "cada_2_horas", "hora_especifica"}
+
+
+def _normalize_schedule_frequency(value: Optional[Any]) -> str:
+    raw = str(value or "manual").strip().lower()
+    aliases = {
+        "manual": "manual",
+        "cada_hora": "cada_hora",
+        "cada hora": "cada_hora",
+        "cada_2_horas": "cada_2_horas",
+        "cada 2 horas": "cada_2_horas",
+        "hora_especifica": "hora_especifica",
+        "hora especifica": "hora_especifica",
+        "hora específica": "hora_especifica",
+    }
+    normalized = aliases.get(raw, raw)
+    if normalized not in ALLOWED_CONNECTION_SCHEDULES:
+        raise ValueError("schedule_frequency inválida. Use: manual, cada_hora, cada_2_horas, hora_especifica.")
+    return normalized
+
+
+def _normalize_schedule_time(value: Optional[Any]) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed.strftime("%H:%M:%S")
+        except Exception:
+            continue
+    raise ValueError("schedule_time inválido. Use HH:MM o HH:MM:SS.")
+
+
+def normalize_remote_connection_schedule(
+    *,
+    payload: Dict[str, Any],
+    existing: Optional[Dict[str, Any]] = None,
+    partial: bool = False,
+) -> Dict[str, Any]:
+    has_frequency = "schedule_frequency" in payload
+    has_time = "schedule_time" in payload
+
+    if partial and not has_frequency and not has_time:
+        return {}
+
+    base_frequency = payload.get("schedule_frequency")
+    base_time = payload.get("schedule_time")
+    if partial:
+        if not has_frequency:
+            base_frequency = (existing or {}).get("schedule_frequency")
+        if not has_time:
+            base_time = (existing or {}).get("schedule_time")
+
+    frequency = _normalize_schedule_frequency(base_frequency)
+    schedule_time = _normalize_schedule_time(base_time)
+
+    if frequency != "hora_especifica":
+        schedule_time = None
+    elif not schedule_time:
+        raise ValueError("schedule_time es requerido cuando schedule_frequency=hora_especifica.")
+
+    return {
+        "schedule_frequency": frequency,
+        "schedule_time": schedule_time,
+    }
+
+
 def sanitize_remote_connection_record(row: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(row or {})
     raw_password = str(data.get("password") or "")
     data["password"] = ""  # Never expose secrets in clear text.
     data["password_masked"] = mask_secret(raw_password) if raw_password else ""
     data["has_password"] = bool(raw_password)
+    try:
+        normalized_schedule = normalize_remote_connection_schedule(payload=data, partial=False)
+        data["schedule_frequency"] = normalized_schedule["schedule_frequency"]
+        data["schedule_time"] = normalized_schedule["schedule_time"]
+    except Exception:
+        data["schedule_frequency"] = "manual"
+        data["schedule_time"] = None
     return data
 
 
@@ -106,6 +183,10 @@ class SensitiveOpsService:
         ensure_operator_can_access_mall(operator_ctx, mall_id)
         if not str(payload.get("password") or "").strip():
             raise ValueError("password es requerido")
+        payload = {
+            **payload,
+            **normalize_remote_connection_schedule(payload=payload, partial=False),
+        }
 
         res = (
             self.supabase.table("remote_connections")
@@ -145,6 +226,13 @@ class SensitiveOpsService:
             if not pwd:
                 # Preserve existing password when frontend intentionally omits/clears masked value.
                 update_payload.pop("password", None)
+        update_payload.update(
+            normalize_remote_connection_schedule(
+                payload=update_payload,
+                existing=existing,
+                partial=True,
+            )
+        )
         if not update_payload:
             return sanitize_remote_connection_record(existing)
 

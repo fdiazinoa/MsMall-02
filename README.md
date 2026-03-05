@@ -70,6 +70,7 @@ Esquema relacional optimizado (`init.sql`):
 
 ### PR-4: Operaciones sensibles movidas a backend (FastAPI)
 - **Conexiones remotas (`remote_connections`)**: CRUD vía API backend con RBAC/tenant checks.
+- **Schedule por conexión destino**: cada `remote_connection` ahora guarda `schedule_frequency` + `schedule_time` para definir su ejecución hacia MsMall.
 - **Secretos protegidos**: la API no devuelve `password` en claro (retorna `password=""` + `password_masked`/`has_password`).
 - **Logs de carga (`logs_carga`)**: lectura y limpieza vía API backend (`/api/v1/load-logs`).
 - **Reactivación de locales suspendidos**: endpoint backend para restablecer `processing_status` y `consecutive_failures`.

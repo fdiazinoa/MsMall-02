@@ -653,6 +653,8 @@ export const ApiService = {
       password_masked: row.password_masked || '',
       has_password: Boolean(row.has_password),
       ruta_base: row.ruta_base || '',
+      schedule_frequency: row.schedule_frequency || 'manual',
+      schedule_time: row.schedule_time || null,
       created_at: row.created_at
     }));
   },
@@ -671,7 +673,11 @@ export const ApiService = {
       puerto: payload.puerto,
       usuario: payload.usuario,
       password: payload.password || undefined,
-      ruta_base: payload.ruta_base || null
+      ruta_base: payload.ruta_base || null,
+      schedule_frequency: payload.schedule_frequency || 'manual',
+      schedule_time: payload.schedule_frequency === 'hora_especifica'
+        ? (payload.schedule_time || null)
+        : null,
     };
 
     const isUpdate = Boolean(payload.id);
@@ -700,6 +706,8 @@ export const ApiService = {
       password_masked: data.password_masked || '',
       has_password: Boolean(data.has_password),
       ruta_base: data.ruta_base || '',
+      schedule_frequency: data.schedule_frequency || 'manual',
+      schedule_time: data.schedule_time || null,
       created_at: data.created_at
     };
   },

@@ -656,13 +656,21 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     const conn = remoteConnections.find(c => c.id === connectionId);
     if (!conn) return;
 
+    const nextFrequency = conn.schedule_frequency || 'manual';
+    const nextTime = conn.schedule_time
+      ? String(conn.schedule_time).slice(0, 5)
+      : (nextFrequency === 'hora_especifica' ? '08:00' : '');
+
     setEditingConfig(prev => ({
       ...prev,
       protocolo: conn.protocolo,
       host: conn.host,
       puerto: conn.puerto,
       usuario: conn.usuario,
-      ruta_remota: conn.ruta_base || prev.ruta_remota
+      ruta_remota: conn.ruta_base || prev.ruta_remota,
+      frecuencia: nextFrequency as any,
+      hora_especifica: nextTime,
+      tipo_ejecucion: nextFrequency === 'manual' ? 'MANUAL' : 'AUTOMATICO',
     }));
     setTempPassword(conn.password || '');
   };
@@ -694,7 +702,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         puerto: Number(editingConfig.puerto) || (editingConfig.protocolo === 'SFTP' ? 22 : 21),
         usuario: editingConfig.usuario.trim(),
         password: tempPassword || editingConfig.password || '',
-        ruta_base: editingConfig.ruta_remota || '.'
+        ruta_base: editingConfig.ruta_remota || '.',
+        schedule_frequency: (editingConfig.frecuencia || 'manual') as any,
+        schedule_time: editingConfig.frecuencia === 'hora_especifica'
+          ? ((editingConfig.hora_especifica || '').trim() || null)
+          : null,
       }, authToken);
       await loadRemoteConnections();
       setSelectedConnectionId(saved.id);
@@ -1625,7 +1637,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           <option value="">-- Seleccionar conexión guardada --</option>
                           {remoteConnections.map((conn) => (
                             <option key={conn.id} value={conn.id}>
-                              {conn.nombre} ({conn.usuario}@{conn.host})
+                              {conn.nombre} ({conn.usuario}@{conn.host}) · {conn.schedule_frequency === 'hora_especifica'
+                                ? `Hora ${String(conn.schedule_time || '08:00').slice(0, 5)}`
+                                : conn.schedule_frequency === 'cada_hora'
+                                  ? 'Cada hora'
+                                  : conn.schedule_frequency === 'cada_2_horas'
+                                    ? 'Cada 2 horas'
+                                    : 'Manual'}
                             </option>
                           ))}
                         </select>

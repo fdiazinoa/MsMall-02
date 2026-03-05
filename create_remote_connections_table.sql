@@ -9,6 +9,8 @@ create table if not exists public.remote_connections (
   usuario text not null,
   password text not null,
   ruta_base text,
+  schedule_frequency text not null default 'manual' check (schedule_frequency in ('manual', 'cada_hora', 'cada_2_horas', 'hora_especifica')),
+  schedule_time time null,
   created_at timestamptz not null default now()
 );
 

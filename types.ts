@@ -68,6 +68,7 @@ export interface RoleConfig {
 export type ImportProtocol = 'FTP' | 'SFTP' | 'LOCAL';
 export type FileType = 'CSV' | 'TXT' | 'JSON' | 'XML';
 export type ImportFrequency = 'cada_hora' | 'cada_2_horas' | 'hora_especifica' | 'manual' | 'daily_batch';
+export type ConnectionScheduleFrequency = 'cada_hora' | 'cada_2_horas' | 'hora_especifica' | 'manual';
 export type PostProcessAction = 'ninguna' | 'eliminar' | 'renombrar' | 'NINGUNA' | 'RENOMBRAR_PROCESADO' | 'ELIMINAR';
 export type ExecutionMode = 'MANUAL' | 'AUTOMATICO';
 
@@ -116,6 +117,8 @@ export interface RemoteConnection {
   password_masked?: string;
   has_password?: boolean;
   ruta_base?: string;
+  schedule_frequency?: ConnectionScheduleFrequency;
+  schedule_time?: string | null;
   created_at?: string;
 }
 

@@ -149,7 +149,9 @@ class SupabaseTokenStore:
     def find_service_account_by_client_id(self, client_id: str) -> Optional[Dict[str, Any]]:
         self._require_db()
         res = self.db.table("service_accounts").select("*").eq("client_id", client_id).maybe_single().execute()
-        return res.data
+        if res is None:
+            return None
+        return getattr(res, "data", None)
 
     def get_service_account(self, service_account_id: str) -> Optional[Dict[str, Any]]:
         self._require_db()
@@ -590,6 +592,9 @@ class TokenService:
     ) -> Dict[str, Any]:
         if token_type == TOKEN_TYPE_EXPORTER and not local_id:
             raise HTTPException(status_code=400, detail="Exporter token requiere local_id")
+        # Validate JWT configuration before writing token rows to avoid partial issuance.
+        _jwt_secret()
+        _jwt_alg()
         now = utcnow()
         access_ttl = self.config.access_ttl(token_type)
         if access_ttl_seconds is not None and int(access_ttl_seconds) > 0:

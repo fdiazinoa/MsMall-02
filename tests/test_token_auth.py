@@ -154,6 +154,41 @@ def test_exporter_token_rejects_misconfigured_service_account_without_500():
     assert issue.json()["detail"] == "Service account exporter incompleta (id/mall_id/local_id)"
 
 
+def test_exporter_token_missing_jwt_secret_returns_503_without_persisting_token():
+    client, svc, store = build_test_client()
+    client_secret = "super-secret"
+
+    def _valid_service_account(_client_id):
+        return {
+            "id": "sa-1",
+            "status": "active",
+            "token_type": "exporter",
+            "client_secret_hash": token_auth_hash_token(client_secret),
+            "mall_id": "mall-1",
+            "local_id": "local-1",
+            "scopes": ["export:write"],
+        }
+
+    store.find_service_account_by_client_id = _valid_service_account  # type: ignore[method-assign]
+
+    prev_msmall_secret = os.environ.pop("MSMALL_TOKEN_JWT_SECRET", None)
+    prev_jwt_secret = os.environ.pop("JWT_SECRET", None)
+    try:
+        issue = client.post(
+            "/auth/token",
+            json={"token_type": "exporter", "client_id": "msa_test", "client_secret": client_secret},
+        )
+    finally:
+        if prev_msmall_secret is not None:
+            os.environ["MSMALL_TOKEN_JWT_SECRET"] = prev_msmall_secret
+        if prev_jwt_secret is not None:
+            os.environ["JWT_SECRET"] = prev_jwt_secret
+
+    assert issue.status_code == 503, issue.text
+    assert issue.json()["detail"] == "Emision de token exporter temporalmente no disponible"
+    assert len(store.api_tokens) == 0
+
+
 def test_bulk_revoke_local_and_mall():
     client, svc, store = build_test_client()
     admin_access = bootstrap_manage_token(client, svc, store)

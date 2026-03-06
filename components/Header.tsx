@@ -10,7 +10,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
-  const { currentMall, malls, setCurrentMall, changePassword, isAdmin, isTic } = useAuth();
+  const { currentMall, malls, setCurrentMall, changePassword, isAdmin, isTic, isAuditor } = useAuth();
   const [systemStatus, setSystemStatus] = useState<'operational' | 'down' | 'loading'>('loading');
   const [lastHeartbeat, setLastHeartbeat] = useState<string | null>(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -25,7 +25,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     { id: 'financial', label: 'Gestión Financiera', visible: true },
     { id: 'cube', label: 'Cubo de Ventas', visible: true },
     { id: 'comparisons', label: 'Comparativas BI', visible: true },
-    { id: 'reports', label: 'Auditoría Ventas', visible: isAdmin || isTic },
+    { id: 'reports', label: 'Auditoría Ventas', visible: isAdmin || isTic || isAuditor },
     { id: 'monitor', label: 'Monitor de Cargas', visible: isAdmin || isTic },
     { id: 'stores', label: 'Mantenimiento', visible: isAdmin || isTic },
     { id: 'store-catalogs', label: 'Catálogos Locales', visible: isAdmin || isTic },

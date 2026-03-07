@@ -4,7 +4,8 @@ import logging
 import uuid
 import asyncio
 import time
-from datetime import datetime, timezone
+import hashlib
+from datetime import datetime, time as dt_time, timedelta, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import paramiko
@@ -13,9 +14,18 @@ import io
 import csv
 import json
 import posixpath
-from typing import Optional, Sequence, Tuple
-from services.connection_monitor_service import ConnectionMonitorService
-from services.sensitive_ops_service import sanitize_error_text
+from typing import Any, Dict, Optional, Sequence, Tuple
+
+try:
+    from services.connection_monitor_service import ConnectionMonitorService
+except Exception:
+    ConnectionMonitorService = None  # type: ignore[assignment]
+
+try:
+    from services.sensitive_ops_service import sanitize_error_text
+except Exception:
+    def sanitize_error_text(value: object) -> str:
+        return str(value or "").strip()
 
 # Setup Logging
 logging.basicConfig(
@@ -41,10 +51,118 @@ else:
     except Exception as e:
         logger.error(f"Failed to initialize Supabase client: {e}")
 
+
+def _read_int_env(name: str, default: int, minimum: int = 0, maximum: Optional[int] = None) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(str(raw).strip()) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        value = default
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+WORKER_POLL_SECONDS = _read_int_env("WORKER_POLL_SECONDS", 300, minimum=60)
+MAX_CONCURRENT_WORKERS = _read_int_env("MAX_CONCURRENT_WORKERS", 3, minimum=1)
+MAX_CONCURRENT_PER_HOST = _read_int_env("MAX_CONCURRENT_PER_HOST", 1, minimum=1)
+HOURLY_STAGGER_MINUTES = _read_int_env("HOURLY_STAGGER_MINUTES", 15, minimum=0, maximum=55)
+MAX_FILES_PER_BATCH = _read_int_env("MAX_FILES_PER_BATCH", 20, minimum=1)
+
+
+def _now_local() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _coerce_datetime_to_reference(value: datetime, reference: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=reference.tzinfo)
+    return value.astimezone(reference.tzinfo)
+
+
+def _parse_datetime_value(raw: Any, reference: datetime) -> Optional[datetime]:
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return _coerce_datetime_to_reference(parsed, reference)
+    except ValueError:
+        return None
+
+
+def _parse_hora_especifica(raw: Any) -> Optional[dt_time]:
+    if raw in (None, "", "null"):
+        return None
+    if isinstance(raw, dt_time):
+        return raw
+
+    text = str(raw).strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _stable_offset_minutes(local: Dict[str, Any], max_minutes: int = HOURLY_STAGGER_MINUTES) -> int:
+    if max_minutes <= 0:
+        return 0
+    seed = str(local.get("id") or local.get("nombre") or local.get("sftp_host") or "")
+    if not seed:
+        return 0
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) % (max_minutes + 1)
+
+
+def _host_key(local: Dict[str, Any]) -> str:
+    return str(local.get("sftp_host") or local.get("host") or "__no_host__").strip().lower()
+
+
+def _schedule_due_at(local: Dict[str, Any], now: datetime) -> Optional[datetime]:
+    frecuencia = str(local.get("frecuencia_cron") or "manual").strip().lower()
+    if frecuencia == "manual":
+        return None
+
+    last_attempt = _parse_datetime_value(local.get("ultima_ejecucion"), now)
+    due_at: Optional[datetime] = None
+
+    if frecuencia == "cada_hora":
+        slot_start = now.replace(minute=0, second=0, microsecond=0)
+        due_at = slot_start + timedelta(minutes=_stable_offset_minutes(local))
+    elif frecuencia == "cada_2_horas":
+        slot_hour = now.hour - (now.hour % 2)
+        slot_start = now.replace(hour=slot_hour, minute=0, second=0, microsecond=0)
+        due_at = slot_start + timedelta(minutes=_stable_offset_minutes(local))
+    elif frecuencia == "hora_especifica":
+        scheduled_time = _parse_hora_especifica(local.get("hora_especifica"))
+        if not scheduled_time:
+            return None
+        due_at = now.replace(
+            hour=scheduled_time.hour,
+            minute=scheduled_time.minute,
+            second=0,
+            microsecond=0,
+        )
+    else:
+        return None
+
+    if now < due_at:
+        return None
+    if last_attempt and last_attempt >= due_at:
+        return None
+    return due_at
+
 AUTO_SUCCESS_PREFIX = "PR_"
 AUTO_ERROR_PREFIX = "ERR_"
 
 def _connection_monitor_service() -> ConnectionMonitorService:
+    if ConnectionMonitorService is None:
+        raise RuntimeError("ConnectionMonitorService not available")
     return ConnectionMonitorService(supabase, logger)
 
 def insert_load_log(
@@ -378,39 +496,53 @@ def process_local_files(config):
     post_action = config.get("accion_post_procesado", "NINGUNA")
     backup_prefix = config.get("prefijo_backup", "PR_")
     custom_backup_prefix = _normalize_prefix_value(backup_prefix)
-    
+
     ext = f".{file_type.lower()}"
     processed_suffix = ".procesado"
-    MAX_FILES_PER_BATCH = 20  # Safety Cap
-    
+    max_files_per_batch = MAX_FILES_PER_BATCH
+    processed_count = 0
+    file_errors = 0
+    total_pending = 0
+    batch_size = 0
+
+    def _result(ok: bool, message: str) -> Dict[str, Any]:
+        return {
+            "ok": ok,
+            "message": message,
+            "processed_files": processed_count,
+            "failed_files": file_errors,
+            "total_pending": total_pending,
+            "batch_size": batch_size,
+        }
+
     logger.info(f"Conectando a {config['nombre']} ({protocol}) en {host}...")
-    
+
     if protocol == "SFTP":
         try:
             ssh, sftp = connect_with_retries(lambda: get_sftp_client(host, port, user, password))
         except Exception as ce:
+            message = f"Fallo conexión SFTP: {str(ce)}"
             insert_load_log(
-                config['nombre'], "N/A", "error", f"Fallo conexión SFTP: {str(ce)}",
+                config['nombre'], "N/A", "error", message,
                 mall_id=config.get("mall_id"), local_id=config.get("id")
             )
-            return
+            return _result(False, message)
 
         try:
-            # Handle directory vs file path
             try:
                 st = sftp.stat(remote_path)
                 if not stat.S_ISDIR(st.st_mode):
                     remote_path = posixpath.dirname(remote_path) or "."
-            except:
+            except Exception:
                 pass
 
-            # 1. DISCOVERY & FILTERING
             items = sftp.listdir_attr(remote_path)
             pending_files = []
-            
+
             for item in items:
-                if stat.S_ISDIR(item.st_mode): continue
-                
+                if stat.S_ISDIR(item.st_mode):
+                    continue
+
                 filename = item.filename
                 is_processed = processed_suffix in filename
                 is_backup = (
@@ -421,43 +553,36 @@ def process_local_files(config):
                 )
                 is_match = filename.lower().endswith(ext)
                 is_error = ".error" in filename
-                
+
                 if is_match and not is_processed and not is_backup and not is_error:
                     pending_files.append(item)
 
-            # 2. SORTING (Chronological: Oldest Modified First)
-            # This is critical to maintain data integrity order
             pending_files.sort(key=lambda x: x.st_mtime)
-            
             total_pending = len(pending_files)
-            
-            # 3. BATCHING
-            batch_files = pending_files[:MAX_FILES_PER_BATCH]
-            
+            batch_files = pending_files[:max_files_per_batch]
+            batch_size = len(batch_files)
+
             if total_pending == 0:
+                message = "Conexión exitosa: 0 pendientes."
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
                 insert_load_log(
-                    config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 pendientes.",
+                    config['nombre'], "N/A", "exito", message,
                     mall_id=config.get("mall_id"), local_id=config.get("id")
                 )
-                return
+                return _result(True, message)
 
-            logger.info(f"🚀 {config['nombre']}: Encontrados {total_pending} pendientes. Procesando lote de {len(batch_files)}.")
+            logger.info(f"🚀 {config['nombre']}: Encontrados {total_pending} pendientes. Procesando lote de {batch_size}.")
 
-            # 4. PROCESSING LOOP
-            processed_count = 0
             for item in batch_files:
                 filename = item.filename
                 batch_id = str(uuid.uuid4())
-                logger.info(f"🔄 [{processed_count + 1}/{len(batch_files)}] Procesando SFTP: {filename}")
-                
+                logger.info(f"🔄 [{processed_count + 1}/{batch_size}] Procesando SFTP: {filename}")
+
                 try:
                     with sftp.open(f"{remote_path}/{filename}", 'r') as f:
-                        # Use utf-8-sig to handle BOM if present
                         content = f.read().decode('utf-8-sig', errors='replace')
-                    
-                    count, errors = process_file_logic(config, filename, content)
 
+                    count, errors = process_file_logic(config, filename, content)
                     estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors)
 
                     if insert_confirmed:
@@ -487,10 +612,11 @@ def process_local_files(config):
                             )
                     else:
                         raise Exception(mensaje)
-                        
+
                     processed_count += 1
-                    
+
                 except Exception as fe:
+                    file_errors += 1
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
                         config['nombre'], filename, "error", str(fe), batch_id,
@@ -507,36 +633,38 @@ def process_local_files(config):
                             strip_prefixes=(custom_backup_prefix,)
                         )
                     except: pass
-            
-            logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{len(batch_files)} archivos procesados exitosamente.")
+
+            logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{batch_size} archivos procesados exitosamente.")
 
         finally:
-            if 'sftp' in locals(): sftp.close()
-            if 'ssh' in locals(): ssh.close()
-            
+            if 'sftp' in locals():
+                sftp.close()
+            if 'ssh' in locals():
+                ssh.close()
+
     elif protocol == "FTP":
         try:
             ftp = connect_with_retries(lambda: get_ftp_client(host, port, user, password))
         except Exception as ce:
+            message = f"Fallo conexión FTP: {str(ce)}"
             insert_load_log(
-                config['nombre'], "N/A", "error", f"Fallo conexión FTP: {str(ce)}",
+                config['nombre'], "N/A", "error", message,
                 mall_id=config.get("mall_id"), local_id=config.get("id")
             )
-            return
+            return _result(False, message)
 
         try:
             try:
                 ftp.cwd(remote_path)
-            except:
+            except Exception:
                 remote_path_parent = posixpath.dirname(remote_path) or "."
-                try: ftp.cwd(remote_path_parent)
-                except: pass
+                try:
+                    ftp.cwd(remote_path_parent)
+                except Exception:
+                    pass
 
-            # 1. DISCOVERY
-            files = ftp.nlst()
             pending_files = []
-            
-            for filename in files:
+            for filename in ftp.nlst():
                 is_processed = processed_suffix in filename
                 is_backup = (
                     (custom_backup_prefix and filename.startswith(custom_backup_prefix))
@@ -546,44 +674,37 @@ def process_local_files(config):
                 )
                 is_match = filename.lower().endswith(ext)
                 is_error = ".error" in filename
-                
+
                 if is_match and not is_processed and not is_backup and not is_error:
                     pending_files.append(filename)
-            
-            # 2. SORTING (Name Ascending)
-            # FTP List doesn't give dates reliable without extra calls. Name sort is best best.
+
             pending_files.sort()
-            
             total_pending = len(pending_files)
-            
-            # 3. BATCHING
-            batch_files = pending_files[:MAX_FILES_PER_BATCH]
-            
+            batch_files = pending_files[:max_files_per_batch]
+            batch_size = len(batch_files)
+
             if total_pending == 0:
+                message = "Conexión exitosa: 0 pendientes."
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
                 insert_load_log(
-                    config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 pendientes.",
+                    config['nombre'], "N/A", "exito", message,
                     mall_id=config.get("mall_id"), local_id=config.get("id")
                 )
-                return
+                return _result(True, message)
 
-            logger.info(f"🚀 {config['nombre']}: Encontrados {total_pending} pendientes. Procesando lote de {len(batch_files)}.")
-            
-            # 4. PROCESSING LOOP
-            processed_count = 0
+            logger.info(f"🚀 {config['nombre']}: Encontrados {total_pending} pendientes. Procesando lote de {batch_size}.")
+
             for filename in batch_files:
                 batch_id = str(uuid.uuid4())
-                logger.info(f"🔄 [{processed_count + 1}/{len(batch_files)}] Procesando FTP: {filename}")
-                
+                logger.info(f"🔄 [{processed_count + 1}/{batch_size}] Procesando FTP: {filename}")
+
                 try:
                     bio = io.BytesIO()
                     ftp.retrbinary(f"RETR {filename}", bio.write)
                     bio.seek(0)
-                    # Use utf-8-sig to handle BOM if present
                     content = bio.read().decode('utf-8-sig', errors='replace')
-                    
-                    count, errors = process_file_logic(config, filename, content)
 
+                    count, errors = process_file_logic(config, filename, content)
                     estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors)
 
                     if insert_confirmed:
@@ -610,10 +731,12 @@ def process_local_files(config):
                                 strip_prefixes=(custom_backup_prefix,)
                             )
                     else:
-                         raise Exception(mensaje)
-                         
+                        raise Exception(mensaje)
+
                     processed_count += 1
+
                 except Exception as fe:
+                    file_errors += 1
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
                         config['nombre'], filename, "error", str(fe), batch_id,
@@ -629,11 +752,25 @@ def process_local_files(config):
                             strip_prefixes=(custom_backup_prefix,)
                         )
                     except: pass
-            
-            logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{len(batch_files)} archivos procesados exitosamente.")
-            
+
+            logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{batch_size} archivos procesados exitosamente.")
+
         finally:
-            if 'ftp' in locals(): ftp.quit()
+            if 'ftp' in locals():
+                ftp.quit()
+
+    else:
+        message = f"Protocolo no soportado: {protocol}"
+        logger.error(message)
+        return _result(False, message)
+
+    ok = total_pending == 0 or processed_count > 0
+    message = (
+        f"Lote completado: {processed_count}/{batch_size} archivos procesados."
+        if batch_size
+        else "Sin archivos para procesar."
+    )
+    return _result(ok, message)
 
 def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix="", strip_prefixes: Sequence[str] = ()):
     full_path = f"{path}/{filename}"
@@ -730,6 +867,8 @@ async def clear_cron_error():
 async def run_connection_monitor_nightly_if_due():
     if not supabase:
         return {"executed": False, "reason": "supabase_not_configured"}
+    if ConnectionMonitorService is None:
+        return {"executed": False, "reason": "service_unavailable"}
     try:
         result = await asyncio.to_thread(_connection_monitor_service().run_nightly_monitor_if_due)
         if result.get("executed"):
@@ -748,80 +887,72 @@ async def run_connection_monitor_nightly_if_due():
         logger.error(f"Connection monitor nightly failed: {sanitize_error_text(e)}")
         return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
 
-async def process_local_safe(local, semaphore):
+async def process_local_safe(local, semaphore, host_semaphore, due_at: Optional[datetime] = None):
     """
     Wraps the synchronous process_local_files in a semaphore and async thread,
     handling DB locking/unlocking and Circuit Breaker.
     """
+    local_name = local.get('nombre', 'Unknown')
+    consecutive_failures = local.get('consecutive_failures', 0)
+    status = local.get('processing_status')
+
+    if status == 'SUSPENDED_AUTH_ERROR':
+         logger.warning(f"⛔ [Skipped] {local_name} is SUSPENDED due to auth errors.")
+         return
+
+    if consecutive_failures >= 5:
+         logger.error(f"⛔ [Suspend] {local_name} reached 5 consecutive failures. Suspending...")
+         await mark_local_status(local['id'], 'SUSPENDED_AUTH_ERROR')
+         return
+
     async with semaphore:
-        local_name = local.get('nombre', 'Unknown')
-        
-        # --- CIRCUIT BREAKER CHECK ---
-        consecutive_failures = local.get('consecutive_failures', 0)
-        status = local.get('processing_status')
-        
-        if status == 'SUSPENDED_AUTH_ERROR':
-             logger.warning(f"⛔ [Skipped] {local_name} is SUSPENDED due to auth errors.")
-             return
+        async with host_semaphore:
+            logger.info(
+                "🔒 [Lock] Locking %s (Status: BUSY, host=%s, due_at=%s)",
+                local_name,
+                _host_key(local),
+                due_at.isoformat() if due_at else "now",
+            )
+            await mark_local_status(local['id'], 'BUSY')
 
-        if consecutive_failures >= 5:
-             logger.error(f"⛔ [Suspend] {local_name} reached 5 consecutive failures. Suspending...")
-             await mark_local_status(local['id'], 'SUSPENDED_AUTH_ERROR')
-             # Reset failures to avoid immediate loop if manually reactivated without reset
-             # But actually, manual reactivation should reset failures.
-             return
+            try:
+                logger.info(f"🚀 [Start] Processing {local_name}...")
+                result = await asyncio.to_thread(process_local_files, local)
+                if not isinstance(result, dict):
+                    result = {"ok": False, "message": "Resultado inválido del worker."}
 
-        logger.info(f"🔒 [Lock] Locking {local_name} (Status: BUSY)")
-        
-        # 1. LOCK
-        await mark_local_status(local['id'], 'BUSY')
-        
-        try:
-            # 2. EXECUTE (Run sync IO in thread pool)
-            logger.info(f"🚀 [Start] Processing {local_name}...")
-            
-            # Run the processing
-            # We need to capture if it was successful or auth error
-            # process_local_files returns nothing, logs internally. 
-            # We need to modify it or wrap it to know if it failed?
-            # Actually process_local_files catches exceptions internally and logs.
-            # to implement true circuit breaker, we need to know if it failed.
-            
-            # For now, let's assume if it throws exception here it failed.
-            # But process_local_files swallows exceptions mostly.
-            # Let's trust it runs. If we want strict circuit breaker, we'd need to refactor process_local_files to return status.
-            # Let's assume for this task we wrap it.
-            
-            await asyncio.to_thread(process_local_files, local)
-            
-            logger.info(f"✅ [Done] Finished {local_name}")
-            
-            # Reset failures on success (Optimistic: if no exception bubbled up)
-            # Ideal: check logs_carga for this batch? 
-            # For simplicity: reset failures here.
-            await asyncio.to_thread(
-                lambda: supabase.table("locales").update({"consecutive_failures": 0}).eq("id", local['id']).execute()
-            )
-            
-        except Exception as e:
-            logger.error(f"❌ [Error] Processing {local_name}: {e}")
-            insert_load_log(
-                local_name, "SYSTEM", "error", f"Async processing failed: {str(e)}",
-                mall_id=local.get("mall_id"), local_id=local.get("id")
-            )
-            
-            # Increment Failures
-            new_failures = consecutive_failures + 1
-            await asyncio.to_thread(
-                 lambda: supabase.table("locales").update({"consecutive_failures": new_failures}).eq("id", local['id']).execute()
-            )
-            
-        finally:
-            # 3. RELEASE (Only if not suspended inside logic, checking status again?)
-            # If we suspended it above, we returned.
-            # If we are here, we must release lock.
-            logger.info(f"🔓 [Release] Unlocking {local_name} (Status: IDLE)")
-            await mark_local_status(local['id'], 'IDLE')
+                if result.get("ok"):
+                    logger.info(f"✅ [Done] Finished {local_name}: {result.get('message', 'ok')}")
+                    await asyncio.to_thread(
+                        lambda: supabase.table("locales").update({"consecutive_failures": 0}).eq("id", local['id']).execute()
+                    )
+                else:
+                    error_text = result.get("message") or "Falló la corrida automática."
+                    logger.error(f"❌ [Error] Processing {local_name}: {error_text}")
+                    insert_load_log(
+                        local_name, "SYSTEM", "error", f"Async processing failed: {error_text}",
+                        mall_id=local.get("mall_id"), local_id=local.get("id")
+                    )
+                    new_failures = consecutive_failures + 1
+                    await asyncio.to_thread(
+                         lambda: supabase.table("locales").update({"consecutive_failures": new_failures}).eq("id", local['id']).execute()
+                    )
+
+            except Exception as e:
+                logger.error(f"❌ [Error] Processing {local_name}: {e}")
+                insert_load_log(
+                    local_name, "SYSTEM", "error", f"Async processing failed: {str(e)}",
+                    mall_id=local.get("mall_id"), local_id=local.get("id")
+                )
+
+                new_failures = consecutive_failures + 1
+                await asyncio.to_thread(
+                     lambda: supabase.table("locales").update({"consecutive_failures": new_failures}).eq("id", local['id']).execute()
+                )
+
+            finally:
+                logger.info(f"🔓 [Release] Unlocking {local_name} (Status: IDLE)")
+                await mark_local_status(local['id'], 'IDLE')
 
 async def cleanup_zombies():
     """Reset locales that have been stuck in BUSY for more than 2 hours."""
@@ -873,64 +1004,64 @@ async def run_worker_async():
     await update_heartbeat()
     
     try:
-        # 2. Fetch Tasks (IDLE + AUTOMATIC)
-        # Note: We need to filter by IDLE to avoid double execution if previous job is running
         response = supabase.table("locales")\
             .select("*")\
             .eq("tipo_ejecucion", "AUTOMATICO")\
             .eq("processing_status", "IDLE")\
             .execute()
-            
-        locales = [loc for loc in (response.data or []) if loc.get("mall_id")]
-        current_hour = datetime.now().hour
-        
-        tasks_to_run = []
-        
-        for local in locales:
-            # Frequency Check Logic
-            frecuencia = local.get("frecuencia_cron", "manual")
-            if frecuencia == "manual": continue
-            
-            should_run = False
-            if frecuencia == "cada_hora":
-                should_run = True
-            elif frecuencia == "cada_2_horas":
-                if current_hour % 2 == 0: should_run = True
-            elif frecuencia == "hora_especifica":
-                hora_esp = local.get("hora_especifica")
-                if hora_esp:
-                    try:
-                        esp_hour = int(hora_esp.split(":")[0])
-                        if current_hour == esp_hour: should_run = True
-                    except: pass
-            
-            if should_run:
-                tasks_to_run.append(local)
-            else:
-                 # Debug check
-                 pass
 
-        if not tasks_to_run:
-            logger.info("😴 No active tasks for this hour.")
+        locales = [loc for loc in (response.data or []) if loc.get("mall_id")]
+        now = _now_local()
+        scheduled_locals = []
+
+        for local in locales:
+            due_at = _schedule_due_at(local, now)
+            if due_at is None:
+                continue
+            scheduled_locals.append((
+                due_at,
+                _stable_offset_minutes(local, 59),
+                _host_key(local),
+                local,
+            ))
+
+        if not scheduled_locals:
+            logger.info("😴 No active tasks for this scheduling window.")
             await run_connection_monitor_nightly_if_due()
             await update_cron_success()
             await clear_cron_error()
             return
 
-        logger.info(f"📋 Encolados {len(tasks_to_run)} locales para ejecución.")
-        
-        # 3. Execute with Semaphore
-        MAX_CONCURRENT_WORKERS = 5
+        scheduled_locals.sort(
+            key=lambda item: (
+                item[0],
+                item[1],
+                item[2],
+                str(item[3].get("nombre") or ""),
+            )
+        )
+
+        logger.info(
+            "📋 Encolados %s locales para ejecución (poll=%ss, max_workers=%s, per_host=%s).",
+            len(scheduled_locals),
+            WORKER_POLL_SECONDS,
+            MAX_CONCURRENT_WORKERS,
+            MAX_CONCURRENT_PER_HOST,
+        )
+
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_WORKERS)
-        
-        tasks = [process_local_safe(local, semaphore) for local in tasks_to_run]
+        host_semaphores: Dict[str, asyncio.Semaphore] = {}
+        tasks = []
+        for due_at, _rank, host_key, local in scheduled_locals:
+            host_semaphore = host_semaphores.setdefault(host_key, asyncio.Semaphore(MAX_CONCURRENT_PER_HOST))
+            tasks.append(process_local_safe(local, semaphore, host_semaphore, due_at))
         await asyncio.gather(*tasks)
-        
+
         logger.info("🏁 Cycle finished.")
         await run_connection_monitor_nightly_if_due()
         await update_cron_success()
         await clear_cron_error()
-        
+
     except Exception as e:
         logger.error(f"Critical error in main loop: {e}")
         await update_cron_error(e)

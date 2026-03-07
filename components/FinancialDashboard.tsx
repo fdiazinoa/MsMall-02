@@ -132,7 +132,9 @@ export const FinancialDashboard: React.FC = () => {
                 const ventaActual = salesMap[s.nombre] || 0;
                 const rentaFija = parseNum(s.renta_fija);
                 const breakpoint = parseNum(s.breakpoint_venta);
-                const pctVar = parseNum(s.porcentaje_variable ?? s.porciento_renta);
+                const pctVarDirect = parseNum(s.porcentaje_variable);
+                const pctVarLegacy = parseNum(s.porciento_renta);
+                const pctVar = pctVarDirect > 0 ? pctVarDirect : pctVarLegacy;
                 const m2 = Number(s.mts) || 1;
                 const proyeccion = ventaActual > 0 ? ventaActual * projectionFactor : ventaActual;
                 const projectionDelta = proyeccion - ventaActual;

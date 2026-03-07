@@ -12,3 +12,6 @@ def test_financial_dashboard_uses_ranked_ocr_and_projection_gap_views():
     assert "const proyeccion = ventaActual;" not in dashboard
     assert "projectionDelta" in dashboard
     assert "storesAboveBreakpoint" in dashboard
+    assert "const pctVarDirect = parseNum(s.porcentaje_variable);" in dashboard
+    assert "const pctVarLegacy = parseNum(s.porciento_renta);" in dashboard
+    assert "const pctVar = pctVarDirect > 0 ? pctVarDirect : pctVarLegacy;" in dashboard

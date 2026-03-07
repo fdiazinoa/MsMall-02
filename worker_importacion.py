@@ -16,6 +16,7 @@ import posixpath
 from typing import Optional, Sequence, Tuple
 from services.connection_monitor_service import ConnectionMonitorService
 from services.sensitive_ops_service import sanitize_error_text
+from analytics_service import run_local_risk_analysis
 
 # Setup Logging
 logging.basicConfig(
@@ -46,6 +47,31 @@ AUTO_ERROR_PREFIX = "ERR_"
 
 def _connection_monitor_service() -> ConnectionMonitorService:
     return ConnectionMonitorService(supabase, logger)
+
+
+def run_local_risk_analysis_if_possible(config, trigger: str) -> Optional[dict]:
+    local_id = config.get("id")
+    if not supabase or not local_id:
+        return None
+    try:
+        snapshot = run_local_risk_analysis(
+            local_id,
+            supabase_client=supabase,
+            logger=logger,
+            trigger=trigger,
+        )
+        summary = snapshot.get("summary") or {}
+        logger.info(
+            "Semaforo IA actualizado para %s: state=%s alerts=%s score=%s",
+            config.get("nombre") or local_id,
+            summary.get("risk_state"),
+            summary.get("alerts_count"),
+            summary.get("risk_score"),
+        )
+        return snapshot
+    except Exception as exc:
+        logger.error("Fallo actualizando semaforo IA para %s: %s", config.get("nombre") or local_id, exc)
+        return None
 
 def insert_load_log(
     local_nombre: str,
@@ -509,6 +535,8 @@ def process_local_files(config):
                     except: pass
             
             logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{len(batch_files)} archivos procesados exitosamente.")
+            if processed_count > 0:
+                run_local_risk_analysis_if_possible(config, trigger="worker_auto_import")
 
         finally:
             if 'sftp' in locals(): sftp.close()
@@ -631,6 +659,8 @@ def process_local_files(config):
                     except: pass
             
             logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{len(batch_files)} archivos procesados exitosamente.")
+            if processed_count > 0:
+                run_local_risk_analysis_if_possible(config, trigger="worker_auto_import")
             
         finally:
             if 'ftp' in locals(): ftp.quit()

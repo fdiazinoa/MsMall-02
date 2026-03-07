@@ -18,7 +18,8 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
     const [selectedLocalId, setSelectedLocalId] = useState<string>(initialLocalId || '');
     const [availableStores, setAvailableStores] = useState<any[]>([]);
     const [alerts, setAlerts] = useState<any[]>([]);
-    const [alertsStatus, setAlertsStatus] = useState<'ok' | 'error'>('ok');
+    const [alertsStatus, setAlertsStatus] = useState<'ok' | 'no_data' | 'error'>('no_data');
+    const [alertsSummary, setAlertsSummary] = useState<any>(null);
     const [benchmarking, setBenchmarking] = useState<any>(null);
     const [efficiency, setEfficiency] = useState<any>(null);
     const [heatmap, setHeatmap] = useState<any[]>([]);
@@ -72,6 +73,7 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                 ]);
                 setAlerts(alertsData.alerts || []);
                 setAlertsStatus(alertsData.status);
+                setAlertsSummary(alertsData.summary || null);
                 setBenchmarking(benchData);
                 setHeatmap(heatmapData);
                 setEfficiency(efficiencyData);
@@ -79,6 +81,7 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                 console.error("Error loading insights:", error);
                 setAlerts([]);
                 setAlertsStatus('error');
+                setAlertsSummary(null);
             } finally {
                 setLoading(false);
             }
@@ -111,14 +114,17 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
     const relevantAlerts = alerts.filter(a => a.nivel_riesgo === 'ALTO' || a.nivel_riesgo === 'MEDIO');
     const hasHighRisk = relevantAlerts.some(a => a.nivel_riesgo === 'ALTO');
     const hasMediumRisk = !hasHighRisk && relevantAlerts.some(a => a.nivel_riesgo === 'MEDIO');
+    const summaryRiskState = alertsSummary?.risk_state;
     const riskState: 'HIGH' | 'MEDIUM' | 'NORMAL' | 'NO_DATA' =
-        alertsStatus === 'error'
+        alertsStatus === 'error' || alertsStatus === 'no_data'
             ? 'NO_DATA'
-            : hasHighRisk
-                ? 'HIGH'
-                : hasMediumRisk
-                    ? 'MEDIUM'
-                    : 'NORMAL';
+            : summaryRiskState === 'HIGH' || summaryRiskState === 'MEDIUM' || summaryRiskState === 'NORMAL' || summaryRiskState === 'NO_DATA'
+                ? summaryRiskState
+                : hasHighRisk
+                    ? 'HIGH'
+                    : hasMediumRisk
+                        ? 'MEDIUM'
+                        : 'NORMAL';
 
     const riskCardStyles =
         riskState === 'HIGH'
@@ -155,6 +161,16 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                 : riskState === 'NO_DATA'
                     ? 'Sin Datos'
                     : 'Operación Normal';
+
+    const riskDescription =
+        alertsSummary?.description ||
+        (riskState === 'NO_DATA'
+            ? 'No hay una evaluación reciente del semáforo para este local.'
+            : 'La última evaluación no detectó anomalías relevantes.');
+
+    const lastEvaluatedAt = alertsSummary?.last_evaluated_at
+        ? new Date(alertsSummary.last_evaluated_at).toLocaleString()
+        : null;
 
     return (
         <div className="space-y-6 animate-in fade-in duration-500 pb-12">
@@ -199,10 +215,10 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                             {relevantAlerts.map((alert, idx) => (
                                 <div key={idx} className="bg-white/60 p-3 rounded-xl border border-red-100">
                                     <div className="flex items-center gap-2 mb-1">
-                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${alert.tipo_alerta === 'CAJA_APAGADA' ? 'bg-red-600 text-white' : alert.tipo_alerta === 'FACTURA_PLANA' ? 'bg-orange-500 text-white' : 'bg-red-100 text-red-600'}`}>
-                                            {alert.tipo_alerta.replace('_', ' ')}
+                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${alert.rule_code === 'CAJA_APAGADA' ? 'bg-red-600 text-white' : alert.rule_code === 'FACTURA_PLANA' ? 'bg-orange-500 text-white' : 'bg-red-100 text-red-600'}`}>
+                                            {alert.display_type || String(alert.rule_code || alert.tipo_alerta || '').replace(/_/g, ' ')}
                                         </span>
-                                        <span className="text-[10px] font-bold text-slate-400">{alert.fecha}</span>
+                                        <span className="text-[10px] font-bold text-slate-400">{alert.fecha || alert.fecha_detectada}</span>
                                     </div>
                                     <p className="text-red-800 text-xs font-medium leading-relaxed">
                                         {alert.mensaje}
@@ -211,13 +227,23 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                             ))}
                         </div>
                     ) : riskState === 'NO_DATA' ? (
-                        <p className="text-slate-700 text-sm font-medium">
-                            No se pudo validar alertas IA en este momento. Verifica conexión o servicio de alertas.
-                        </p>
+                        <div className="space-y-2">
+                            <p className="text-slate-700 text-sm font-medium">{riskDescription}</p>
+                            {lastEvaluatedAt && (
+                                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">
+                                    Última evaluación: {lastEvaluatedAt}
+                                </p>
+                            )}
+                        </div>
                     ) : (
-                        <p className="text-green-700 text-sm font-medium">
-                            No se han detectado anomalías significativas en los últimos 7 días.
-                        </p>
+                        <div className="space-y-2">
+                            <p className="text-green-700 text-sm font-medium">{riskDescription}</p>
+                            {lastEvaluatedAt && (
+                                <p className="text-[11px] font-semibold text-green-700/70 uppercase tracking-wide">
+                                    Última evaluación: {lastEvaluatedAt}
+                                </p>
+                            )}
+                        </div>
                     )}
                 </div>
 

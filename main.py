@@ -21,7 +21,7 @@ import json
 import xmltodict
 from ftplib import FTP
 import stat
-from worker_importacion import run_worker_async
+from worker_importacion import WORKER_POLL_SECONDS, run_worker_async
 from analytics import generate_sales_cube
 from routers import recipes, comparisons, admin_tools
 from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
@@ -221,7 +221,7 @@ app.include_router(admin_tools.router)
 _api_scheduler_task = None
 
 async def scheduler_loop():
-    await asyncio.sleep(10) # Initial delay
+    await asyncio.sleep(min(10, WORKER_POLL_SECONDS))
     while True:
         logger.info("[Scheduler] Iniciando ciclo de importación automática...")
         try:
@@ -229,8 +229,8 @@ async def scheduler_loop():
             await run_worker_async()
         except Exception as e:
             logger.error(f"[Scheduler] Error en ciclo: {e}")
-        logger.info("[Scheduler] Durmiendo 1 hora...")
-        await asyncio.sleep(3600)
+        logger.info("[Scheduler] Durmiendo %s segundos...", WORKER_POLL_SECONDS)
+        await asyncio.sleep(WORKER_POLL_SECONDS)
 
 @app.on_event("startup")
 async def startup_event():

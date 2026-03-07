@@ -84,3 +84,84 @@ def test_get_alert_snapshot_uses_recent_stored_run_before_live_refresh(monkeypat
     assert snapshot["status"] == "ok"
     assert snapshot["source"] == "stored"
     assert snapshot["alerts"][0]["rule_code"] == "MONTO_REPETIDO_CONSECUTIVO"
+
+
+def test_detect_flat_amounts_ignores_high_volume_with_low_share():
+    service = AnalyticsService(supabase_client=object())
+    sale_date = date.today().isoformat()
+    rows = []
+    for idx in range(400):
+        amount = 99.99 if idx < 20 else 100.11 + idx
+        rows.append({
+            "fecha": sale_date,
+            "total_bruto": amount,
+            "factura_no": str(idx),
+            "hora_transaccion": f"10:{idx % 60:02d}:00",
+        })
+    df = service._to_sales_frame(rows)
+
+    assert service._detect_flat_amounts(df) is None
+
+
+class _PagedQuery:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self._range = None
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def gte(self, *_args, **_kwargs):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def range(self, start, end):
+        self._range = (start, end)
+        return self
+
+    def execute(self):
+        start, end = self._range
+        return type("Response", (), {"data": self.rows[start:end + 1]})()
+
+
+class _PagedSupabase:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def table(self, _name):
+        return _PagedQuery(self.rows)
+
+
+def test_fetch_sales_rows_paginates_until_recent_days_covered():
+    service = AnalyticsService(supabase_client=_PagedSupabase([
+        {"fecha": "2026-03-05", "total_bruto": 100, "factura_no": f"a{i}", "hora_transaccion": "12:00:00"}
+        for i in range(1000)
+    ] + [
+        {"fecha": "2026-03-04", "total_bruto": 100, "factura_no": f"b{i}", "hora_transaccion": "12:00:00"}
+        for i in range(1000)
+    ] + [
+        {"fecha": "2026-03-03", "total_bruto": 100, "factura_no": f"c{i}", "hora_transaccion": "12:00:00"}
+        for i in range(1000)
+    ] + [
+        {"fecha": "2026-03-02", "total_bruto": 100, "factura_no": f"d{i}", "hora_transaccion": "12:00:00"}
+        for i in range(1000)
+    ] + [
+        {"fecha": "2026-03-01", "total_bruto": 100, "factura_no": f"e{i}", "hora_transaccion": "12:00:00"}
+        for i in range(50)
+    ]))
+
+    rows = service._fetch_sales_rows("local-1", days=30)
+
+    assert len(rows) == 4050
+    assert {row["fecha"] for row in rows} >= {
+        "2026-03-05",
+        "2026-03-04",
+        "2026-03-03",
+        "2026-03-02",
+        "2026-03-01",
+    }

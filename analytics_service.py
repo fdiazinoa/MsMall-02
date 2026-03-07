@@ -18,6 +18,9 @@ ALERT_WINDOW_DAYS = 7
 RECENT_RUN_HOURS = 24
 MIN_HISTORY_DAYS = 5
 MIN_PATTERN_TRANSACTIONS = 8
+ANALYSIS_PAGE_SIZE = 1000
+MAX_ANALYSIS_PAGES = 12
+TARGET_HISTORY_DAYS = 10
 RUNS_TABLE = "ai_analysis_runs"
 ALERTS_TABLE = "alertas_inteligentes"
 
@@ -149,17 +152,38 @@ class AnalyticsService:
 
     def _fetch_sales_rows(self, local_id: str, days: int = LOOKBACK_DAYS) -> List[Dict[str, Any]]:
         start_date = (date.today() - timedelta(days=max(days - 1, 0))).isoformat()
-        response = (
-            self.supabase.table("ventas")
-            .select("fecha, total_bruto, factura_no, hora_transaccion")
-            .eq("local_id", local_id)
-            .gte("fecha", start_date)
-            .order("fecha")
-            .order("hora_transaccion")
-            .order("factura_no")
-            .execute()
-        )
-        return response.data or []
+        target_days = min(days, TARGET_HISTORY_DAYS)
+        collected: List[Dict[str, Any]] = []
+        distinct_dates = set()
+
+        for page in range(MAX_ANALYSIS_PAGES):
+            start = page * ANALYSIS_PAGE_SIZE
+            end = start + ANALYSIS_PAGE_SIZE - 1
+            response = (
+                self.supabase.table("ventas")
+                .select("fecha, total_bruto, factura_no, hora_transaccion")
+                .eq("local_id", local_id)
+                .gte("fecha", start_date)
+                .order("fecha", desc=True)
+                .order("hora_transaccion", desc=True)
+                .order("factura_no", desc=True)
+                .range(start, end)
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                break
+
+            collected.extend(rows)
+            distinct_dates.update(str(row.get("fecha")) for row in rows if row.get("fecha"))
+            if len(distinct_dates) >= target_days and len(rows) < ANALYSIS_PAGE_SIZE:
+                break
+            if len(distinct_dates) >= target_days and page >= 1:
+                break
+            if len(rows) < ANALYSIS_PAGE_SIZE:
+                break
+
+        return collected
 
     def _to_sales_frame(self, rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
         if not rows:
@@ -298,9 +322,11 @@ class AnalyticsService:
         round_numbers = amounts.apply(lambda value: float(value).is_integer()).sum()
         round_share = round_numbers / max(len(df), 1)
 
-        if repeated_count >= 18 or (repeated_share >= 0.60 and round_share >= 0.75):
+        if repeated_count >= 25 and repeated_share >= 0.15:
             level = "ALTO"
-        elif repeated_count >= 10 and repeated_share >= 0.35:
+        elif repeated_count >= 15 and repeated_share >= 0.08:
+            level = "MEDIO"
+        elif round_share >= 0.80 and repeated_share >= 0.04:
             level = "MEDIO"
         else:
             return None

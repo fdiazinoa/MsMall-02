@@ -37,6 +37,7 @@ const createEmptyStore = (mallId = ''): Partial<Store> => ({
   tipo_negocio: '',
   mts: '',
   porciento_renta: '',
+  breakpoint_venta: '',
   rubro: '',
 });
 
@@ -60,6 +61,14 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
 
   const updateNewStoreField = (fieldName: 'tipo_negocio' | 'rubro', value: string) => {
     setNewStore((prev) => ({ ...prev, [fieldName]: value }));
+  };
+
+  const parseOptionalNumber = (value: unknown): number | null => {
+    if (value === null || value === undefined) return null;
+    const raw = String(value).trim();
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
   };
 
   const loadStores = async () => {
@@ -117,7 +126,12 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
       return;
     }
 
-    const storeToSave = { ...newStore, mall_id: currentMall.id };
+    const storeToSave = {
+      ...newStore,
+      mall_id: currentMall.id,
+      porciento_renta: parseOptionalNumber(newStore.porciento_renta),
+      breakpoint_venta: parseOptionalNumber(newStore.breakpoint_venta),
+    };
 
     try {
       if (storeToSave.id) {
@@ -447,6 +461,31 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         />
                         <Percent size={14} className="absolute right-3 top-3.5 text-slate-400" />
                       </div>
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between gap-3 mb-1">
+                        <label className="block text-sm font-medium text-slate-700">Breakpoint de Venta</label>
+                        <span
+                          className="text-[11px] font-medium text-slate-400"
+                          title="Umbral de ventas a partir del cual el dashboard considera que el local entra en zona de renta variable."
+                        >
+                          Umbral contractual
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={newStore.breakpoint_venta ?? ''}
+                          onChange={(e) => setNewStore({ ...newStore, breakpoint_venta: e.target.value })}
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none pr-10"
+                          placeholder="250000.00"
+                        />
+                        <span className="absolute right-3 top-3 text-xs text-slate-400 font-bold">$</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Umbral de ventas desde el cual el local empieza a evaluarse como candidato a renta variable. Si el contrato no usa breakpoint, dejelo vacio.
+                      </p>
                     </div>
                   </section>
 

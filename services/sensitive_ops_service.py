@@ -203,6 +203,7 @@ class SensitiveOpsService:
         ensure_operator_can_access_mall(operator_ctx, mall_id)
         safe_limit = max(1, min(int(limit or 50), 200))
 
+        primary_error: Optional[Exception] = None
         try:
             query = self.supabase.table("logs_carga").select("*").eq("mall_id", mall_id)
             if local_id:
@@ -212,26 +213,36 @@ class SensitiveOpsService:
             if end_date:
                 query = query.lte("fecha_hora", f"{end_date}T23:59:59")
             res = query.order("fecha_hora", desc=True).limit(safe_limit).execute()
-            return res.data or []
+            primary_rows = res.data or []
+            # If there are tenant-aware rows, return immediately (fast path).
+            if primary_rows:
+                return primary_rows
         except Exception as err:
-            # Backward compatibility if logs_carga tenant columns are not fully migrated.
-            err_msg = sanitize_error_text(err)
+            primary_error = err
+
+        # Backward compatibility path:
+        # 1) schema not migrated (query failed)
+        # 2) rows exist but historical entries don't have mall_id populated (query succeeded but returned 0)
+        if primary_error is not None:
+            err_msg = sanitize_error_text(primary_error)
             self.logger.warning(f"logs_carga primary query fallback: {err_msg}")
+
+        if local_id:
+            stores_query = self.supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).eq("id", local_id)
+        else:
             stores_query = self.supabase.table("locales").select("id, nombre").eq("mall_id", mall_id)
-            if local_id:
-                stores_query = stores_query.eq("id", local_id)
-            stores_res = stores_query.execute()
-            stores = stores_res.data or []
-            store_names = [s.get("nombre") for s in stores if s.get("nombre")]
-            if not store_names:
-                return []
-            legacy_query = self.supabase.table("logs_carga").select("*").in_("local_nombre", store_names)
-            if start_date:
-                legacy_query = legacy_query.gte("fecha_hora", f"{start_date}T00:00:00")
-            if end_date:
-                legacy_query = legacy_query.lte("fecha_hora", f"{end_date}T23:59:59")
-            legacy_res = legacy_query.order("fecha_hora", desc=True).limit(safe_limit).execute()
-            return legacy_res.data or []
+        stores_res = stores_query.execute()
+        stores = stores_res.data or []
+        store_names = [s.get("nombre") for s in stores if s.get("nombre")]
+        if not store_names:
+            return []
+        legacy_query = self.supabase.table("logs_carga").select("*").in_("local_nombre", store_names)
+        if start_date:
+            legacy_query = legacy_query.gte("fecha_hora", f"{start_date}T00:00:00")
+        if end_date:
+            legacy_query = legacy_query.lte("fecha_hora", f"{end_date}T23:59:59")
+        legacy_res = legacy_query.order("fecha_hora", desc=True).limit(safe_limit).execute()
+        return legacy_res.data or []
 
     def clear_load_logs(
         self,

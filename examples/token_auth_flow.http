@@ -1,0 +1,82 @@
+### Crear token app (usuario MsMall)
+POST http://localhost:8000/auth/token
+Content-Type: application/json
+
+{
+  "token_type": "app",
+  "username": "admin@mall.com",
+  "password": "secret"
+}
+
+### Crear service account exporter (admin con tokens:manage)
+POST http://localhost:8000/service-accounts
+Authorization: Bearer {{admin_access_token}}
+Content-Type: application/json
+
+{
+  "mall_id": "00000000-0000-0000-0000-000000000001",
+  "local_id": "00000000-0000-0000-0000-000000000010",
+  "token_type": "exporter",
+  "scopes": ["export:write", "mapping:read"]
+}
+
+### Emitir token exporter
+POST http://localhost:8000/auth/token
+Content-Type: application/json
+
+{
+  "token_type": "exporter",
+  "client_id": "{{client_id}}",
+  "client_secret": "{{client_secret}}"
+}
+
+### Usar endpoint protegido de sync (payload debe coincidir mall/local del token)
+### Ruta recomendada para MsExportador (no usar /api/v1/ingesta)
+POST http://localhost:8000/api/v1/exporter/sync/ingest
+Authorization: Bearer {{exporter_access_token}}
+Content-Type: application/json
+
+{
+  "mall_id": "00000000-0000-0000-0000-000000000001",
+  "local_id": "00000000-0000-0000-0000-000000000010",
+  "rows": []
+}
+
+### Ejecutar endpoint real de importación manual (exporter)
+### Ruta dedicada para MsExportador; valida que config_id pertenezca al local del token
+POST http://localhost:8000/api/v1/remote/execute-manual/exporter
+Authorization: Bearer {{exporter_access_token}}
+Content-Type: application/json
+
+{
+  "config_id": "00000000-0000-0000-0000-000000000010",
+  "filename": "ventas_2026-02-25.csv"
+}
+
+### Refresh (rotación obligatoria)
+POST http://localhost:8000/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{exporter_refresh_token}}"
+}
+
+### Revocar token actual
+POST http://localhost:8000/auth/revoke
+Authorization: Bearer {{exporter_access_token}}
+Content-Type: application/json
+
+{
+  "reason": "device_reprovisioned"
+}
+
+### Error esperado 403 (local incorrecto)
+POST http://localhost:8000/api/v1/exporter/sync/ingest
+Authorization: Bearer {{exporter_access_token}}
+Content-Type: application/json
+
+{
+  "mall_id": "00000000-0000-0000-0000-000000000001",
+  "local_id": "00000000-0000-0000-0000-000000000099",
+  "rows": []
+}

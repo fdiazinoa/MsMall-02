@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 // Fix: Import types from '../types' instead of '../api'
-import { ImportConfig, ImportProtocol, RemoteConnection } from '../types';
+import { ImportConfig, ImportProtocol, RemoteConnection, SecurityExporterWebserviceConfig } from '../types';
 import { SmartMappingModal } from './SmartMappingModal';
 import MappingModal from './MappingModal';
 import {
@@ -50,7 +50,22 @@ const createDefaultImportConfig = (): ImportConfig => ({
   password: ''
 });
 
-export const ImportManager: React.FC = () => {
+const createDefaultExporterWebserviceDraft = () => ({
+  enabled: true,
+  contract_type: 'msmall_sales_v1' as const,
+  default_granularity: 'transaction' as 'transaction' | 'daily',
+  allow_transaction: true,
+  allow_daily: true,
+  strict_validation: true,
+  notes: ''
+});
+
+interface ImportManagerProps {
+  initialSection?: 'ftp' | 'webservice';
+  onCloseWebserviceModal?: () => void;
+}
+
+export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = 'ftp', onCloseWebserviceModal }) => {
   const { currentMall, isAdmin, isTic, session } = useAuth();
   const canManageImports = isAdmin || isTic;
   const authToken = session?.access_token || '';
@@ -69,6 +84,10 @@ export const ImportManager: React.FC = () => {
   const [explorerPath, setExplorerPath] = useState('.');
   const [explorerItems, setExplorerItems] = useState<{ nombre: string, ruta: string, es_dir: boolean }[]>([]);
   const [explorerLoading, setExplorerLoading] = useState(false);
+  const [browserFilesSelection, setBrowserFilesSelection] = useState<{
+    count: number;
+    names: string[];
+  } | null>(null);
 
   // Mapping Helper State
   const [remoteHeaders, setRemoteHeaders] = useState<string[]>([]);
@@ -113,7 +132,10 @@ export const ImportManager: React.FC = () => {
     message: string;
   }>(initialBatchProgress);
   const batchCancelRef = useRef(false);
+  const browserFilesInputRef = useRef<HTMLInputElement | null>(null);
+  const exporterWebservicePanelRef = useRef<HTMLDivElement | null>(null);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
+  const isWebserviceModalMode = initialSection === 'webservice';
 
   // Progress Modal State
   const [showProgressModal, setShowProgressModal] = useState(false);
@@ -134,6 +156,12 @@ export const ImportManager: React.FC = () => {
   const [editingConfig, setEditingConfig] = useState<ImportConfig>(createDefaultImportConfig());
 
   const [availableStores, setAvailableStores] = useState<any[]>([]);
+  const [exporterWsConfigs, setExporterWsConfigs] = useState<SecurityExporterWebserviceConfig[]>([]);
+  const [exporterWsLoading, setExporterWsLoading] = useState(false);
+  const [exporterWsSaving, setExporterWsSaving] = useState(false);
+  const [selectedExporterLocalId, setSelectedExporterLocalId] = useState('');
+  const [exporterWsDraft, setExporterWsDraft] = useState(createDefaultExporterWebserviceDraft());
+  const [exporterWsError, setExporterWsError] = useState<string | null>(null);
 
   const loadConfigs = async () => {
     if (!currentMall?.id) return;
@@ -143,9 +171,23 @@ export const ImportManager: React.FC = () => {
     setLoading(false);
   };
 
-  const loadStores = async () => {
-    const stores = await ApiService.getStores();
-    setAvailableStores(stores);
+  const loadStores = async (mallId?: string) => {
+    if (!mallId) {
+      setAvailableStores([]);
+      setSelectedExporterLocalId('');
+      return;
+    }
+    try {
+      const stores = await ApiService.getStores(mallId);
+      // Avoid stale async overwrite when mall changes quickly.
+      if (String(currentMall?.id || '') !== String(mallId)) {
+        return;
+      }
+      setAvailableStores(stores || []);
+    } catch (error) {
+      console.error("Error loading stores:", error);
+      setAvailableStores([]);
+    }
   };
 
   const loadRemoteConnections = async () => {
@@ -159,13 +201,390 @@ export const ImportManager: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    if (currentMall) {
-      loadConfigs();
-      loadStores();
-      loadRemoteConnections();
+  const loadExporterWebserviceConfigs = async () => {
+    if (!currentMall?.id || !authToken) {
+      setExporterWsConfigs([]);
+      return;
     }
-  }, [currentMall]);
+    setExporterWsLoading(true);
+    setExporterWsError(null);
+    try {
+      const rows = await ApiService.getSecurityExporterWebserviceConfigs(authToken, { mall_id: currentMall.id });
+      setExporterWsConfigs(rows);
+    } catch (error: any) {
+      console.error("Error loading exporter webservice configs:", error);
+      setExporterWsConfigs([]);
+      setExporterWsError(error?.message || 'No se pudo cargar la configuración webservice ERP.');
+    } finally {
+      setExporterWsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const mallId = currentMall?.id;
+    if (mallId) {
+      loadConfigs();
+      loadStores(mallId);
+      loadRemoteConnections();
+    } else {
+      setAvailableStores([]);
+      setSelectedExporterLocalId('');
+    }
+  }, [currentMall?.id, authToken]);
+
+  useEffect(() => {
+    if (currentMall?.id && authToken) {
+      loadExporterWebserviceConfigs();
+    } else {
+      setExporterWsConfigs([]);
+    }
+  }, [currentMall?.id, authToken]);
+
+  useEffect(() => {
+    if (initialSection !== 'webservice') return;
+    const id = window.setTimeout(() => {
+      exporterWebservicePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [initialSection, loading, configs.length]);
+
+  useEffect(() => {
+    if (!selectedExporterLocalId && availableStores.length > 0) {
+      setSelectedExporterLocalId(String(availableStores[0].id || ''));
+    }
+  }, [availableStores, selectedExporterLocalId]);
+
+  useEffect(() => {
+    if (!selectedExporterLocalId) return;
+    const existsInMall = (availableStores || []).some((store) => String(store?.id) === String(selectedExporterLocalId));
+    if (!existsInMall) {
+      setSelectedExporterLocalId('');
+    }
+  }, [availableStores, selectedExporterLocalId]);
+
+  useEffect(() => {
+    if (!selectedExporterLocalId) {
+      setExporterWsDraft(createDefaultExporterWebserviceDraft());
+      return;
+    }
+    const existing = exporterWsConfigs.find((row) => String(row.local_id) === String(selectedExporterLocalId));
+    if (!existing) {
+      setExporterWsDraft(createDefaultExporterWebserviceDraft());
+      return;
+    }
+    setExporterWsDraft({
+      enabled: !!existing.enabled,
+      contract_type: 'msmall_sales_v1',
+      default_granularity: existing.default_granularity === 'daily' ? 'daily' : 'transaction',
+      allow_transaction: existing.allow_transaction !== false,
+      allow_daily: existing.allow_daily !== false,
+      strict_validation: existing.strict_validation !== false,
+      notes: existing.notes || ''
+    });
+  }, [selectedExporterLocalId, exporterWsConfigs]);
+
+  const getStoreLabel = (localId?: string | null) => {
+    if (!localId) return 'Local no definido';
+    const store = (availableStores || []).find((s) => String(s.id) === String(localId));
+    if (!store) return localId;
+    return `${store.nombre} (${store.codigo_interno || 'sin código'})`;
+  };
+
+  const exporterWsRowsByLocal = useMemo(() => {
+    const byLocal = new Map<string, SecurityExporterWebserviceConfig>();
+    (exporterWsConfigs || []).forEach((row) => {
+      if (!row?.local_id) return;
+      byLocal.set(String(row.local_id), row);
+    });
+
+    const storeRows = [...(availableStores || [])]
+      .sort((a, b) => String(a?.nombre || '').localeCompare(String(b?.nombre || '')))
+      .map((store) => {
+        const localId = String(store?.id || '');
+        return { localId, store, config: byLocal.get(localId) || null };
+      });
+
+    const knownIds = new Set(storeRows.map((row) => row.localId));
+    const orphanRows = (exporterWsConfigs || [])
+      .filter((row) => row?.local_id && !knownIds.has(String(row.local_id)))
+      .map((row) => ({
+        localId: String(row.local_id),
+        store: null,
+        config: row,
+      }));
+
+    return [...storeRows, ...orphanRows];
+  }, [availableStores, exporterWsConfigs]);
+
+  const saveExporterWebserviceConfig = async () => {
+    if (!currentMall?.id) {
+      alert('Debe seleccionar un mall antes de configurar webservice ERP.');
+      return;
+    }
+    if (!authToken) {
+      alert('No hay sesión activa para guardar la configuración webservice ERP.');
+      return;
+    }
+    if (!selectedExporterLocalId) {
+      alert('Seleccione un local para configurar el webservice ERP.');
+      return;
+    }
+    const selectedStore = (availableStores || []).find((store) => String(store?.id) === String(selectedExporterLocalId));
+    const selectedStoreMallId = String(selectedStore?.mall_id || '');
+    if (selectedStoreMallId && selectedStoreMallId !== String(currentMall.id)) {
+      setExporterWsError('El local seleccionado no pertenece al mall activo. Recargue la lista e intente nuevamente.');
+      alert('El local seleccionado no pertenece al mall activo. Recargue la lista e intente nuevamente.');
+      return;
+    }
+    const targetMallId = selectedStoreMallId || String(currentMall.id || '');
+    if (!targetMallId) {
+      alert('No se pudo determinar el mall del local seleccionado.');
+      return;
+    }
+    setExporterWsSaving(true);
+    try {
+      const saved = await ApiService.upsertSecurityExporterWebserviceConfig(
+        selectedExporterLocalId,
+        {
+          mall_id: targetMallId,
+          enabled: exporterWsDraft.enabled,
+          contract_type: 'msmall_sales_v1',
+          default_granularity: exporterWsDraft.default_granularity,
+          allow_transaction: exporterWsDraft.allow_transaction,
+          allow_daily: exporterWsDraft.allow_daily,
+          strict_validation: exporterWsDraft.strict_validation,
+          notes: (exporterWsDraft.notes || '').trim() || null
+        },
+        authToken
+      );
+      setExporterWsConfigs((prev) => {
+        const next = prev.filter((row) => String(row.local_id) !== String(saved.local_id));
+        return [saved, ...next];
+      });
+      setExporterWsError(null);
+      alert(`Configuración webservice ERP guardada para ${getStoreLabel(saved.local_id)}.`);
+    } catch (error: any) {
+      console.error("Error saving exporter webservice config:", error);
+      setExporterWsError(error?.message || 'No se pudo guardar la configuración webservice ERP.');
+      alert(error?.message || 'No se pudo guardar la configuración webservice ERP.');
+    } finally {
+      setExporterWsSaving(false);
+    }
+  };
+
+  const renderExporterWebservicePanel = () => (
+    <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-4">
+      <div className="bg-white border border-emerald-100 rounded-2xl shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-emerald-50 bg-gradient-to-r from-emerald-50 to-white">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <ArrowRightLeft size={16} className="text-emerald-600" />
+                ERP Webservice (MsExportador)
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Configura por local la recepción de ventas vía webservice. Este canal es independiente de FTP/SFTP.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadExporterWebserviceConfigs}
+              disabled={exporterWsLoading || !currentMall?.id || !authToken}
+              className="px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50 flex items-center gap-2"
+            >
+              <RefreshCw size={13} className={exporterWsLoading ? 'animate-spin' : ''} />
+              Recargar
+            </button>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {exporterWsError && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span>{exporterWsError}</span>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+              Local
+            </label>
+            <select
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-emerald-500"
+              value={selectedExporterLocalId}
+              onChange={(e) => setSelectedExporterLocalId(e.target.value)}
+            >
+              <option value="">-- Seleccionar local --</option>
+              {(availableStores || []).map((store) => (
+                <option key={store.id} value={store.id}>
+                  {store.nombre} ({store.codigo_interno || 'sin código'})
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-slate-500 mt-2">
+              Se guarda por local. Selecciona un local, guarda y luego cambia al siguiente para configurarlo.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.enabled}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, enabled: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <span className="text-sm font-medium text-slate-700">Canal habilitado</span>
+            </label>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                Granularidad por defecto
+              </label>
+              <select
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-emerald-500"
+                value={exporterWsDraft.default_granularity}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, default_granularity: e.target.value as 'transaction' | 'daily' }))}
+              >
+                <option value="transaction">Transacción</option>
+                <option value="daily">Resumen diario</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.allow_transaction}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, allow_transaction: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Permitir transacción
+            </label>
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.allow_daily}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, allow_daily: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Permitir resumen diario
+            </label>
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.strict_validation}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, strict_validation: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Validación estricta
+            </label>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+              Notas
+            </label>
+            <textarea
+              rows={3}
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white text-sm focus:ring-2 focus:ring-emerald-500"
+              placeholder="Ej: ERP activo desde marzo, envío por transacción."
+              value={exporterWsDraft.notes}
+              onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, notes: e.target.value }))}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-2">
+            <div className="text-xs text-slate-500">
+              Contrato fijo: <span className="font-semibold text-slate-700">msmall_sales_v1</span>
+            </div>
+            <button
+              type="button"
+              onClick={saveExporterWebserviceConfig}
+              disabled={exporterWsSaving || !selectedExporterLocalId || !currentMall?.id || !authToken}
+              className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2"
+              title={selectedExporterLocalId ? `Guardar para ${getStoreLabel(selectedExporterLocalId)}` : 'Seleccione un local'}
+            >
+              {exporterWsSaving ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+              {exporterWsSaving ? 'Guardando...' : 'Guardar Configuración'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/80">
+          <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+            <Database size={15} className="text-slate-500" />
+            Estado Webservice por Local
+          </h3>
+          <p className="text-xs text-slate-500 mt-1">
+            Se configura un local a la vez. Haz click en cualquier local para cargar su configuración en el formulario.
+          </p>
+        </div>
+
+        <div className="p-4">
+          {exporterWsLoading ? (
+            <div className="text-sm text-slate-500 flex items-center gap-2">
+              <RefreshCw size={14} className="animate-spin" />
+              Cargando configuración webservice...
+            </div>
+          ) : exporterWsRowsByLocal.length === 0 ? (
+            <div className="text-sm text-slate-500 border border-dashed border-slate-200 rounded-xl p-4">
+              No hay locales disponibles para configurar en este mall.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+              {exporterWsRowsByLocal.map((row) => {
+                const { localId, store, config } = row;
+                const isSelected = String(localId) === String(selectedExporterLocalId);
+                const storeLabel = store
+                  ? `${store.nombre} (${store.codigo_interno || 'sin código'})`
+                  : `${localId} (local no encontrado)`;
+                return (
+                  <button
+                    key={`erpws-${localId}`}
+                    type="button"
+                    onClick={() => setSelectedExporterLocalId(String(localId))}
+                    className={`w-full text-left rounded-xl border px-3 py-3 transition-all ${
+                      isSelected ? 'border-emerald-300 bg-emerald-50/70' : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-800">{storeLabel}</div>
+                        <div className="text-[11px] text-slate-500 mt-1">
+                          {config
+                            ? `${config.allow_transaction ? 'Transacción' : 'Sin transacción'} · ${config.allow_daily ? 'Daily' : 'Sin daily'} · Default ${config.default_granularity}`
+                            : 'Sin configuración webservice guardada'}
+                        </div>
+                      </div>
+                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-[10px] font-bold ${
+                        !config
+                          ? 'bg-slate-100 text-slate-600'
+                          : config.enabled
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : 'bg-amber-100 text-amber-700'
+                      }`}>
+                        {!config ? 'SIN CONFIG' : config.enabled ? 'HABILITADO' : 'DESHABILITADO'}
+                      </span>
+                    </div>
+                    {config?.notes && (
+                      <div className="mt-2 text-xs text-slate-600 line-clamp-2">
+                        {config.notes}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 
   const closeFormDrawer = () => {
     setShowForm(false);
@@ -173,6 +592,7 @@ export const ImportManager: React.FC = () => {
     setTempPassword('');
     setSelectedConnectionId('');
     setShowExplorer(false);
+    setBrowserFilesSelection(null);
     setSelectedFilePreview(null);
     setEditingConfig(createDefaultImportConfig());
   };
@@ -181,6 +601,7 @@ export const ImportManager: React.FC = () => {
     setEditingConfig(createDefaultImportConfig());
     setTempPassword('');
     setSelectedConnectionId('');
+    setBrowserFilesSelection(null);
     setActiveStep(1);
     setShowForm(true);
   };
@@ -188,6 +609,7 @@ export const ImportManager: React.FC = () => {
   const openEditConnectionDrawer = (config: ImportConfig) => {
     setEditingConfig(config);
     setTempPassword(config.password || '');
+    setBrowserFilesSelection(null);
     setActiveStep(1);
     setSelectedConnectionId('');
     setShowForm(true);
@@ -785,9 +1207,15 @@ export const ImportManager: React.FC = () => {
     setExplorerLoading(true);
 
     try {
+      const localInitialPath =
+        editingConfig.protocolo === 'LOCAL' &&
+        (!initialPath || initialPath === '.' || initialPath === './' || initialPath === '/app')
+          ? ''
+          : initialPath;
+
       console.log("Calling ApiService.exploreDirectory...");
       const data = await ApiService.exploreDirectory(
-        initialPath || '.',
+        localInitialPath,
         editingConfig.protocolo,
         editingConfig.host,
         editingConfig.puerto,
@@ -804,6 +1232,66 @@ export const ImportManager: React.FC = () => {
       setExplorerItems([]);
     }
     setExplorerLoading(false);
+  };
+
+  const handlePickBrowserFiles = () => {
+    try {
+      const openFilePicker = (window as any).showOpenFilePicker as undefined | ((opts?: any) => Promise<any[]>);
+      if (typeof openFilePicker === 'function') {
+        openFilePicker({
+          multiple: true,
+          types: [
+            {
+              description: 'Archivos de importación',
+              accept: {
+                'text/csv': ['.csv'],
+                'text/plain': ['.txt'],
+                'application/json': ['.json'],
+                'application/xml': ['.xml'],
+                'text/xml': ['.xml']
+              }
+            }
+          ]
+        }).then((handles) => {
+          if (!handles || handles.length === 0) return;
+          const names = handles.map((h: any) => String(h?.name || 'archivo'));
+          setBrowserFilesSelection({
+            count: handles.length,
+            names: names.slice(0, 5)
+          });
+          if (handles.length === 1) {
+            setEditingConfig(prev => ({ ...prev, tipo_archivo: detectFileType(names[0]) }));
+          }
+        }).catch((err: any) => {
+          const msg = String(err?.message || err || '').toLowerCase();
+          if (msg.includes('abort') || msg.includes('cancel')) return;
+          browserFilesInputRef.current?.click();
+        });
+        return;
+      }
+
+      browserFilesInputRef.current?.click();
+    } catch (error: any) {
+      console.error(error);
+      alert('No se pudo abrir el selector de archivos del navegador.');
+    }
+  };
+
+  const handleBrowserFilesInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const names = files.map((f) => f.name);
+    setBrowserFilesSelection({
+      count: files.length,
+      names: names.slice(0, 5)
+    });
+    if (files.length === 1) {
+      setEditingConfig(prev => ({ ...prev, tipo_archivo: detectFileType(files[0].name) }));
+    }
+
+    // Allow re-selecting the same file(s).
+    e.target.value = '';
   };
 
   const handleNavigateExplorer = async (path: string) => {
@@ -888,7 +1376,14 @@ export const ImportManager: React.FC = () => {
       <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
         <div className="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-300 flex flex-col max-h-[80vh]">
           <div className="bg-slate-50 p-3 border-b border-slate-100 flex justify-between items-center">
-            <span className="text-[10px] font-bold text-slate-500 truncate max-w-[80%]">{explorerPath}</span>
+            <div className="min-w-0 max-w-[85%]">
+              <span className="text-[10px] font-bold text-slate-500 truncate block">{explorerPath}</span>
+              {editingConfig.protocolo === 'LOCAL' && (
+                <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 inline-block mt-1">
+                  Directorio local (servidor): muestra carpetas del servidor donde corre MsMall
+                </span>
+              )}
+            </div>
             <button onClick={() => setShowExplorer(false)} className="text-slate-400 hover:text-slate-600"><XCircle size={14} /></button>
           </div>
           <div className="max-h-60 overflow-y-auto p-2 space-y-1">
@@ -956,6 +1451,36 @@ export const ImportManager: React.FC = () => {
     return (
       <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm font-medium">
         Solo usuarios con rol IT o ADMIN pueden gestionar conexiones e importaciones remotas.
+      </div>
+    );
+  }
+
+  if (isWebserviceModalMode) {
+    return (
+      <div className="fixed inset-0 z-[120] bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+        <div
+          className="absolute inset-0"
+          onClick={() => {
+            if (onCloseWebserviceModal) onCloseWebserviceModal();
+          }}
+        />
+        <div className="relative h-full w-full p-4 md:p-6 lg:p-8 flex items-center justify-center">
+          <div className="relative w-full max-w-7xl max-h-[92vh] overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => {
+                if (onCloseWebserviceModal) onCloseWebserviceModal();
+              }}
+              className="absolute right-3 top-3 z-10 rounded-full bg-white/95 border border-slate-200 text-slate-500 hover:text-slate-700 hover:bg-white p-2 shadow-sm"
+              title="Cerrar ERP Webservice"
+            >
+              <XCircle size={20} />
+            </button>
+            <div ref={exporterWebservicePanelRef}>
+              {renderExporterWebservicePanel()}
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -1133,12 +1658,13 @@ export const ImportManager: React.FC = () => {
                         onChange={e => {
                           const nextProtocol = e.target.value as ImportProtocol;
                           if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
+                          if (nextProtocol !== 'LOCAL') setBrowserFilesSelection(null);
                           setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : 21 });
                         }}
                       >
                         <option value="SFTP">SFTP (SSH File Transfer)</option>
                         <option value="FTP">FTP (Estándar)</option>
-                        <option value="LOCAL">Directorio Local (Windows/Linux)</option>
+                        <option value="LOCAL">Directorio local (servidor)</option>
                       </select>
                     </div>
                     {editingConfig.protocolo !== 'LOCAL' && (
@@ -1258,7 +1784,7 @@ export const ImportManager: React.FC = () => {
                   )}
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                      {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio' : 'Ruta Remota de Archivos'}
+                      {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio (Servidor)' : 'Ruta Remota de Archivos'}
                     </label>
                     <div className="relative">
                       <button
@@ -1276,6 +1802,36 @@ export const ImportManager: React.FC = () => {
                         onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
                       />
                     </div>
+                    {editingConfig.protocolo === 'LOCAL' && (
+                      <div className="mt-2 space-y-2">
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenExplorer(editingConfig.ruta_remota)}
+                            className="px-3 py-2 rounded-lg border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 text-xs font-bold"
+                          >
+                            Explorar directorio local (servidor)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handlePickBrowserFiles}
+                            className="px-3 py-2 rounded-lg border border-cyan-200 text-cyan-700 bg-cyan-50 hover:bg-cyan-100 text-xs font-bold"
+                          >
+                            Seleccionar archivos de mi equipo
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                          <code>Directorio local (servidor)</code> navega carpetas del servidor donde corre MsMall (ej. Railway/Linux). Tu PC no es accesible desde el backend.
+                        </p>
+                        {browserFilesSelection && (
+                          <p className="text-[11px] text-cyan-700 bg-cyan-50 border border-cyan-200 rounded-lg px-3 py-2">
+                            Archivos seleccionados de tu equipo: <strong>{browserFilesSelection.count}</strong>
+                            {browserFilesSelection.names.length > 0 ? ` · ${browserFilesSelection.names.join(', ')}` : ''}
+                            {browserFilesSelection.count > browserFilesSelection.names.length ? ' ...' : ''}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -1616,6 +2172,14 @@ export const ImportManager: React.FC = () => {
             )}
 
             {renderExplorerModal()}
+            <input
+              ref={browserFilesInputRef}
+              type="file"
+              multiple
+              accept=".csv,.txt,.json,.xml,text/csv,text/plain,application/json,text/xml,application/xml"
+              onChange={handleBrowserFilesInputChange}
+              className="hidden"
+            />
                 </div>
               </div>
 
@@ -1667,7 +2231,7 @@ export const ImportManager: React.FC = () => {
           {(configs || []).map(config => (
             <div key={config.id} className="bg-white rounded-3xl border border-slate-200 p-6 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
               <div className={`absolute top-0 right-0 px-6 py-2 rounded-bl-3xl text-[10px] font-bold uppercase tracking-widest ${config.protocolo === 'SFTP' ? 'bg-indigo-600 text-white' : config.protocolo === 'LOCAL' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}`}>
-                {config.protocolo === 'LOCAL' ? 'Directorio' : config.protocolo}
+                {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
               </div>
 
               <div className="flex items-start gap-4 mb-6">
@@ -1793,7 +2357,7 @@ export const ImportManager: React.FC = () => {
                       </td>
                       <td className="px-5 py-4">
                         <span className={`inline-flex px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide ${config.protocolo === 'SFTP' ? 'bg-indigo-100 text-indigo-700' : config.protocolo === 'LOCAL' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                          {config.protocolo === 'LOCAL' ? 'Directorio' : config.protocolo}
+                          {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
                         </span>
                       </td>
                       <td className="px-5 py-4 text-xs text-slate-600 font-medium">
@@ -1996,8 +2560,9 @@ export const ImportManager: React.FC = () => {
                     <tbody className="divide-y divide-slate-50">
                       {(manualFiles || []).map((file) => {
                         const isServerMarkedProcessed = file.nombre.startsWith('PR_');
+                        const isServerMarkedErrored = file.nombre.startsWith('ERR_');
                         const isProcessed = isServerMarkedProcessed || fileStatuses[file.nombre] === 'success';
-                        const isErrored = !isProcessed && fileStatuses[file.nombre] === 'error';
+                        const isErrored = isServerMarkedErrored || (!isProcessed && fileStatuses[file.nombre] === 'error');
 
                         return (
                         <tr key={file.nombre} className="hover:bg-indigo-50/30 transition-colors group">

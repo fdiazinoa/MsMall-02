@@ -2,6 +2,7 @@ import React, { useState, Suspense } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
+import { AppTab } from './components/appTabs';
 import { useAuth } from './context/AuthProvider';
 import { supabase } from './api';
 
@@ -15,7 +16,7 @@ console.error = (...args: any[]) => {
 };
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons'>('analytics');
+  const [activeTab, setActiveTab] = useState<AppTab>('analytics');
   const { session, loading } = useAuth();
 
   // Estados para el login
@@ -136,13 +137,13 @@ const App: React.FC = () => {
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
               </div>
             }>
-              <Dashboard activeTab={activeTab} />
+          <Dashboard activeTab={activeTab} setActiveTab={setActiveTab} />
             </Suspense>
           </div>
         </main>
 
         <footer className="border-t border-slate-200 py-4 px-6 text-center text-sm text-slate-500">
-          &copy; {new Date().getFullYear()} MSMALL Audit Systems - Prototipo MVP
+          &copy; MercaSend, SRL. MsMall v.20
         </footer>
       </div>
     </div>

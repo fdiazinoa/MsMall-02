@@ -1,5 +1,6 @@
 
 # Backend: FastAPI API para MSMALL Audit
+import asyncio
 import csv
 import io
 import logging
@@ -23,6 +24,7 @@ import xmltodict
 from ftplib import FTP
 import stat
 from worker_importacion import WORKER_POLL_SECONDS, run_worker_async
+from analytics_service import AnalyticsService
 from analytics import generate_sales_cube
 from routers import recipes, comparisons, admin_tools
 from routers.token_auth import (
@@ -102,6 +104,22 @@ def _sensitive_ops_service() -> SensitiveOpsService:
 
 def _connection_monitor_service() -> ConnectionMonitorService:
     return ConnectionMonitorService(supabase, logger)
+
+
+def _analytics_service() -> AnalyticsService:
+    return AnalyticsService(supabase_client=supabase, logger=logger)
+
+
+async def _run_local_risk_analysis_async(local_id: Optional[str], trigger: str) -> Optional[Dict[str, Any]]:
+    if not supabase or not local_id:
+        return None
+    try:
+        return await asyncio.to_thread(
+            lambda: _analytics_service().run_and_persist_local_analysis(local_id, trigger=trigger)
+        )
+    except Exception as exc:
+        logger.error("Error ejecutando analisis IA para local %s: %s", local_id, exc)
+        return None
 
 
 # --- LIGHTWEIGHT IN-MEMORY CACHE (TTL) ---
@@ -1932,7 +1950,6 @@ async def explorar_directorio(
         raise HTTPException(status_code=500, detail=f"Error remoto: {str(e)}")
 
 # --- UTILIDADES DE CONEXIÓN REMOTA ---
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 executor = ThreadPoolExecutor(max_workers=20) # Aumentado de 5 a 20 para evitar agotamiento
@@ -2483,17 +2500,44 @@ async def get_stores():
 # --- AI & INSIGHTS ENDPOINTS ---
 @app.get("/api/v1/insights/alerts")
 async def get_intelligent_alerts(local_id: Optional[str] = None):
-    """Fetch recent intelligent alerts (real check)."""
-    if not supabase: return []
+    """Fetch a real antifraud snapshot for a store."""
+    if not supabase or not local_id:
+        return {
+            "status": "no_data",
+            "source": "none",
+            "alerts": [],
+            "summary": {
+                "risk_state": "NO_DATA",
+                "risk_label": "Sin Datos",
+                "description": "Selecciona un local con ventas para evaluar el semaforo.",
+                "last_evaluated_at": None,
+                "has_recent_run": False,
+                "risk_score": 0,
+                "alerts_count": 0,
+                "analysis_window_days": 30,
+            },
+        }
     try:
-        # Search in 'alertas_inteligentes' table if exists
-        query = supabase.table("alertas_inteligentes").select("*").order("created_at", desc=True)
-        if local_id:
-            query = query.eq("local_id", local_id)
-        res = query.limit(5).execute()
-        return res.data if res.data else []
-    except:
-        return []
+        return await asyncio.to_thread(
+            lambda: _analytics_service().get_alert_snapshot(local_id, allow_live_refresh=True)
+        )
+    except Exception as exc:
+        logger.error("Error obteniendo snapshot IA para local %s: %s", local_id, exc)
+        return {
+            "status": "error",
+            "source": "none",
+            "alerts": [],
+            "summary": {
+                "risk_state": "NO_DATA",
+                "risk_label": "Sin Datos",
+                "description": "No se pudo evaluar el semaforo en este momento.",
+                "last_evaluated_at": None,
+                "has_recent_run": False,
+                "risk_score": 0,
+                "alerts_count": 0,
+                "analysis_window_days": 30,
+            },
+        }
 
 @app.get("/api/v1/insights/benchmarking/{local_id}")
 async def get_benchmarking(local_id: str):
@@ -3620,7 +3664,12 @@ async def _execute_manual_endpoint_impl(
             local_id=config_data.get("id")
         )
 
-
+        risk_snapshot = None
+        if registros_exito > 0:
+            risk_snapshot = await _run_local_risk_analysis_async(
+                config_data.get("id"),
+                trigger="manual_remote_import",
+            )
 
         # 5. Renombrar resultado: PR_ (éxito con registros) o ERR_ (fallo/no-data)
         logger.info(f"Evaluando renombrado: registros_exito={registros_exito} (Tipo: {type(registros_exito)})")
@@ -3640,7 +3689,8 @@ async def _execute_manual_endpoint_impl(
             "records_processed": registros_exito,
             "batch_id": batch_id,
             "errors": detalles_errores,
-            "renaming_error": renaming_error
+            "renaming_error": renaming_error,
+            "risk_summary": (risk_snapshot or {}).get("summary"),
         })
     except Exception as e:
         if isinstance(e, HTTPException):

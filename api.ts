@@ -1933,16 +1933,21 @@ export const ApiService = {
   },
 
   // --- MÉTODOS DE INTELIGENCIA ARTIFICIAL ---
-  async getAIAlerts(localId?: string): Promise<{ alerts: any[], status: 'ok' | 'error' }> {
+  async getAIAlerts(localId?: string): Promise<{ alerts: any[], status: 'ok' | 'no_data' | 'error', summary?: any, source?: string }> {
     const url = localId ? `${BASE_URL}/insights/alerts?local_id=${localId}` : `${BASE_URL}/insights/alerts`;
     try {
       const response = await fetch(url);
       if (!response.ok) throw new Error("Error al obtener alertas");
       const data = await response.json();
-      return { alerts: Array.isArray(data) ? data : [], status: 'ok' };
+      return {
+        alerts: Array.isArray(data?.alerts) ? data.alerts : [],
+        status: data?.status || 'error',
+        summary: data?.summary || null,
+        source: data?.source || null,
+      };
     } catch (error) {
       console.error(error);
-      return { alerts: [], status: 'error' };
+      return { alerts: [], status: 'error', summary: null, source: null };
     }
   },
 

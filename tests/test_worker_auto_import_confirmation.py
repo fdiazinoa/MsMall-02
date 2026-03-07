@@ -70,11 +70,13 @@ class _FakeSSH:
 def test_worker_marks_error_when_no_insert_is_confirmed(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_sftp = _FakeSFTP({"ventas_20260301.json": b'{"rows":[]}'})
+    triggered = []
 
     monkeypatch.setattr(worker, "connect_with_retries", lambda connector, attempts=3, base_delay=2: connector())
     monkeypatch.setattr(worker, "get_sftp_client", lambda *args, **kwargs: (_FakeSSH(), fake_sftp))
     monkeypatch.setattr(worker, "process_file_logic", lambda config, filename, content: (0, []))
     monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker, "run_local_risk_analysis_if_possible", lambda *args, **kwargs: triggered.append(True))
 
     worker.process_local_files({
         "nombre": "Cafe Santo Domingo",
@@ -92,16 +94,19 @@ def test_worker_marks_error_when_no_insert_is_confirmed(monkeypatch):
     })
 
     assert fake_sftp.renames == [("ventas_20260301.json", "ERR_ventas_20260301.json")]
+    assert triggered == []
 
 
 def test_worker_marks_success_with_pr_prefix_after_confirmed_insert(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_sftp = _FakeSFTP({"ventas_20260301.json": b'{"rows":[{"ok":true}]}'})
+    triggered = []
 
     monkeypatch.setattr(worker, "connect_with_retries", lambda connector, attempts=3, base_delay=2: connector())
     monkeypatch.setattr(worker, "get_sftp_client", lambda *args, **kwargs: (_FakeSSH(), fake_sftp))
     monkeypatch.setattr(worker, "process_file_logic", lambda config, filename, content: (12, []))
     monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker, "run_local_risk_analysis_if_possible", lambda *args, **kwargs: triggered.append(kwargs.get("trigger")))
 
     worker.process_local_files({
         "nombre": "Cafe Santo Domingo",
@@ -119,6 +124,7 @@ def test_worker_marks_success_with_pr_prefix_after_confirmed_insert(monkeypatch)
     })
 
     assert fake_sftp.renames == [("ventas_20260301.json", "PR_ventas_20260301.json")]
+    assert triggered == ["worker_auto_import"]
 
 
 def test_worker_strips_legacy_custom_prefix_when_building_standard_marker(monkeypatch):

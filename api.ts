@@ -405,8 +405,8 @@ export interface Store {
   upsert_activo?: boolean;
   mall_nombre?: string;
   renta_fija?: number;
-  breakpoint_venta?: number;
-  porcentaje_variable?: number;
+  breakpoint_venta?: string | number;
+  porcentaje_variable?: string | number;
   processing_status?: 'IDLE' | 'BUSY' | 'SUSPENDED_AUTH_ERROR';
   consecutive_failures?: number;
 }

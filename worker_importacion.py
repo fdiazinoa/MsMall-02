@@ -14,7 +14,18 @@ import io
 import csv
 import json
 import posixpath
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence, Tuple
+
+try:
+    from services.connection_monitor_service import ConnectionMonitorService
+except Exception:
+    ConnectionMonitorService = None  # type: ignore[assignment]
+
+try:
+    from services.sensitive_ops_service import sanitize_error_text
+except Exception:
+    def sanitize_error_text(value: object) -> str:
+        return str(value or "").strip()
 
 # Setup Logging
 logging.basicConfig(
@@ -146,6 +157,14 @@ def _schedule_due_at(local: Dict[str, Any], now: datetime) -> Optional[datetime]
         return None
     return due_at
 
+AUTO_SUCCESS_PREFIX = "PR_"
+AUTO_ERROR_PREFIX = "ERR_"
+
+def _connection_monitor_service() -> ConnectionMonitorService:
+    if ConnectionMonitorService is None:
+        raise RuntimeError("ConnectionMonitorService not available")
+    return ConnectionMonitorService(supabase, logger)
+
 def insert_load_log(
     local_nombre: str,
     archivo: str,
@@ -274,6 +293,57 @@ def connect_with_retries(connector, attempts=3, base_delay=2):
             logger.warning(f"Conexión fallida (intento {attempt}/{attempts}): {e}. Reintentando en {delay}s...")
             time.sleep(delay)
     raise last_error
+
+def _normalize_prefix_value(prefix: Optional[str]) -> str:
+    value = str(prefix or "").strip()
+    return value if value else ""
+
+def _build_marked_filename(filename: str, prefix: str, extra_prefixes: Sequence[str] = ()) -> str:
+    base_name = posixpath.basename(str(filename or "").strip())
+    if not base_name:
+        return base_name
+
+    candidates = [
+        AUTO_SUCCESS_PREFIX,
+        AUTO_ERROR_PREFIX,
+        "PW_",
+        *[_normalize_prefix_value(item) for item in extra_prefixes],
+    ]
+    normalized_candidates = []
+    for candidate in candidates:
+        if candidate and candidate not in normalized_candidates:
+            normalized_candidates.append(candidate)
+
+    upper_name = base_name.upper()
+    changed = True
+    while changed:
+        changed = False
+        for candidate in normalized_candidates:
+            if not candidate:
+                continue
+            candidate_upper = candidate.upper()
+            if upper_name.startswith(candidate_upper):
+                base_name = base_name[len(candidate):]
+                upper_name = base_name.upper()
+                changed = True
+                break
+
+    return f"{prefix}{base_name}"
+
+def _resolve_worker_processing_outcome(count: int, errors: list) -> Tuple[str, str, bool]:
+    if isinstance(count, int) and count > 0:
+        estado = "parcial" if errors else "exito"
+        mensaje = f"Worker: Inserción confirmada de {count} registros."
+        if errors:
+            mensaje += f" Se encontraron {len(errors)} errores parciales."
+        return estado, mensaje, True
+
+    mensaje = "Worker: No se confirmó inserción en BD."
+    if errors:
+        mensaje += f" Se encontraron {len(errors)} errores."
+    else:
+        mensaje += " El archivo se marcará con error para revisión."
+    return "error", mensaje, False
 
 def process_file_logic(config, filename, content):
     """
@@ -425,6 +495,7 @@ def process_local_files(config):
     file_type = config.get("file_type", "CSV")
     post_action = config.get("accion_post_procesado", "NINGUNA")
     backup_prefix = config.get("prefijo_backup", "PR_")
+    custom_backup_prefix = _normalize_prefix_value(backup_prefix)
 
     ext = f".{file_type.lower()}"
     processed_suffix = ".procesado"
@@ -474,7 +545,12 @@ def process_local_files(config):
 
                 filename = item.filename
                 is_processed = processed_suffix in filename
-                is_backup = filename.startswith(backup_prefix) or filename.startswith("PR_") or filename.startswith("PW_")
+                is_backup = (
+                    (custom_backup_prefix and filename.startswith(custom_backup_prefix))
+                    or filename.startswith(AUTO_SUCCESS_PREFIX)
+                    or filename.startswith(AUTO_ERROR_PREFIX)
+                    or filename.startswith("PW_")
+                )
                 is_match = filename.lower().endswith(ext)
                 is_error = ".error" in filename
 
@@ -507,21 +583,37 @@ def process_local_files(config):
                         content = f.read().decode('utf-8-sig', errors='replace')
 
                     count, errors = process_file_logic(config, filename, content)
+                    estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors)
 
-                    if count > 0 or (count == 0 and not errors):
-                        estado = "exito"
-                        mensaje = f"Worker: Procesado {count} registros."
-                        if errors:
-                            mensaje += f" {len(errors)} errores parciales."
-
+                    if insert_confirmed:
                         insert_load_log(
                             config['nombre'], filename, estado, mensaje, batch_id, errors,
                             mall_id=config.get("mall_id"), local_id=config.get("id")
                         )
-                        handle_post_process_sftp(sftp, remote_path, filename, post_action, processed_suffix, backup_prefix)
-                        processed_count += 1
+                        if post_action == "RENOMBRAR_BACKUP":
+                            handle_post_process_sftp(
+                                sftp,
+                                remote_path,
+                                filename,
+                                post_action,
+                                processed_suffix,
+                                AUTO_SUCCESS_PREFIX,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
+                        else:
+                            handle_post_process_sftp(
+                                sftp,
+                                remote_path,
+                                filename,
+                                post_action,
+                                processed_suffix,
+                                custom_backup_prefix,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
                     else:
-                        raise Exception(f"Fallo lógico: {errors[0]['error'] if errors else 'Desconocido'}")
+                        raise Exception(mensaje)
+
+                    processed_count += 1
 
                 except Exception as fe:
                     file_errors += 1
@@ -531,10 +623,16 @@ def process_local_files(config):
                         mall_id=config.get("mall_id"), local_id=config.get("id")
                     )
                     try:
-                        error_name = f"{remote_path}/{filename}.error"
-                        sftp.rename(f"{remote_path}/{filename}", error_name)
-                    except Exception:
-                        pass
+                        handle_post_process_sftp(
+                            sftp,
+                            remote_path,
+                            filename,
+                            "RENOMBRAR_BACKUP",
+                            processed_suffix,
+                            AUTO_ERROR_PREFIX,
+                            strip_prefixes=(custom_backup_prefix,)
+                        )
+                    except: pass
 
             logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{batch_size} archivos procesados exitosamente.")
 
@@ -568,7 +666,12 @@ def process_local_files(config):
             pending_files = []
             for filename in ftp.nlst():
                 is_processed = processed_suffix in filename
-                is_backup = filename.startswith(backup_prefix) or filename.startswith("PR_") or filename.startswith("PW_")
+                is_backup = (
+                    (custom_backup_prefix and filename.startswith(custom_backup_prefix))
+                    or filename.startswith(AUTO_SUCCESS_PREFIX)
+                    or filename.startswith(AUTO_ERROR_PREFIX)
+                    or filename.startswith("PW_")
+                )
                 is_match = filename.lower().endswith(ext)
                 is_error = ".error" in filename
 
@@ -602,20 +705,35 @@ def process_local_files(config):
                     content = bio.read().decode('utf-8-sig', errors='replace')
 
                     count, errors = process_file_logic(config, filename, content)
+                    estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors)
 
-                    if count > 0 or (count == 0 and not errors):
-                        mensaje = f"Worker: Procesado {count} registros."
-                        if errors:
-                            mensaje += f" {len(errors)} errores parciales."
-
+                    if insert_confirmed:
                         insert_load_log(
-                            config['nombre'], filename, "exito", mensaje, batch_id, errors,
+                            config['nombre'], filename, estado, mensaje, batch_id, errors,
                             mall_id=config.get("mall_id"), local_id=config.get("id")
                         )
-                        handle_post_process_ftp(ftp, filename, post_action, processed_suffix, backup_prefix)
-                        processed_count += 1
+                        if post_action == "RENOMBRAR_BACKUP":
+                            handle_post_process_ftp(
+                                ftp,
+                                filename,
+                                post_action,
+                                processed_suffix,
+                                AUTO_SUCCESS_PREFIX,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
+                        else:
+                            handle_post_process_ftp(
+                                ftp,
+                                filename,
+                                post_action,
+                                processed_suffix,
+                                custom_backup_prefix,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
                     else:
-                        raise Exception(f"Fallo lógico: {errors[0]['error'] if errors else 'Desconocido'}")
+                        raise Exception(mensaje)
+
+                    processed_count += 1
 
                 except Exception as fe:
                     file_errors += 1
@@ -625,9 +743,15 @@ def process_local_files(config):
                         mall_id=config.get("mall_id"), local_id=config.get("id")
                     )
                     try:
-                        ftp.rename(filename, f"{filename}.error")
-                    except Exception:
-                        pass
+                        handle_post_process_ftp(
+                            ftp,
+                            filename,
+                            "RENOMBRAR_BACKUP",
+                            processed_suffix,
+                            AUTO_ERROR_PREFIX,
+                            strip_prefixes=(custom_backup_prefix,)
+                        )
+                    except: pass
 
             logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{batch_size} archivos procesados exitosamente.")
 
@@ -648,7 +772,7 @@ def process_local_files(config):
     )
     return _result(ok, message)
 
-def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix=""):
+def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix="", strip_prefixes: Sequence[str] = ()):
     full_path = f"{path}/{filename}"
     if action == "ELIMINAR":
         logger.info(f"Eliminando archivo remoto: {filename}")
@@ -658,12 +782,12 @@ def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix=""):
         logger.info(f"Renombrando archivo remoto a: {new_name}")
         sftp.rename(full_path, new_name)
     elif action == "RENOMBRAR_BACKUP":
-        new_filename = f"{prefix}{filename}"
+        new_filename = _build_marked_filename(filename, prefix, strip_prefixes)
         new_full_path = f"{path}/{new_filename}"
         logger.info(f"Renombrando (Backup) archivo remoto a: {new_full_path}")
         sftp.rename(full_path, new_full_path)
 
-def handle_post_process_ftp(ftp, filename, action, suffix, prefix=""):
+def handle_post_process_ftp(ftp, filename, action, suffix, prefix="", strip_prefixes: Sequence[str] = ()):
     if action == "ELIMINAR":
         logger.info(f"Eliminando archivo remoto FTP: {filename}")
         ftp.delete(filename)
@@ -672,7 +796,7 @@ def handle_post_process_ftp(ftp, filename, action, suffix, prefix=""):
         logger.info(f"Renombrando archivo remoto FTP a: {new_name}")
         ftp.rename(filename, new_name)
     elif action == "RENOMBRAR_BACKUP":
-        new_name = f"{prefix}{filename}"
+        new_name = _build_marked_filename(filename, prefix, strip_prefixes)
         logger.info(f"Renombrando (Backup) archivo remoto FTP a: {new_name}")
         ftp.rename(filename, new_name)
 
@@ -739,6 +863,29 @@ async def clear_cron_error():
         await _upsert_system_health_value("CRON_LAST_ERROR", "")
     except Exception as e:
         logger.error(f"Error clearing CRON_LAST_ERROR: {e}")
+
+async def run_connection_monitor_nightly_if_due():
+    if not supabase:
+        return {"executed": False, "reason": "supabase_not_configured"}
+    if ConnectionMonitorService is None:
+        return {"executed": False, "reason": "service_unavailable"}
+    try:
+        result = await asyncio.to_thread(_connection_monitor_service().run_nightly_monitor_if_due)
+        if result.get("executed"):
+            summary = (result.get("summary") or {})
+            logger.info(
+                "🔎 Connection monitor nightly executed total=%s ok=%s fail=%s partial=%s",
+                summary.get("total", 0),
+                summary.get("ok", 0),
+                summary.get("fail", 0),
+                summary.get("partial", 0),
+            )
+        else:
+            logger.info("🔎 Connection monitor nightly skipped: %s", result.get("reason"))
+        return result
+    except Exception as e:
+        logger.error(f"Connection monitor nightly failed: {sanitize_error_text(e)}")
+        return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
 
 async def process_local_safe(local, semaphore, host_semaphore, due_at: Optional[datetime] = None):
     """
@@ -880,6 +1027,7 @@ async def run_worker_async():
 
         if not scheduled_locals:
             logger.info("😴 No active tasks for this scheduling window.")
+            await run_connection_monitor_nightly_if_due()
             await update_cron_success()
             await clear_cron_error()
             return
@@ -910,6 +1058,7 @@ async def run_worker_async():
         await asyncio.gather(*tasks)
 
         logger.info("🏁 Cycle finished.")
+        await run_connection_monitor_nightly_if_due()
         await update_cron_success()
         await clear_cron_error()
 

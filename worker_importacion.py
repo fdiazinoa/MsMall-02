@@ -14,6 +14,7 @@ import io
 import csv
 import json
 import posixpath
+import pandas as pd
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 try:
@@ -376,10 +377,22 @@ def _resolve_worker_processing_outcome(count: int, errors: list) -> Tuple[str, s
         mensaje += " El archivo se marcará con error para revisión."
     return "error", mensaje, False
 
+
+def _normalize_worker_import_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(config or {})
+    if not normalized.get("mapping_config"):
+        normalized["mapping_config"] = normalized.get("mapping") or {}
+    if not normalized.get("constants_config"):
+        normalized["constants_config"] = normalized.get("constants") or {}
+    if not normalized.get("file_type"):
+        normalized["file_type"] = normalized.get("tipo_archivo", "CSV")
+    return normalized
+
 def process_file_logic(config, filename, content):
     """
     Process file content (CSV or JSON) and insert to database.
     """
+    config = _normalize_worker_import_config(config)
     logger.info(f"Procesando contenido de {filename} para {config['nombre']}")
     detalles = []
     registros_exito = 0
@@ -402,6 +415,9 @@ def process_file_logic(config, filename, content):
                             break
                     if not raw_records:
                         raw_records = [data] # Single object
+                if raw_records:
+                    df = pd.json_normalize(raw_records)
+                    raw_records = df.where(pd.notnull(df), None).to_dict(orient='records')
             except Exception as e:
                 return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}]
         else:
@@ -423,6 +439,7 @@ def process_file_logic(config, filename, content):
             
         # Get mapping
         mapping = config.get('mapping_config') or {}
+        constants = config.get('constants_config') or {}
         
         valid_rows = []
         valid_line_numbers = []
@@ -432,7 +449,10 @@ def process_file_logic(config, filename, content):
                 normalized_row = _normalize_csv_row_keys(row)
                 lowered_row = {k.lower(): v for k, v in normalized_row.items()}
 
-                def pick_value(mapped_header, fallback_header=""):
+                def pick_value(sys_field, mapped_header, fallback_header=""):
+                    constant_value = _clean_cell_value(constants.get(sys_field))
+                    if constant_value not in (None, ""):
+                        return constant_value
                     key = _clean_csv_header_name(mapped_header)
                     if key and key in normalized_row:
                         return _clean_cell_value(normalized_row[key])
@@ -447,8 +467,8 @@ def process_file_logic(config, filename, content):
 
                 # Map fields using mapping_config
                 # mapping_config usually translates system_field -> file_header
-                fecha_venta_raw = pick_value(mapping.get('fecha_venta', 'fecha_venta'), 'fecha')
-                factura_no = pick_value(mapping.get('factura_numero', 'factura_numero'), 'factura_no')
+                fecha_venta_raw = pick_value('fecha_venta', mapping.get('fecha_venta', 'fecha_venta'), 'fecha')
+                factura_no = pick_value('factura_numero', mapping.get('factura_numero', 'factura_numero'), 'factura_no')
                 
                 # Check for direct key matches if mapping fails
                 fecha_venta = normalize_date(fecha_venta_raw)
@@ -465,9 +485,9 @@ def process_file_logic(config, filename, content):
                     except:
                         return 0.0
 
-                total_bruto = clean_float(pick_value(mapping.get('total_bruto', 'total_bruto')))
-                total_impuestos = clean_float(pick_value(mapping.get('total_impuestos', 'total_impuestos')))
-                total_neto = clean_float(pick_value(mapping.get('total_neto', 'total_neto')))
+                total_bruto = clean_float(pick_value('total_bruto', mapping.get('total_bruto', 'total_bruto')))
+                total_impuestos = clean_float(pick_value('total_impuestos', mapping.get('total_impuestos', 'total_impuestos')))
+                total_neto = clean_float(pick_value('total_neto', mapping.get('total_neto', 'total_neto')))
                 
                 if not fecha_venta or total_bruto == 0:
                     detalles.append({"linea": i, "error": "Datos incompletos (Fecha o Total Bruto faltante/cero)"})
@@ -535,6 +555,8 @@ def process_local_files(config):
     file_errors = 0
     total_pending = 0
     batch_size = 0
+    last_error_details = []
+    last_error_message = ""
 
     def _result(ok: bool, message: str) -> Dict[str, Any]:
         return {
@@ -544,6 +566,7 @@ def process_local_files(config):
             "failed_files": file_errors,
             "total_pending": total_pending,
             "batch_size": batch_size,
+            "details": last_error_details,
         }
 
     logger.info(f"Conectando a {config['nombre']} ({protocol}) en {host}...")
@@ -610,7 +633,7 @@ def process_local_files(config):
                 logger.info(f"🔄 [{processed_count + 1}/{batch_size}] Procesando SFTP: {filename}")
 
                 try:
-                    with sftp.open(f"{remote_path}/{filename}", 'r') as f:
+                    with sftp.open(f"{remote_path}/{filename}", 'rb') as f:
                         content = f.read().decode('utf-8-sig', errors='replace')
 
                     count, errors = process_file_logic(config, filename, content)
@@ -642,12 +665,34 @@ def process_local_files(config):
                                 strip_prefixes=(custom_backup_prefix,)
                             )
                     else:
-                        raise Exception(mensaje)
+                        file_errors += 1
+                        last_error_message = mensaje
+                        last_error_details = list(errors or [])
+                        logger.error(f"❌ Error validando archivo {filename}: {mensaje}")
+                        insert_load_log(
+                            config['nombre'], filename, "error", mensaje, batch_id, errors,
+                            mall_id=config.get("mall_id"), local_id=config.get("id")
+                        )
+                        try:
+                            handle_post_process_sftp(
+                                sftp,
+                                remote_path,
+                                filename,
+                                "RENOMBRAR_BACKUP",
+                                processed_suffix,
+                                AUTO_ERROR_PREFIX,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
+                        except Exception:
+                            pass
+                        continue
 
                     processed_count += 1
 
                 except Exception as fe:
                     file_errors += 1
+                    last_error_message = str(fe)
+                    last_error_details = []
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
                         config['nombre'], filename, "error", str(fe), batch_id,
@@ -763,12 +808,33 @@ def process_local_files(config):
                                 strip_prefixes=(custom_backup_prefix,)
                             )
                     else:
-                        raise Exception(mensaje)
+                        file_errors += 1
+                        last_error_message = mensaje
+                        last_error_details = list(errors or [])
+                        logger.error(f"❌ Error validando archivo {filename}: {mensaje}")
+                        insert_load_log(
+                            config['nombre'], filename, "error", mensaje, batch_id, errors,
+                            mall_id=config.get("mall_id"), local_id=config.get("id")
+                        )
+                        try:
+                            handle_post_process_ftp(
+                                ftp,
+                                filename,
+                                "RENOMBRAR_BACKUP",
+                                processed_suffix,
+                                AUTO_ERROR_PREFIX,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
+                        except Exception:
+                            pass
+                        continue
 
                     processed_count += 1
 
                 except Exception as fe:
                     file_errors += 1
+                    last_error_message = str(fe)
+                    last_error_details = []
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
                         config['nombre'], filename, "error", str(fe), batch_id,
@@ -802,6 +868,8 @@ def process_local_files(config):
         if batch_size
         else "Sin archivos para procesar."
     )
+    if not ok and last_error_message:
+        message = f"{message} {last_error_message}"
     return _result(ok, message)
 
 def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix="", strip_prefixes: Sequence[str] = ()):
@@ -963,6 +1031,7 @@ async def process_local_safe(local, semaphore, host_semaphore, due_at: Optional[
                     logger.error(f"❌ [Error] Processing {local_name}: {error_text}")
                     insert_load_log(
                         local_name, "SYSTEM", "error", f"Async processing failed: {error_text}",
+                        detalles=result.get("details"),
                         mall_id=local.get("mall_id"), local_id=local.get("id")
                     )
                     new_failures = consecutive_failures + 1

@@ -1,5 +1,7 @@
 import importlib
+import asyncio
 import io
+import json
 import stat as stat_module
 import sys
 from types import SimpleNamespace
@@ -65,6 +67,46 @@ class _FakeSFTP:
 class _FakeSSH:
     def close(self):
         return None
+
+
+class _FakeTable:
+    def __init__(self, inserted_rows):
+        self.inserted_rows = inserted_rows
+        self._payload = None
+
+    def insert(self, payload):
+        self._payload = payload
+        return self
+
+    def update(self, _payload):
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        if self._payload is not None:
+            if isinstance(self._payload, list):
+                self.inserted_rows.extend(self._payload)
+            else:
+                self.inserted_rows.append(self._payload)
+        return SimpleNamespace(data=None)
+
+
+class _FakeSupabase:
+    def __init__(self, inserted_rows):
+        self.inserted_rows = inserted_rows
+
+    def table(self, _name):
+        return _FakeTable(self.inserted_rows)
+
+
+class _AsyncNullContext:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 
 def test_worker_marks_error_when_no_insert_is_confirmed(monkeypatch):
@@ -135,3 +177,103 @@ def test_worker_strips_legacy_custom_prefix_when_building_standard_marker(monkey
         worker.AUTO_SUCCESS_PREFIX,
         ("MS02_",),
     ) == "PR_ventas_20260301.json"
+
+
+def test_worker_processes_nested_json_using_dot_mapping(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    inserted_rows = []
+    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
+
+    content = json.dumps({
+        "rows": [
+            {
+                "invoiceNumber": "1001",
+                "invoiceDate": "2026-03-06",
+                "totals": {"grandTotal": 118.0, "taxTotal": 18.0, "subTotal": 100.0},
+                "fiscalData": {"ncf": "B0100001"},
+            },
+            {
+                "invoiceNumber": "1002",
+                "invoiceDate": "2026-03-06",
+                "totals": {"grandTotal": 59.0, "taxTotal": 9.0, "subTotal": 50.0},
+                "fiscalData": {"ncf": "B0100002"},
+            },
+        ]
+    })
+
+    count, errors = worker.process_file_logic(
+        {
+            "nombre": "Cafe Santo Domingo",
+            "id": "local-1",
+            "mall_id": "mall-1",
+            "file_type": "JSON",
+            "mapping_config": {
+                "factura_numero": "invoiceNumber",
+                "fecha_venta": "invoiceDate",
+                "total_bruto": "totals.grandTotal",
+                "total_impuestos": "totals.taxTotal",
+                "total_neto": "totals.subTotal",
+            },
+            "constants_config": {
+                "local_codigo": "L003",
+            },
+        },
+        "MS02_ventas_20260306.json",
+        content,
+    )
+
+    assert count == 2
+    assert errors == []
+    assert [row["factura_no"] for row in inserted_rows] == ["1001", "1002"]
+    assert inserted_rows[0]["fecha"] == "2026-03-06"
+    assert inserted_rows[0]["total_bruto"] == 118.0
+    assert inserted_rows[0]["total_impuestos"] == 18.0
+    assert inserted_rows[0]["total_neto"] == 100.0
+
+
+def test_worker_returns_failure_details_and_system_log_includes_them(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    inserted_rows = []
+    logs = []
+
+    async def _noop_mark_local_status(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
+    monkeypatch.setattr(
+        worker,
+        "process_local_files",
+        lambda local: {
+            "ok": False,
+            "message": "Lote completado: 0/1 archivos procesados. Worker: No se confirmó inserción en BD. Se encontraron 2 errores.",
+            "details": [
+                {"linea": 2, "error": "Datos incompletos"},
+                {"linea": 3, "error": "Datos incompletos"},
+            ],
+        },
+    )
+    monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: logs.append((args, kwargs)))
+    monkeypatch.setattr(worker, "mark_local_status", _noop_mark_local_status)
+
+    asyncio.run(
+        worker.process_local_safe(
+            {
+                "nombre": "Cafe Santo Domingo",
+                "id": "local-1",
+                "mall_id": "mall-1",
+                "consecutive_failures": 0,
+                "processing_status": "IDLE",
+            },
+            _AsyncNullContext(),
+            _AsyncNullContext(),
+        )
+    )
+
+    assert logs, "Se esperaba un log de error SYSTEM"
+    args, kwargs = logs[0]
+    assert args[1] == "SYSTEM"
+    assert "Async processing failed: Lote completado: 0/1 archivos procesados." in args[3]
+    assert kwargs["detalles"] == [
+        {"linea": 2, "error": "Datos incompletos"},
+        {"linea": 3, "error": "Datos incompletos"},
+    ]

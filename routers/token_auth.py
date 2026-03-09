@@ -15,6 +15,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
+from services.load_log_service import build_load_log_payload, insert_load_log_row
 
 try:
     from supabase import create_client, Client
@@ -248,7 +249,7 @@ class SupabaseTokenStore:
         self._require_db()
         res = (
             self.db.table("locales")
-            .select("id, mall_id, codigo_interno")
+            .select("id, mall_id, codigo_interno, nombre")
             .eq("mall_id", mall_id)
             .eq("id", local_id)
             .maybe_single()
@@ -261,6 +262,7 @@ class SupabaseTokenStore:
             "mall_id": row.get("mall_id"),
             "local_id": row.get("id"),
             "codigo_cliente": row.get("codigo_interno"),
+            "local_nombre": row.get("nombre"),
         }
 
     def upsert_exporter_ingest_rows(self, rows: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -353,6 +355,7 @@ class InMemoryTokenStore:
         self.api_tokens: Dict[str, Dict[str, Any]] = {}
         self.audit_logs: List[Dict[str, Any]] = []
         self.local_codes: Dict[Tuple[str, str], str] = {}
+        self.local_names: Dict[Tuple[str, str], str] = {}
         self.exporter_ingest_rows: Dict[str, Dict[str, Any]] = {}
         self.exporter_webservice_configs: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
@@ -449,7 +452,12 @@ class InMemoryTokenStore:
         code = self.local_codes.get((mall_id, local_id))
         if not code:
             return None
-        return {"mall_id": mall_id, "local_id": local_id, "codigo_cliente": code}
+        return {
+            "mall_id": mall_id,
+            "local_id": local_id,
+            "codigo_cliente": code,
+            "local_nombre": self.local_names.get((mall_id, local_id)),
+        }
 
     def upsert_exporter_ingest_rows(self, rows: List[Dict[str, Any]]) -> Dict[str, int]:
         inserted = 0
@@ -527,6 +535,42 @@ class TokenService:
         self.supabase = supabase_client
         self.config = config or TokenConfig()
         self.ratelimiter = InMemoryRateLimiter()
+
+    def write_load_log(
+        self,
+        *,
+        mall_id: Optional[str],
+        local_id: Optional[str],
+        local_nombre: Optional[str],
+        archivo: str,
+        estado: str,
+        mensaje: str,
+        batch_id: Optional[str] = None,
+        detalles: Optional[List[Dict[str, Any]]] = None,
+        records_processed: Optional[int] = None,
+        error_count: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self.supabase:
+            return
+        payload = build_load_log_payload(
+            local_nombre=local_nombre or local_id or "Local desconocido",
+            archivo=archivo,
+            estado=estado,
+            mensaje=mensaje,
+            batch_id=batch_id,
+            detalles=detalles,
+            mall_id=mall_id,
+            local_id=local_id,
+            canal="WebService",
+            records_processed=records_processed,
+            error_count=error_count,
+            metadata=metadata,
+        )
+        try:
+            insert_load_log_row(self.supabase, payload, logger=logger)
+        except Exception as exc:
+            logger.warning("webservice load log failed: %s", exc)
 
     def _issue_jwt(self, *, token_id: str, mall_id: str, local_id: Optional[str], token_type: str, scopes: List[str], access_exp: datetime) -> str:
         now_ts = _now_ts()
@@ -924,6 +968,24 @@ def _normalize_granularity(value: Any) -> str:
     return "transaction"
 
 
+def _exporter_log_filename(meta: Dict[str, Any]) -> str:
+    for field_name in ("filename", "file_name", "source_filename", "archivo", "batch_label"):
+        value = _as_str_or_none(meta.get(field_name))
+        if value:
+            return value
+    batch_id = _as_str_or_none(meta.get("batch_id"))
+    if batch_id:
+        return f"WebService batch {batch_id}"
+    return "WebService payload"
+
+
+def _exporter_validation_details(errors: List[str]) -> List[Dict[str, Any]]:
+    details: List[Dict[str, Any]] = []
+    for idx, error in enumerate(errors[:20], start=1):
+        details.append({"linea": idx, "error": error})
+    return details
+
+
 def _coerce_numeric(value: Any, *, row_idx: int, field_name: str, errors: List[str]) -> Optional[float]:
     if not _has_value(value):
         return None
@@ -1048,100 +1110,202 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
 
     rows, meta = _parse_exporter_rows(payload)
     granularity = _normalize_granularity(meta.get("granularity"))
+    batch_id = _as_str_or_none(meta.get("batch_id"))
+    local_nombre: Optional[str] = None
+    log_written = False
 
-    exporter_cfg_get = getattr(svc.store, "get_exporter_webservice_config", None)
-    exporter_cfg = exporter_cfg_get(payload_mall_id, payload_local_id) if callable(exporter_cfg_get) else None
-    if exporter_cfg:
-        if exporter_cfg.get("enabled") is False:
-            raise HTTPException(status_code=409, detail="Webservice exporter deshabilitado para este local en MsMall")
-        if not _has_value(meta.get("granularity")) and _has_value(exporter_cfg.get("default_granularity")):
-            granularity = _normalize_granularity(exporter_cfg.get("default_granularity"))
-        if granularity == "transaction" and exporter_cfg.get("allow_transaction") is False:
-            raise HTTPException(status_code=422, detail="Granularity 'transaction' no permitido para este local")
-        if granularity == "daily" and exporter_cfg.get("allow_daily") is False:
-            raise HTTPException(status_code=422, detail="Granularity 'daily' no permitido para este local")
+    def _write_webservice_log(
+        *,
+        estado: str,
+        mensaje: str,
+        records_processed: int,
+        error_count: int,
+        detalles: Optional[List[Dict[str, Any]]] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        nonlocal log_written
+        svc.write_load_log(
+            mall_id=payload_mall_id,
+            local_id=payload_local_id,
+            local_nombre=local_nombre,
+            archivo=_exporter_log_filename(meta),
+            estado=estado,
+            mensaje=mensaje,
+            batch_id=batch_id,
+            detalles=detalles,
+            records_processed=records_processed,
+            error_count=error_count,
+            metadata={
+                "source": "exporter_sync_ingest",
+                "granularity": granularity,
+                "probe": bool(meta.get("probe")),
+                "contract_type": _as_str_or_none(meta.get("contract_type")),
+                **(extra_metadata or {}),
+            },
+        )
+        log_written = True
 
-    if not rows:
-        return {
+    try:
+        exporter_cfg_get = getattr(svc.store, "get_exporter_webservice_config", None)
+        exporter_cfg = exporter_cfg_get(payload_mall_id, payload_local_id) if callable(exporter_cfg_get) else None
+        if exporter_cfg:
+            if exporter_cfg.get("enabled") is False:
+                raise HTTPException(status_code=409, detail="Webservice exporter deshabilitado para este local en MsMall")
+            if not _has_value(meta.get("granularity")) and _has_value(exporter_cfg.get("default_granularity")):
+                granularity = _normalize_granularity(exporter_cfg.get("default_granularity"))
+            if granularity == "transaction" and exporter_cfg.get("allow_transaction") is False:
+                raise HTTPException(status_code=422, detail="Granularity 'transaction' no permitido para este local")
+            if granularity == "daily" and exporter_cfg.get("allow_daily") is False:
+                raise HTTPException(status_code=422, detail="Granularity 'daily' no permitido para este local")
+
+        if not rows:
+            response = {
+                "accepted": True,
+                "mall_id": payload_mall_id,
+                "local_id": payload_local_id,
+                "granularity": granularity,
+                "webservice_config_applied": bool(exporter_cfg),
+                "received": 0,
+                "inserted": 0,
+                "updated": 0,
+                "probe": bool(meta.get("probe")),
+                "batch_id": batch_id,
+            }
+            _write_webservice_log(
+                estado="exito",
+                mensaje="Carga vía WebService recibida correctamente. 0 registros procesados.",
+                records_processed=0,
+                error_count=0,
+                extra_metadata=response,
+            )
+            return response
+
+        local_info = getattr(svc.store, "get_local_exporter_code", lambda *_: None)(payload_mall_id, payload_local_id)
+        if not local_info:
+            raise HTTPException(status_code=422, detail="Local no encontrado en MsMall para mall_id/local_id")
+        local_nombre = _as_str_or_none(local_info.get("local_nombre") or local_info.get("nombre"))
+        codigo_cliente = _as_str_or_none(local_info.get("codigo_cliente") or local_info.get("codigo_interno"))
+        if not codigo_cliente:
+            raise HTTPException(status_code=422, detail="El local existe pero no tiene codigo_interno configurado en MsMall")
+
+        errors: List[str] = []
+        persist_rows: List[Dict[str, Any]] = []
+        contract_type = (
+            _as_str_or_none(meta.get("contract_type"))
+            or _as_str_or_none((exporter_cfg or {}).get("contract_type"))
+            or "msmall_sales_v1"
+        )
+        chunk_index = _coerce_int(meta.get("chunk_index"), row_idx=0, field_name="chunk_index", errors=[])
+        chunk_total = _coerce_int(meta.get("chunk_total"), row_idx=0, field_name="chunk_total", errors=[])
+
+        for idx, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                errors.append(f"row {idx}: cada elemento de rows debe ser objeto")
+                continue
+            normalized = _canonicalize_exporter_row(row, row_idx=idx, granularity=granularity, errors=errors)
+            persist_rows.append({
+                "mall_id": payload_mall_id,
+                "local_id": payload_local_id,
+                "codigo_cliente": codigo_cliente,
+                "contract_type": contract_type,
+                "granularity": granularity,
+                "batch_id": batch_id,
+                "chunk_index": chunk_index,
+                "chunk_total": chunk_total,
+                "row_index": idx,
+                "dedup_key": _build_exporter_dedup_key(mall_id=payload_mall_id, local_id=payload_local_id, granularity=granularity, normalized_row=normalized),
+                "documento_tipo": normalized.get("documento_tipo"),
+                "documento_numero": normalized.get("documento_numero"),
+                "resumen_id": normalized.get("resumen_id"),
+                "cantidad_documentos": normalized.get("cantidad_documentos"),
+                "fecha_venta": normalized.get("fecha_venta"),
+                "hora_venta": normalized.get("hora_venta"),
+                "total_bruto": normalized.get("total_bruto"),
+                "total_impuesto": normalized.get("total_impuesto"),
+                "total_neto": normalized.get("total_neto"),
+                "raw_row": row,
+                "raw_meta": meta,
+            })
+
+        if errors:
+            details = "; ".join(errors[:10])
+            if len(errors) > 10:
+                details += f" (+{len(errors) - 10} mas)"
+            _write_webservice_log(
+                estado="error",
+                mensaje=f"Carga vía WebService rechazada por validación. {len(errors)} errores detectados.",
+                records_processed=0,
+                error_count=len(errors),
+                detalles=_exporter_validation_details(errors),
+                extra_metadata={"validation_errors": errors[:20]},
+            )
+            raise HTTPException(status_code=422, detail=f"Payload exporter invalido: {details}")
+
+        upsert_result = getattr(svc.store, "upsert_exporter_ingest_rows", None)
+        if not callable(upsert_result):
+            raise HTTPException(status_code=500, detail="Store no soporta persistencia de ingest exporter")
+        stats = upsert_result(persist_rows) or {}
+        inserted = int(stats.get("inserted") or 0)
+        updated = int(stats.get("updated") or 0)
+        response = {
             "accepted": True,
             "mall_id": payload_mall_id,
             "local_id": payload_local_id,
+            "codigo_cliente": codigo_cliente,
             "granularity": granularity,
             "webservice_config_applied": bool(exporter_cfg),
-            "received": 0,
-            "inserted": 0,
-            "updated": 0,
-            "probe": bool(meta.get("probe")),
-        }
-
-    local_info = getattr(svc.store, "get_local_exporter_code", lambda *_: None)(payload_mall_id, payload_local_id)
-    if not local_info:
-        raise HTTPException(status_code=422, detail="Local no encontrado en MsMall para mall_id/local_id")
-    codigo_cliente = _as_str_or_none(local_info.get("codigo_cliente") or local_info.get("codigo_interno"))
-    if not codigo_cliente:
-        raise HTTPException(status_code=422, detail="El local existe pero no tiene codigo_interno configurado en MsMall")
-
-    errors: List[str] = []
-    persist_rows: List[Dict[str, Any]] = []
-    contract_type = (
-        _as_str_or_none(meta.get("contract_type"))
-        or _as_str_or_none((exporter_cfg or {}).get("contract_type"))
-        or "msmall_sales_v1"
-    )
-    batch_id = _as_str_or_none(meta.get("batch_id"))
-    chunk_index = _coerce_int(meta.get("chunk_index"), row_idx=0, field_name="chunk_index", errors=[])
-    chunk_total = _coerce_int(meta.get("chunk_total"), row_idx=0, field_name="chunk_total", errors=[])
-
-    for idx, row in enumerate(rows, start=1):
-        if not isinstance(row, dict):
-            errors.append(f"row {idx}: cada elemento de rows debe ser objeto")
-            continue
-        normalized = _canonicalize_exporter_row(row, row_idx=idx, granularity=granularity, errors=errors)
-        persist_rows.append({
-            "mall_id": payload_mall_id,
-            "local_id": payload_local_id,
-            "codigo_cliente": codigo_cliente,
-            "contract_type": contract_type,
-            "granularity": granularity,
+            "received": len(rows),
+            "inserted": inserted,
+            "updated": updated,
             "batch_id": batch_id,
-            "chunk_index": chunk_index,
-            "chunk_total": chunk_total,
-            "row_index": idx,
-            "dedup_key": _build_exporter_dedup_key(mall_id=payload_mall_id, local_id=payload_local_id, granularity=granularity, normalized_row=normalized),
-            "documento_tipo": normalized.get("documento_tipo"),
-            "documento_numero": normalized.get("documento_numero"),
-            "resumen_id": normalized.get("resumen_id"),
-            "cantidad_documentos": normalized.get("cantidad_documentos"),
-            "fecha_venta": normalized.get("fecha_venta"),
-            "hora_venta": normalized.get("hora_venta"),
-            "total_bruto": normalized.get("total_bruto"),
-            "total_impuesto": normalized.get("total_impuesto"),
-            "total_neto": normalized.get("total_neto"),
-            "raw_row": row,
-            "raw_meta": meta,
-        })
-
-    if errors:
-        details = "; ".join(errors[:10])
-        if len(errors) > 10:
-            details += f" (+{len(errors) - 10} mas)"
-        raise HTTPException(status_code=422, detail=f"Payload exporter invalido: {details}")
-
-    upsert_result = getattr(svc.store, "upsert_exporter_ingest_rows", None)
-    if not callable(upsert_result):
-        raise HTTPException(status_code=500, detail="Store no soporta persistencia de ingest exporter")
-    stats = upsert_result(persist_rows) or {}
-    return {
-        "accepted": True,
-        "mall_id": payload_mall_id,
-        "local_id": payload_local_id,
-        "codigo_cliente": codigo_cliente,
-        "granularity": granularity,
-        "webservice_config_applied": bool(exporter_cfg),
-        "received": len(rows),
-        "inserted": int(stats.get("inserted") or 0),
-        "updated": int(stats.get("updated") or 0),
-    }
+        }
+        _write_webservice_log(
+            estado="exito",
+            mensaje=f"Carga vía WebService completada. {len(rows)} registros procesados. {inserted} nuevos, {updated} actualizados.",
+            records_processed=len(rows),
+            error_count=0,
+            extra_metadata=response,
+        )
+        return response
+    except HTTPException as exc:
+        if not log_written:
+            svc.write_load_log(
+                mall_id=payload_mall_id,
+                local_id=payload_local_id,
+                local_nombre=local_nombre,
+                archivo=_exporter_log_filename(meta),
+                estado="error",
+                mensaje=f"Carga vía WebService falló: {exc.detail}",
+                batch_id=batch_id,
+                records_processed=0,
+                error_count=1,
+                metadata={
+                    "source": "exporter_sync_ingest",
+                    "granularity": granularity,
+                    "detail": str(exc.detail),
+                    "status_code": exc.status_code,
+                },
+            )
+        raise
+    except Exception as exc:
+        if not log_written:
+            svc.write_load_log(
+                mall_id=payload_mall_id,
+                local_id=payload_local_id,
+                local_nombre=local_nombre,
+                archivo=_exporter_log_filename(meta),
+                estado="error",
+                mensaje=f"Carga vía WebService falló por error interno: {exc}",
+                batch_id=batch_id,
+                records_processed=0,
+                error_count=1,
+                metadata={
+                    "source": "exporter_sync_ingest",
+                    "granularity": granularity,
+                    "detail": str(exc),
+                },
+            )
+        raise
 
 
 def sanitize_token_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

@@ -58,6 +58,7 @@ from services.connection_monitor_service import (
     ConnectionMonitorService,
     RetryPolicyBlocked,
 )
+from services.load_log_service import build_load_log_payload, insert_load_log_row
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -1200,7 +1201,12 @@ def insert_load_log(
     batch_id: Optional[str] = None,
     detalles: Optional[List[Dict]] = None,
     mall_id: Optional[str] = None,
-    local_id: Optional[str] = None
+    local_id: Optional[str] = None,
+    mall_nombre: Optional[str] = None,
+    canal: Optional[str] = None,
+    records_processed: Optional[int] = None,
+    error_count: Optional[int] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
     """Inserts a log into Supabase 'logs_carga' table."""
     if not supabase:
@@ -1208,31 +1214,24 @@ def insert_load_log(
         return
     
     try:
-        log_data = {
-            "fecha_hora": datetime.now().isoformat(),
-            "local_nombre": local_nombre,
-            "archivo": archivo,
-            "estado": estado,
-            "mensaje": mensaje,
-            "batch_id": batch_id,
-            "detalles": detalles or []
-        }
-        if mall_id:
-            log_data["mall_id"] = mall_id
-        if local_id:
-            log_data["local_id"] = local_id
+        log_data = build_load_log_payload(
+            local_nombre=local_nombre,
+            archivo=archivo,
+            estado=estado,
+            mensaje=mensaje,
+            batch_id=batch_id,
+            detalles=detalles,
+            mall_id=mall_id,
+            mall_nombre=mall_nombre,
+            local_id=local_id,
+            canal=canal,
+            records_processed=records_processed,
+            error_count=error_count,
+            metadata=metadata,
+        )
         logger.info(f"Intentando guardar log en Supabase: {local_nombre} - {archivo} - {estado}")
-        try:
-            res = supabase.table("logs_carga").insert(log_data).execute()
-        except Exception as insert_err:
-            # Backward compatibility while DB migration is not applied yet.
-            err_txt = str(insert_err).lower()
-            if ("mall_id" in err_txt or "local_id" in err_txt) and ("column" in err_txt or "schema" in err_txt):
-                legacy_payload = {k: v for k, v in log_data.items() if k not in {"mall_id", "local_id"}}
-                res = supabase.table("logs_carga").insert(legacy_payload).execute()
-            else:
-                raise
-        logger.info(f"Log guardado exitosamente. Respuesta: {res}")
+        insert_load_log_row(supabase, log_data, logger=logger)
+        logger.info("Log guardado exitosamente.")
     except Exception as e:
         logger.error(f"Error CRÍTICO insertando log en Supabase: {e}")
         logger.error(f"Data intentada: {log_data}")
@@ -1849,7 +1848,11 @@ async def ingesta_ventas(
             mensaje,
             batch_id,
             errors,
-            mall_id=mall_id
+            mall_id=mall_id,
+            canal="API",
+            records_processed=count,
+            error_count=len(errors or []),
+            metadata={"source": "direct_ingest_api"},
         )
         
         return {
@@ -3602,7 +3605,11 @@ async def _execute_manual_endpoint_impl(
                 f"Error de conexión: {error_msg}",
                 batch_id,
                 mall_id=config_data.get("mall_id"),
-                local_id=config_data.get("id")
+                local_id=config_data.get("id"),
+                canal=protocolo,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "manual_remote_import", "connection_error": error_msg},
             )
             raise HTTPException(status_code=500, detail=f"Error de conexión remota ({protocolo}): {error_msg}")
 
@@ -3617,7 +3624,11 @@ async def _execute_manual_endpoint_impl(
                 batch_id,
                 detalles_errores,
                 mall_id=config_data.get("mall_id"),
-                local_id=config_data.get("id")
+                local_id=config_data.get("id"),
+                canal=protocolo,
+                records_processed=0,
+                error_count=len(detalles_errores),
+                metadata={"source": "manual_remote_import", "empty_payload": True},
             )
             renaming_error = None
             try:
@@ -3661,7 +3672,11 @@ async def _execute_manual_endpoint_impl(
             batch_id,
             detalles_errores,
             mall_id=config_data.get("mall_id"),
-            local_id=config_data.get("id")
+            local_id=config_data.get("id"),
+            canal=protocolo,
+            records_processed=registros_exito,
+            error_count=len(detalles_errores or []),
+            metadata={"source": "manual_remote_import"},
         )
 
         risk_snapshot = None
@@ -3706,7 +3721,11 @@ async def _execute_manual_endpoint_impl(
                 str(e),
                 batch_id,
                 mall_id=config_data.get("mall_id") if 'config_data' in locals() else None,
-                local_id=config_data.get("id") if 'config_data' in locals() else None
+                local_id=config_data.get("id") if 'config_data' in locals() else None,
+                canal=protocolo if 'protocolo' in locals() else None,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "manual_remote_import", "exception": str(e)},
             )
         raise HTTPException(status_code=500, detail=str(e))
     finally:

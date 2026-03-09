@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -97,6 +97,89 @@ const normalizeErrorMessage = (error: any, fallbackMessage: string): string => {
 const toFiniteNumber = (value: any): number => {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+};
+
+const toOptionalNonNegativeInt = (value: any): number | null => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(Math.trunc(n), 0);
+};
+
+const extractLoadCount = (message: string, patterns: RegExp[]): number | null => {
+  for (const pattern of patterns) {
+    const match = message.match(pattern);
+    if (match?.[1]) {
+      const parsed = toOptionalNonNegativeInt(match[1]);
+      if (parsed !== null) return parsed;
+    }
+  }
+  return null;
+};
+
+const normalizeLoadChannel = (value: any): string | null => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  if (upper === 'WEBSERVICE') return 'WebService';
+  if (upper === 'FTP' || upper === 'SFTP' || upper === 'API') return upper;
+  return raw;
+};
+
+const inferLoadChannel = (row: any): string | null => {
+  const metadata = row?.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+  const fromFields = normalizeLoadChannel(row?.canal ?? metadata?.canal ?? metadata?.channel);
+  if (fromFields) return fromFields;
+
+  const haystack = `${row?.mensaje || ''} ${row?.archivo || ''}`.toLowerCase();
+  if (haystack.includes('webservice')) return 'WebService';
+  if (haystack.includes('sftp')) return 'SFTP';
+  if (haystack.includes('ftp')) return 'FTP';
+  if (haystack.includes('api')) return 'API';
+  return null;
+};
+
+const normalizeLoadLogRow = (row: any): LoadLogEntry => {
+  const metadata = row?.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+  const detalles = Array.isArray(row?.detalles)
+    ? row.detalles.filter((item: any) => item && typeof item === 'object')
+    : [];
+  const message = String(row?.mensaje || '').trim();
+  const recordsProcessed =
+    toOptionalNonNegativeInt(row?.records_processed ?? metadata?.records_processed)
+    ?? extractLoadCount(message, [
+      /(?:^|\s)(\d+)\s+registros?\s+(?:cargados?|procesados?)/i,
+      /procesado:\s*(\d+)\s+registros?/i,
+      /inserci[oó]n confirmada de\s*(\d+)\s+registros?/i,
+    ]);
+  const errorCount =
+    toOptionalNonNegativeInt(row?.error_count ?? metadata?.error_count)
+    ?? (detalles.length > 0 ? detalles.length : extractLoadCount(message, [
+      /errores?:\s*(\d+)/i,
+      /se encontraron\s*(\d+)\s+errores?/i,
+    ]))
+    ?? 0;
+
+  let estado = String(row?.estado || '').trim().toLowerCase() || 'error';
+  if (estado === 'exito' && errorCount > 0) estado = 'parcial';
+
+  return {
+    ...row,
+    id: row?.id ?? `${row?.fecha_hora || ''}-${row?.archivo || ''}-${row?.local_nombre || row?.local_id || ''}`,
+    fecha_hora: String(row?.fecha_hora || ''),
+    mall_id: row?.mall_id ?? metadata?.mall_id ?? null,
+    mall_nombre: row?.mall_nombre ?? metadata?.mall_nombre ?? null,
+    local_id: row?.local_id ?? metadata?.local_id ?? null,
+    local_nombre: row?.local_nombre ?? metadata?.local_nombre ?? null,
+    archivo: row?.archivo ?? metadata?.archivo ?? null,
+    estado,
+    mensaje: message || 'Sin detalle adicional.',
+    batch_id: row?.batch_id ?? metadata?.batch_id ?? null,
+    detalles,
+    canal: inferLoadChannel(row),
+    records_processed: recordsProcessed,
+    error_count: errorCount,
+    metadata,
+  };
 };
 
 const parseCsvLine = (line: string): string[] => {
@@ -1068,14 +1151,14 @@ export const ApiService = {
   },
 
   // --- MÉTODOS DE AUDITORÍA DE CARGA ---
-  async getLoadLogs(mallId?: string, token?: string): Promise<any[]> {
+  async getLoadLogs(mallId?: string, token?: string): Promise<LoadLogEntry[]> {
     try {
       const query = new URLSearchParams();
       if (mallId) query.set('mall_id', mallId);
       const suffix = query.toString() ? `?${query.toString()}` : '';
       const headers: Record<string, string> = { 'Accept': 'application/json' };
       if (mallId) headers['X-Mall-Id'] = mallId;
-      return await fetchJsonWithBaseFallback<any[]>(
+      const rows = await fetchJsonWithBaseFallback<any[]>(
         `/load-logs${suffix}`,
         {
           method: 'GET',
@@ -1083,6 +1166,7 @@ export const ApiService = {
         },
         'Error cargando historial de cargas'
       );
+      return Array.isArray(rows) ? rows.map(normalizeLoadLogRow) : [];
     } catch (error) {
       console.error('Error fetching load logs:', error);
       return [];

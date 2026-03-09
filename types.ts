@@ -242,12 +242,41 @@ export interface SecurityTokenPairReveal {
   token_kind: SecurityTokenType;
 }
 
+export type LoadLogStatus = 'exito' | 'parcial' | 'error' | 'no_encontrado' | string;
+export type LoadLogChannel = 'FTP' | 'SFTP' | 'WebService' | 'API' | string;
+
+export interface LoadLogDetail {
+  linea?: number;
+  error: string;
+  [key: string]: any;
+}
+
+export interface LoadLogEntry {
+  id: number | string;
+  fecha_hora: string;
+  mall_id?: string | null;
+  mall_nombre?: string | null;
+  local_id?: string | null;
+  local_nombre?: string | null;
+  archivo?: string | null;
+  estado: LoadLogStatus;
+  mensaje: string;
+  batch_id?: string | null;
+  detalles?: LoadLogDetail[];
+  canal?: LoadLogChannel | null;
+  records_processed?: number | null;
+  error_count?: number | null;
+  metadata?: Record<string, any> | null;
+}
+
 export interface SecurityTokenAuditLogEntry {
   id: number | string;
   token_id?: string | null;
   event_type: 'issued' | 'refreshed' | 'revoked' | 'used' | 'failed' | string;
   mall_id?: string | null;
+  mall_nombre?: string | null;
   local_id?: string | null;
+  local_nombre?: string | null;
   ip?: string | null;
   ua?: string | null;
   metadata?: Record<string, any>;

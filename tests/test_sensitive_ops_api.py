@@ -302,6 +302,47 @@ def test_list_load_logs_falls_back_to_legacy_rows_when_primary_empty():
     assert rows[0]["local_nombre"] == "Subway"
 
 
+def test_list_load_logs_merges_primary_and_legacy_rows():
+    fake_db = _FakeSupabase({
+        "locales": [
+            {"id": "loc-1", "mall_id": "mall-a", "nombre": "Subway"},
+        ],
+        "logs_carga": [
+            {
+                "id": "log-new-1",
+                "mall_id": "mall-a",
+                "local_id": "loc-1",
+                "local_nombre": "Subway",
+                "archivo": "nuevo.csv",
+                "estado": "exito",
+                "mensaje": "Carga estructurada",
+                "fecha_hora": "2026-03-01T10:00:00Z",
+            },
+            {
+                "id": "log-legacy-1",
+                "mall_id": None,
+                "local_id": None,
+                "local_nombre": "Subway",
+                "archivo": "legacy.csv",
+                "estado": "error",
+                "mensaje": "Carga legacy",
+                "fecha_hora": "2026-02-27T10:00:00Z",
+            },
+        ],
+    })
+    logger = SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None)
+    service = SensitiveOpsService(fake_db, logger)
+
+    rows = service.list_load_logs(
+        operator_ctx={"user_id": "u1", "role": "it", "allowed_malls": ["mall-a"]},
+        ensure_operator_can_access_mall=_tenant_guard,
+        mall_id="mall-a",
+        limit=50,
+    )
+
+    assert [row["id"] for row in rows] == ["log-new-1", "log-legacy-1"]
+
+
 def test_load_logs_endpoint_accepts_mall_query_without_current_mall_dependency(monkeypatch):
     main = _load_main(monkeypatch)
 

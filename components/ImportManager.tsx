@@ -942,6 +942,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         (log?.estado === 'exito' || log?.estado === 'parcial')
       );
 
+      const structuredCount = Number(targetLog?.records_processed);
+      if (Number.isFinite(structuredCount)) return structuredCount;
       if (!targetLog?.mensaje) return null;
 
       const match = String(targetLog.mensaje).match(/(\d+)\s+registros/i);

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ApiService } from '../api';
+import { ApiService, type Store } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import { SecurityApiToken, SecurityServiceAccount, SecurityTokenAuditLogEntry } from '../types';
 import {
@@ -305,6 +305,7 @@ export const SecurityTokenAdmin: React.FC = () => {
   const [tokens, setTokens] = useState<SecurityApiToken[]>([]);
   const [auditLogs, setAuditLogs] = useState<SecurityTokenAuditLogEntry[]>([]);
   const [auditAvailable, setAuditAvailable] = useState(true);
+  const [storeDirectory, setStoreDirectory] = useState<Record<string, Store>>({});
 
   const [filters, setFilters] = useState({
     mall_id: '',
@@ -339,6 +340,78 @@ export const SecurityTokenAdmin: React.FC = () => {
   });
 
   const selectedMallId = filters.mall_id || currentMall?.id || '';
+  const mallNameById = useMemo(() => {
+    const entries = (malls || []).map((mall: any) => [String(mall.id), String(mall.nombre || mall.id)]);
+    return new Map<string, string>(entries);
+  }, [malls]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadStores = async () => {
+      const mallRows = Array.isArray(malls) ? malls : [];
+      if (mallRows.length === 0) {
+        setStoreDirectory({});
+        return;
+      }
+
+      const storeLists = await Promise.all(
+        mallRows.map(async (mall: any) => {
+          try {
+            return await ApiService.getStores(mall.id);
+          } catch {
+            return [];
+          }
+        })
+      );
+
+      if (cancelled) return;
+
+      const next: Record<string, Store> = {};
+      for (const store of storeLists.flat()) {
+        next[`${store.mall_id}::${store.id}`] = store;
+      }
+      setStoreDirectory(next);
+    };
+
+    loadStores();
+    return () => {
+      cancelled = true;
+    };
+  }, [malls]);
+
+  const resolveMallName = (mallId?: string | null, mallName?: string | null) => {
+    if (mallName && mallName.trim()) return mallName;
+    if (mallId && mallNameById.has(mallId)) return mallNameById.get(mallId) || mallId;
+    return truncateMiddle(mallId || '', 10, 6);
+  };
+
+  const resolveLocalName = (mallId?: string | null, localId?: string | null, localName?: string | null) => {
+    if (localName && localName.trim()) return localName;
+    if (mallId && localId) {
+      const direct = storeDirectory[`${mallId}::${localId}`];
+      if (direct?.nombre) return direct.nombre;
+    }
+    if (localId) {
+      const anyStore = Object.values(storeDirectory).find((store) => store.id === localId);
+      if (anyStore?.nombre) return anyStore.nombre;
+    }
+    return truncateMiddle(localId || '', 10, 6);
+  };
+
+  const renderMallIdentity = (mallId?: string | null, mallName?: string | null) => (
+    <div>
+      <div className="font-medium text-slate-800">{resolveMallName(mallId, mallName)}</div>
+      <div className="text-xs font-mono text-slate-500">{mallId ? truncateMiddle(mallId, 10, 6) : '—'}</div>
+    </div>
+  );
+
+  const renderLocalIdentity = (mallId?: string | null, localId?: string | null, localName?: string | null) => (
+    <div>
+      <div className="font-medium text-slate-800">{resolveLocalName(mallId, localId, localName)}</div>
+      <div className="text-xs font-mono text-slate-500">{localId ? truncateMiddle(localId, 10, 6) : '—'}</div>
+    </div>
+  );
 
   useEffect(() => {
     if (currentMall?.id) {
@@ -873,8 +946,8 @@ export const SecurityTokenAdmin: React.FC = () => {
                       <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-200">
                         <tr>
                           <th className="px-4 py-3">Nombre</th>
-                          <th className="px-4 py-3">mall_id</th>
-                          <th className="px-4 py-3">local_id</th>
+                          <th className="px-4 py-3">Mall</th>
+                          <th className="px-4 py-3">Local</th>
                           <th className="px-4 py-3">Estado</th>
                           <th className="px-4 py-3">Scopes</th>
                           <th className="px-4 py-3">Creado</th>
@@ -897,8 +970,8 @@ export const SecurityTokenAdmin: React.FC = () => {
                                 <div className="font-medium text-slate-800">{row.name || '(sin nombre)'}</div>
                                 <div className="text-xs font-mono text-slate-500">{row.client_id}</div>
                               </td>
-                              <td className="px-4 py-3 font-mono text-xs text-slate-600">{truncateMiddle(row.mall_id, 10, 6)}</td>
-                              <td className="px-4 py-3 font-mono text-xs text-slate-600">{truncateMiddle(row.local_id || '', 10, 6)}</td>
+                              <td className="px-4 py-3">{renderMallIdentity(row.mall_id)}</td>
+                              <td className="px-4 py-3">{renderLocalIdentity(row.mall_id, row.local_id)}</td>
                               <td className="px-4 py-3">
                                 <span className={`inline-flex items-center px-2.5 py-1 rounded-full border text-xs font-semibold ${badgeClasses(row.status)}`}>
                                   {row.status}
@@ -969,8 +1042,8 @@ export const SecurityTokenAdmin: React.FC = () => {
                       <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-200">
                         <tr>
                           <th className="px-4 py-3">Tipo</th>
-                          <th className="px-4 py-3">mall_id</th>
-                          <th className="px-4 py-3">local_id</th>
+                          <th className="px-4 py-3">Mall</th>
+                          <th className="px-4 py-3">Local</th>
                           <th className="px-4 py-3">Scopes</th>
                           <th className="px-4 py-3">Expira</th>
                           <th className="px-4 py-3">Estado</th>
@@ -995,8 +1068,8 @@ export const SecurityTokenAdmin: React.FC = () => {
                                   <div className="text-xs text-slate-500">SA: {truncateMiddle(row.service_account_id, 8, 4)}</div>
                                 )}
                               </td>
-                              <td className="px-4 py-3 font-mono text-xs text-slate-600">{truncateMiddle(row.mall_id, 10, 6)}</td>
-                              <td className="px-4 py-3 font-mono text-xs text-slate-600">{truncateMiddle(row.local_id || '', 10, 6)}</td>
+                              <td className="px-4 py-3">{renderMallIdentity(row.mall_id)}</td>
+                              <td className="px-4 py-3">{renderLocalIdentity(row.mall_id, row.local_id)}</td>
                               <td className="px-4 py-3">
                                 <div className="flex flex-wrap gap-1 max-w-[220px]">
                                   {row.__scopes.map((scope) => (
@@ -1062,8 +1135,8 @@ export const SecurityTokenAdmin: React.FC = () => {
                         <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-200">
                           <tr>
                             <th className="px-4 py-3">Evento</th>
-                            <th className="px-4 py-3">mall_id</th>
-                            <th className="px-4 py-3">local_id</th>
+                            <th className="px-4 py-3">Mall</th>
+                            <th className="px-4 py-3">Local</th>
                             <th className="px-4 py-3">IP</th>
                             <th className="px-4 py-3">User-Agent</th>
                             <th className="px-4 py-3">Token ID</th>
@@ -1085,13 +1158,22 @@ export const SecurityTokenAdmin: React.FC = () => {
                                     {row.event_type}
                                   </span>
                                 </td>
-                                <td className="px-4 py-3 font-mono text-xs text-slate-600">{truncateMiddle(row.mall_id || '', 10, 6)}</td>
-                                <td className="px-4 py-3 font-mono text-xs text-slate-600">{truncateMiddle(row.local_id || '', 10, 6)}</td>
+                                <td className="px-4 py-3">{renderMallIdentity(row.mall_id, row.mall_nombre)}</td>
+                                <td className="px-4 py-3">{renderLocalIdentity(row.mall_id, row.local_id, row.local_nombre)}</td>
                                 <td className="px-4 py-3 text-xs text-slate-600">{row.ip || '—'}</td>
                                 <td className="px-4 py-3 text-xs text-slate-600 max-w-[320px] truncate" title={row.ua || ''}>
                                   {row.ua || '—'}
                                 </td>
-                                <td className="px-4 py-3 font-mono text-xs text-slate-600">{truncateMiddle(row.token_id || '', 10, 6)}</td>
+                                <td className="px-4 py-3">
+                                  <div className="font-mono text-xs text-slate-700" title={row.token_id || ''}>
+                                    {truncateMiddle(row.token_id || '', 10, 6)}
+                                  </div>
+                                  {row.metadata?.jti && (
+                                    <div className="text-[11px] text-slate-500 mt-1" title={String(row.metadata.jti)}>
+                                      JTI: {truncateMiddle(String(row.metadata.jti), 10, 6)}
+                                    </div>
+                                  )}
+                                </td>
                                 <td className="px-4 py-3 text-xs text-slate-600">{formatIso(row.created_at)}</td>
                               </tr>
                             ))
@@ -1324,12 +1406,14 @@ export const SecurityTokenAdmin: React.FC = () => {
                 <div className="font-medium text-slate-800">{selectedTokenDetail.status}</div>
               </div>
               <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
-                <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">mall_id</div>
-                <div className="font-mono text-xs text-slate-800 break-all">{selectedTokenDetail.mall_id}</div>
+                <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Mall</div>
+                <div className="font-medium text-slate-800">{resolveMallName(selectedTokenDetail.mall_id)}</div>
+                <div className="font-mono text-xs text-slate-500 break-all mt-1">{selectedTokenDetail.mall_id}</div>
               </div>
               <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
-                <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">local_id</div>
-                <div className="font-mono text-xs text-slate-800 break-all">{selectedTokenDetail.local_id || '—'}</div>
+                <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Local</div>
+                <div className="font-medium text-slate-800">{resolveLocalName(selectedTokenDetail.mall_id, selectedTokenDetail.local_id)}</div>
+                <div className="font-mono text-xs text-slate-500 break-all mt-1">{selectedTokenDetail.local_id || '—'}</div>
               </div>
             </div>
             <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">

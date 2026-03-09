@@ -15,6 +15,7 @@ import json
 import posixpath
 from typing import Optional, Sequence, Tuple
 from services.connection_monitor_service import ConnectionMonitorService
+from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.sensitive_ops_service import sanitize_error_text
 from analytics_service import run_local_risk_analysis
 
@@ -81,36 +82,34 @@ def insert_load_log(
     batch_id: str = None,
     detalles: list = None,
     mall_id: str = None,
-    local_id: str = None
+    local_id: str = None,
+    mall_nombre: str = None,
+    canal: str = None,
+    records_processed: Optional[int] = None,
+    error_count: Optional[int] = None,
+    metadata: Optional[dict] = None,
 ):
     """Inserts a log into Supabase 'logs_carga' table."""
     if not supabase:
         logger.warning("Skipping load log insert: Supabase client not initialized.")
         return
     try:
-        log_data = {
-            "fecha_hora": datetime.now().isoformat(),
-            "local_nombre": local_nombre,
-            "archivo": archivo,
-            "estado": estado,
-            "mensaje": mensaje,
-            "batch_id": batch_id,
-            "detalles": detalles or []
-        }
-        if mall_id:
-            log_data["mall_id"] = mall_id
-        if local_id:
-            log_data["local_id"] = local_id
-
-        try:
-            supabase.table("logs_carga").insert(log_data).execute()
-        except Exception as insert_err:
-            err_txt = str(insert_err).lower()
-            if ("mall_id" in err_txt or "local_id" in err_txt) and ("column" in err_txt or "schema" in err_txt):
-                legacy_payload = {k: v for k, v in log_data.items() if k not in {"mall_id", "local_id"}}
-                supabase.table("logs_carga").insert(legacy_payload).execute()
-            else:
-                raise
+        log_data = build_load_log_payload(
+            local_nombre=local_nombre,
+            archivo=archivo,
+            estado=estado,
+            mensaje=mensaje,
+            batch_id=batch_id,
+            detalles=detalles,
+            mall_id=mall_id,
+            mall_nombre=mall_nombre,
+            local_id=local_id,
+            canal=canal,
+            records_processed=records_processed,
+            error_count=error_count,
+            metadata=metadata,
+        )
+        insert_load_log_row(supabase, log_data, logger=logger)
         logger.info(f"Log registrado: {mensaje}")
     except Exception as e:
         logger.error(f"Error inserting load log: {e}")
@@ -417,7 +416,12 @@ def process_local_files(config):
         except Exception as ce:
             insert_load_log(
                 config['nombre'], "N/A", "error", f"Fallo conexión SFTP: {str(ce)}",
-                mall_id=config.get("mall_id"), local_id=config.get("id")
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal=protocol,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_auto_import", "connection_error": str(ce)},
             )
             return
 
@@ -464,7 +468,12 @@ def process_local_files(config):
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
                 insert_load_log(
                     config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 pendientes.",
-                    mall_id=config.get("mall_id"), local_id=config.get("id")
+                    mall_id=config.get("mall_id"),
+                    local_id=config.get("id"),
+                    canal=protocol,
+                    records_processed=0,
+                    error_count=0,
+                    metadata={"source": "worker_auto_import", "pending_files": 0},
                 )
                 return
 
@@ -489,7 +498,12 @@ def process_local_files(config):
                     if insert_confirmed:
                         insert_load_log(
                             config['nombre'], filename, estado, mensaje, batch_id, errors,
-                            mall_id=config.get("mall_id"), local_id=config.get("id")
+                            mall_id=config.get("mall_id"),
+                            local_id=config.get("id"),
+                            canal=protocol,
+                            records_processed=count,
+                            error_count=len(errors or []),
+                            metadata={"source": "worker_auto_import"},
                         )
                         if post_action == "RENOMBRAR_BACKUP":
                             handle_post_process_sftp(
@@ -520,7 +534,12 @@ def process_local_files(config):
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
                         config['nombre'], filename, "error", str(fe), batch_id,
-                        mall_id=config.get("mall_id"), local_id=config.get("id")
+                        mall_id=config.get("mall_id"),
+                        local_id=config.get("id"),
+                        canal=protocol,
+                        records_processed=0,
+                        error_count=1,
+                        metadata={"source": "worker_auto_import", "exception": str(fe)},
                     )
                     try:
                         handle_post_process_sftp(
@@ -548,7 +567,12 @@ def process_local_files(config):
         except Exception as ce:
             insert_load_log(
                 config['nombre'], "N/A", "error", f"Fallo conexión FTP: {str(ce)}",
-                mall_id=config.get("mall_id"), local_id=config.get("id")
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal=protocol,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_auto_import", "connection_error": str(ce)},
             )
             return
 
@@ -591,7 +615,12 @@ def process_local_files(config):
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
                 insert_load_log(
                     config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 pendientes.",
-                    mall_id=config.get("mall_id"), local_id=config.get("id")
+                    mall_id=config.get("mall_id"),
+                    local_id=config.get("id"),
+                    canal=protocol,
+                    records_processed=0,
+                    error_count=0,
+                    metadata={"source": "worker_auto_import", "pending_files": 0},
                 )
                 return
 
@@ -617,7 +646,12 @@ def process_local_files(config):
                     if insert_confirmed:
                         insert_load_log(
                             config['nombre'], filename, estado, mensaje, batch_id, errors,
-                            mall_id=config.get("mall_id"), local_id=config.get("id")
+                            mall_id=config.get("mall_id"),
+                            local_id=config.get("id"),
+                            canal=protocol,
+                            records_processed=count,
+                            error_count=len(errors or []),
+                            metadata={"source": "worker_auto_import"},
                         )
                         if post_action == "RENOMBRAR_BACKUP":
                             handle_post_process_ftp(
@@ -645,7 +679,12 @@ def process_local_files(config):
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
                         config['nombre'], filename, "error", str(fe), batch_id,
-                        mall_id=config.get("mall_id"), local_id=config.get("id")
+                        mall_id=config.get("mall_id"),
+                        local_id=config.get("id"),
+                        canal=protocol,
+                        records_processed=0,
+                        error_count=1,
+                        metadata={"source": "worker_auto_import", "exception": str(fe)},
                     )
                     try:
                         handle_post_process_ftp(
@@ -837,7 +876,12 @@ async def process_local_safe(local, semaphore):
             logger.error(f"❌ [Error] Processing {local_name}: {e}")
             insert_load_log(
                 local_name, "SYSTEM", "error", f"Async processing failed: {str(e)}",
-                mall_id=local.get("mall_id"), local_id=local.get("id")
+                mall_id=local.get("mall_id"),
+                local_id=local.get("id"),
+                canal=local.get("sftp_protocol"),
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_async_wrapper", "exception": str(e)},
             )
             
             # Increment Failures

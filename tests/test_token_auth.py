@@ -1,5 +1,6 @@
 import asyncio
 import os
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 import httpx
@@ -35,11 +36,36 @@ class ASGITestClient:
         return self._request("PUT", path, **kwargs)
 
 
-def build_test_client():
+class _FakeSupabaseTable:
+    def __init__(self, supabase, table_name):
+        self.supabase = supabase
+        self.table_name = table_name
+        self._payload = None
+
+    def insert(self, payload):
+        self._payload = payload
+        return self
+
+    def execute(self):
+        rows = self.supabase.tables.setdefault(self.table_name, [])
+        payload = dict(self._payload or {})
+        rows.append(payload)
+        return SimpleNamespace(data=[payload])
+
+
+class _FakeSupabase:
+    def __init__(self):
+        self.tables = {}
+
+    def table(self, table_name):
+        return _FakeSupabaseTable(self, table_name)
+
+
+def build_test_client(supabase_client=None):
     os.environ.setdefault("MSMALL_TOKEN_JWT_SECRET", "test-secret-123")
     app = FastAPI()
     store = InMemoryTokenStore()
-    svc = TokenService(store=store)
+    svc = TokenService(store=store, supabase_client=supabase_client)
     app.include_router(create_router())
     app.dependency_overrides[get_token_service] = lambda: svc
     return ASGITestClient(app), svc, store
@@ -111,6 +137,58 @@ def test_exporter_issue_use_refresh_revoke_flow():
         json={"mall_id": "mall-1", "local_id": "local-1"},
     )
     assert reused.status_code == 401
+
+
+def test_exporter_sync_ingest_writes_structured_load_log():
+    fake_supabase = _FakeSupabase()
+    client, svc, store = build_test_client(fake_supabase)
+    store.local_codes[("mall-1", "local-1")] = "LOC-001"
+    store.local_names[("mall-1", "local-1")] = "Zara"
+
+    admin_access = bootstrap_manage_token(client, svc, store)
+    sa = client.post(
+        "/service-accounts",
+        headers={"Authorization": f"Bearer {admin_access}"},
+        json={"mall_id": "mall-1", "local_id": "local-1", "token_type": "exporter", "scopes": ["export:write", "mapping:read"]},
+    )
+    assert sa.status_code == 200, sa.text
+
+    issue = client.post(
+        "/auth/token",
+        json={"token_type": "exporter", "client_id": sa.json()["client_id"], "client_secret": sa.json()["client_secret"]},
+    )
+    assert issue.status_code == 200, issue.text
+
+    ingest = client.post(
+        "/api/v1/exporter/sync/ingest",
+        headers={"Authorization": f"Bearer {issue.json()['access_token']}"},
+        json={
+            "mall_id": "mall-1",
+            "local_id": "local-1",
+            "rows": [{
+                "documento_numero": "FAC-1001",
+                "documento_tipo": "factura",
+                "fecha_venta": "2026-03-09",
+                "hora_venta": "10:15:00",
+                "total_bruto": 120,
+                "total_impuesto": 18,
+                "total_neto": 138,
+            }],
+            "meta": {
+                "batch_id": "batch-web-001",
+                "filename": "mall-demo-sync.json",
+            },
+        },
+    )
+    assert ingest.status_code == 200, ingest.text
+
+    logs = fake_supabase.tables.get("logs_carga") or []
+    assert len(logs) == 1
+    assert logs[0]["canal"] == "WebService"
+    assert logs[0]["local_nombre"] == "Zara"
+    assert logs[0]["batch_id"] == "batch-web-001"
+    assert logs[0]["records_processed"] == 1
+    assert logs[0]["error_count"] == 0
 
 
 def test_exporter_token_handles_store_lookup_failure_without_500():

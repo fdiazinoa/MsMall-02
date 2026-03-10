@@ -1296,6 +1296,20 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
             sales_stats = promoter(persist_rows) or {}
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"No se pudo promover a ventas: {exc}") from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Exporter sales promotion failed mall=%s local=%s batch=%s: %s",
+                payload_mall_id,
+                payload_local_id,
+                batch_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error promoviendo ventas WebService a public.ventas: {exc}",
+            ) from exc
         ventas_inserted = int(sales_stats.get("inserted") or 0)
         ventas_updated = int(sales_stats.get("updated") or 0)
         response = {

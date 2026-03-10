@@ -12,6 +12,7 @@ from routers.token_auth import (
     create_router,
     get_token_service,
 )
+from services.exporter_sales_promotion_service import build_sales_dedup_key
 
 
 class ASGITestClient:
@@ -335,12 +336,21 @@ def test_exporter_sync_ingest_transaction_persists_and_dedups():
     assert j1["codigo_cliente"] == "CLI-001"
     assert j1["inserted"] == 1
     assert j1["updated"] == 0
+    assert j1["ventas_inserted"] == 1
+    assert j1["ventas_updated"] == 0
 
     rows_after_first = store.list_exporter_ingest_rows()
     assert len(rows_after_first) == 1
     assert rows_after_first[0]["documento_numero"] == "F-1001"
     assert rows_after_first[0]["documento_tipo"] == "factura"
     assert rows_after_first[0]["codigo_cliente"] == "CLI-001"
+    sales_after_first = store.list_sales_rows()
+    assert len(sales_after_first) == 1
+    assert sales_after_first[0]["factura_no"] == "F-1001"
+    assert sales_after_first[0]["fecha"] == "2026-02-26"
+    assert sales_after_first[0]["hora_transaccion"] == "10:20:30"
+    assert sales_after_first[0]["total_impuestos"] == 19.0
+    assert sales_after_first[0]["metadata"]["source"] == "exporter_webservice"
 
     payload["rows"][0]["total_neto"] = "82.00"
     r2 = client.post("/api/v1/exporter/sync/ingest", headers={"Authorization": f"Bearer {access_token}"}, json=payload)
@@ -348,10 +358,15 @@ def test_exporter_sync_ingest_transaction_persists_and_dedups():
     j2 = r2.json()
     assert j2["inserted"] == 0
     assert j2["updated"] == 1
+    assert j2["ventas_inserted"] == 0
+    assert j2["ventas_updated"] == 1
 
     rows_after_second = store.list_exporter_ingest_rows()
     assert len(rows_after_second) == 1
     assert rows_after_second[0]["total_neto"] == 82.0
+    sales_after_second = store.list_sales_rows()
+    assert len(sales_after_second) == 1
+    assert sales_after_second[0]["total_neto"] == 82.0
 
 
 def test_exporter_sync_ingest_daily_requires_resumen_id_when_no_documento():
@@ -392,10 +407,101 @@ def test_exporter_sync_ingest_daily_requires_resumen_id_when_no_documento():
     j = ok.json()
     assert j["granularity"] == "daily"
     assert j["inserted"] == 1
+    assert j["ventas_inserted"] == 1
+    assert j["ventas_updated"] == 0
     rows = store.list_exporter_ingest_rows()
     assert len(rows) == 1
     assert rows[0]["hora_venta"] is None
     assert rows[0]["resumen_id"] == "local-1-2026-02-26"
+    sales_rows = store.list_sales_rows()
+    assert len(sales_rows) == 1
+    assert sales_rows[0]["factura_no"] == "WS-DAILY:local-1-2026-02-26"
+    assert sales_rows[0].get("hora_transaccion") is None
+    assert sales_rows[0]["metadata"]["granularity"] == "daily"
+
+
+def test_exporter_sync_ingest_updates_existing_venta_row():
+    client, svc, store = build_test_client()
+    store.local_codes[("mall-1", "local-1")] = "CLI-001"
+    existing_sale = {
+        "id": "venta-1",
+        "mall_id": "mall-1",
+        "local_id": "local-1",
+        "fecha": "2026-02-26",
+        "factura_no": "F-1001",
+        "hora_transaccion": "09:30:00",
+        "total_bruto": 100.0,
+        "total_impuestos": 19.0,
+        "total_neto": 81.0,
+        "metadata": {"source": "file_import"},
+        "created_at": "2026-02-26T10:00:00+00:00",
+        "updated_at": "2026-02-26T10:00:00+00:00",
+    }
+    store.sales_rows[build_sales_dedup_key(existing_sale)] = dict(existing_sale)
+    access_token = _issue_exporter_access_for_local(client, svc, store, "mall-1", "local-1")
+
+    response = client.post(
+        "/api/v1/exporter/sync/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "mall_id": "mall-1",
+            "local_id": "local-1",
+            "rows": [{
+                "factura_numero": "F-1001",
+                "fecha_venta": "2026-02-26",
+                "hora_venta": "10:20:30",
+                "total_bruto": 118.0,
+                "total_impuestos": 18.0,
+                "total_neto": 100.0,
+            }],
+            "meta": {"granularity": "transaction", "batch_id": "batch-ventas-1"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ventas_inserted"] == 0
+    assert payload["ventas_updated"] == 1
+    sales_rows = store.list_sales_rows()
+    assert len(sales_rows) == 1
+    assert sales_rows[0]["factura_no"] == "F-1001"
+    assert sales_rows[0]["total_bruto"] == 118.0
+    assert sales_rows[0]["total_impuestos"] == 18.0
+    assert sales_rows[0]["total_neto"] == 100.0
+    assert sales_rows[0]["metadata"]["source"] == "exporter_webservice"
+
+
+def test_exporter_sync_ingest_returns_promotion_error_detail():
+    client, svc, store = build_test_client()
+    store.local_codes[("mall-1", "local-1")] = "CLI-001"
+    access_token = _issue_exporter_access_for_local(client, svc, store, "mall-1", "local-1")
+
+    def _raise_promotion_error(_rows):
+        raise RuntimeError('column "factura_no" of relation "ventas" does not exist')
+
+    store.promote_exporter_ingest_rows = _raise_promotion_error  # type: ignore[method-assign]
+
+    response = client.post(
+        "/api/v1/exporter/sync/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "mall_id": "mall-1",
+            "local_id": "local-1",
+            "rows": [{
+                "factura_numero": "F-1001",
+                "fecha_venta": "2026-02-26",
+                "hora_venta": "10:20:30",
+                "total_bruto": 118.0,
+                "total_impuestos": 18.0,
+                "total_neto": 100.0,
+            }],
+            "meta": {"granularity": "transaction", "batch_id": "batch-error-1"},
+        },
+    )
+
+    assert response.status_code == 500, response.text
+    assert 'Error promoviendo ventas WebService a public.ventas' in response.json()["detail"]
+    assert 'factura_no' in response.json()["detail"]
 
 
 def test_exporter_webservice_config_crud_endpoints():

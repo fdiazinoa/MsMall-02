@@ -471,6 +471,39 @@ def test_exporter_sync_ingest_updates_existing_venta_row():
     assert sales_rows[0]["metadata"]["source"] == "exporter_webservice"
 
 
+def test_exporter_sync_ingest_returns_promotion_error_detail():
+    client, svc, store = build_test_client()
+    store.local_codes[("mall-1", "local-1")] = "CLI-001"
+    access_token = _issue_exporter_access_for_local(client, svc, store, "mall-1", "local-1")
+
+    def _raise_promotion_error(_rows):
+        raise RuntimeError('column "factura_no" of relation "ventas" does not exist')
+
+    store.promote_exporter_ingest_rows = _raise_promotion_error  # type: ignore[method-assign]
+
+    response = client.post(
+        "/api/v1/exporter/sync/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "mall_id": "mall-1",
+            "local_id": "local-1",
+            "rows": [{
+                "factura_numero": "F-1001",
+                "fecha_venta": "2026-02-26",
+                "hora_venta": "10:20:30",
+                "total_bruto": 118.0,
+                "total_impuestos": 18.0,
+                "total_neto": 100.0,
+            }],
+            "meta": {"granularity": "transaction", "batch_id": "batch-error-1"},
+        },
+    )
+
+    assert response.status_code == 500, response.text
+    assert 'Error promoviendo ventas WebService a public.ventas' in response.json()["detail"]
+    assert 'factura_no' in response.json()["detail"]
+
+
 def test_exporter_webservice_config_crud_endpoints():
     client, svc, store = build_test_client()
     admin_access = bootstrap_manage_token(client, svc, store)

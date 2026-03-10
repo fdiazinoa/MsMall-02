@@ -15,6 +15,11 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
+from services.exporter_sales_promotion_service import (
+    build_sales_dedup_key,
+    prepare_exporter_sales_rows,
+    promote_exporter_rows_to_sales,
+)
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 
 try:
@@ -284,6 +289,10 @@ class SupabaseTokenStore:
         inserted = sum(1 for key in dedup_keys if key not in existing)
         return {"inserted": inserted, "updated": len(dedup_keys) - inserted}
 
+    def promote_exporter_ingest_rows(self, rows: List[Dict[str, Any]]) -> Dict[str, int]:
+        self._require_db()
+        return promote_exporter_rows_to_sales(self.db, rows, logger=logger)
+
     def get_exporter_webservice_config(self, mall_id: str, local_id: str) -> Optional[Dict[str, Any]]:
         self._require_db()
         res = (
@@ -357,6 +366,7 @@ class InMemoryTokenStore:
         self.local_codes: Dict[Tuple[str, str], str] = {}
         self.local_names: Dict[Tuple[str, str], str] = {}
         self.exporter_ingest_rows: Dict[str, Dict[str, Any]] = {}
+        self.sales_rows: Dict[str, Dict[str, Any]] = {}
         self.exporter_webservice_configs: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     def create_service_account(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -477,6 +487,36 @@ class InMemoryTokenStore:
 
     def list_exporter_ingest_rows(self) -> List[Dict[str, Any]]:
         return list(self.exporter_ingest_rows.values())
+
+    def promote_exporter_ingest_rows(self, rows: List[Dict[str, Any]]) -> Dict[str, int]:
+        prepared_rows = prepare_exporter_sales_rows(rows)
+        inserted = 0
+        updated = 0
+        for row in prepared_rows:
+            dedup_key = build_sales_dedup_key(row) or str(uuid.uuid4())
+            now_iso = utcnow().isoformat()
+            current = self.sales_rows.get(dedup_key)
+            if current:
+                self.sales_rows[dedup_key] = {
+                    **current,
+                    **row,
+                    "id": current.get("id") or str(uuid.uuid4()),
+                    "created_at": current.get("created_at") or now_iso,
+                    "updated_at": now_iso,
+                }
+                updated += 1
+            else:
+                self.sales_rows[dedup_key] = {
+                    **row,
+                    "id": str(uuid.uuid4()),
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
+                }
+                inserted += 1
+        return {"processed": len(prepared_rows), "inserted": inserted, "updated": updated}
+
+    def list_sales_rows(self) -> List[Dict[str, Any]]:
+        return list(self.sales_rows.values())
 
     def get_exporter_webservice_config(self, mall_id: str, local_id: str) -> Optional[Dict[str, Any]]:
         row = self.exporter_webservice_configs.get((mall_id, local_id))
@@ -1168,6 +1208,8 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
                 "received": 0,
                 "inserted": 0,
                 "updated": 0,
+                "ventas_inserted": 0,
+                "ventas_updated": 0,
                 "probe": bool(meta.get("probe")),
                 "batch_id": batch_id,
             }
@@ -1247,6 +1289,15 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
         stats = upsert_result(persist_rows) or {}
         inserted = int(stats.get("inserted") or 0)
         updated = int(stats.get("updated") or 0)
+        promoter = getattr(svc.store, "promote_exporter_ingest_rows", None)
+        if not callable(promoter):
+            raise HTTPException(status_code=500, detail="Store no soporta promocion de ventas exporter")
+        try:
+            sales_stats = promoter(persist_rows) or {}
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"No se pudo promover a ventas: {exc}") from exc
+        ventas_inserted = int(sales_stats.get("inserted") or 0)
+        ventas_updated = int(sales_stats.get("updated") or 0)
         response = {
             "accepted": True,
             "mall_id": payload_mall_id,
@@ -1257,14 +1308,19 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
             "received": len(rows),
             "inserted": inserted,
             "updated": updated,
+            "ventas_inserted": ventas_inserted,
+            "ventas_updated": ventas_updated,
             "batch_id": batch_id,
         }
         _write_webservice_log(
             estado="exito",
-            mensaje=f"Carga vía WebService completada. {len(rows)} registros procesados. {inserted} nuevos, {updated} actualizados.",
+            mensaje=(
+                f"Carga vía WebService completada. {len(rows)} registros procesados. "
+                f"Ventas: {ventas_inserted} nuevas, {ventas_updated} actualizadas."
+            ),
             records_processed=len(rows),
             error_count=0,
-            extra_metadata=response,
+            extra_metadata={**response, "staging_inserted": inserted, "staging_updated": updated},
         )
         return response
     except HTTPException as exc:

@@ -2781,6 +2781,14 @@ SYSTEM_FIELDS_SYNONYMS = {
 }
 
 
+def _remote_analysis_timeout_seconds(filename: Optional[str], tipo_archivo: Optional[str] = None) -> float:
+    normalized_type = str(tipo_archivo or "").strip().upper()
+    normalized_name = str(filename or "").strip().lower()
+    if normalized_type == "JSON" or normalized_name.endswith(".json"):
+        return 420.0
+    return 180.0
+
+
 
 
 def _perform_mapping_analysis(decoded_content, filename, tipo_archivo=None, force_has_header: Optional[bool] = None, data_start_row: Optional[int] = None):
@@ -2969,6 +2977,7 @@ async def analyze_remote_mapping(
     try:
         content = ""
         loop = asyncio.get_event_loop()
+        analysis_timeout_seconds = _remote_analysis_timeout_seconds(req.ruta, req.tipo_archivo)
         
         def _read_remote_sample():
             # Determine if we should read all (JSON) or sample (CSV)
@@ -3008,10 +3017,9 @@ async def analyze_remote_mapping(
             return ""
 
         # Usar wait_for para evitar hangs si el archivo es gigante o la red falla
-        # Increased timeout for big JSON files
         content = await asyncio.wait_for(
             loop.run_in_executor(executor, _read_remote_sample),
-            timeout=120.0 
+            timeout=analysis_timeout_seconds
         )
         if not content:
             return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
@@ -3025,7 +3033,10 @@ async def analyze_remote_mapping(
         )
         
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Timeout analizando archivo remoto (el archivo podría ser demasiado grande o la conexión lenta)")
+        raise HTTPException(
+            status_code=504,
+            detail="Timeout analizando archivo remoto (el archivo podria ser grande y la primera carga puede tardar varios minutos)",
+        )
     except Exception as e:
         logger.error(f"Error analyzing remote mapping: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3876,6 +3887,10 @@ async def analyze_remote_file(
         ruta_remota = config_data.get("ruta_remota") or config_data.get("sftp_path", ".")
         protocolo = config_data.get("protocolo") or config_data.get("sftp_protocol", "SFTP")
         analysis_filename = req.filename
+        analysis_timeout_seconds = _remote_analysis_timeout_seconds(
+            req.filename,
+            config_data.get("tipo_archivo"),
+        )
         
         loop = asyncio.get_event_loop()
         
@@ -3923,7 +3938,7 @@ async def analyze_remote_file(
 
         content = await asyncio.wait_for(
             loop.run_in_executor(executor, _read_file_sample),
-            timeout=120.0
+            timeout=analysis_timeout_seconds
         )
         
         if not content:
@@ -3943,7 +3958,10 @@ async def analyze_remote_file(
         return analysis
         
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Timeout analizando archivo")
+        raise HTTPException(
+            status_code=504,
+            detail="Timeout analizando archivo remoto (el archivo podria ser grande y la primera carga puede tardar varios minutos)",
+        )
     except Exception as e:
         logger.error(f"Error analyzing remote file: {e}")
         raise HTTPException(status_code=500, detail=str(e))

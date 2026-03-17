@@ -961,6 +961,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     if (!activeConfigId) return;
     const config = configs.find(c => c.id === activeConfigId);
     if (!config) return;
+    const targetFile = (manualFiles || []).find((file) => file.nombre === filename);
+    const isLargeRemoteFile = Number(targetFile?.tamano || 0) >= 15 * 1024 * 1024;
+    const analysisTimeoutMs = (isLargeRemoteFile || filename.toLowerCase().endsWith('.json')) ? 420000 : 180000;
+    const mappingReady = hasRequiredMapping(config);
 
     setExecutingFile(filename);
     setShowProgressModal(true);
@@ -969,30 +973,39 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     setProgressRecords(0);
 
     try {
-      // Step 1: Analyze file structure to validate content and mapping readiness.
-      console.log("Analizando estructura del archivo:", filename);
-      setProgressStep('processing');
-      setProgressMessage(`Analizando estructura del archivo...`);
-      const analysis = await ApiService.analyzeSingleFile(config, filename, authToken);
+      if (!mappingReady) {
+        // First load or incomplete mapping: analyze remote structure before processing.
+        console.log("Analizando estructura del archivo:", filename);
+        setProgressStep('processing');
+        setProgressMessage(
+          isLargeRemoteFile
+            ? 'Analizando estructura del archivo grande. La primera carga puede tardar varios minutos...'
+            : 'Analizando estructura del archivo...'
+        );
+        const analysis = await ApiService.analyzeSingleFile(
+          config,
+          filename,
+          authToken,
+          { timeoutMs: analysisTimeoutMs }
+        );
 
-      if (!hasDataRowsInAnalysis(analysis)) {
-        const previewLines = Array.isArray(analysis?.raw_preview_lines)
-          ? analysis.raw_preview_lines.filter((line: string) => String(line || '').trim() !== '')
-          : [];
+        if (!hasDataRowsInAnalysis(analysis)) {
+          const previewLines = Array.isArray(analysis?.raw_preview_lines)
+            ? analysis.raw_preview_lines.filter((line: string) => String(line || '').trim() !== '')
+            : [];
 
-        if (previewLines.length === 0) {
-          setProgressStep('error');
-          setProgressMessage('⚠️ El archivo seleccionado no contiene filas de data para importar (vacío o solo encabezado).');
-          setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
-          return;
+          if (previewLines.length === 0) {
+            setProgressStep('error');
+            setProgressMessage('⚠️ El archivo seleccionado no contiene filas de data para importar (vacío o solo encabezado).');
+            setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
+            return;
+          }
+
+          console.warn("Análisis preliminar sin filas detectadas, pero hay contenido crudo. Se intentará procesar.");
+          setProgressStep('processing');
+          setProgressMessage('⚠️ El análisis preliminar no detectó filas con certeza, intentando procesar el archivo...');
         }
 
-        console.warn("Análisis preliminar sin filas detectadas, pero hay contenido crudo. Se intentará procesar.");
-        setProgressStep('processing');
-        setProgressMessage('⚠️ El análisis preliminar no detectó filas con certeza, intentando procesar el archivo...');
-      }
-
-      if (!hasRequiredMapping(config)) {
         const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
         const currentMapping = analysis.current_mapping || {};
         const missingFields = requiredFields.filter(f => !currentMapping[f]);
@@ -1014,6 +1027,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         }
       } else {
         console.log("Mapeo requerido detectado, omitiendo análisis remoto previo");
+        setProgressStep('processing');
+        setProgressMessage('Mapeo existente detectado. Omitiendo análisis previo y preparando inserción...');
       }
 
       // Step 2: If mapping is OK, process directly

@@ -994,7 +994,12 @@ export const ApiService = {
     }
   },
 
-  async analyzeSingleFile(config: ImportConfig, filename: string, token?: string): Promise<{
+  async analyzeSingleFile(
+    config: ImportConfig,
+    filename: string,
+    token?: string,
+    options?: { timeoutMs?: number }
+  ): Promise<{
     csv_headers: string[],
     suggested_mapping: Record<string, any>,
     sample_row: Record<string, any>,
@@ -1009,13 +1014,15 @@ export const ApiService = {
       filename,
       config
     };
+    const normalizedFilename = String(filename || '').toLowerCase();
+    const timeoutMs = options?.timeoutMs ?? (normalizedFilename.endsWith('.json') ? 420000 : 180000);
 
     const maxAttempts = 2;
     let lastError: any = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
         const response = await fetch(`${BASE_URL}/remote/analyze-file`, {
@@ -1048,7 +1055,7 @@ export const ApiService = {
         }
 
         if (isTimeout) {
-          throw new Error("Timeout analizando archivo remoto. Intenta nuevamente.");
+          throw new Error("Timeout analizando archivo remoto. Para archivos grandes la primera carga puede tardar varios minutos.");
         }
         if (isNetworkFailure) {
           throw new Error("No se pudo contactar el servicio de análisis remoto (Failed to fetch). Verifica red/VPN e intenta de nuevo.");

@@ -94,6 +94,30 @@ const normalizeErrorMessage = (error: any, fallbackMessage: string): string => {
   return fallbackMessage;
 };
 
+const getRemoteOperationTimeoutMs = (
+  filename: string,
+  options?: {
+    timeoutMs?: number;
+    largeFile?: boolean;
+    operation?: 'analysis' | 'execute';
+  }
+): number => {
+  if (options?.timeoutMs && options.timeoutMs > 0) return options.timeoutMs;
+
+  const normalizedFilename = String(filename || '').toLowerCase();
+  const isJson = normalizedFilename.endsWith('.json');
+  const isLargeFile = Boolean(options?.largeFile);
+  const operation = options?.operation || 'analysis';
+
+  if (operation === 'execute') {
+    if (isJson || isLargeFile) return 900000;
+    return 300000;
+  }
+
+  if (isJson || isLargeFile) return 420000;
+  return 180000;
+};
+
 const toFiniteNumber = (value: any): number => {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
@@ -1010,7 +1034,7 @@ export const ApiService = {
     config: ImportConfig,
     filename: string,
     token?: string,
-    options?: { timeoutMs?: number }
+    options?: { timeoutMs?: number; largeFile?: boolean }
   ): Promise<{
     csv_headers: string[],
     suggested_mapping: Record<string, any>,
@@ -1026,8 +1050,11 @@ export const ApiService = {
       filename,
       config
     };
-    const normalizedFilename = String(filename || '').toLowerCase();
-    const timeoutMs = options?.timeoutMs ?? (normalizedFilename.endsWith('.json') ? 420000 : 180000);
+    const timeoutMs = getRemoteOperationTimeoutMs(filename, {
+      timeoutMs: options?.timeoutMs,
+      largeFile: options?.largeFile,
+      operation: 'analysis'
+    });
 
     const maxAttempts = 2;
     let lastError: any = null;
@@ -1079,7 +1106,12 @@ export const ApiService = {
     throw new Error(normalizeErrorMessage(lastError, "Error analizando archivo"));
   },
 
-  async executeManualImport(config: ImportConfig, filename: string, token?: string): Promise<{ status: string, message: string, errors?: any[], records_processed?: number }> {
+  async executeManualImport(
+    config: ImportConfig,
+    filename: string,
+    token?: string,
+    options?: { timeoutMs?: number; largeFile?: boolean }
+  ): Promise<{ status: string, message: string, errors?: any[], records_processed?: number }> {
     const requestId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
       ? crypto.randomUUID()
       : `req-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
@@ -1093,11 +1125,16 @@ export const ApiService = {
 
     const baseUrls = getExecuteManualBaseUrls();
     let lastError: any = null;
+    const timeoutMs = getRemoteOperationTimeoutMs(filename, {
+      timeoutMs: options?.timeoutMs,
+      largeFile: options?.largeFile,
+      operation: 'execute'
+    });
 
     for (let i = 0; i < baseUrls.length; i++) {
       const baseUrl = baseUrls[i];
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
         const response = await fetch(`${baseUrl}/remote/execute-manual`, {
@@ -1109,8 +1146,7 @@ export const ApiService = {
         clearTimeout(timeoutId);
 
         if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ detail: "Error ejecutando importación" }));
-          const serverDetail = errorData.detail || "Error ejecutando importación";
+          const serverDetail = await parseErrorDetail(response, "Error ejecutando importación");
 
           // If proxy route fails with 5xx, try direct backend (if available).
           if (response.status >= 500 && i < baseUrls.length - 1) {
@@ -1135,7 +1171,7 @@ export const ApiService = {
         }
 
         if (isTimeout) {
-          throw new Error("Timeout ejecutando importación remota. Intenta nuevamente.");
+          throw new Error("Timeout ejecutando importación remota. Para archivos grandes la primera carga puede tardar varios minutos.");
         }
         if (isNetworkFailure) {
           throw new Error("No se pudo confirmar la importación por cambio de red (ERR_NETWORK_CHANGED). Revisa conexión/VPN e intenta de nuevo.");

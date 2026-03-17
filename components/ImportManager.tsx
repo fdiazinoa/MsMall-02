@@ -819,7 +819,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       }));
 
       try {
-        const result = await ApiService.executeManualImport(config, file.nombre, authToken);
+        const isLargeRemoteFile = Number(file?.tamano || 0) >= 15 * 1024 * 1024;
+        const result = await ApiService.executeManualImport(
+          config,
+          file.nombre,
+          authToken,
+          { largeFile: isLargeRemoteFile }
+        );
         const records = Number(result?.records_processed || 0);
         const ok = (result?.status === 'success' || result?.status === 'partial') && records > 0;
 
@@ -957,6 +963,37 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     }
   };
 
+  const tryRecoverSuccessfulImport = async (
+    config: ImportConfig,
+    filename: string
+  ): Promise<{
+    recovered: boolean;
+    processedCount: number | null;
+    latestFiles: { nombre: string, fecha: string, tamano: number }[];
+    renamedExists: boolean;
+    originalExists: boolean;
+  }> => {
+    let latestFiles: { nombre: string, fecha: string, tamano: number }[] = [];
+    try {
+      latestFiles = await ApiService.listRemoteFiles(config, authToken);
+    } catch (error) {
+      console.warn("No se pudo listar archivos remotos al intentar recuperar la ejecución:", error);
+    }
+
+    const renamedExists = latestFiles.some((file) => file.nombre === `PR_${filename}`);
+    const originalExists = latestFiles.some((file) => file.nombre === filename);
+    const processedCount = await resolveProcessedCountFromLogs(config, filename);
+    const recovered = (renamedExists && !originalExists) || ((processedCount || 0) > 0);
+
+    return {
+      recovered,
+      processedCount,
+      latestFiles,
+      renamedExists,
+      originalExists
+    };
+  };
+
   const handleExecuteManualFile = async (filename: string) => {
     if (!activeConfigId) return;
     const config = configs.find(c => c.id === activeConfigId);
@@ -1034,9 +1071,18 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       // Step 2: If mapping is OK, process directly
       console.log("Mapeo completo, procesando directamente");
       setProgressStep('inserting');
-      setProgressMessage(`Procesando e insertando registros en la base de datos...`);
+      setProgressMessage(
+        isLargeRemoteFile
+          ? 'Procesando archivo grande e insertando registros. Esto puede tardar varios minutos...'
+          : 'Procesando e insertando registros en la base de datos...'
+      );
 
-      const result = await ApiService.executeManualImport(config, filename, authToken);
+      const result = await ApiService.executeManualImport(
+        config,
+        filename,
+        authToken,
+        { largeFile: isLargeRemoteFile }
+      );
 
       setProgressRecords(result.records_processed || 0);
 
@@ -1060,28 +1106,33 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       console.error(error);
 
       if (
+        errorMsg.includes('Timeout ejecutando importación remota') ||
         errorMsg.includes('ERR_NETWORK_CHANGED') ||
         errorMsg.includes('Failed to fetch') ||
         errorMsg.includes('No se pudo confirmar la importación')
       ) {
         try {
-          const latestFiles = await ApiService.listRemoteFiles(config, authToken);
-          const renamedExists = latestFiles.some(f => f.nombre === `PR_${filename}`);
-          const originalExists = latestFiles.some(f => f.nombre === filename);
+          const recovery = await tryRecoverSuccessfulImport(config, filename);
 
-          if (renamedExists && !originalExists) {
-            const processedCount = await resolveProcessedCountFromLogs(config, filename);
+          if (recovery.recovered) {
+            const processedCount = recovery.processedCount;
             if (processedCount && processedCount > 0) {
               setProgressRecords(processedCount);
             }
             setProgressStep('complete');
             setProgressMessage(
-              processedCount && processedCount > 0
-                ? `Conexión cambiada durante la confirmación, pero el archivo se procesó correctamente (${processedCount} registros).`
-                : 'Conexión cambiada durante la confirmación, pero el archivo quedó procesado (renombrado con PR_).'
+              recovery.renamedExists && !recovery.originalExists
+                ? (
+                  processedCount && processedCount > 0
+                    ? `La confirmación tardó demasiado, pero el archivo se procesó correctamente (${processedCount} registros).`
+                    : 'La confirmación tardó demasiado, pero el archivo quedó procesado y renombrado con PR_.'
+                )
+                : `La confirmación tardó demasiado, pero el monitor reporta ${processedCount || 0} registros procesados.`
             );
             setFileStatuses(prev => ({ ...prev, [filename]: 'success' }));
-            setManualFiles(latestFiles);
+            if (recovery.latestFiles.length > 0) {
+              setManualFiles(recovery.latestFiles);
+            }
             return;
           }
         } catch (checkErr) {
@@ -1105,29 +1156,25 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     if (!activeConfigId || !mappingData) return;
     const config = configs.find(c => c.id === activeConfigId);
     if (!config) return;
+    const targetFilename = mappingData.filename;
+    const updatedConfig = {
+      ...config,
+      mapping: { ...mapping },
+      constants
+    };
 
     setShowMappingModal(false);
-    setExecutingFile(mappingData.filename);
+    setExecutingFile(targetFilename);
 
     // Show progress modal
     setShowProgressModal(true);
     setProgressStep('downloading');
-    setProgressMessage(`Conectando al servidor y descargando ${mappingData.filename}...`);
+    setProgressMessage(`Conectando al servidor y descargando ${targetFilename}...`);
     setProgressRecords(0);
 
     try {
-      // Combine mapping and constants into final mapping
-      const finalMapping: Record<string, string> = { ...mapping };
-
       console.log("Mapping recibido del modal:", mapping);
       console.log("Constants recibidos del modal:", constants);
-
-      // Update config with new mapping and constants
-      const updatedConfig = {
-        ...config,
-        mapping: finalMapping,
-        constants: constants
-      };
 
       console.log("Configuración actualizada a enviar:", updatedConfig);
 
@@ -1136,11 +1183,21 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       setProgressMessage('Aplicando mapeo de campos personalizado...');
 
       // Show inserting step
+      const isLargeRemoteFile = Number((manualFiles || []).find((file) => file.nombre === targetFilename)?.tamano || 0) >= 15 * 1024 * 1024;
       setProgressStep('inserting');
-      setProgressMessage('Procesando e insertando registros en la base de datos...');
+      setProgressMessage(
+        isLargeRemoteFile
+          ? 'Procesando archivo grande e insertando registros. Esto puede tardar varios minutos...'
+          : 'Procesando e insertando registros en la base de datos...'
+      );
 
       // Execute import with updated mapping
-      const result = await ApiService.executeManualImport(updatedConfig, mappingData.filename, authToken);
+      const result = await ApiService.executeManualImport(
+        updatedConfig,
+        targetFilename,
+        authToken,
+        { largeFile: isLargeRemoteFile }
+      );
 
       setProgressRecords(result.records_processed || 0);
 
@@ -1153,7 +1210,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           successMessage += ` (${result.errors.length} errores parciales)`;
         }
         setProgressMessage(successMessage);
-        setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'success' }));
+        setFileStatuses(prev => ({ ...prev, [targetFilename]: 'success' }));
 
         // Auto-close after 3 seconds on success
         setTimeout(() => {
@@ -1164,15 +1221,50 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       } else {
         setProgressStep('error');
         setProgressMessage(result.message || '❌ Error en la importación');
-        setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'error' }));
+        setFileStatuses(prev => ({ ...prev, [targetFilename]: 'error' }));
       }
 
       setMappingData(null);
     } catch (error: any) {
       console.error(error);
+      const errorMsg = String(error?.message || error || '');
+      if (
+        errorMsg.includes('Timeout ejecutando importación remota') ||
+        errorMsg.includes('ERR_NETWORK_CHANGED') ||
+        errorMsg.includes('Failed to fetch') ||
+        errorMsg.includes('No se pudo confirmar la importación')
+      ) {
+        try {
+          const recovery = await tryRecoverSuccessfulImport(updatedConfig, targetFilename);
+          if (recovery.recovered) {
+            const processedCount = recovery.processedCount;
+            if (processedCount && processedCount > 0) {
+              setProgressRecords(processedCount);
+            }
+            setProgressStep('complete');
+            setProgressMessage(
+              processedCount && processedCount > 0
+                ? `La confirmación tardó demasiado, pero el archivo se procesó correctamente (${processedCount} registros).`
+                : 'La confirmación tardó demasiado, pero el archivo quedó procesado correctamente.'
+            );
+            setFileStatuses(prev => ({ ...prev, [targetFilename]: 'success' }));
+            if (recovery.latestFiles.length > 0) {
+              setManualFiles(recovery.latestFiles);
+            }
+            setTimeout(() => {
+              setShowProgressModal(false);
+              setShowManualModal(true);
+              if (activeConfigId) refreshFileList(activeConfigId);
+            }, 3000);
+            return;
+          }
+        } catch (checkErr) {
+          console.warn("No se pudo verificar estado post error de confirmación:", checkErr);
+        }
+      }
       setProgressStep('error');
       setProgressMessage("❌ Error procesando archivo: " + (error.message || error));
-      setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'error' }));
+      setFileStatuses(prev => ({ ...prev, [targetFilename]: 'error' }));
     } finally {
       setExecutingFile(null);
     }

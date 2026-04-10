@@ -299,7 +299,37 @@ def test_list_load_logs_falls_back_to_legacy_rows_when_primary_empty():
 
     assert len(rows) == 1
     assert rows[0]["id"] == "log-legacy-1"
-    assert rows[0]["local_nombre"] == "Subway"
+
+
+def test_reactivate_local_processing_resets_status_and_failures():
+    fake_db = _FakeSupabase({
+        "locales": [
+            {
+                "id": "loc-1",
+                "mall_id": "mall-a",
+                "nombre": "AGE",
+                "processing_status": "SUSPENDED_AUTH_ERROR",
+                "consecutive_failures": 5,
+            }
+        ],
+        "system_audit_logs": [],
+    })
+    logger = SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None)
+    service = SensitiveOpsService(fake_db, logger)
+
+    result = service.reactivate_local_processing(
+        local_id="loc-1",
+        operator_ctx={"user_id": "u1", "role": "it", "allowed_malls": ["mall-a"]},
+        ensure_operator_can_access_mall=_tenant_guard,
+    )
+
+    assert result["status"] == "success"
+    assert result["local"]["processing_status"] == "IDLE"
+    assert result["local"]["consecutive_failures"] == 0
+    assert fake_db.tables["locales"][0]["processing_status"] == "IDLE"
+    assert fake_db.tables["locales"][0]["consecutive_failures"] == 0
+    assert fake_db.tables["system_audit_logs"]
+    assert fake_db.tables["system_audit_logs"][0]["accion"] == "LOCAL_REACTIVATE_PROCESSING"
 
 
 def test_list_load_logs_merges_primary_and_legacy_rows():

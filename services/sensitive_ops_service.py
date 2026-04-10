@@ -343,11 +343,17 @@ class SensitiveOpsService:
         mall_id = local_row.get("mall_id")
         ensure_operator_can_access_mall(operator_ctx, mall_id)
 
-        update_res = (
+        (
             self.supabase.table("locales")
             .update({"processing_status": "IDLE", "consecutive_failures": 0})
             .eq("id", local_id)
+            .execute()
+        )
+
+        update_res = (
+            self.supabase.table("locales")
             .select("id, processing_status, consecutive_failures")
+            .eq("id", local_id)
             .single()
             .execute()
         )

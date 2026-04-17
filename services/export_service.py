@@ -16,10 +16,12 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from supabase import Client
+from services.local_custom_fields_service import LocalCustomFieldsService
 
 class ExportService:
     def __init__(self, supabase_client: Client):
         self.supabase = supabase_client
+        self.local_custom_fields_service = LocalCustomFieldsService(supabase_client, logger=None)
     
     # --- UTILS ---
     def _get_header_style(self):
@@ -212,7 +214,9 @@ class ExportService:
         agrupacion: str,
         metrica: str,
         mall_id: str = None,
-        local_id: str = None
+        local_id: str = None,
+        custom_dimension_key: Optional[str] = None,
+        custom_filters: Optional[Dict[str, Any]] = None
     ) -> io.BytesIO:
         # Same logic as get_sales_cube in main.py but exporting
         stores_query = self.supabase.table("locales").select("id, nombre")
@@ -223,6 +227,9 @@ class ExportService:
         stores = stores_query.execute().data
         store_map = {str(s['id']): s['nombre'] for s in stores}
         local_ids = list(store_map.keys())
+        snapshot = self.local_custom_fields_service.build_snapshot(mall_id, local_ids, include_inactive=False) if mall_id else self.local_custom_fields_service.build_snapshot("", [], include_inactive=False)
+        if custom_filters:
+            local_ids = self.local_custom_fields_service.filter_local_ids_by_custom_filters(local_ids, snapshot, custom_filters)
 
         sales = []
         if local_ids:
@@ -256,75 +263,55 @@ class ExportService:
         else:
             df = pd.DataFrame(sales)
             df['local_id'] = df['local_id'].astype(str)
-            df['nombre_local'] = df['local_id'].map(store_map).fillna(df['local_id'])
-            df['fecha'] = pd.to_datetime(df['fecha'])
-            
-            # Metric selection
-            # Remember User Terminology: metrica parameter might come as 'total_neto' (user clicked 'Venta Bruta')
-            # But the pivot should show the value of that column.
-            # If user asks for 'transacciones', count rows.
-            
-            if agrupacion == 'dia':
-                df['grupo'] = df['fecha'].dt.strftime('%Y-%m-%d')
-            elif agrupacion == 'semana':
-                df['grupo'] = df['fecha'].dt.to_period('W').astype(str)
-            elif agrupacion == 'mes':
-                df['grupo'] = df['fecha'].dt.to_period('M').astype(str)
-            
-            val_col = metrica
-            agg = 'sum'
-            if metrica == 'transacciones':
-                val_col = 'id' # Any col
-                agg = 'count'
-            else:
-                 # Ensure numeric
-                 df[val_col] = pd.to_numeric(df[val_col], errors='coerce').fillna(0)
-            
-            pivot = df.pivot_table(index='grupo', columns='nombre_local', values=val_col, aggfunc=agg, fill_value=0)
+            df['local_nombre'] = df['local_id'].map(store_map).fillna(df['local_id'])
+            cube = self.local_custom_fields_service.build_cube_response(
+                df,
+                grouping=agrupacion.upper(),
+                metric=metrica,
+                start_date=fecha_inicio,
+                end_date=fecha_fin,
+                snapshot=snapshot,
+                custom_dimension_key=custom_dimension_key,
+            )
             
             # Write Headers
-            ws.cell(row=4, column=1, value=agrupacion.capitalize())
+            ws.cell(row=4, column=1, value=cube.get("row_label") or "Local")
             fill, font = self._get_header_style()
             ws.cell(row=4, column=1).fill = fill
             ws.cell(row=4, column=1).font = font
             
+            visible_columns = [col for col in cube["columns"] if col != "row_label"]
             col_idx = 2
-            for col_name in pivot.columns:
+            for col_name in visible_columns:
                 c = ws.cell(row=4, column=col_idx, value=col_name)
                 c.fill = fill
                 c.font = font
                 col_idx += 1
-            # Total Column Header
-            c = ws.cell(row=4, column=col_idx, value="TOTAL")
-            c.fill = fill
-            c.font = font
             
             # Write Data
             row_idx = 5
-            for idx, row in pivot.iterrows():
-                ws.cell(row=row_idx, column=1, value=str(idx))
+            for row in cube["data"]:
+                label = row.get("row_label") or row.get("local_nombre") or ""
+                ws.cell(row=row_idx, column=1, value=str(label))
+                if row.get("row_type") == "group":
+                    ws.cell(row=row_idx, column=1).font = Font(bold=True)
                 c_idx = 2
-                row_sum = 0
-                for col_name in pivot.columns:
-                    val = row[col_name]
+                for col_name in visible_columns:
+                    val = row.get(col_name, 0)
                     ws.cell(row=row_idx, column=c_idx, value=val).number_format = '$#,##0.00' if metrica != 'transacciones' else '0'
-                    row_sum += val
+                    if row.get("row_type") == "group":
+                        ws.cell(row=row_idx, column=c_idx).font = Font(bold=True)
                     c_idx += 1
-                ws.cell(row=row_idx, column=c_idx, value=row_sum).number_format = '$#,##0.00' if metrica != 'transacciones' else '0'
-                ws.cell(row=row_idx, column=c_idx).font = Font(bold=True)
                 row_idx += 1
             
             # Total Row
             ws.cell(row=row_idx, column=1, value="TOTAL").font = Font(bold=True)
             c_idx = 2
-            grand_total = 0
-            for col_name in pivot.columns:
-                col_sum = pivot[col_name].sum()
+            for col_name in visible_columns:
+                col_sum = cube["grand_totals"].get(col_name, 0)
                 ws.cell(row=row_idx, column=c_idx, value=col_sum).number_format = '$#,##0.00' if metrica != 'transacciones' else '0'
                 ws.cell(row=row_idx, column=c_idx).font = Font(bold=True)
-                grand_total += col_sum
                 c_idx += 1
-            ws.cell(row=row_idx, column=c_idx, value=grand_total).number_format = '$#,##0.00' if metrica != 'transacciones' else '0'
 
         output = io.BytesIO()
         wb.save(output)

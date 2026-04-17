@@ -25,6 +25,7 @@ from worker_importacion import run_worker_async
 from analytics import generate_sales_cube
 from routers import recipes, comparisons, admin_tools
 from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
+from services.local_custom_fields_service import LocalCustomFieldsService
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -68,6 +69,10 @@ IT_ROLES = {"it", "tic"}
 
 def _sensitive_ops_service() -> SensitiveOpsService:
     return SensitiveOpsService(supabase, logger)
+
+
+def _local_custom_fields_service() -> LocalCustomFieldsService:
+    return LocalCustomFieldsService(supabase, logger)
 
 
 # --- LIGHTWEIGHT IN-MEMORY CACHE (TTL) ---
@@ -978,6 +983,53 @@ class StoreSchema(BaseModel):
     porciento_renta: str
     upsert_activo: bool = False
     mall_nombre: Optional[str] = "Mall Plaza"
+
+
+class CustomFieldOptionPayload(BaseModel):
+    id: Optional[str] = None
+    field_definition_id: Optional[str] = None
+    label: str
+    value: str
+    sort_order: int = 0
+    active: bool = True
+    parent_option_id: Optional[str] = None
+
+
+class CustomFieldDefinitionCreateRequest(BaseModel):
+    mall_id: str
+    key: str
+    label: str
+    data_type: str
+    widget_type: str
+    required: bool = False
+    active: bool = True
+    sort_order: int = 0
+    parent_field_id: Optional[str] = None
+    options: List[CustomFieldOptionPayload] = []
+
+
+class CustomFieldDefinitionUpdateRequest(BaseModel):
+    key: Optional[str] = None
+    label: Optional[str] = None
+    data_type: Optional[str] = None
+    widget_type: Optional[str] = None
+    required: Optional[bool] = None
+    active: Optional[bool] = None
+    sort_order: Optional[int] = None
+    parent_field_id: Optional[str] = None
+    options: Optional[List[CustomFieldOptionPayload]] = None
+
+
+class LocalCustomFieldValuePayload(BaseModel):
+    field_definition_id: str
+    value_text: Optional[str] = None
+    value_number: Optional[float] = None
+    value_date: Optional[str] = None
+    selected_option_id: Optional[str] = None
+
+
+class LocalCustomFieldValueUpsertRequest(BaseModel):
+    values: List[LocalCustomFieldValuePayload]
 
 class RemoteRequest(BaseModel):
     protocolo: str = "SFTP"
@@ -2225,6 +2277,70 @@ async def get_stores():
         }
     ]
 
+
+@app.get("/api/v1/locales/custom-fields")
+async def list_local_custom_fields(
+    mall_id: str = Query(...),
+    include_inactive: bool = Query(True),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    return _local_custom_fields_service().list_definitions(mall_id, include_inactive=include_inactive)
+
+
+@app.post("/api/v1/locales/custom-fields")
+async def create_local_custom_field(
+    request: CustomFieldDefinitionCreateRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    return _local_custom_fields_service().create_definition(
+        request.dict(),
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+    )
+
+
+@app.patch("/api/v1/locales/custom-fields/{field_id}")
+async def update_local_custom_field(
+    field_id: str,
+    request: CustomFieldDefinitionUpdateRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    return _local_custom_fields_service().update_definition(
+        field_id,
+        request.dict(exclude_unset=True),
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+    )
+
+
+@app.get("/api/v1/locales/{local_id}/custom-fields")
+async def get_local_custom_fields(
+    local_id: str,
+    include_inactive: bool = Query(False),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    return _local_custom_fields_service().get_local_fields(
+        local_id,
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        include_inactive=include_inactive,
+    )
+
+
+@app.put("/api/v1/locales/{local_id}/custom-fields")
+async def upsert_local_custom_fields(
+    local_id: str,
+    request: LocalCustomFieldValueUpsertRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    return _local_custom_fields_service().upsert_local_values(
+        local_id,
+        [value.dict(exclude_unset=True) for value in request.values],
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+    )
+
 # --- AI & INSIGHTS ENDPOINTS ---
 @app.get("/api/v1/insights/alerts")
 async def get_intelligent_alerts(local_id: Optional[str] = None):
@@ -2465,6 +2581,8 @@ class CubeRequest(BaseModel):
     agrupacion: str = "DIA" # DIA, SEMANA, MES
     metrica: str = "total_neto" # total_neto, total_bruto, transacciones
     local_id: Optional[str] = None
+    custom_dimension_key: Optional[str] = None
+    custom_filters: Optional[Dict[str, Any]] = None
 
 # --- INTELLIGENT AUTO-MAPPING ---
 SYSTEM_FIELDS_SYNONYMS = {
@@ -3411,6 +3529,8 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
     Endpoint para generar el Cubo de Ventas (Matriz) usando datos reales de Supabase (Service Role).
     """
     try:
+        custom_fields_service = _local_custom_fields_service()
+
         # 1. Fetch Locales (Store Map) - Filtered by Mall
         stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
         stores = stores_res.data or []
@@ -3422,6 +3542,16 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
                 # Prevent cross-tenant access and return deterministic empty matrix.
                 return {"columns": ["local_nombre", "TOTAL_FILA"], "data": [], "grand_totals": {}}
             allowed_local_ids = [str(request.local_id)]
+
+        if request.custom_filters:
+            snapshot = custom_fields_service.build_snapshot(mall_id, allowed_local_ids, include_inactive=False)
+            allowed_local_ids = custom_fields_service.filter_local_ids_by_custom_filters(
+                allowed_local_ids,
+                snapshot,
+                request.custom_filters,
+            )
+        else:
+            snapshot = custom_fields_service.build_snapshot(mall_id, allowed_local_ids, include_inactive=False)
 
         if not allowed_local_ids:
             return {"columns": ["local_nombre", "TOTAL_FILA"], "data": [], "grand_totals": {}}
@@ -3476,14 +3606,15 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         # Check if 'cantidad_transacciones' exists in DB? Previous view didn't show it.
         # Let's count rows as transactions.
         
-        # 6. Generate Cube using existing logic
-        # Assuming generate_sales_cube handles the DataFrame aggregation
-        result = generate_sales_cube(
+        # 6. Generate Cube using existing logic or custom hierarchical grouping.
+        result = custom_fields_service.build_cube_response(
             df,
-            request.agrupacion,
-            request.metrica,
+            grouping=request.agrupacion,
+            metric=request.metrica,
             start_date=request.fecha_inicio,
-            end_date=request.fecha_fin
+            end_date=request.fecha_fin,
+            snapshot=snapshot,
+            custom_dimension_key=request.custom_dimension_key,
         )
         return result
         
@@ -4316,16 +4447,21 @@ async def export_sales_cube_excel(
     agrupacion: str = "dia",
     metrica: str = "total_neto",
     local_id: Optional[str] = None,
+    custom_dimension_key: Optional[str] = None,
+    custom_filters: Optional[str] = None,
     current_mall: str = Depends(get_current_mall)
 ):
     try:
+        parsed_custom_filters = json.loads(custom_filters) if custom_filters else None
         data = await export_service.generate_sales_cube_excel(
             fecha_inicio,
             fecha_fin,
             agrupacion,
             metrica,
             mall_id=current_mall,
-            local_id=local_id
+            local_id=local_id,
+            custom_dimension_key=custom_dimension_key,
+            custom_filters=parsed_custom_filters,
         )
         return StreamingResponse(
             data,

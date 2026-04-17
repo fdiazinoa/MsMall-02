@@ -13,6 +13,10 @@ import {
 } from 'lucide-react';
 import { SalesPurge } from './SalesPurge';
 
+interface StoreMaintenanceProps {
+  onOpenCatalogs?: () => void;
+}
+
 type FieldValueState = {
   field_definition_id: string;
   value_text?: string | null;
@@ -210,7 +214,7 @@ const DefinitionOptionsEditor: React.FC<{
   );
 };
 
-export const StoreMaintenance: React.FC = () => {
+export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalogs }) => {
   const { currentMall, isAdmin, isTic, session } = useAuth();
   const canManageStores = isAdmin || isTic;
   const authToken = session?.access_token;
@@ -425,6 +429,16 @@ export const StoreMaintenance: React.FC = () => {
           <p className="text-slate-500">Gestione la configuración contractual, física y los campos libres por mall.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          {onOpenCatalogs && (
+            <button
+              type="button"
+              onClick={onOpenCatalogs}
+              className="border border-slate-200 bg-white text-slate-700 px-4 py-2.5 rounded-xl flex items-center gap-2 hover:bg-slate-50 transition-all shadow-sm font-medium"
+            >
+              <Tag size={18} />
+              Gestionar Catálogos
+            </button>
+          )}
           <button
             onClick={() => setShowCustomFieldsManager(true)}
             className="border border-slate-200 bg-white text-slate-700 px-4 py-2.5 rounded-xl flex items-center gap-2 hover:bg-slate-50 transition-all shadow-sm font-medium"

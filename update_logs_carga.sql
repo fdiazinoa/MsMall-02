@@ -1,3 +1,11 @@
-
--- Add detalles column to logs_carga to store line-level errors
 ALTER TABLE logs_carga ADD COLUMN IF NOT EXISTS detalles JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE logs_carga ADD COLUMN IF NOT EXISTS mall_id UUID;
+ALTER TABLE logs_carga ADD COLUMN IF NOT EXISTS mall_nombre VARCHAR(255);
+ALTER TABLE logs_carga ADD COLUMN IF NOT EXISTS local_id UUID;
+ALTER TABLE logs_carga ADD COLUMN IF NOT EXISTS canal VARCHAR(50);
+ALTER TABLE logs_carga ADD COLUMN IF NOT EXISTS records_processed INTEGER DEFAULT 0;
+ALTER TABLE logs_carga ADD COLUMN IF NOT EXISTS error_count INTEGER DEFAULT 0;
+ALTER TABLE logs_carga ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+
+ALTER TABLE logs_carga
+  ALTER COLUMN batch_id TYPE TEXT USING batch_id::text;

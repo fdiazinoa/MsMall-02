@@ -36,9 +36,20 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     reactivate_segment = _segment(api_ts, "async reactivateStore")
     assert "/reactivate-processing" in reactivate_segment
 
+    custom_defs_segment = _segment(api_ts, "async getLocalCustomFieldDefinitions")
+    assert "/locales/custom-fields?mall_id=" in custom_defs_segment
+    assert ".from('local_custom_field_definitions')" not in custom_defs_segment
+
+    save_custom_values_segment = _segment(api_ts, "async saveStoreCustomFields")
+    assert "/custom-fields" in save_custom_values_segment
+    assert ".from('local_custom_field_values')" not in save_custom_values_segment
+
     assert "ApiService.getRemoteConnections(currentMall.id, authToken)" in import_manager
     assert "}, authToken);" in import_manager  # saveRemoteConnection call includes token
     assert "ApiService.deleteRemoteConnection(selectedConnectionId, authToken)" in import_manager
     assert "ApiService.getLoadLogs(currentMall?.id, authToken)" in import_manager
     assert "ApiService.getLoadLogs(currentMall.id, session?.access_token)" in load_monitor
     assert "ApiService.reactivateStore(store.id, session?.access_token)" in store_maintenance
+    assert "ApiService.getLocalCustomFieldDefinitions(currentMall.id, authToken, true)" in store_maintenance
+    assert "ApiService.saveStoreCustomFields(savedStore.id, customValuesPayload, authToken)" in store_maintenance
+    assert "custom_dimension_key: selectedCustomDimension || null" in (repo / "components" / "SalesCube.tsx").read_text(encoding="utf-8")

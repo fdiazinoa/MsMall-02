@@ -16,11 +16,12 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from supabase import Client
-from analytics import generate_sales_cube
+from services.local_custom_fields_service import LocalCustomFieldsService
 
 class ExportService:
     def __init__(self, supabase_client: Client):
         self.supabase = supabase_client
+        self.local_custom_fields_service = LocalCustomFieldsService(supabase_client, logger=None)
     
     # --- UTILS ---
     def _get_header_style(self):
@@ -576,7 +577,9 @@ class ExportService:
         agrupacion: str,
         metrica: str,
         mall_id: str = None,
-        local_id: str = None
+        local_id: str = None,
+        custom_dimension_key: Optional[str] = None,
+        custom_filters: Optional[Dict[str, Any]] = None,
     ) -> io.BytesIO:
         # Same logic as get_sales_cube in main.py but exporting
         stores_query = self.supabase.table("locales").select("id, nombre")
@@ -587,6 +590,9 @@ class ExportService:
         stores = stores_query.execute().data
         store_map = {str(s['id']): s['nombre'] for s in stores}
         local_ids = list(store_map.keys())
+        snapshot = self.local_custom_fields_service.build_snapshot(mall_id, local_ids, include_inactive=False) if mall_id else self.local_custom_fields_service.build_snapshot("", [], include_inactive=False)
+        if custom_filters:
+            local_ids = self.local_custom_fields_service.filter_local_ids_by_custom_filters(local_ids, snapshot, custom_filters)
 
         sales = []
         if local_ids:
@@ -621,20 +627,14 @@ class ExportService:
             df = pd.DataFrame(sales)
             df['local_id'] = df['local_id'].astype(str)
             df['local_nombre'] = df['local_id'].map(store_map).fillna(df['local_id'])
-            df['fecha'] = pd.to_datetime(df['fecha'])
-            
-            # Match the exact orientation used by the UI matrix:
-            # rows = locales, columns = periodos (dias/semanas/meses)
-            df['total_bruto'] = pd.to_numeric(df['total_bruto'], errors='coerce').fillna(0)
-            df['total_neto'] = pd.to_numeric(df['total_neto'], errors='coerce').fillna(0)
-            df['transacciones'] = 1
-
-            cube = generate_sales_cube(
-                ventas_df=df,
-                grouping=agrupacion,
+            cube = self.local_custom_fields_service.build_cube_response(
+                sales_df=df,
+                grouping=agrupacion.upper(),
                 metric=metrica,
                 start_date=fecha_inicio,
                 end_date=fecha_fin,
+                snapshot=snapshot,
+                custom_dimension_key=custom_dimension_key,
             )
 
             columns = list(cube.get('columns') or [])
@@ -647,8 +647,8 @@ class ExportService:
             fill, font = self._get_header_style()
 
             def _display_col_label(col_name: str) -> str:
-                if col_name == 'local_nombre':
-                    return 'LOCAL'
+                if col_name in {'local_nombre', 'row_label'}:
+                    return str(cube.get('row_label') or 'LOCAL').upper()
                 if col_name == 'TOTAL_FILA':
                     return 'TOTAL'
                 return str(col_name)
@@ -684,7 +684,7 @@ class ExportService:
                             cell.value = 0
                         cell.number_format = number_format
                         cell.alignment = Alignment(horizontal='right')
-                        if col_name == 'TOTAL_FILA':
+                        if col_name == 'TOTAL_FILA' or row.get('row_type') == 'group':
                             cell.font = Font(bold=True)
                 row_idx += 1
 

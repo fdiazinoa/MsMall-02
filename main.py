@@ -2588,6 +2588,18 @@ async def update_local_custom_field(
     )
 
 
+@app.delete("/api/v1/locales/custom-fields/{field_id}")
+async def delete_local_custom_field(
+    field_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    return _local_custom_fields_service().delete_definition(
+        field_id,
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+    )
+
+
 @app.get("/api/v1/locales/{local_id}/custom-fields")
 async def get_local_custom_fields(
     local_id: str,

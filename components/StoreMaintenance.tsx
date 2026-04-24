@@ -225,6 +225,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   const [showCustomFieldsManager, setShowCustomFieldsManager] = useState(false);
   const [savingStore, setSavingStore] = useState(false);
   const [savingFieldDefinition, setSavingFieldDefinition] = useState(false);
+  const [deletingFieldDefinition, setDeletingFieldDefinition] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [newStore, setNewStore] = useState<Partial<Store>>(emptyStore());
   const [customFieldDefinitions, setCustomFieldDefinitions] = useState<LocalCustomFieldDefinition[]>([]);
@@ -388,6 +389,26 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
       alert(error?.message || 'No se pudo guardar el campo libre.');
     } finally {
       setSavingFieldDefinition(false);
+    }
+  };
+
+  const handleDeleteFieldDefinition = async () => {
+    if (!editingFieldId || !fieldDraft.label) return;
+    const confirmed = confirm(
+      `¿Desea borrar el campo libre "${fieldDraft.label}"?\nSe eliminarán también sus opciones y valores guardados en los locales.`
+    );
+    if (!confirmed) return;
+
+    setDeletingFieldDefinition(true);
+    try {
+      await ApiService.deleteLocalCustomFieldDefinition(editingFieldId, authToken);
+      await loadCustomFieldDefinitions();
+      resetFieldDraft();
+    } catch (error: any) {
+      console.error('Error deleting custom field definition:', error);
+      alert(error?.message || 'No se pudo borrar el campo libre.');
+    } finally {
+      setDeletingFieldDefinition(false);
     }
   };
 
@@ -758,6 +779,16 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                 />
 
                 <div className="flex justify-end gap-3 pt-2">
+                  {editingFieldId && (
+                    <button
+                      type="button"
+                      onClick={handleDeleteFieldDefinition}
+                      disabled={deletingFieldDefinition || savingFieldDefinition}
+                      className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
+                    >
+                      {deletingFieldDefinition ? 'Borrando...' : 'Borrar Campo'}
+                    </button>
+                  )}
                   <button type="button" onClick={resetFieldDraft} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-white">
                     Limpiar
                   </button>

@@ -40,6 +40,10 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "/locales/custom-fields?mall_id=" in custom_defs_segment
     assert ".from('local_custom_field_definitions')" not in custom_defs_segment
 
+    delete_custom_def_segment = _segment(api_ts, "async deleteLocalCustomFieldDefinition")
+    assert "/locales/custom-fields/" in delete_custom_def_segment
+    assert "method: 'DELETE'" in delete_custom_def_segment
+
     save_custom_values_segment = _segment(api_ts, "async saveStoreCustomFields")
     assert "/custom-fields" in save_custom_values_segment
     assert ".from('local_custom_field_values')" not in save_custom_values_segment
@@ -52,4 +56,5 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "ApiService.reactivateStore(store.id, session?.access_token)" in store_maintenance
     assert "ApiService.getLocalCustomFieldDefinitions(currentMall.id, authToken, true)" in store_maintenance
     assert "ApiService.saveStoreCustomFields(savedStore.id, customValuesPayload, authToken)" in store_maintenance
+    assert "ApiService.deleteLocalCustomFieldDefinition(editingFieldId, authToken)" in store_maintenance
     assert "custom_dimension_key: selectedCustomDimension || null" in (repo / "components" / "SalesCube.tsx").read_text(encoding="utf-8")

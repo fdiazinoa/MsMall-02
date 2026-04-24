@@ -1787,6 +1787,17 @@ export const ApiService = {
     );
   },
 
+  async deleteLocalCustomFieldDefinition(fieldId: string, token?: string): Promise<{ deleted: boolean; id: string }> {
+    return fetchJsonWithBaseFallback<{ deleted: boolean; id: string }>(
+      `/locales/custom-fields/${fieldId}`,
+      {
+        method: 'DELETE',
+        headers: withAuthHeaders(token),
+      },
+      'Error borrando campo libre.'
+    );
+  },
+
   async getStoreCustomFields(localId: string, token?: string, includeInactive = false): Promise<LocalCustomFieldBundle> {
     return fetchJsonWithBaseFallback<LocalCustomFieldBundle>(
       `/locales/${localId}/custom-fields?include_inactive=${includeInactive ? 'true' : 'false'}`,

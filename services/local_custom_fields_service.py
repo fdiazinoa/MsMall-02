@@ -114,43 +114,58 @@ class LocalCustomFieldsService:
             raise HTTPException(status_code=500, detail="Supabase no configurado")
 
     def _ensure_key_available(self, mall_id: str, key: str, field_id: Optional[str] = None) -> None:
-        existing = (
+        row = self._maybe_single(
             self.supabase.table("local_custom_field_definitions")
             .select("id")
             .eq("mall_id", mall_id)
             .eq("key", key)
             .maybe_single()
-            .execute()
         )
-        row = existing.data
         if row and row.get("id") != field_id:
             raise HTTPException(status_code=409, detail="Ya existe un campo libre con esa clave en este mall.")
 
     def _load_definition(self, field_id: str) -> Dict[str, Any]:
-        res = (
+        row = self._maybe_single(
             self.supabase.table("local_custom_field_definitions")
             .select("*")
             .eq("id", field_id)
             .maybe_single()
-            .execute()
         )
-        row = res.data
         if not row:
             raise HTTPException(status_code=404, detail="Campo libre no encontrado.")
         return row
 
     def _load_local(self, local_id: str) -> Dict[str, Any]:
-        res = (
+        row = self._maybe_single(
             self.supabase.table("locales")
             .select("id, mall_id, nombre")
             .eq("id", local_id)
             .maybe_single()
-            .execute()
         )
-        row = res.data
         if not row:
             raise HTTPException(status_code=404, detail="Local no encontrado.")
         return row
+
+    def _maybe_single(self, query) -> Optional[Dict[str, Any]]:
+        try:
+            response = query.execute()
+        except Exception as exc:
+            message = str(exc or "").lower()
+            if (
+                "0 rows" in message
+                or "results contain 0 rows" in message
+                or "json object requested" in message
+                or "not acceptable" in message
+                or "406" in message
+            ):
+                return None
+            raise
+        if response is None:
+            return None
+        data = getattr(response, "data", None)
+        if isinstance(data, list):
+            return data[0] if data else None
+        return data
 
     def _validate_definition(self, payload: Dict[str, Any], existing_field_id: Optional[str] = None) -> Dict[str, Any]:
         data = _normalize_definition_payload(payload)
@@ -391,6 +406,50 @@ class LocalCustomFieldsService:
         field_row = self._load_definition(field_id)
         field_row["options"] = self._replace_options(field_row, validated.get("options") or [])
         return field_row
+
+    def delete_definition(
+        self,
+        field_id: str,
+        operator_ctx: Dict[str, Any],
+        ensure_operator_can_access_mall: Callable[[Dict[str, Any], Optional[str]], None],
+    ) -> Dict[str, Any]:
+        self._require_db()
+        existing = self._load_definition(field_id)
+        ensure_operator_can_access_mall(operator_ctx, existing.get("mall_id"))
+
+        child_fields = (
+            self.supabase.table("local_custom_field_definitions")
+            .select("id, label")
+            .eq("parent_field_id", field_id)
+            .execute()
+        ).data or []
+        if child_fields:
+            child_label = child_fields[0].get("label") or "campo dependiente"
+            raise HTTPException(
+                status_code=409,
+                detail=f"No se puede borrar este campo porque es padre de '{child_label}'. Elimine primero los campos dependientes.",
+            )
+
+        (
+            self.supabase.table("local_custom_field_values")
+            .delete()
+            .eq("field_definition_id", field_id)
+            .execute()
+        )
+        (
+            self.supabase.table("local_custom_field_options")
+            .delete()
+            .eq("field_definition_id", field_id)
+            .execute()
+        )
+        (
+            self.supabase.table("local_custom_field_definitions")
+            .delete()
+            .eq("id", field_id)
+            .execute()
+        )
+
+        return {"deleted": True, "id": field_id}
 
     def _serialize_value_for_definition(
         self,

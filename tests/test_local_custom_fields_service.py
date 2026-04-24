@@ -113,6 +113,11 @@ class _FakeSupabase:
         return _TableQuery(self, table_name)
 
 
+class _RaisingMaybeSingleQuery:
+    def execute(self):
+        raise RuntimeError("406 Not Acceptable")
+
+
 def _guard(operator_ctx, mall_id):
     allowed = set(operator_ctx.get("allowed_malls") or [])
     if operator_ctx.get("role") != "admin" and mall_id not in allowed:
@@ -210,3 +215,38 @@ def test_snapshot_filter_and_hierarchical_cube():
     north_group = next(row for row in cube["data"] if row["row_label"] == "Norte")
     assert north_group["01/04"] == 100
     assert next(row for row in cube["data"] if row["row_label"] == "  Zara")["01/04"] == 100
+
+
+def test_maybe_single_treats_406_as_missing_row():
+    service, _fake_db = _service()
+
+    assert service._maybe_single(_RaisingMaybeSingleQuery()) is None
+
+
+def test_delete_definition_removes_values_and_options():
+    service, fake_db = _service()
+
+    result = service.delete_definition(
+        "field-opening",
+        operator_ctx={"role": "it", "allowed_malls": ["mall-1"]},
+        ensure_operator_can_access_mall=_guard,
+    )
+
+    assert result == {"deleted": True, "id": "field-opening"}
+    assert all(row["id"] != "field-opening" for row in fake_db.tables["local_custom_field_definitions"])
+    assert all(row["field_definition_id"] != "field-opening" for row in fake_db.tables["local_custom_field_values"])
+    assert all(row["field_definition_id"] != "field-opening" for row in fake_db.tables["local_custom_field_options"])
+
+
+def test_delete_definition_blocks_parent_fields():
+    service, _fake_db = _service()
+
+    with pytest.raises(HTTPException) as exc:
+        service.delete_definition(
+            "field-region",
+            operator_ctx={"role": "it", "allowed_malls": ["mall-1"]},
+            ensure_operator_can_access_mall=_guard,
+        )
+
+    assert exc.value.status_code == 409
+    assert "dependientes" in exc.value.detail

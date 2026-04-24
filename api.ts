@@ -548,6 +548,50 @@ export interface StoreCatalogOptionsResult {
   available: boolean;
 }
 
+export type CustomFieldDataType = 'text' | 'number' | 'date' | 'select';
+export type CustomFieldWidgetType = 'textbox' | 'select' | 'drilldown';
+
+export interface LocalCustomFieldOption {
+  id?: string;
+  field_definition_id?: string;
+  label: string;
+  value: string;
+  sort_order?: number;
+  active?: boolean;
+  parent_option_id?: string | null;
+}
+
+export interface LocalCustomFieldDefinition {
+  id: string;
+  mall_id: string;
+  key: string;
+  label: string;
+  data_type: CustomFieldDataType;
+  widget_type: CustomFieldWidgetType;
+  required: boolean;
+  active: boolean;
+  sort_order: number;
+  parent_field_id?: string | null;
+  options: LocalCustomFieldOption[];
+}
+
+export interface LocalCustomFieldValue {
+  field_definition_id: string;
+  value_text?: string | null;
+  value_number?: number | null;
+  value_date?: string | null;
+  selected_option_id?: string | null;
+  display_value?: string | number | null;
+  filter_value?: string | number | null;
+}
+
+export interface LocalCustomFieldBundle {
+  local_id: string;
+  mall_id: string;
+  definitions: LocalCustomFieldDefinition[];
+  values: LocalCustomFieldValue[];
+}
+
 export const DEFAULT_STORE_CATALOG_VALUES: Record<StoreCatalogFieldName, string[]> = {
   tipo_negocio: [
     'RETAIL',
@@ -1714,6 +1758,65 @@ export const ApiService = {
       console.error('Error deleting store:', error);
       throw error.message || error;
     }
+  },
+
+  async getLocalCustomFieldDefinitions(mallId: string, token?: string, includeInactive = true): Promise<LocalCustomFieldDefinition[]> {
+    return fetchJsonWithBaseFallback<LocalCustomFieldDefinition[]>(
+      `/locales/custom-fields?mall_id=${encodeURIComponent(mallId)}&include_inactive=${includeInactive ? 'true' : 'false'}`,
+      { headers: withAuthHeaders(token) },
+      'Error obteniendo campos libres.'
+    );
+  },
+
+  async createLocalCustomFieldDefinition(
+    payload: Partial<LocalCustomFieldDefinition>,
+    token?: string
+  ): Promise<LocalCustomFieldDefinition> {
+    return fetchJsonWithBaseFallback<LocalCustomFieldDefinition>(
+      '/locales/custom-fields',
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+      },
+      'Error creando campo libre.'
+    );
+  },
+
+  async updateLocalCustomFieldDefinition(
+    fieldId: string,
+    payload: Partial<LocalCustomFieldDefinition>,
+    token?: string
+  ): Promise<LocalCustomFieldDefinition> {
+    return fetchJsonWithBaseFallback<LocalCustomFieldDefinition>(
+      `/locales/custom-fields/${fieldId}`,
+      {
+        method: 'PATCH',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+      },
+      'Error actualizando campo libre.'
+    );
+  },
+
+  async getStoreCustomFields(localId: string, token?: string, includeInactive = false): Promise<LocalCustomFieldBundle> {
+    return fetchJsonWithBaseFallback<LocalCustomFieldBundle>(
+      `/locales/${localId}/custom-fields?include_inactive=${includeInactive ? 'true' : 'false'}`,
+      { headers: withAuthHeaders(token) },
+      'Error obteniendo valores de campos libres.'
+    );
+  },
+
+  async saveStoreCustomFields(localId: string, values: LocalCustomFieldValue[], token?: string): Promise<LocalCustomFieldBundle> {
+    return fetchJsonWithBaseFallback<LocalCustomFieldBundle>(
+      `/locales/${localId}/custom-fields`,
+      {
+        method: 'PUT',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ values }),
+      },
+      'Error guardando campos libres.'
+    );
   },
 
   async ingestSales(

@@ -2,6 +2,7 @@
 import React from 'react';
 import { AppTab } from './appTabs';
 import { UploadForm } from './UploadForm';
+import { StoreImportTool } from './StoreImportTool';
 import { SalesReport } from './SalesReport';
 import { DashboardKPIs } from './DashboardKPIs';
 import { StoreMaintenance } from './StoreMaintenance';
@@ -30,6 +31,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab })
       return <SalesReport />;
     case 'upload':
       return <UploadForm />;
+    case 'store-import':
+      return <StoreImportTool />;
     case 'stores':
       return <StoreMaintenance onOpenCatalogs={() => setActiveTab('store-catalogs')} />;
     case 'store-catalogs':

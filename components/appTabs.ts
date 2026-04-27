@@ -1,5 +1,6 @@
 export type AppTab =
   | 'upload'
+  | 'store-import'
   | 'reports'
   | 'analytics'
   | 'stores'

@@ -17,6 +17,10 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     import_manager = (repo / "components" / "ImportManager.tsx").read_text(encoding="utf-8")
     load_monitor = (repo / "components" / "LoadMonitor.tsx").read_text(encoding="utf-8")
     store_maintenance = (repo / "components" / "StoreMaintenance.tsx").read_text(encoding="utf-8")
+    dashboard = (repo / "components" / "Dashboard.tsx").read_text(encoding="utf-8")
+    header = (repo / "components" / "Header.tsx").read_text(encoding="utf-8")
+    sidebar = (repo / "components" / "Sidebar.tsx").read_text(encoding="utf-8")
+    store_import_tool = (repo / "components" / "StoreImportTool.tsx").read_text(encoding="utf-8")
 
     remote_segment = _segment(api_ts, "async getRemoteConnections")
     assert "/remote-connections" in remote_segment
@@ -50,6 +54,12 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "ApiService.getLoadLogs(currentMall?.id, authToken)" in import_manager
     assert "ApiService.getLoadLogs(currentMall.id, session?.access_token)" in load_monitor
     assert "ApiService.reactivateStore(store.id, session?.access_token)" in store_maintenance
+    assert "case 'store-import':" in dashboard
+    assert "Importador Locales" in header
+    assert "Importador Locales" in sidebar
+    assert "ApiService.getStores(currentMall.id)" in store_import_tool
+    assert "await ApiService.createStore(payload)" in store_import_tool
+    assert "await ApiService.updateStore(existing.id" in store_import_tool
     assert "ApiService.getLocalCustomFieldDefinitions(currentMall.id, authToken, true)" in store_maintenance
     assert "ApiService.saveStoreCustomFields(savedStore.id, customValuesPayload, authToken)" in store_maintenance
     assert "custom_dimension_key: selectedCustomDimension || null" in (repo / "components" / "SalesCube.tsx").read_text(encoding="utf-8")

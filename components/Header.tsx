@@ -32,6 +32,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     { id: 'auto-import', label: 'Importación FTP', visible: isAdmin || isTic },
     { id: 'erp-webservice', label: 'ERP Webservice', visible: isAdmin || isTic },
     { id: 'upload', label: 'Ingesta CSV', visible: isAdmin || isTic },
+    { id: 'store-import', label: 'Importador Locales', visible: isAdmin || isTic },
     { id: 'malls', label: 'Gestión de Malls', visible: isAdmin },
     { id: 'users', label: 'Usuarios y Roles', visible: isAdmin },
     { id: 'security', label: 'Seguridad Tokens', visible: isAdmin }

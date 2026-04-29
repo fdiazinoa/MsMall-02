@@ -5399,6 +5399,35 @@ async def get_sales_gaps(
             except Exception:
                 return None
 
+        def _load_actual_dates_for_local(target_local_id: str) -> Set[str]:
+            rows: List[Dict[str, Any]] = []
+            page_size = 2000
+            page = 0
+            while True:
+                chunk = (
+                    supabase.table('ventas')
+                    .select('id, fecha')
+                    .eq('local_id', target_local_id)
+                    .gte('fecha', fecha_inicio)
+                    .lte('fecha', fecha_fin)
+                    .order('id')
+                    .range(page * page_size, (page + 1) * page_size - 1)
+                    .execute()
+                ).data or []
+                if not chunk:
+                    break
+                rows.extend(chunk)
+                if len(chunk) < page_size:
+                    break
+                page += 1
+
+            actual_dates: Set[str] = set()
+            for row in rows:
+                normalized_date = _normalize_sales_date(row.get('fecha'))
+                if normalized_date:
+                    actual_dates.add(normalized_date)
+            return actual_dates
+
         # 1. Calendario Ideal
         start_date = datetime.strptime(fecha_inicio, '%Y-%m-%d')
         end_date = datetime.strptime(fecha_fin, '%Y-%m-%d')
@@ -5431,50 +5460,12 @@ async def get_sales_gaps(
             
             stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
             stores = stores_resp.data or []
-            store_ids = [str(s['id']) for s in stores if s.get('id')]
-
-            # Paginar ventas por local_id para no truncar por límites del cliente.
-            sales_rows: List[Dict[str, Any]] = []
-            if store_ids:
-                page_size = 2000
-                page = 0
-                while True:
-                    chunk = (
-                        supabase.table('ventas')
-                        .select('id, local_id, fecha')
-                        .in_('local_id', store_ids)
-                        .gte('fecha', fecha_inicio)
-                        .lte('fecha', fecha_fin)
-                        # Use a unique deterministic order to avoid pagination gaps/duplicates.
-                        .order('id')
-                        .range(page * page_size, (page + 1) * page_size - 1)
-                        .execute()
-                    ).data or []
-                    if not chunk:
-                        break
-                    sales_rows.extend(chunk)
-                    if len(chunk) < page_size:
-                        break
-                    page += 1
-
-            sales_df = pd.DataFrame(sales_rows)
-            if not sales_df.empty:
-                sales_df['local_id_norm'] = sales_df['local_id'].astype(str)
-                sales_df['fecha_norm'] = sales_df['fecha'].apply(_normalize_sales_date)
             
             global_summary = []
             
             for store in stores:
                 sid = str(store['id'])
-                # Fechas reales para este local
-                if not sales_df.empty:
-                    s_actual = set(
-                        sales_df[sales_df['local_id_norm'] == sid]['fecha_norm']
-                        .dropna()
-                        .unique()
-                    )
-                else:
-                    s_actual = set()
+                s_actual = _load_actual_dates_for_local(sid)
                 
                 missing = sorted(list(expected_dates - s_actual))
                 count_missing = len(missing)
@@ -5506,33 +5497,7 @@ async def get_sales_gaps(
 
         # --- MODO INDIVIDUAL (Detailed View) ---
         # 2. Calendario Real (Individual)
-        individual_sales_rows: List[Dict[str, Any]] = []
-        page_size = 2000
-        page = 0
-        while True:
-            chunk = (
-                supabase.table('ventas')
-                .select('id, fecha')
-                .eq('local_id', local_id)
-                .gte('fecha', fecha_inicio)
-                .lte('fecha', fecha_fin)
-                # Use a unique deterministic order to avoid pagination gaps/duplicates.
-                .order('id')
-                .range(page * page_size, (page + 1) * page_size - 1)
-                .execute()
-            ).data or []
-            if not chunk:
-                break
-            individual_sales_rows.extend(chunk)
-            if len(chunk) < page_size:
-                break
-            page += 1
-
-        actual_dates = set()
-        for row in individual_sales_rows:
-            normalized_date = _normalize_sales_date(row.get('fecha'))
-            if normalized_date:
-                actual_dates.add(normalized_date)
+        actual_dates = _load_actual_dates_for_local(local_id)
         
         # 3. Brechas
         missing_dates = sorted(list(expected_dates - actual_dates))

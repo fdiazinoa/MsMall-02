@@ -147,44 +147,59 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                            {criticalItems.map((item) => (
-                                <tr key={item.local_id} className="hover:bg-slate-50 transition-colors">
-                                    <td className="px-4 py-3">
-                                        <div className="font-medium text-slate-800">{item.nombre}</div>
-                                        <div className="text-xs text-slate-400">{item.rubro}</div>
-                                    </td>
-                                    <td className="px-4 py-3 text-center">
-                                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${item.estado === 'Crítico' ? 'bg-rose-100 text-rose-700' :
-                                            item.estado === 'Alerta' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
-                                            }`}>
-                                            {item.estado === 'Crítico' && <AlertTriangle size={12} className="mr-1" />}
-                                            {item.estado}
-                                        </span>
-                                    </td>
-                                    <td className="px-4 py-3 text-center font-mono font-bold text-slate-700">
-                                        {item.dias_faltantes_count} / {item.dias_totales_periodo}
-                                    </td>
-                                    <td className="px-4 py-3 text-center">
-                                        <div className="flex items-center gap-2 justify-center">
-                                            <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
-                                                <div
-                                                    className={`h-full ${item.porcentaje_cumplimiento < 80 ? 'bg-rose-500' : item.porcentaje_cumplimiento < 95 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                                                    style={{ width: `${item.porcentaje_cumplimiento}%` }}
-                                                ></div>
+                            {criticalItems.map((item) => {
+                                const totalDays = item.dias_totales_periodo || 0;
+                                const missingDays = item.dias_faltantes_count || 0;
+                                const reportedDays = Math.max(0, totalDays - missingDays);
+                                const compliance = Number.isFinite(item.porcentaje_cumplimiento) ? item.porcentaje_cumplimiento : 0;
+
+                                return (
+                                    <tr key={item.local_id} className="hover:bg-slate-50 transition-colors">
+                                        <td className="px-4 py-3">
+                                            <div className="font-medium text-slate-800">{item.nombre}</div>
+                                            <div className="text-xs text-slate-400">{item.rubro}</div>
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${item.estado === 'Crítico' ? 'bg-rose-100 text-rose-700' :
+                                                item.estado === 'Alerta' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                                                }`}>
+                                                {item.estado === 'Crítico' && <AlertTriangle size={12} className="mr-1" />}
+                                                {item.estado}
+                                            </span>
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <div className="font-mono font-bold text-slate-700">
+                                                {missingDays} / {totalDays}
                                             </div>
-                                            <span className="text-xs font-medium text-slate-500">{item.porcentaje_cumplimiento}%</span>
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-3 text-right">
-                                        <button
-                                            onClick={() => onSelectLocal && onSelectLocal(item.local_id)}
-                                            className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 text-xs font-medium shadow-sm transition-all hover:border-indigo-300 hover:text-indigo-600"
-                                        >
-                                            <Eye size={14} /> Auditar
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
+                                            <div className="text-[11px] text-slate-400">
+                                                {reportedDays} días con venta
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <div className="flex items-center gap-2 justify-center">
+                                                <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
+                                                    <div
+                                                        className={`h-full ${compliance < 80 ? 'bg-rose-500' : compliance < 95 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                                        style={{ width: `${compliance}%` }}
+                                                    ></div>
+                                                </div>
+                                                <span className="text-xs font-medium text-slate-500">{compliance}%</span>
+                                            </div>
+                                            <div className="mt-1 text-[11px] text-slate-400">
+                                                {missingDays > 0 ? `${(100 - compliance).toFixed(1)}% de brecha` : '0% de brecha'}
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3 text-right">
+                                            <button
+                                                onClick={() => onSelectLocal && onSelectLocal(item.local_id)}
+                                                className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 text-xs font-medium shadow-sm transition-all hover:border-indigo-300 hover:text-indigo-600"
+                                            >
+                                                <Eye size={14} /> Auditar
+                                            </button>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
 
                             {completeCount > 0 && (
                                 <tr className="bg-slate-50/50">

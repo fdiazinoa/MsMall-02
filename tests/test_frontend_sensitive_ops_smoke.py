@@ -21,6 +21,7 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     header = (repo / "components" / "Header.tsx").read_text(encoding="utf-8")
     sidebar = (repo / "components" / "Sidebar.tsx").read_text(encoding="utf-8")
     store_import_tool = (repo / "components" / "StoreImportTool.tsx").read_text(encoding="utf-8")
+    missing_days_alert = (repo / "components" / "MissingDaysAlert.tsx").read_text(encoding="utf-8")
 
     remote_segment = _segment(api_ts, "async getRemoteConnections")
     assert "/remote-connections" in remote_segment
@@ -63,3 +64,6 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "ApiService.getLocalCustomFieldDefinitions(currentMall.id, authToken, true)" in store_maintenance
     assert "ApiService.saveStoreCustomFields(savedStore.id, customValuesPayload, authToken)" in store_maintenance
     assert "custom_dimension_key: selectedCustomDimension || null" in (repo / "components" / "SalesCube.tsx").read_text(encoding="utf-8")
+    assert "días con venta" in missing_days_alert
+    assert "% de brecha" in missing_days_alert
+    assert "const reportedDays = Math.max(0, totalDays - missingDays);" in missing_days_alert

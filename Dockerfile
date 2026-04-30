@@ -1,3 +1,4 @@
+# Trigger fresh production rebuild after Railway incident paused deploy propagation.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, ResendMessagingStatus, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -2248,6 +2248,21 @@ export const ApiService = {
         body: JSON.stringify(settings)
       },
       "No se pudo guardar la programación de envío"
+    );
+  },
+
+  async sendMissingDaysEmailNow(mallId: string, token: string): Promise<MissingDaysSendNowResponse> {
+    return fetchJsonWithBaseFallback<MissingDaysSendNowResponse>(
+      '/admin/messaging/missing-days/send-now',
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }),
+        body: JSON.stringify({ mall_id: mallId })
+      },
+      "No se pudo ejecutar el envío inmediato"
     );
   },
 

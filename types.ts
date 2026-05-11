@@ -214,6 +214,27 @@ export interface MissingDaysEmailSettings {
   updated_at?: string;
 }
 
+export interface MissingDaysSendNowResponse {
+  status: string;
+  mall_id: string;
+  fecha_inicio: string;
+  fecha_fin: string;
+  requested: number;
+  sent: number;
+  skipped: number;
+  failed: number;
+  results: Array<{
+    local_id: string;
+    local_nombre: string;
+    email?: string | null;
+    status: 'sent' | 'skipped' | 'failed';
+    missing_days: number;
+    reason?: string;
+    resend_id?: string | null;
+  }>;
+  message: string;
+}
+
 export type SecurityTokenType = 'app' | 'exporter';
 export type SecurityTokenStatus = 'active' | 'disabled' | 'revoked';
 

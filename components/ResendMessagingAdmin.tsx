@@ -35,6 +35,7 @@ export const ResendMessagingAdmin: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingSchedule, setSavingSchedule] = useState(false);
+  const [sendingNow, setSendingNow] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const [testTo, setTestTo] = useState(user?.email || '');
@@ -82,6 +83,20 @@ export const ResendMessagingAdmin: React.FC = () => {
     });
   };
 
+  const buildSchedulePayload = (): MissingDaysEmailSettings => {
+    const parsedCcEmails = ccEmails
+      .split(/[\n,;]+/)
+      .map((email) => email.trim())
+      .filter(Boolean);
+
+    return {
+      ...schedule,
+      mall_id: currentMall?.id || schedule.mall_id,
+      cc_emails: parsedCcEmails,
+      lookback_days: Number(schedule.lookback_days) || 7,
+    };
+  };
+
   const handleSendTest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !status) return;
@@ -120,21 +135,11 @@ export const ResendMessagingAdmin: React.FC = () => {
       return;
     }
 
-    const parsedCcEmails = ccEmails
-      .split(/[\n,;]+/)
-      .map((email) => email.trim())
-      .filter(Boolean);
-
     setSavingSchedule(true);
     setFlash(null);
     try {
       const saved = await ApiService.saveMissingDaysEmailSettings(
-        {
-          ...schedule,
-          mall_id: currentMall.id,
-          cc_emails: parsedCcEmails,
-          lookback_days: Number(schedule.lookback_days) || 7,
-        },
+        buildSchedulePayload(),
         token
       );
       setSchedule(saved);
@@ -144,6 +149,40 @@ export const ResendMessagingAdmin: React.FC = () => {
       setFlash({ kind: 'error', message: e?.message || 'No se pudo guardar la programación.' });
     } finally {
       setSavingSchedule(false);
+    }
+  };
+
+  const handleSendNow = async () => {
+    if (!token || !currentMall?.id) {
+      setFlash({ kind: 'error', message: 'Seleccione un mall antes de enviar.' });
+      return;
+    }
+    if (!status?.configured) {
+      setFlash({ kind: 'error', message: 'Configure RESEND_API_KEY antes de enviar auditorías.' });
+      return;
+    }
+    if (schedule.enabled && schedule.weekdays.length === 0) {
+      setFlash({ kind: 'error', message: 'Seleccione al menos un día de envío o desactive el automático.' });
+      return;
+    }
+
+    setSendingNow(true);
+    setFlash(null);
+    try {
+      const saved = await ApiService.saveMissingDaysEmailSettings(buildSchedulePayload(), token);
+      setSchedule(saved);
+      setCcEmails((saved.cc_emails || []).join('\n'));
+
+      const result = await ApiService.sendMissingDaysEmailNow(currentMall.id, token);
+      const kind = result.failed > 0 ? 'error' : 'success';
+      setFlash({
+        kind,
+        message: `${result.message} Periodo ${result.fecha_inicio} al ${result.fecha_fin}.`,
+      });
+    } catch (e: any) {
+      setFlash({ kind: 'error', message: e?.message || 'No se pudo ejecutar el envío inmediato.' });
+    } finally {
+      setSendingNow(false);
     }
   };
 
@@ -370,10 +409,19 @@ export const ResendMessagingAdmin: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex justify-end">
+        <div className="flex flex-col sm:flex-row justify-end gap-3">
+          <button
+            type="button"
+            onClick={handleSendNow}
+            disabled={sendingNow || savingSchedule || loading || !currentMall?.id || !status?.configured}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-white px-5 py-2.5 text-sm font-bold text-indigo-700 shadow-sm transition-all hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {sendingNow ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+            {sendingNow ? 'Enviando ahora...' : 'Enviar ahora'}
+          </button>
           <button
             type="submit"
-            disabled={savingSchedule || loading || !currentMall?.id}
+            disabled={savingSchedule || sendingNow || loading || !currentMall?.id}
             className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-indigo-200 transition-all hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {savingSchedule ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}

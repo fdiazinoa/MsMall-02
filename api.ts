@@ -517,6 +517,7 @@ export interface Store {
   mall_id: string;
   codigo_interno: string;
   nombre: string;
+  email?: string | null;
   rubro: string | null;
   created_at: string;
   responsable: string;
@@ -666,6 +667,34 @@ const toStoreCatalogError = (error: any, fallbackMessage: string): Error => {
     return new Error('Ese valor ya existe en la lista.');
   }
   return error instanceof Error ? error : new Error(normalizeErrorMessage(error, fallbackMessage));
+};
+
+const isMissingStoreEmailColumnError = (error: any): boolean => {
+  const message = String(error?.message || error?.details || error?.hint || '').toLowerCase();
+  return (
+    error?.code === 'PGRST204' &&
+    (
+      message.includes("'email'") ||
+      message.includes('"email"') ||
+      message.includes('email')
+    )
+  );
+};
+
+const normalizeStorePayload = (store: Partial<Store>): Record<string, any> => {
+  const { id, created_at, ...storeData } = store as any;
+  if ('email' in storeData) {
+    const email = String(storeData.email || '').trim().toLowerCase();
+    storeData.email = email || null;
+  }
+  return storeData;
+};
+
+const toStorePersistenceError = (error: any): Error => {
+  if (isMissingStoreEmailColumnError(error)) {
+    return new Error("La base de datos no está actualizada: ejecute el script '20260511_add_local_email.sql'.");
+  }
+  return error instanceof Error ? error : new Error(normalizeErrorMessage(error, 'Error guardando local'));
 };
 
 export const ApiService = {
@@ -1700,8 +1729,7 @@ export const ApiService = {
     if (!supabase) throw new Error("Supabase no está configurado");
 
     try {
-      // Remove any fields that shouldn't be inserted if they are present but undefined/null
-      const { id, created_at, ...storeData } = store as any;
+      const storeData = normalizeStorePayload(store);
 
       const { data, error } = await supabase
         .from('locales')
@@ -1713,15 +1741,14 @@ export const ApiService = {
       return data as Store;
     } catch (error) {
       console.error('Error creating store:', error);
-      throw error;
+      throw toStorePersistenceError(error);
     }
   },
 
   async updateStore(id: string, store: Partial<Store>): Promise<Store> {
     if (!supabase) throw new Error("Supabase no está configurado");
     try {
-      // Remove ID/created_at if present in update payload
-      const { id: _, created_at, ...storeData } = store as any;
+      const storeData = normalizeStorePayload(store);
       const { data, error } = await supabase
         .from('locales')
         .update(storeData)
@@ -1732,7 +1759,7 @@ export const ApiService = {
       return data as Store;
     } catch (error) {
       console.error('Error updating store:', error);
-      throw error;
+      throw toStorePersistenceError(error);
     }
   },
 

@@ -9,7 +9,7 @@ import {
 import { useAuth } from '../context/AuthProvider';
 import {
   Store as StoreIcon, Plus, Search, Building2,
-  User, FileText, MapPin, Tag, Maximize2, Percent, X, Settings2, Layers3
+  User, FileText, MapPin, Tag, Maximize2, Percent, X, Settings2, Layers3, Mail
 } from 'lucide-react';
 import { SalesPurge } from './SalesPurge';
 
@@ -28,6 +28,7 @@ type FieldValueState = {
 const emptyStore = (mallId?: string): Partial<Store> => ({
   nombre: '',
   codigo_interno: '',
+  email: '',
   mall_id: mallId || '',
   responsable: '',
   contrato_no: '',
@@ -244,6 +245,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
       return [
         store.nombre,
         store.codigo_interno,
+        store.email,
         store.responsable,
         store.tipo_negocio,
         store.rubro,
@@ -479,6 +481,19 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Código Interno</label>
                   <input type="text" required value={newStore.codigo_interno} onChange={(e) => setNewStore({ ...newStore, codigo_interno: e.target.value })} className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="L001" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Email de Notificaciones</label>
+                  <div className="relative">
+                    <input
+                      type="email"
+                      value={newStore.email || ''}
+                      onChange={(e) => setNewStore({ ...newStore, email: e.target.value })}
+                      className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none pr-10"
+                      placeholder="contacto@local.com"
+                    />
+                    <Mail size={14} className="absolute right-3 top-3 text-slate-400" />
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Tipo de Negocio</label>
@@ -779,7 +794,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Buscar por nombre, responsable o código..."
+              placeholder="Buscar por nombre, email, responsable o código..."
               className="bg-transparent border-none outline-none text-sm w-full"
             />
           </div>
@@ -842,6 +857,11 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                       <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5 ml-5">
                         <FileText size={10} /> {store.contrato_no}
                       </div>
+                      {store.email && (
+                        <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5 ml-5">
+                          <Mail size={10} /> {store.email}
+                        </div>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2 text-slate-600 text-sm font-medium">

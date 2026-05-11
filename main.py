@@ -1143,6 +1143,9 @@ class MissingDaysEmailSettingsRequest(BaseModel):
     send_only_with_gaps: bool = True
     cc_emails: List[str] = []
 
+class MissingDaysSendNowRequest(BaseModel):
+    mall_id: str
+
 class RemoteRequest(BaseModel):
     protocolo: str = "SFTP"
     host: str
@@ -4234,7 +4237,13 @@ def _resend_config_status() -> Dict[str, Any]:
     }
 
 
-def _send_resend_email(to_email: str, subject: str, message: str) -> Dict[str, Any]:
+def _send_resend_email(
+    to_email: str,
+    subject: str,
+    message: str,
+    html_body: Optional[str] = None,
+    cc_emails: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     api_key = os.getenv(RESEND_API_KEY_ENV)
     if not api_key:
         raise HTTPException(
@@ -4242,14 +4251,17 @@ def _send_resend_email(to_email: str, subject: str, message: str) -> Dict[str, A
             detail=f"Resend no esta configurado. Falta la variable {RESEND_API_KEY_ENV}.",
         )
 
-    safe_message = html.escape(message or "").replace("\n", "<br />")
     payload = {
         "from": f"{RESEND_FROM_NAME} <{RESEND_FROM_EMAIL}>",
         "to": [to_email],
         "subject": subject,
         "text": message,
-        "html": f"<p>{safe_message}</p>",
+        "html": html_body or f"<p>{html.escape(message or '').replace(chr(10), '<br />')}</p>",
     }
+    cc_list = _normalize_email_list(cc_emails or [])
+    if cc_list:
+        payload["cc"] = cc_list
+
     req = urllib.request.Request(
         "https://api.resend.com/emails",
         data=json.dumps(payload).encode("utf-8"),
@@ -4359,6 +4371,133 @@ def _is_missing_email_settings_table_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return "email_notification_settings" in text and (
         "does not exist" in text or "schema cache" in text or "pgrst205" in text
+    )
+
+
+def _normalize_missing_days_sale_date(raw_value: Any) -> Optional[str]:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, datetime):
+        return raw_value.strftime("%Y-%m-%d")
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    if len(value) >= 10 and value[4] == "-" and value[7] == "-":
+        return value[:10]
+    try:
+        parsed = pd.to_datetime(value, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        return parsed.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _load_missing_days_details_for_local(
+    local_id: str,
+    local_name: str,
+    mall_id: str,
+    fecha_inicio: str,
+    fecha_fin: str,
+) -> List[Dict[str, Any]]:
+    start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d")
+    end_date = datetime.strptime(fecha_fin, "%Y-%m-%d")
+    total_days = (end_date - start_date).days + 1
+    expected_dates = {
+        (start_date + timedelta(days=x)).strftime("%Y-%m-%d")
+        for x in range(total_days)
+    }
+
+    rows: List[Dict[str, Any]] = []
+    page_size = 2000
+    page = 0
+    while True:
+        chunk = (
+            supabase.table("ventas")
+            .select("id, fecha")
+            .eq("local_id", local_id)
+            .gte("fecha", fecha_inicio)
+            .lte("fecha", fecha_fin)
+            .order("id")
+            .range(page * page_size, (page + 1) * page_size - 1)
+            .execute()
+        ).data or []
+        if not chunk:
+            break
+        rows.extend(chunk)
+        if len(chunk) < page_size:
+            break
+        page += 1
+
+    actual_dates = {
+        normalized
+        for normalized in (_normalize_missing_days_sale_date(row.get("fecha")) for row in rows)
+        if normalized
+    }
+    missing_dates = sorted(list(expected_dates - actual_dates))
+    if not missing_dates:
+        return []
+
+    try:
+        logs_resp = (
+            supabase.table("logs_carga")
+            .select("*")
+            .eq("local_id", local_id)
+            .gte("fecha_hora", f"{fecha_inicio}T00:00:00")
+            .lte("fecha_hora", f"{fecha_fin}T23:59:59")
+            .order("fecha_hora", desc=True)
+            .execute()
+        )
+    except Exception:
+        logs_resp = type("Tmp", (), {"data": []})()
+
+    if not logs_resp.data and local_name:
+        legacy_q = (
+            supabase.table("logs_carga")
+            .select("*")
+            .eq("local_nombre", local_name)
+            .gte("fecha_hora", f"{fecha_inicio}T00:00:00")
+            .lte("fecha_hora", f"{fecha_fin}T23:59:59")
+            .order("fecha_hora", desc=True)
+        )
+        if mall_id:
+            legacy_q = legacy_q.eq("mall_id", mall_id)
+        logs_resp = legacy_q.execute()
+
+    logs_df = pd.DataFrame(logs_resp.data or [])
+    if not logs_df.empty:
+        logs_df["fecha_log"] = logs_df["fecha_hora"].apply(lambda x: str(x).split("T")[0] if x else None)
+
+    details: List[Dict[str, Any]] = []
+    for missing_date in missing_dates:
+        cause = "Proceso no ejecutado / Sin conexión"
+        log_id = None
+        if not logs_df.empty:
+            day_logs = logs_df[logs_df["fecha_log"] == missing_date]
+            if not day_logs.empty:
+                last_log = day_logs.iloc[0]
+                log_id = last_log.get("id")
+                status_text = str(last_log.get("estado") or "").strip().lower()
+                if status_text == "error":
+                    cause = "Fallo Técnico / Error de Lectura"
+                elif status_text in {"no_encontrado", "no encontrado"}:
+                    cause = "Archivo no disponible en FTP"
+                elif status_text in {"exito", "éxito", "success", "parcial"}:
+                    cause = "Procesado con Éxito (Posible archivo vacío)"
+        details.append({"fecha": missing_date, "causa": cause, "log_id": log_id})
+    return details
+
+
+def _missing_days_report_url(mall_id: str, local_id: str, fecha_inicio: str, fecha_fin: str) -> Optional[str]:
+    app_url = (os.getenv("APP_BASE_URL") or os.getenv("FRONTEND_URL") or "").strip().rstrip("/")
+    if not app_url:
+        return None
+    return (
+        f"{app_url}/?view=reports"
+        f"&mall_id={mall_id}"
+        f"&local_id={local_id}"
+        f"&start_date={fecha_inicio}"
+        f"&end_date={fecha_fin}"
     )
 
 
@@ -4488,6 +4627,170 @@ async def save_missing_days_email_settings(
             )
         logger.error("Error guardando configuracion de emails de dias faltantes: %s", exc)
         raise HTTPException(status_code=500, detail="No se pudo guardar la programacion de envio.")
+
+
+@app.post("/api/v1/admin/messaging/missing-days/send-now")
+async def send_missing_days_email_now(
+    payload: MissingDaysSendNowRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    if not os.getenv(RESEND_API_KEY_ENV):
+        raise HTTPException(status_code=503, detail=f"Resend no esta configurado. Falta {RESEND_API_KEY_ENV}.")
+
+    mall_id = (payload.mall_id or "").strip()
+    if not mall_id:
+        raise HTTPException(status_code=400, detail="mall_id es requerido.")
+    _ensure_operator_can_access_mall(admin_ctx, mall_id)
+
+    try:
+        settings_res = (
+            supabase.table("email_notification_settings")
+            .select("*")
+            .eq("mall_id", mall_id)
+            .eq("notification_type", "missing_days_audit")
+            .maybe_single()
+            .execute()
+        )
+        settings = _sanitize_missing_days_email_settings_row(settings_res.data, mall_id)
+    except Exception as exc:
+        if _is_missing_email_settings_table_error(exc):
+            raise HTTPException(
+                status_code=503,
+                detail="La base de datos no está actualizada: ejecute el script 20260511_email_notification_settings.sql.",
+            )
+        logger.error("Error cargando configuracion para envio inmediato: %s", exc)
+        raise HTTPException(status_code=500, detail="No se pudo cargar la programacion de envio.")
+
+    lookback_days = max(1, min(90, int(settings.get("lookback_days") or 7)))
+    fecha_fin_date = datetime.utcnow().date()
+    fecha_inicio_date = fecha_fin_date - timedelta(days=lookback_days - 1)
+    fecha_inicio = fecha_inicio_date.strftime("%Y-%m-%d")
+    fecha_fin = fecha_fin_date.strftime("%Y-%m-%d")
+
+    try:
+        mall_res = supabase.table("malls").select("nombre").eq("id", mall_id).maybe_single().execute()
+        mall_name = (mall_res.data or {}).get("nombre") or "MSMALL"
+    except Exception:
+        mall_name = "MSMALL"
+
+    stores = (
+        supabase.table("locales")
+        .select("id, nombre, email")
+        .eq("mall_id", mall_id)
+        .order("nombre")
+        .execute()
+    ).data or []
+
+    results: List[Dict[str, Any]] = []
+    cc_emails = settings.get("cc_emails") or []
+    send_only_with_gaps = settings.get("send_only_with_gaps") is not False
+
+    for store in stores:
+        local_id = str(store.get("id") or "")
+        local_name = store.get("nombre") or local_id
+        local_email = str(store.get("email") or "").strip().lower()
+
+        if not local_email:
+            results.append({
+                "local_id": local_id,
+                "local_nombre": local_name,
+                "email": None,
+                "status": "skipped",
+                "missing_days": 0,
+                "reason": "Local sin email de notificaciones.",
+            })
+            continue
+
+        missing_details = _load_missing_days_details_for_local(
+            local_id=local_id,
+            local_name=local_name,
+            mall_id=mall_id,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+        )
+        missing_count = len(missing_details)
+        if missing_count == 0 and send_only_with_gaps:
+            results.append({
+                "local_id": local_id,
+                "local_nombre": local_name,
+                "email": local_email,
+                "status": "skipped",
+                "missing_days": 0,
+                "reason": "Sin dias faltantes en el periodo.",
+            })
+            continue
+
+        html_body = build_missing_days_email_html(
+            mall_name=mall_name,
+            local_name=local_name,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            missing_details=missing_details,
+            report_url=_missing_days_report_url(mall_id, local_id, fecha_inicio, fecha_fin),
+        )
+        subject = (
+            f"Auditoria de dias faltantes: {local_name} ({missing_count} dias)"
+            if missing_count > 0
+            else f"Auditoria de dias faltantes: {local_name} sin brechas"
+        )
+        text_body = (
+            f"Auditoria de dias faltantes para {local_name}. "
+            f"Periodo {fecha_inicio} al {fecha_fin}. "
+            f"Dias faltantes: {missing_count}."
+        )
+        try:
+            resend_result = await asyncio.to_thread(
+                _send_resend_email,
+                local_email,
+                subject,
+                text_body,
+                html_body,
+                cc_emails,
+            )
+            results.append({
+                "local_id": local_id,
+                "local_nombre": local_name,
+                "email": local_email,
+                "status": "sent",
+                "missing_days": missing_count,
+                "resend_id": resend_result.get("id"),
+            })
+        except HTTPException as exc:
+            results.append({
+                "local_id": local_id,
+                "local_nombre": local_name,
+                "email": local_email,
+                "status": "failed",
+                "missing_days": missing_count,
+                "reason": str(exc.detail),
+            })
+        except Exception as exc:
+            results.append({
+                "local_id": local_id,
+                "local_nombre": local_name,
+                "email": local_email,
+                "status": "failed",
+                "missing_days": missing_count,
+                "reason": str(exc) or "Error enviando email.",
+            })
+
+    sent = len([row for row in results if row["status"] == "sent"])
+    skipped = len([row for row in results if row["status"] == "skipped"])
+    failed = len([row for row in results if row["status"] == "failed"])
+    return {
+        "status": "success" if failed == 0 else "partial",
+        "mall_id": mall_id,
+        "fecha_inicio": fecha_inicio,
+        "fecha_fin": fecha_fin,
+        "requested": len(stores),
+        "sent": sent,
+        "skipped": skipped,
+        "failed": failed,
+        "results": results,
+        "message": f"Envio inmediato completado: {sent} enviados, {skipped} omitidos, {failed} fallidos.",
+    }
 
 
 @app.delete("/api/v1/admin/reset-sales")

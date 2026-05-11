@@ -1,17 +1,40 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Loader2, Mail, Send, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, CalendarDays, CheckCircle2, Clock, Loader2, Mail, Save, Send, ShieldCheck } from 'lucide-react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
-import { ResendMessagingStatus } from '../types';
+import { MissingDaysEmailSettings, ResendMessagingStatus } from '../types';
 
 const DEFAULT_TEST_MESSAGE = 'Mensaje de prueba desde MSMALL usando Resend.';
+const WEEKDAY_OPTIONS = [
+  { id: 0, label: 'Lun' },
+  { id: 1, label: 'Mar' },
+  { id: 2, label: 'Mie' },
+  { id: 3, label: 'Jue' },
+  { id: 4, label: 'Vie' },
+  { id: 5, label: 'Sab' },
+  { id: 6, label: 'Dom' },
+];
+
+const defaultSchedule = (mallId = ''): MissingDaysEmailSettings => ({
+  mall_id: mallId,
+  notification_type: 'missing_days_audit',
+  enabled: false,
+  weekdays: [],
+  send_time: '08:00',
+  lookback_days: 7,
+  send_only_with_gaps: true,
+  cc_emails: [],
+});
 
 export const ResendMessagingAdmin: React.FC = () => {
-  const { session, isAdmin, user } = useAuth();
+  const { session, isAdmin, user, currentMall } = useAuth();
   const token = session?.access_token || '';
   const [status, setStatus] = useState<ResendMessagingStatus | null>(null);
+  const [schedule, setSchedule] = useState<MissingDaysEmailSettings>(defaultSchedule());
+  const [ccEmails, setCcEmails] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingSchedule, setSavingSchedule] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const [testTo, setTestTo] = useState(user?.email || '');
@@ -21,13 +44,22 @@ export const ResendMessagingAdmin: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
 
-    const loadStatus = async () => {
+    const loadConfig = async () => {
       if (!token) return;
       setLoading(true);
       setError(null);
       try {
-        const data = await ApiService.getResendMessagingStatus(token);
-        if (!cancelled) setStatus(data);
+        const [statusData, scheduleData] = await Promise.all([
+          ApiService.getResendMessagingStatus(token),
+          currentMall?.id
+            ? ApiService.getMissingDaysEmailSettings(currentMall.id, token)
+            : Promise.resolve(defaultSchedule('')),
+        ]);
+        if (!cancelled) {
+          setStatus(statusData);
+          setSchedule(scheduleData);
+          setCcEmails((scheduleData.cc_emails || []).join('\n'));
+        }
       } catch (e: any) {
         if (!cancelled) setError(e?.message || 'No se pudo cargar Resend.');
       } finally {
@@ -35,11 +67,20 @@ export const ResendMessagingAdmin: React.FC = () => {
       }
     };
 
-    loadStatus();
+    loadConfig();
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, currentMall?.id]);
+
+  const toggleWeekday = (day: number) => {
+    setSchedule((prev) => {
+      const selected = new Set(prev.weekdays || []);
+      if (selected.has(day)) selected.delete(day);
+      else selected.add(day);
+      return { ...prev, weekdays: Array.from(selected).sort() };
+    });
+  };
 
   const handleSendTest = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,6 +106,44 @@ export const ResendMessagingAdmin: React.FC = () => {
       setFlash({ kind: 'error', message: e?.message || 'No se pudo enviar el mensaje.' });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveSchedule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token || !currentMall?.id) {
+      setFlash({ kind: 'error', message: 'Seleccione un mall antes de guardar la programación.' });
+      return;
+    }
+    if (schedule.enabled && schedule.weekdays.length === 0) {
+      setFlash({ kind: 'error', message: 'Seleccione al menos un día de envío.' });
+      return;
+    }
+
+    const parsedCcEmails = ccEmails
+      .split(/[\n,;]+/)
+      .map((email) => email.trim())
+      .filter(Boolean);
+
+    setSavingSchedule(true);
+    setFlash(null);
+    try {
+      const saved = await ApiService.saveMissingDaysEmailSettings(
+        {
+          ...schedule,
+          mall_id: currentMall.id,
+          cc_emails: parsedCcEmails,
+          lookback_days: Number(schedule.lookback_days) || 7,
+        },
+        token
+      );
+      setSchedule(saved);
+      setCcEmails((saved.cc_emails || []).join('\n'));
+      setFlash({ kind: 'success', message: 'Programación de auditoría guardada.' });
+    } catch (e: any) {
+      setFlash({ kind: 'error', message: e?.message || 'No se pudo guardar la programación.' });
+    } finally {
+      setSavingSchedule(false);
     }
   };
 
@@ -191,6 +270,117 @@ export const ResendMessagingAdmin: React.FC = () => {
           </div>
         </form>
       </div>
+
+      <form onSubmit={handleSaveSchedule} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+              <CalendarDays size={20} />
+            </div>
+            <div>
+              <h3 className="font-bold text-slate-800">Programación de días faltantes</h3>
+              <p className="text-xs text-slate-500">
+                Se enviará una auditoría HTML por local usando el email configurado en la ficha del local.
+              </p>
+            </div>
+          </div>
+
+          <label className="inline-flex items-center gap-3 rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700">
+            <input
+              type="checkbox"
+              checked={schedule.enabled}
+              onChange={(e) => setSchedule((prev) => ({ ...prev, enabled: e.target.checked }))}
+            />
+            Envío automático activo
+          </label>
+        </div>
+
+        {!currentMall?.id && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+            Seleccione un mall para guardar esta programación.
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-5">
+          <div className="space-y-3">
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Días de envío</label>
+            <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+              {WEEKDAY_OPTIONS.map((day) => {
+                const active = schedule.weekdays.includes(day.id);
+                return (
+                  <button
+                    key={day.id}
+                    type="button"
+                    onClick={() => toggleWeekday(day.id)}
+                    className={`h-11 rounded-xl border text-sm font-bold transition-all ${active ? 'border-indigo-600 bg-indigo-600 text-white shadow-md shadow-indigo-100' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+                  >
+                    {day.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Hora</label>
+              <div className="relative">
+                <input
+                  type="time"
+                  value={(schedule.send_time || '08:00').slice(0, 5)}
+                  onChange={(e) => setSchedule((prev) => ({ ...prev, send_time: e.target.value }))}
+                  className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <Clock size={14} className="absolute right-3 top-3.5 text-slate-400 pointer-events-none" />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Auditar últimos días</label>
+              <input
+                type="number"
+                min={1}
+                max={90}
+                value={schedule.lookback_days}
+                onChange={(e) => setSchedule((prev) => ({ ...prev, lookback_days: Number(e.target.value) || 7 }))}
+                className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] gap-5">
+          <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={schedule.send_only_with_gaps}
+              onChange={(e) => setSchedule((prev) => ({ ...prev, send_only_with_gaps: e.target.checked }))}
+            />
+            Enviar solo cuando existan días faltantes
+          </label>
+
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Copias administrativas</label>
+            <textarea
+              value={ccEmails}
+              onChange={(e) => setCcEmails(e.target.value)}
+              className="min-h-20 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="correo1@empresa.com&#10;correo2@empresa.com"
+            />
+          </div>
+        </div>
+
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={savingSchedule || loading || !currentMall?.id}
+            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-indigo-200 transition-all hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {savingSchedule ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            {savingSchedule ? 'Guardando...' : 'Guardar programación'}
+          </button>
+        </div>
+      </form>
     </div>
   );
 };

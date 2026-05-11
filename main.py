@@ -1133,6 +1133,16 @@ class MissingDaysEmailPreviewRequest(BaseModel):
     missing_details: List[Dict[str, Any]]
     report_url: Optional[str] = None
 
+class MissingDaysEmailSettingsRequest(BaseModel):
+    mall_id: str
+    notification_type: str = "missing_days_audit"
+    enabled: bool = False
+    weekdays: List[int] = []
+    send_time: str = "08:00"
+    lookback_days: int = 7
+    send_only_with_gaps: bool = True
+    cc_emails: List[str] = []
+
 class RemoteRequest(BaseModel):
     protocolo: str = "SFTP"
     host: str
@@ -4273,6 +4283,85 @@ def _send_resend_email(to_email: str, subject: str, message: str) -> Dict[str, A
         raise HTTPException(status_code=500, detail="Error inesperado enviando con Resend.")
 
 
+def _default_missing_days_email_settings(mall_id: str) -> Dict[str, Any]:
+    return {
+        "id": None,
+        "mall_id": mall_id,
+        "notification_type": "missing_days_audit",
+        "enabled": False,
+        "weekdays": [],
+        "send_time": "08:00",
+        "lookback_days": 7,
+        "send_only_with_gaps": True,
+        "cc_emails": [],
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+def _normalize_weekdays(weekdays: List[int]) -> List[int]:
+    normalized = set()
+    for day in weekdays or []:
+        try:
+            value = int(day)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= value <= 6:
+            normalized.add(value)
+    return sorted(normalized)
+
+
+def _normalize_email_list(values: List[str]) -> List[str]:
+    emails = []
+    for value in values or []:
+        email = str(value or "").strip().lower()
+        if not email:
+            continue
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            raise HTTPException(status_code=400, detail=f"Email invalido: {email}")
+        emails.append(email)
+    return sorted(set(emails))
+
+
+def _normalize_send_time(value: str) -> str:
+    candidate = str(value or "").strip()
+    if re.match(r"^\d{2}:\d{2}$", candidate):
+        candidate = f"{candidate}:00"
+    if not re.match(r"^\d{2}:\d{2}:\d{2}$", candidate):
+        raise HTTPException(status_code=400, detail="Hora de envio invalida. Use HH:MM.")
+    hour, minute, second = [int(part) for part in candidate.split(":")]
+    if hour > 23 or minute > 59 or second > 59:
+        raise HTTPException(status_code=400, detail="Hora de envio invalida. Use HH:MM.")
+    return f"{hour:02d}:{minute:02d}:00"
+
+
+def _sanitize_missing_days_email_settings_row(row: Optional[Dict[str, Any]], mall_id: str) -> Dict[str, Any]:
+    if not row:
+        return _default_missing_days_email_settings(mall_id)
+    data = _default_missing_days_email_settings(mall_id)
+    data.update({
+        "id": row.get("id"),
+        "mall_id": row.get("mall_id") or mall_id,
+        "notification_type": row.get("notification_type") or "missing_days_audit",
+        "enabled": bool(row.get("enabled")),
+        "weekdays": _normalize_weekdays(row.get("weekdays") or []),
+        "send_time": str(row.get("send_time") or "08:00")[:5],
+        "lookback_days": int(row.get("lookback_days") or 7),
+        "send_only_with_gaps": row.get("send_only_with_gaps") is not False,
+        "cc_emails": _normalize_email_list(row.get("cc_emails") or []),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    })
+    return data
+
+
+def _is_missing_email_settings_table_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "email_notification_settings" in text and (
+        "does not exist" in text or "schema cache" in text or "pgrst205" in text
+    )
+
+
 @app.get("/api/v1/admin/messaging/resend")
 async def get_resend_messaging_config(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     return _resend_config_status()
@@ -4320,6 +4409,85 @@ async def preview_missing_days_email_html(
             report_url=payload.report_url,
         )
     }
+
+
+@app.get("/api/v1/admin/messaging/missing-days/settings")
+async def get_missing_days_email_settings(
+    mall_id: str = Query(...),
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    _ensure_operator_can_access_mall(admin_ctx, mall_id)
+    try:
+        res = (
+            supabase.table("email_notification_settings")
+            .select("*")
+            .eq("mall_id", mall_id)
+            .eq("notification_type", "missing_days_audit")
+            .maybe_single()
+            .execute()
+        )
+        return _sanitize_missing_days_email_settings_row(res.data, mall_id)
+    except Exception as exc:
+        if _is_missing_email_settings_table_error(exc):
+            raise HTTPException(
+                status_code=503,
+                detail="La base de datos no está actualizada: ejecute el script 20260511_email_notification_settings.sql.",
+            )
+        logger.error("Error cargando configuracion de emails de dias faltantes: %s", exc)
+        raise HTTPException(status_code=500, detail="No se pudo cargar la programacion de envio.")
+
+
+@app.put("/api/v1/admin/messaging/missing-days/settings")
+async def save_missing_days_email_settings(
+    payload: MissingDaysEmailSettingsRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    mall_id = (payload.mall_id or "").strip()
+    if not mall_id:
+        raise HTTPException(status_code=400, detail="mall_id es requerido.")
+    _ensure_operator_can_access_mall(admin_ctx, mall_id)
+
+    weekdays = _normalize_weekdays(payload.weekdays)
+    if payload.enabled and not weekdays:
+        raise HTTPException(status_code=400, detail="Seleccione al menos un dia de envio.")
+
+    lookback_days = int(payload.lookback_days or 7)
+    if lookback_days < 1 or lookback_days > 90:
+        raise HTTPException(status_code=400, detail="La ventana de auditoria debe estar entre 1 y 90 dias.")
+
+    row = {
+        "mall_id": mall_id,
+        "notification_type": "missing_days_audit",
+        "enabled": bool(payload.enabled),
+        "weekdays": weekdays,
+        "send_time": _normalize_send_time(payload.send_time),
+        "lookback_days": lookback_days,
+        "send_only_with_gaps": bool(payload.send_only_with_gaps),
+        "cc_emails": _normalize_email_list(payload.cc_emails),
+        "updated_by": admin_ctx.get("user_id"),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    try:
+        res = (
+            supabase.table("email_notification_settings")
+            .upsert(row, on_conflict="mall_id,notification_type")
+            .execute()
+        )
+        saved = (res.data or [row])[0]
+        return _sanitize_missing_days_email_settings_row(saved, mall_id)
+    except Exception as exc:
+        if _is_missing_email_settings_table_error(exc):
+            raise HTTPException(
+                status_code=503,
+                detail="La base de datos no está actualizada: ejecute el script 20260511_email_notification_settings.sql.",
+            )
+        logger.error("Error guardando configuracion de emails de dias faltantes: %s", exc)
+        raise HTTPException(status_code=500, detail="No se pudo guardar la programacion de envio.")
 
 
 @app.delete("/api/v1/admin/reset-sales")

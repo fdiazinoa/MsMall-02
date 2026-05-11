@@ -2,6 +2,7 @@
 # Backend: FastAPI API para MSMALL Audit
 import asyncio
 import csv
+import html
 import io
 import logging
 import time
@@ -23,6 +24,8 @@ import json
 import xmltodict
 from ftplib import FTP
 import stat
+import urllib.error
+import urllib.request
 from worker_importacion import run_worker_async
 from analytics_service import AnalyticsService
 from routers import recipes, comparisons, admin_tools
@@ -97,6 +100,10 @@ SYSTEM_ADMIN_EMAILS = {
     for e in (os.getenv("SYSTEM_ADMIN_EMAILS", "fdiaz@mercasend.net")).split(",")
     if e and e.strip()
 }
+RESEND_API_KEY_ENV = "RESEND_API_KEY"
+RESEND_DOMAIN = "mercasend.net"
+RESEND_FROM_EMAIL = "notificaciones@mercasend.net"
+RESEND_FROM_NAME = "MercaSend Notificaciones"
 ADMIN_ROLES = {"admin", "superadmin", "super_admin", "administrador"}
 IT_ROLES = {"it", "tic"}
 
@@ -1109,6 +1116,11 @@ class LocalCustomFieldValuePayload(BaseModel):
 
 class LocalCustomFieldValueUpsertRequest(BaseModel):
     values: List[LocalCustomFieldValuePayload]
+
+class ResendTestMessageRequest(BaseModel):
+    to: str
+    subject: Optional[str] = None
+    message: Optional[str] = None
 
 class RemoteRequest(BaseModel):
     protocolo: str = "SFTP"
@@ -4187,6 +4199,97 @@ async def unmark_file(
     except Exception as e:
         logger.error(f"Error unmarking file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _resend_config_status() -> Dict[str, Any]:
+    return {
+        "provider": "resend",
+        "domain": RESEND_DOMAIN,
+        "from_email": RESEND_FROM_EMAIL,
+        "from_name": RESEND_FROM_NAME,
+        "configured": bool(os.getenv(RESEND_API_KEY_ENV)),
+        "api_key_env": RESEND_API_KEY_ENV,
+    }
+
+
+def _send_resend_email(to_email: str, subject: str, message: str) -> Dict[str, Any]:
+    api_key = os.getenv(RESEND_API_KEY_ENV)
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Resend no esta configurado. Falta la variable {RESEND_API_KEY_ENV}.",
+        )
+
+    safe_message = html.escape(message or "").replace("\n", "<br />")
+    payload = {
+        "from": f"{RESEND_FROM_NAME} <{RESEND_FROM_EMAIL}>",
+        "to": [to_email],
+        "subject": subject,
+        "text": message,
+        "html": f"<p>{safe_message}</p>",
+    }
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw)
+            detail = parsed.get("message") or parsed.get("error") or raw
+        except Exception:
+            detail = raw or "Resend rechazo el envio."
+        logger.warning("Resend API error %s: %s", e.code, detail)
+        raise HTTPException(status_code=502, detail=f"Resend: {detail}")
+    except urllib.error.URLError as e:
+        logger.error("Resend network error: %s", e)
+        raise HTTPException(status_code=502, detail="No se pudo conectar con Resend.")
+    except Exception as e:
+        logger.error("Unexpected Resend error: %s", e)
+        raise HTTPException(status_code=500, detail="Error inesperado enviando con Resend.")
+
+
+@app.get("/api/v1/admin/messaging/resend")
+async def get_resend_messaging_config(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+    return _resend_config_status()
+
+
+@app.post("/api/v1/admin/messaging/resend/test")
+async def send_resend_test_message(
+    payload: ResendTestMessageRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    to_email = (payload.to or "").strip()
+    subject = (payload.subject or "Prueba de notificaciones MSMALL").strip()
+    message = (payload.message or "Mensaje de prueba desde MSMALL usando Resend.").strip()
+
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", to_email):
+        raise HTTPException(status_code=400, detail="Destinatario invalido.")
+    if not subject:
+        raise HTTPException(status_code=400, detail="Asunto requerido.")
+    if not message:
+        raise HTTPException(status_code=400, detail="Mensaje requerido.")
+
+    result = await asyncio.to_thread(_send_resend_email, to_email, subject, message)
+    return {
+        "status": "success",
+        "id": result.get("id"),
+        "to": to_email,
+        "from_email": RESEND_FROM_EMAIL,
+        "domain": RESEND_DOMAIN,
+        "message": "Mensaje de prueba enviado correctamente.",
+    }
 
 
 @app.delete("/api/v1/admin/reset-sales")

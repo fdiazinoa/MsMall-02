@@ -35,6 +35,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     { id: 'store-import', label: 'Importador Locales', visible: isAdmin || isTic },
     { id: 'malls', label: 'Gestión de Malls', visible: isAdmin },
     { id: 'users', label: 'Usuarios y Roles', visible: isAdmin },
+    { id: 'messaging', label: 'Mensajería Resend', visible: isAdmin },
     { id: 'security', label: 'Seguridad Tokens', visible: isAdmin }
   ];
 

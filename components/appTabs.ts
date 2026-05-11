@@ -14,4 +14,5 @@ export type AppTab =
   | 'cube'
   | 'malls'
   | 'comparisons'
+  | 'messaging'
   | 'security';

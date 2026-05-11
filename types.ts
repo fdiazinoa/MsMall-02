@@ -200,6 +200,20 @@ export interface ResendTestMessageResponse {
   message: string;
 }
 
+export interface MissingDaysEmailSettings {
+  id?: string;
+  mall_id: string;
+  notification_type: 'missing_days_audit';
+  enabled: boolean;
+  weekdays: number[];
+  send_time: string;
+  lookback_days: number;
+  send_only_with_gaps: boolean;
+  cc_emails: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
 export type SecurityTokenType = 'app' | 'exporter';
 export type SecurityTokenStatus = 'active' | 'disabled' | 'revoked';
 

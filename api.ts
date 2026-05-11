@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, ResendMessagingStatus, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, ResendMessagingStatus, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -2210,6 +2210,32 @@ export const ApiService = {
         body: JSON.stringify(payload)
       },
       "No se pudo enviar el mensaje de prueba"
+    );
+  },
+
+  async getMissingDaysEmailSettings(mallId: string, token: string): Promise<MissingDaysEmailSettings> {
+    return fetchJsonWithBaseFallback<MissingDaysEmailSettings>(
+      `/admin/messaging/missing-days/settings?mall_id=${encodeURIComponent(mallId)}`,
+      { headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      "No se pudo cargar la programación de envío"
+    );
+  },
+
+  async saveMissingDaysEmailSettings(
+    settings: MissingDaysEmailSettings,
+    token: string
+  ): Promise<MissingDaysEmailSettings> {
+    return fetchJsonWithBaseFallback<MissingDaysEmailSettings>(
+      '/admin/messaging/missing-days/settings',
+      {
+        method: 'PUT',
+        headers: withAuthHeaders(token, {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }),
+        body: JSON.stringify(settings)
+      },
+      "No se pudo guardar la programación de envío"
     );
   },
 

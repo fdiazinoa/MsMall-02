@@ -31,6 +31,10 @@ const getApiBaseUrls = (): string[] => {
   const normalizedDirectBase = normalizeApiBaseUrl(DIRECT_BACKEND_BASE_URL);
   const isVercelHost = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
 
+  if (isVercelHost) {
+    urls.push(BASE_URL);
+  }
+
   if (normalizedDirectBase && normalizedDirectBase !== BASE_URL) {
     urls.push(normalizedDirectBase);
   } else if (isVercelHost) {

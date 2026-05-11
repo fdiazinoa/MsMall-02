@@ -104,6 +104,7 @@ RESEND_API_KEY_ENV = "RESEND_API_KEY"
 RESEND_DOMAIN = "mercasend.net"
 RESEND_FROM_EMAIL = "notificaciones@mercasend.net"
 RESEND_FROM_NAME = "MercaSend Notificaciones"
+RESEND_USER_AGENT = "MSMALL-API/1.0 (mercasend.net)"
 ADMIN_ROLES = {"admin", "superadmin", "super_admin", "administrador"}
 IT_ROLES = {"it", "tic"}
 
@@ -4235,6 +4236,7 @@ def _send_resend_email(to_email: str, subject: str, message: str) -> Dict[str, A
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": RESEND_USER_AGENT,
         },
         method="POST",
     )
@@ -4247,7 +4249,7 @@ def _send_resend_email(to_email: str, subject: str, message: str) -> Dict[str, A
         raw = e.read().decode("utf-8", errors="replace")
         try:
             parsed = json.loads(raw)
-            detail = parsed.get("message") or parsed.get("error") or raw
+            detail = parsed.get("message") or parsed.get("detail") or parsed.get("error") or raw
         except Exception:
             detail = raw or "Resend rechazo el envio."
         logger.warning("Resend API error %s: %s", e.code, detail)

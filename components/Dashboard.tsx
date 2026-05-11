@@ -16,6 +16,7 @@ import { FinancialDashboard } from './FinancialDashboard';
 import { SalesCube } from './SalesCube';
 import { MallManager } from './MallManager';
 import { PeriodComparison } from './PeriodComparison';
+import { ResendMessagingAdmin } from './ResendMessagingAdmin';
 import { SecurityTokenAdmin } from './SecurityTokenAdmin';
 
 interface DashboardProps {
@@ -57,6 +58,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab })
       return <MallManager />;
     case 'comparisons':
       return <PeriodComparison />;
+    case 'messaging':
+      return <ResendMessagingAdmin />;
     default:
       return <DashboardKPIs />;
   }

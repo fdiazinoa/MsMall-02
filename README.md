@@ -55,6 +55,7 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
 - La versión declarada de la API en FastAPI es `1.0.0` (`main.py`), aunque el estado funcional del proyecto se documenta como MVP `v1.0.2`.
 - Variables operativas relevantes:
   - `ENABLE_API_SCHEDULER=false` (default recomendado)
+  - `RESEND_API_KEY` para activar envío de notificaciones con Resend desde `notificaciones@mercasend.net`
   - `WORKER_POLL_SECONDS`, `MAX_CONCURRENT_WORKERS`, `MAX_CONCURRENT_PER_HOST`, `HOURLY_STAGGER_MINUTES`, `MAX_FILES_PER_BATCH`
   - `CACHE_TTL_DASHBOARD`, `CACHE_TTL_RANKING`, `CACHE_TTL_HEATMAP`
   - `frecuencia_cron` / `hora_especifica` en configuración de locales (worker)

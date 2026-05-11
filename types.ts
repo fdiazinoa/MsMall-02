@@ -182,6 +182,24 @@ export interface ConnectionRetryBatchResponse {
   results: any[];
 }
 
+export interface ResendMessagingStatus {
+  provider: 'resend';
+  domain: string;
+  from_email: string;
+  from_name: string;
+  configured: boolean;
+  api_key_env: string;
+}
+
+export interface ResendTestMessageResponse {
+  status: string;
+  id?: string;
+  to: string;
+  from_email: string;
+  domain: string;
+  message: string;
+}
+
 export type SecurityTokenType = 'app' | 'exporter';
 export type SecurityTokenStatus = 'active' | 'disabled' | 'revoked';
 

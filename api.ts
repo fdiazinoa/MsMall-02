@@ -168,20 +168,32 @@ const normalizeLoadLogRow = (row: any): LoadLogEntry => {
     ? row.detalles.filter((item: any) => item && typeof item === 'object')
     : [];
   const message = String(row?.mensaje || '').trim();
-  const recordsProcessed =
-    toOptionalNonNegativeInt(row?.records_processed ?? metadata?.records_processed)
-    ?? extractLoadCount(message, [
-      /(?:^|\s)(\d+)\s+registros?\s+(?:cargados?|procesados?)/i,
-      /procesado:\s*(\d+)\s+registros?/i,
-      /inserci[oó]n confirmada de\s*(\d+)\s+registros?/i,
-    ]);
-  const errorCount =
-    toOptionalNonNegativeInt(row?.error_count ?? metadata?.error_count)
-    ?? (detalles.length > 0 ? detalles.length : extractLoadCount(message, [
-      /errores?:\s*(\d+)/i,
-      /se encontraron\s*(\d+)\s+errores?/i,
-    ]))
-    ?? 0;
+  const parsedRecordsProcessed = extractLoadCount(message, [
+    /(?:^|\s)(\d+)\s+registros?\s+(?:cargados?|procesados?)/i,
+    /procesado:\s*(\d+)\s+registros?/i,
+    /inserci[oó]n confirmada de\s*(\d+)\s+registros?/i,
+  ]);
+  const explicitRecordsProcessed = toOptionalNonNegativeInt(row?.records_processed ?? metadata?.records_processed);
+  const recordsProcessed = (
+    parsedRecordsProcessed !== null
+      && parsedRecordsProcessed > 0
+      && (explicitRecordsProcessed === null || explicitRecordsProcessed === 0)
+  )
+    ? parsedRecordsProcessed
+    : (explicitRecordsProcessed ?? parsedRecordsProcessed);
+
+  const parsedErrorCount = detalles.length > 0 ? detalles.length : extractLoadCount(message, [
+    /errores?:\s*(\d+)/i,
+    /se encontraron\s*(\d+)\s+errores?/i,
+  ]);
+  const explicitErrorCount = toOptionalNonNegativeInt(row?.error_count ?? metadata?.error_count);
+  const errorCount = (
+    parsedErrorCount !== null
+      && parsedErrorCount > 0
+      && (explicitErrorCount === null || explicitErrorCount === 0)
+  )
+    ? parsedErrorCount
+    : (explicitErrorCount ?? parsedErrorCount ?? 0);
 
   let estado = String(row?.estado || '').trim().toLowerCase() || 'error';
   if (estado === 'exito' && errorCount > 0) estado = 'parcial';

@@ -65,6 +65,8 @@ const TOKEN_PRESETS: Record<'app' | 'exporter', Array<{ label: string; seconds: 
   ],
 };
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const formatIso = (value?: string | null) => {
   if (!value) return '—';
   try {
@@ -88,6 +90,8 @@ const parseScopes = (value: string[] | string | undefined | null): string[] => {
     .map((x) => x.trim())
     .filter(Boolean);
 };
+
+const isUuid = (value?: string | null) => UUID_REGEX.test(String(value || '').trim());
 
 const badgeClasses = (status?: string) => {
   switch ((status || '').toLowerCase()) {
@@ -318,6 +322,11 @@ export const SecurityTokenAdmin: React.FC = () => {
   const [showCreateSaModal, setShowCreateSaModal] = useState(false);
   const [showCreateTokenModal, setShowCreateTokenModal] = useState(false);
   const [savingAction, setSavingAction] = useState(false);
+  const [createServiceAccountError, setCreateServiceAccountError] = useState<string | null>(null);
+  const [createTokenError, setCreateTokenError] = useState<string | null>(null);
+  const [storeOptionsByMall, setStoreOptionsByMall] = useState<Record<string, Store[]>>({});
+  const [storesLoadingMall, setStoresLoadingMall] = useState<string | null>(null);
+  const [storesLoadError, setStoresLoadError] = useState<string | null>(null);
   const [selectedTokenDetail, setSelectedTokenDetail] = useState<SecurityApiToken | null>(null);
   const [revealState, setRevealState] = useState<RevealState | null>(null);
 
@@ -340,6 +349,8 @@ export const SecurityTokenAdmin: React.FC = () => {
   });
 
   const selectedMallId = filters.mall_id || currentMall?.id || '';
+  const serviceAccountStoreOptions = storeOptionsByMall[serviceAccountForm.mall_id] || [];
+  const tokenStoreOptions = storeOptionsByMall[tokenForm.mall_id] || [];
   const mallNameById = useMemo(() => {
     const entries = (malls || []).map((mall: any) => [String(mall.id), String(mall.nombre || mall.id)]);
     return new Map<string, string>(entries);
@@ -420,6 +431,33 @@ export const SecurityTokenAdmin: React.FC = () => {
       setTokenForm((prev) => (prev.mall_id ? prev : { ...prev, mall_id: currentMall.id }));
     }
   }, [currentMall?.id]);
+
+  const loadStoresForMall = async (mallId: string) => {
+    const normalizedMallId = String(mallId || '').trim();
+    if (!normalizedMallId || storeOptionsByMall[normalizedMallId]) return;
+    setStoresLoadingMall(normalizedMallId);
+    setStoresLoadError(null);
+    try {
+      const stores = await ApiService.getStores(normalizedMallId);
+      setStoreOptionsByMall((prev) => ({ ...prev, [normalizedMallId]: stores || [] }));
+    } catch (err: any) {
+      setStoresLoadError(err?.message || 'No se pudieron cargar los locales del mall seleccionado.');
+    } finally {
+      setStoresLoadingMall((prev) => (prev === normalizedMallId ? null : prev));
+    }
+  };
+
+  useEffect(() => {
+    if (showCreateSaModal && isUuid(serviceAccountForm.mall_id)) {
+      loadStoresForMall(serviceAccountForm.mall_id);
+    }
+  }, [showCreateSaModal, serviceAccountForm.mall_id]);
+
+  useEffect(() => {
+    if (showCreateTokenModal && isUuid(tokenForm.mall_id)) {
+      loadStoresForMall(tokenForm.mall_id);
+    }
+  }, [showCreateTokenModal, tokenForm.mall_id]);
 
   useEffect(() => {
     if (!flash) return;
@@ -508,6 +546,7 @@ export const SecurityTokenAdmin: React.FC = () => {
   }, [tokens]);
 
   const resetServiceAccountForm = () => {
+    setCreateServiceAccountError(null);
     setServiceAccountForm({
       name: '',
       mall_id: selectedMallId || '',
@@ -517,6 +556,7 @@ export const SecurityTokenAdmin: React.FC = () => {
   };
 
   const resetTokenForm = () => {
+    setCreateTokenError(null);
     setTokenForm({
       token_type: 'exporter',
       mall_id: selectedMallId || '',
@@ -532,16 +572,27 @@ export const SecurityTokenAdmin: React.FC = () => {
   const handleCreateServiceAccount = async () => {
     if (!token) return;
     const name = serviceAccountForm.name.trim();
+    const mallId = serviceAccountForm.mall_id.trim();
+    const localId = serviceAccountForm.local_id.trim();
+    setCreateServiceAccountError(null);
     if (!name) {
-      notify('El nombre es requerido.', 'error');
+      setCreateServiceAccountError('El nombre es requerido.');
       return;
     }
-    if (!serviceAccountForm.mall_id.trim() || !serviceAccountForm.local_id.trim()) {
-      notify('mall_id y local_id son requeridos.', 'error');
+    if (!mallId || !localId) {
+      setCreateServiceAccountError('Mall y local son requeridos.');
+      return;
+    }
+    if (!isUuid(mallId)) {
+      setCreateServiceAccountError('Mall inválido. Selecciona un mall válido.');
+      return;
+    }
+    if (!isUuid(localId)) {
+      setCreateServiceAccountError('Local inválido. Debes seleccionar un local real del mall.');
       return;
     }
     if (serviceAccountForm.scopes.length === 0) {
-      notify('Debe seleccionar al menos un scope.', 'error');
+      setCreateServiceAccountError('Debe seleccionar al menos un scope.');
       return;
     }
     if (!window.confirm('¿Crear Service Account para MsExportador?')) return;
@@ -551,8 +602,8 @@ export const SecurityTokenAdmin: React.FC = () => {
       const created = await ApiService.createSecurityServiceAccount(
         {
           name,
-          mall_id: serviceAccountForm.mall_id.trim(),
-          local_id: serviceAccountForm.local_id.trim(),
+          mall_id: mallId,
+          local_id: localId,
           scopes: serviceAccountForm.scopes,
         },
         token
@@ -569,7 +620,9 @@ export const SecurityTokenAdmin: React.FC = () => {
       notify('Service Account creado correctamente.');
       await loadData({ silent: true });
     } catch (err: any) {
-      notify(err?.message || 'No se pudo crear el service account.', 'error');
+      const message = err?.message || 'No se pudo crear el service account.';
+      setCreateServiceAccountError(message);
+      notify(message, 'error');
     } finally {
       setSavingAction(false);
     }
@@ -588,21 +641,30 @@ export const SecurityTokenAdmin: React.FC = () => {
     if (!token) return;
     const mallId = tokenForm.mall_id.trim();
     const localId = tokenForm.local_id.trim();
+    setCreateTokenError(null);
     if (!mallId) {
-      notify('mall_id es requerido.', 'error');
+      setCreateTokenError('Mall es requerido.');
+      return;
+    }
+    if (!isUuid(mallId)) {
+      setCreateTokenError('Mall inválido. Selecciona un mall válido.');
       return;
     }
     if (tokenForm.token_type === 'exporter' && !localId) {
-      notify('local_id es requerido para token exporter.', 'error');
+      setCreateTokenError('Local es requerido para token exporter.');
+      return;
+    }
+    if (tokenForm.token_type === 'exporter' && !isUuid(localId)) {
+      setCreateTokenError('Local inválido. Debes seleccionar un local real del mall.');
       return;
     }
     if (tokenForm.scopes.length === 0) {
-      notify('Debe seleccionar al menos un scope.', 'error');
+      setCreateTokenError('Debe seleccionar al menos un scope.');
       return;
     }
     const expiresIn = resolveTokenExpiresIn();
     if (tokenForm.expires_in === 'custom' && !expiresIn) {
-      notify('expires_in personalizado inválido.', 'error');
+      setCreateTokenError('expires_in personalizado inválido.');
       return;
     }
     if (!window.confirm(`¿Crear token ${tokenForm.token_type} para ${mallId}${localId ? ` / ${localId}` : ''}?`)) return;
@@ -632,7 +694,9 @@ export const SecurityTokenAdmin: React.FC = () => {
       notify('Token creado correctamente.');
       await loadData({ silent: true });
     } catch (err: any) {
-      notify(err?.message || 'No se pudo crear el token.', 'error');
+      const message = err?.message || 'No se pudo crear el token.';
+      setCreateTokenError(message);
+      notify(message, 'error');
     } finally {
       setSavingAction(false);
     }
@@ -738,7 +802,7 @@ export const SecurityTokenAdmin: React.FC = () => {
   const handleBulkRevokeByLocal = async () => {
     if (!token) return;
     if (!filters.mall_id || !filters.local_id) {
-      notify('Para revocar por local debe indicar mall_id y local_id en los filtros.', 'error');
+      notify('Para revocar por local debe indicar mall y local en los filtros.', 'error');
       return;
     }
     if (!window.confirm(`¿Revocar todos los tokens del local ${filters.local_id}?`)) return;
@@ -754,7 +818,7 @@ export const SecurityTokenAdmin: React.FC = () => {
   const handleBulkRevokeByMall = async () => {
     if (!token) return;
     if (!filters.mall_id) {
-      notify('Para revocar por mall debe indicar mall_id en los filtros.', 'error');
+      notify('Para revocar por mall debe indicar mall en los filtros.', 'error');
       return;
     }
     if (!window.confirm(`¿Revocar todos los tokens del mall ${filters.mall_id}?`)) return;
@@ -939,7 +1003,7 @@ export const SecurityTokenAdmin: React.FC = () => {
               {activeTab === 'service_accounts' && (
                 <div className="space-y-4">
                   <div className="text-sm text-slate-500">
-                    Service Accounts para MsExportador por <span className="font-mono">mall_id + local_id</span>, con client secret one-time reveal.
+                    Service Accounts para MsExportador por mall + local, con client secret one-time reveal.
                   </div>
                   <div className="overflow-x-auto rounded-xl border border-slate-200">
                     <table className="w-full text-left min-w-[1100px]">
@@ -1193,39 +1257,86 @@ export const SecurityTokenAdmin: React.FC = () => {
         open={showCreateSaModal}
         onClose={() => setShowCreateSaModal(false)}
         title="Crear Service Account (MsExportador)"
-        subtitle="Vinculado a mall_id + local_id. El client_secret se mostrará una sola vez."
+        subtitle="Vinculado a un mall y un local. El client_secret se mostrará una sola vez."
         widthClass="max-w-2xl"
       >
         <div className="space-y-4">
+          {createServiceAccountError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              <div className="font-semibold mb-1">No se pudo crear el Service Account</div>
+              <div>{createServiceAccountError}</div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="md:col-span-2">
               <label className="block text-sm font-medium text-slate-700 mb-1">Nombre *</label>
               <input
                 value={serviceAccountForm.name}
-                onChange={(e) => setServiceAccountForm((prev) => ({ ...prev, name: e.target.value }))}
+                onChange={(e) => {
+                  setCreateServiceAccountError(null);
+                  setServiceAccountForm((prev) => ({ ...prev, name: e.target.value }));
+                }}
                 placeholder="Ej: Exportador Local 01"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">mall_id *</label>
-              <input
+              <label className="block text-sm font-medium text-slate-700 mb-1">Mall *</label>
+              <select
                 value={serviceAccountForm.mall_id}
-                onChange={(e) => setServiceAccountForm((prev) => ({ ...prev, mall_id: e.target.value }))}
-                placeholder="UUID mall"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
-              />
+                onChange={(e) => {
+                  setCreateServiceAccountError(null);
+                  setStoresLoadError(null);
+                  setServiceAccountForm((prev) => ({ ...prev, mall_id: e.target.value, local_id: '' }));
+                }}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white"
+              >
+                <option value="">Selecciona un mall</option>
+                {(malls || []).map((mall: any) => (
+                  <option key={mall.id} value={mall.id}>
+                    {mall.nombre} ({truncateMiddle(mall.id, 8, 4)})
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">local_id *</label>
-              <input
+              <label className="block text-sm font-medium text-slate-700 mb-1">Local *</label>
+              <select
                 value={serviceAccountForm.local_id}
-                onChange={(e) => setServiceAccountForm((prev) => ({ ...prev, local_id: e.target.value }))}
-                placeholder="UUID local"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
-              />
+                onChange={(e) => {
+                  setCreateServiceAccountError(null);
+                  setServiceAccountForm((prev) => ({ ...prev, local_id: e.target.value }));
+                }}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white"
+                disabled={!serviceAccountForm.mall_id || storesLoadingMall === serviceAccountForm.mall_id}
+              >
+                <option value="">
+                  {!serviceAccountForm.mall_id
+                    ? 'Selecciona un mall primero'
+                    : storesLoadingMall === serviceAccountForm.mall_id
+                      ? 'Cargando locales...'
+                      : serviceAccountStoreOptions.length === 0
+                        ? 'No hay locales disponibles'
+                        : 'Selecciona un local'}
+                </option>
+                {serviceAccountStoreOptions.map((store) => (
+                  <option key={store.id} value={store.id}>
+                    {store.nombre} {store.codigo_interno ? `(${store.codigo_interno})` : ''} · {truncateMiddle(store.id, 8, 4)}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-slate-500">
+                Selecciona el local por nombre/código. Internamente se usará el <span className="font-mono">UUID</span> real de <span className="font-mono">locales.id</span>.
+              </p>
             </div>
           </div>
+
+          {storesLoadError && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              {storesLoadError}
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">Scopes por defecto</label>
@@ -1258,6 +1369,13 @@ export const SecurityTokenAdmin: React.FC = () => {
         widthClass="max-w-3xl"
       >
         <div className="space-y-4">
+          {createTokenError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              <div className="font-semibold mb-1">No se pudo crear el token</div>
+              <div>{createTokenError}</div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">token_type *</label>
@@ -1265,6 +1383,7 @@ export const SecurityTokenAdmin: React.FC = () => {
                 value={tokenForm.token_type}
                 onChange={(e) => {
                   const nextType = e.target.value as 'app' | 'exporter';
+                  setCreateTokenError(null);
                   setTokenForm((prev) => ({
                     ...prev,
                     token_type: nextType,
@@ -1281,24 +1400,59 @@ export const SecurityTokenAdmin: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">mall_id *</label>
-              <input
+              <label className="block text-sm font-medium text-slate-700 mb-1">Mall *</label>
+              <select
                 value={tokenForm.mall_id}
-                onChange={(e) => setTokenForm((prev) => ({ ...prev, mall_id: e.target.value }))}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
-                placeholder="UUID mall"
-              />
+                onChange={(e) => {
+                  setCreateTokenError(null);
+                  setStoresLoadError(null);
+                  setTokenForm((prev) => ({ ...prev, mall_id: e.target.value, local_id: '', service_account_id: '' }));
+                }}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white"
+              >
+                <option value="">Selecciona un mall</option>
+                {(malls || []).map((mall: any) => (
+                  <option key={mall.id} value={mall.id}>
+                    {mall.nombre} ({truncateMiddle(mall.id, 8, 4)})
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
-                local_id {tokenForm.token_type === 'exporter' ? '*' : '(opcional)'}
+                Local {tokenForm.token_type === 'exporter' ? '*' : '(opcional)'}
               </label>
-              <input
+              <select
                 value={tokenForm.local_id}
-                onChange={(e) => setTokenForm((prev) => ({ ...prev, local_id: e.target.value }))}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
-                placeholder="UUID local"
-              />
+                onChange={(e) => {
+                  setCreateTokenError(null);
+                  setTokenForm((prev) => ({ ...prev, local_id: e.target.value }));
+                }}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white"
+                disabled={tokenForm.token_type !== 'exporter' || !tokenForm.mall_id || storesLoadingMall === tokenForm.mall_id}
+              >
+                <option value="">
+                  {tokenForm.token_type !== 'exporter'
+                    ? 'No requerido para token app'
+                    : !tokenForm.mall_id
+                      ? 'Selecciona un mall primero'
+                      : storesLoadingMall === tokenForm.mall_id
+                        ? 'Cargando locales...'
+                        : tokenStoreOptions.length === 0
+                          ? 'No hay locales disponibles'
+                          : 'Selecciona un local'}
+                </option>
+                {tokenStoreOptions.map((store) => (
+                  <option key={store.id} value={store.id}>
+                    {store.nombre} {store.codigo_interno ? `(${store.codigo_interno})` : ''} · {truncateMiddle(store.id, 8, 4)}
+                  </option>
+                ))}
+              </select>
+              {tokenForm.token_type === 'exporter' && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Selecciona el local por nombre/código. Internamente se usará el <span className="font-mono">UUID</span> real de <span className="font-mono">locales.id</span>.
+                </p>
+              )}
             </div>
 
             <div>
@@ -1367,7 +1521,7 @@ export const SecurityTokenAdmin: React.FC = () => {
 
           {tokenForm.token_type === 'exporter' && !tokenForm.local_id.trim() && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-              Exporter token requiere <span className="font-mono">local_id</span>. El submit está bloqueado hasta completarlo.
+              Exporter token requiere seleccionar un <span className="font-medium">local</span>. El submit está bloqueado hasta completarlo.
             </div>
           )}
 

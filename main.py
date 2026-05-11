@@ -26,7 +26,7 @@ from ftplib import FTP
 import stat
 import urllib.error
 import urllib.request
-from worker_importacion import run_worker_async
+from worker_importacion import WORKER_POLL_SECONDS, run_worker_async
 from analytics_service import AnalyticsService
 from routers import recipes, comparisons, admin_tools
 from routers.token_auth import (
@@ -286,7 +286,7 @@ app.include_router(create_token_auth_router())
 _api_scheduler_task = None
 
 async def scheduler_loop():
-    await asyncio.sleep(10) # Initial delay
+    await asyncio.sleep(min(10, WORKER_POLL_SECONDS))
     while True:
         logger.info("[Scheduler] Iniciando ciclo de importación automática...")
         try:
@@ -294,8 +294,8 @@ async def scheduler_loop():
             await run_worker_async()
         except Exception as e:
             logger.error(f"[Scheduler] Error en ciclo: {e}")
-        logger.info("[Scheduler] Durmiendo 1 hora...")
-        await asyncio.sleep(3600)
+        logger.info("[Scheduler] Durmiendo %s segundos...", WORKER_POLL_SECONDS)
+        await asyncio.sleep(WORKER_POLL_SECONDS)
 
 @app.on_event("startup")
 async def startup_event():

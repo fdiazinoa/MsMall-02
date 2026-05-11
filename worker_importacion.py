@@ -16,6 +16,7 @@ import posixpath
 from typing import Optional, Sequence, Tuple
 from services.connection_monitor_service import ConnectionMonitorService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
+from services.missing_days_email_service import run_missing_days_email_scheduler
 from services.sensitive_ops_service import sanitize_error_text
 from analytics_service import run_local_risk_analysis
 
@@ -817,6 +818,22 @@ async def run_connection_monitor_nightly_if_due():
         logger.error(f"Connection monitor nightly failed: {sanitize_error_text(e)}")
         return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
 
+async def run_missing_days_email_scheduler_if_due():
+    if not supabase:
+        return {"executed": False, "reason": "supabase_not_configured"}
+    try:
+        result = await asyncio.to_thread(
+            lambda: run_missing_days_email_scheduler(supabase, logger=logger)
+        )
+        if result.get("executed"):
+            logger.info("📬 Missing-days email scheduler executed: %s", result.get("runs"))
+        else:
+            logger.info("📬 Missing-days email scheduler skipped: %s", result)
+        return result
+    except Exception as e:
+        logger.error(f"Missing-days email scheduler failed: {sanitize_error_text(e)}")
+        return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
+
 async def process_local_safe(local, semaphore):
     """
     Wraps the synchronous process_local_files in a semaphore and async thread,
@@ -986,6 +1003,7 @@ async def run_worker_async():
 
         if not tasks_to_run:
             logger.info("😴 No active tasks for this hour.")
+            await run_missing_days_email_scheduler_if_due()
             await run_connection_monitor_nightly_if_due()
             await update_cron_success()
             await clear_cron_error()
@@ -1001,6 +1019,7 @@ async def run_worker_async():
         await asyncio.gather(*tasks)
         
         logger.info("🏁 Cycle finished.")
+        await run_missing_days_email_scheduler_if_due()
         await run_connection_monitor_nightly_if_due()
         await update_cron_success()
         await clear_cron_error()

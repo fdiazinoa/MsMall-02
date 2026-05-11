@@ -1,7 +1,27 @@
-"""HTML templates for missing-days email notifications."""
+"""Missing-days email notifications and scheduler helpers."""
 
+import json
+import os
+import re
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
 from html import escape
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - Python 3.8 fallback only.
+    ZoneInfo = None
+
+
+RESEND_API_KEY_ENV = "RESEND_API_KEY"
+RESEND_FROM_EMAIL = "notificaciones@mercasend.net"
+RESEND_FROM_NAME = "MercaSend Notificaciones"
+RESEND_USER_AGENT = "MSMALL-API/1.0 (mercasend.net)"
+MISSING_DAYS_NOTIFICATION_TYPE = "missing_days_audit"
+MISSING_DAYS_SCHEDULER_TZ_ENV = "MISSING_DAYS_EMAIL_TIMEZONE"
+DEFAULT_MISSING_DAYS_SCHEDULER_TZ = "America/Santo_Domingo"
 
 
 def _status_color(missing_count: int) -> Dict[str, str]:
@@ -124,6 +144,9 @@ def build_missing_days_email_html(
                     <div style="font-size:20px;line-height:1.3;font-weight:800;color:#7c2d12;">
                       Atencion: Faltan ventas para {missing_count} dias
                     </div>
+                    <div style="margin-top:6px;font-size:14px;line-height:1.45;color:#7c2d12;">
+                      <strong>Local auditado:</strong> {safe_local}
+                    </div>
                     <div style="margin-top:6px;font-size:14px;line-height:1.45;color:#9a3412;">
                       Se detectaron dias sin transacciones registradas en el periodo seleccionado.
                     </div>
@@ -156,3 +179,447 @@ def build_missing_days_email_html(
       </body>
     </html>
     """
+
+
+def _normalize_missing_days_sale_date(raw_value: Any) -> Optional[str]:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, datetime):
+        return raw_value.strftime("%Y-%m-%d")
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    if len(value) >= 10 and value[4] == "-" and value[7] == "-":
+        return value[:10]
+    try:
+        parsed = datetime.fromisoformat(value[:19])
+        return parsed.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def load_missing_days_details_for_local(
+    supabase_client: Any,
+    *,
+    local_id: str,
+    local_name: str,
+    mall_id: str,
+    fecha_inicio: str,
+    fecha_fin: str,
+) -> List[Dict[str, Any]]:
+    start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d")
+    end_date = datetime.strptime(fecha_fin, "%Y-%m-%d")
+    total_days = (end_date - start_date).days + 1
+    expected_dates = {
+        (start_date + timedelta(days=x)).strftime("%Y-%m-%d")
+        for x in range(total_days)
+    }
+
+    rows: List[Dict[str, Any]] = []
+    page_size = 2000
+    page = 0
+    while True:
+        chunk = (
+            supabase_client.table("ventas")
+            .select("id, fecha")
+            .eq("local_id", local_id)
+            .gte("fecha", fecha_inicio)
+            .lte("fecha", fecha_fin)
+            .order("id")
+            .range(page * page_size, (page + 1) * page_size - 1)
+            .execute()
+        ).data or []
+        if not chunk:
+            break
+        rows.extend(chunk)
+        if len(chunk) < page_size:
+            break
+        page += 1
+
+    actual_dates = {
+        normalized
+        for normalized in (_normalize_missing_days_sale_date(row.get("fecha")) for row in rows)
+        if normalized
+    }
+    missing_dates = sorted(list(expected_dates - actual_dates))
+    if not missing_dates:
+        return []
+
+    try:
+        logs_resp = (
+            supabase_client.table("logs_carga")
+            .select("*")
+            .eq("local_id", local_id)
+            .gte("fecha_hora", f"{fecha_inicio}T00:00:00")
+            .lte("fecha_hora", f"{fecha_fin}T23:59:59")
+            .order("fecha_hora", desc=True)
+            .execute()
+        )
+    except Exception:
+        logs_resp = type("Tmp", (), {"data": []})()
+
+    logs = logs_resp.data or []
+    if not logs and local_name:
+        legacy_q = (
+            supabase_client.table("logs_carga")
+            .select("*")
+            .eq("local_nombre", local_name)
+            .gte("fecha_hora", f"{fecha_inicio}T00:00:00")
+            .lte("fecha_hora", f"{fecha_fin}T23:59:59")
+            .order("fecha_hora", desc=True)
+        )
+        if mall_id:
+            legacy_q = legacy_q.eq("mall_id", mall_id)
+        logs = legacy_q.execute().data or []
+
+    logs_by_date: Dict[str, List[Dict[str, Any]]] = {}
+    for row in logs:
+        fecha_log = str(row.get("fecha_hora") or "").split("T")[0] or None
+        if fecha_log:
+            logs_by_date.setdefault(fecha_log, []).append(row)
+
+    details: List[Dict[str, Any]] = []
+    for missing_date in missing_dates:
+        cause = "Proceso no ejecutado / Sin conexion"
+        log_id = None
+        day_logs = logs_by_date.get(missing_date) or []
+        if day_logs:
+            last_log = day_logs[0]
+            log_id = last_log.get("id")
+            status_text = str(last_log.get("estado") or "").strip().lower()
+            if status_text == "error":
+                cause = "Fallo Tecnico / Error de Lectura"
+            elif status_text in {"no_encontrado", "no encontrado"}:
+                cause = "Archivo no disponible en FTP"
+            elif status_text in {"exito", "success", "parcial"}:
+                cause = "Procesado con Exito (Posible archivo vacio)"
+        details.append({"fecha": missing_date, "causa": cause, "log_id": log_id})
+    return details
+
+
+def missing_days_report_url(mall_id: str, local_id: str, fecha_inicio: str, fecha_fin: str) -> Optional[str]:
+    app_url = (os.getenv("APP_BASE_URL") or os.getenv("FRONTEND_URL") or "").strip().rstrip("/")
+    if not app_url:
+        return None
+    return (
+        f"{app_url}/?view=reports"
+        f"&mall_id={mall_id}"
+        f"&local_id={local_id}"
+        f"&start_date={fecha_inicio}"
+        f"&end_date={fecha_fin}"
+    )
+
+
+def send_resend_email(
+    to_email: str,
+    subject: str,
+    text_body: str,
+    html_body: Optional[str] = None,
+    cc_emails: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    api_key = os.getenv(RESEND_API_KEY_ENV)
+    if not api_key:
+        raise RuntimeError(f"Falta {RESEND_API_KEY_ENV}.")
+
+    payload: Dict[str, Any] = {
+        "from": f"{RESEND_FROM_NAME} <{RESEND_FROM_EMAIL}>",
+        "to": [to_email],
+        "subject": subject,
+        "text": text_body,
+    }
+    clean_cc = [email for email in (cc_emails or []) if email]
+    if clean_cc:
+        payload["cc"] = clean_cc
+    if html_body:
+        payload["html"] = html_body
+
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": RESEND_USER_AGENT,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Resend {exc.code}: {raw or exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"No se pudo conectar con Resend: {exc}") from exc
+
+
+def _normalize_weekdays(values: Any) -> List[int]:
+    normalized = set()
+    for value in values or []:
+        try:
+            day = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= day <= 6:
+            normalized.add(day)
+    return sorted(normalized)
+
+
+def _parse_send_time(value: Any) -> Tuple[int, int]:
+    candidate = str(value or "08:00").strip()[:5]
+    if not re.match(r"^\d{2}:\d{2}$", candidate):
+        return 8, 0
+    hour, minute = [int(part) for part in candidate.split(":")]
+    if hour > 23 or minute > 59:
+        return 8, 0
+    return hour, minute
+
+
+def _scheduler_tz():
+    tz_name = os.getenv(MISSING_DAYS_SCHEDULER_TZ_ENV, DEFAULT_MISSING_DAYS_SCHEDULER_TZ)
+    if ZoneInfo:
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:
+            return ZoneInfo(DEFAULT_MISSING_DAYS_SCHEDULER_TZ)
+    return timezone.utc
+
+
+def _local_scheduler_now(now: Optional[datetime] = None) -> datetime:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(_scheduler_tz())
+
+
+def missing_days_schedule_slot(settings: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[bool, Optional[str], str]:
+    if not settings.get("enabled"):
+        return False, None, "disabled"
+
+    local_now = _local_scheduler_now(now)
+    weekdays = _normalize_weekdays(settings.get("weekdays") or [])
+    if local_now.weekday() not in weekdays:
+        return False, None, "weekday_not_selected"
+
+    hour, minute = _parse_send_time(settings.get("send_time"))
+    scheduled_at = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if local_now < scheduled_at:
+        return False, None, "send_time_not_reached"
+
+    slot = f"{local_now.strftime('%Y-%m-%d')}T{hour:02d}:{minute:02d}"
+    return True, slot, "due"
+
+
+def _system_health_key(mall_id: str, suffix: str) -> str:
+    return f"MISSING_DAYS_EMAIL_{suffix}:{mall_id}"
+
+
+def _system_health_get(supabase_client: Any, key: str) -> Optional[str]:
+    row = (
+        supabase_client.table("system_health")
+        .select("value")
+        .eq("key", key)
+        .maybe_single()
+        .execute()
+    ).data or {}
+    return row.get("value")
+
+
+def _system_health_upsert(supabase_client: Any, key: str, value: str) -> None:
+    supabase_client.table("system_health").upsert({
+        "key": key,
+        "value": value,
+        "last_update": datetime.now(timezone.utc).isoformat(),
+    }).execute()
+
+
+def send_missing_days_emails_for_mall(
+    supabase_client: Any,
+    settings: Dict[str, Any],
+    *,
+    logger: Any = None,
+    send_email: Callable[..., Dict[str, Any]] = send_resend_email,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    mall_id = str(settings.get("mall_id") or "").strip()
+    if not mall_id:
+        raise ValueError("mall_id es requerido.")
+
+    lookback_days = max(1, min(90, int(settings.get("lookback_days") or 7)))
+    fecha_fin_date = _local_scheduler_now(now).date()
+    fecha_inicio_date = fecha_fin_date - timedelta(days=lookback_days - 1)
+    fecha_inicio = fecha_inicio_date.strftime("%Y-%m-%d")
+    fecha_fin = fecha_fin_date.strftime("%Y-%m-%d")
+
+    try:
+        mall_res = supabase_client.table("malls").select("nombre").eq("id", mall_id).maybe_single().execute()
+        mall_name = (mall_res.data or {}).get("nombre") or "MSMALL"
+    except Exception:
+        mall_name = "MSMALL"
+
+    stores = (
+        supabase_client.table("locales")
+        .select("id, nombre, email")
+        .eq("mall_id", mall_id)
+        .order("nombre")
+        .execute()
+    ).data or []
+
+    results: List[Dict[str, Any]] = []
+    cc_emails = [str(email or "").strip().lower() for email in (settings.get("cc_emails") or []) if email]
+    send_only_with_gaps = settings.get("send_only_with_gaps") is not False
+
+    for store in stores:
+        local_id = str(store.get("id") or "")
+        local_name = store.get("nombre") or local_id
+        local_email = str(store.get("email") or "").strip().lower()
+
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", local_email):
+            results.append({
+                "local_id": local_id,
+                "local_nombre": local_name,
+                "email": local_email or None,
+                "status": "skipped",
+                "missing_days": 0,
+                "reason": "Local sin email valido de notificaciones.",
+            })
+            continue
+
+        missing_details = load_missing_days_details_for_local(
+            supabase_client,
+            local_id=local_id,
+            local_name=local_name,
+            mall_id=mall_id,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+        )
+        missing_count = len(missing_details)
+        if missing_count == 0 and send_only_with_gaps:
+            results.append({
+                "local_id": local_id,
+                "local_nombre": local_name,
+                "email": local_email,
+                "status": "skipped",
+                "missing_days": 0,
+                "reason": "Sin dias faltantes en el periodo.",
+            })
+            continue
+
+        html_body = build_missing_days_email_html(
+            mall_name=mall_name,
+            local_name=local_name,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            missing_details=missing_details,
+            report_url=missing_days_report_url(mall_id, local_id, fecha_inicio, fecha_fin),
+        )
+        subject = (
+            f"Auditoria de dias faltantes: {local_name} ({missing_count} dias)"
+            if missing_count > 0
+            else f"Auditoria de dias faltantes: {local_name} sin brechas"
+        )
+        text_body = (
+            f"Auditoria de dias faltantes para {local_name}. "
+            f"Periodo {fecha_inicio} al {fecha_fin}. "
+            f"Dias faltantes: {missing_count}."
+        )
+
+        try:
+            resend_result = send_email(local_email, subject, text_body, html_body, cc_emails)
+            results.append({
+                "local_id": local_id,
+                "local_nombre": local_name,
+                "email": local_email,
+                "status": "sent",
+                "missing_days": missing_count,
+                "resend_id": resend_result.get("id"),
+            })
+        except Exception as exc:
+            if logger:
+                logger.error("Error enviando auditoria de dias faltantes a %s: %s", local_name, exc)
+            results.append({
+                "local_id": local_id,
+                "local_nombre": local_name,
+                "email": local_email,
+                "status": "failed",
+                "missing_days": missing_count,
+                "reason": str(exc) or "Error enviando email.",
+            })
+
+    sent = len([row for row in results if row["status"] == "sent"])
+    skipped = len([row for row in results if row["status"] == "skipped"])
+    failed = len([row for row in results if row["status"] == "failed"])
+    return {
+        "status": "success" if failed == 0 else "partial",
+        "mall_id": mall_id,
+        "fecha_inicio": fecha_inicio,
+        "fecha_fin": fecha_fin,
+        "requested": len(stores),
+        "sent": sent,
+        "skipped": skipped,
+        "failed": failed,
+        "results": results,
+    }
+
+
+def run_missing_days_email_scheduler(
+    supabase_client: Any,
+    *,
+    logger: Any = None,
+    now: Optional[datetime] = None,
+    send_email: Callable[..., Dict[str, Any]] = send_resend_email,
+) -> Dict[str, Any]:
+    if not supabase_client:
+        return {"executed": False, "reason": "supabase_not_configured", "runs": []}
+    if not os.getenv(RESEND_API_KEY_ENV):
+        return {"executed": False, "reason": "resend_not_configured", "runs": []}
+
+    rows = (
+        supabase_client.table("email_notification_settings")
+        .select("*")
+        .eq("notification_type", MISSING_DAYS_NOTIFICATION_TYPE)
+        .eq("enabled", True)
+        .execute()
+    ).data or []
+
+    runs: List[Dict[str, Any]] = []
+    for settings in rows:
+        mall_id = str(settings.get("mall_id") or "").strip()
+        if not mall_id:
+            continue
+
+        due, slot, reason = missing_days_schedule_slot(settings, now=now)
+        last_slot_key = _system_health_key(mall_id, "LAST_SLOT")
+        status_key = _system_health_key(mall_id, "LAST_STATUS")
+        if not due or not slot:
+            runs.append({"mall_id": mall_id, "executed": False, "reason": reason})
+            continue
+
+        last_slot = _system_health_get(supabase_client, last_slot_key)
+        if last_slot == slot:
+            runs.append({"mall_id": mall_id, "executed": False, "reason": "already_sent_for_slot", "slot": slot})
+            continue
+
+        result = send_missing_days_emails_for_mall(
+            supabase_client,
+            settings,
+            logger=logger,
+            send_email=send_email,
+            now=now,
+        )
+        _system_health_upsert(supabase_client, last_slot_key, slot)
+        _system_health_upsert(
+            supabase_client,
+            status_key,
+            f"{result['status']}: sent={result['sent']} skipped={result['skipped']} failed={result['failed']}",
+        )
+        runs.append({"mall_id": mall_id, "executed": True, "slot": slot, **result})
+
+    return {
+        "executed": any(run.get("executed") for run in runs),
+        "checked": len(rows),
+        "runs": runs,
+    }

@@ -62,6 +62,7 @@ from services.connection_monitor_service import (
     RetryPolicyBlocked,
 )
 from services.load_log_service import build_load_log_payload, insert_load_log_row
+from services.missing_days_email_service import build_missing_days_email_html
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -1060,6 +1061,7 @@ class StoreSchema(BaseModel):
     mall_id: str
     codigo_interno: str
     nombre: str
+    email: Optional[str] = None
     rubro: Optional[str] = None
     created_at: str
     responsable: str
@@ -1122,6 +1124,14 @@ class ResendTestMessageRequest(BaseModel):
     to: str
     subject: Optional[str] = None
     message: Optional[str] = None
+
+class MissingDaysEmailPreviewRequest(BaseModel):
+    mall_name: str
+    local_name: str
+    fecha_inicio: str
+    fecha_fin: str
+    missing_details: List[Dict[str, Any]]
+    report_url: Optional[str] = None
 
 class RemoteRequest(BaseModel):
     protocolo: str = "SFTP"
@@ -2553,6 +2563,7 @@ async def get_stores():
           "mall_id": "c23e99b6-8feb-4be8-8842-86c263bc5cad",
           "codigo_interno": "l002",
           "nombre": "Adidas",
+          "email": "notificaciones@adidas.example",
           "rubro": "Deporte",
           "created_at": "2026-01-27T15:33:02",
           "responsable": "Jose Perez",
@@ -4291,6 +4302,23 @@ async def send_resend_test_message(
         "from_email": RESEND_FROM_EMAIL,
         "domain": RESEND_DOMAIN,
         "message": "Mensaje de prueba enviado correctamente.",
+    }
+
+
+@app.post("/api/v1/admin/messaging/missing-days/preview-html")
+async def preview_missing_days_email_html(
+    payload: MissingDaysEmailPreviewRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    return {
+        "html": build_missing_days_email_html(
+            mall_name=payload.mall_name,
+            local_name=payload.local_name,
+            fecha_inicio=payload.fecha_inicio,
+            fecha_fin=payload.fecha_fin,
+            missing_details=payload.missing_details,
+            report_url=payload.report_url,
+        )
     }
 
 

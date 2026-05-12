@@ -22,6 +22,7 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     sidebar = (repo / "components" / "Sidebar.tsx").read_text(encoding="utf-8")
     store_import_tool = (repo / "components" / "StoreImportTool.tsx").read_text(encoding="utf-8")
     missing_days_alert = (repo / "components" / "MissingDaysAlert.tsx").read_text(encoding="utf-8")
+    resend_messaging_admin = (repo / "components" / "ResendMessagingAdmin.tsx").read_text(encoding="utf-8")
 
     remote_segment = _segment(api_ts, "async getRemoteConnections")
     assert "/remote-connections" in remote_segment
@@ -67,3 +68,9 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "días con venta" in missing_days_alert
     assert "% de brecha" in missing_days_alert
     assert "const reportedDays = Math.max(0, totalDays - missingDays);" in missing_days_alert
+
+    resend_load_segment = _segment(resend_messaging_admin, "const loadConfig = async", until="const toggleWeekday")
+    assert "Promise.allSettled([statusPromise, schedulePromise])" in resend_load_segment
+    assert "Promise.all([" not in resend_load_segment
+    assert "const resendMissingKey = status?.configured === false;" in resend_messaging_admin
+    assert "{resendMissingKey && !loading && (" in resend_messaging_admin

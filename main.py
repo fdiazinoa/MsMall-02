@@ -4323,13 +4323,17 @@ def _normalize_weekdays(weekdays: List[int]) -> List[int]:
     return sorted(normalized)
 
 
-def _normalize_email_list(values: List[str]) -> List[str]:
+def _normalize_email_list(values: List[str], *, strict: bool = True) -> List[str]:
     emails = []
+    if isinstance(values, str):
+        values = re.split(r"[\n,;]+", values)
     for value in values or []:
         email = str(value or "").strip().lower()
         if not email:
             continue
         if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            if not strict:
+                continue
             raise HTTPException(status_code=400, detail=f"Email invalido: {email}")
         emails.append(email)
     return sorted(set(emails))
@@ -4351,6 +4355,11 @@ def _sanitize_missing_days_email_settings_row(row: Optional[Dict[str, Any]], mal
     if not row:
         return _default_missing_days_email_settings(mall_id)
     data = _default_missing_days_email_settings(mall_id)
+    try:
+        lookback_days = int(row.get("lookback_days") or 7)
+    except (TypeError, ValueError):
+        lookback_days = 7
+    lookback_days = max(1, min(90, lookback_days))
     data.update({
         "id": row.get("id"),
         "mall_id": row.get("mall_id") or mall_id,
@@ -4358,9 +4367,9 @@ def _sanitize_missing_days_email_settings_row(row: Optional[Dict[str, Any]], mal
         "enabled": bool(row.get("enabled")),
         "weekdays": _normalize_weekdays(row.get("weekdays") or []),
         "send_time": str(row.get("send_time") or "08:00")[:5],
-        "lookback_days": int(row.get("lookback_days") or 7),
+        "lookback_days": lookback_days,
         "send_only_with_gaps": row.get("send_only_with_gaps") is not False,
-        "cc_emails": _normalize_email_list(row.get("cc_emails") or []),
+        "cc_emails": _normalize_email_list(row.get("cc_emails") or [], strict=False),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     })
@@ -4570,12 +4579,18 @@ async def get_missing_days_email_settings(
         return _sanitize_missing_days_email_settings_row(res.data, mall_id)
     except Exception as exc:
         if _is_missing_email_settings_table_error(exc):
-            raise HTTPException(
-                status_code=503,
-                detail="La base de datos no está actualizada: ejecute el script 20260511_email_notification_settings.sql.",
+            logger.warning(
+                "Tabla email_notification_settings no disponible al cargar programacion; usando defaults para mall %s: %s",
+                mall_id,
+                exc,
             )
-        logger.error("Error cargando configuracion de emails de dias faltantes: %s", exc)
-        raise HTTPException(status_code=500, detail="No se pudo cargar la programacion de envio.")
+            return _default_missing_days_email_settings(mall_id)
+        logger.warning(
+            "Error cargando configuracion de emails de dias faltantes; usando defaults para mall %s: %s",
+            mall_id,
+            exc,
+        )
+        return _default_missing_days_email_settings(mall_id)
 
 
 @app.put("/api/v1/admin/messaging/missing-days/settings")
@@ -4656,12 +4671,19 @@ async def send_missing_days_email_now(
         settings = _sanitize_missing_days_email_settings_row(settings_res.data, mall_id)
     except Exception as exc:
         if _is_missing_email_settings_table_error(exc):
-            raise HTTPException(
-                status_code=503,
-                detail="La base de datos no está actualizada: ejecute el script 20260511_email_notification_settings.sql.",
+            logger.warning(
+                "Tabla email_notification_settings no disponible para envio inmediato; usando defaults para mall %s: %s",
+                mall_id,
+                exc,
             )
-        logger.error("Error cargando configuracion para envio inmediato: %s", exc)
-        raise HTTPException(status_code=500, detail="No se pudo cargar la programacion de envio.")
+            settings = _default_missing_days_email_settings(mall_id)
+        else:
+            logger.warning(
+                "Error cargando configuracion para envio inmediato; usando defaults para mall %s: %s",
+                mall_id,
+                exc,
+            )
+            settings = _default_missing_days_email_settings(mall_id)
 
     lookback_days = max(1, min(90, int(settings.get("lookback_days") or 7)))
     fecha_fin_date = datetime.utcnow().date()

@@ -37,6 +37,7 @@ export const ResendMessagingAdmin: React.FC = () => {
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [sendingNow, setSendingNow] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const [testTo, setTestTo] = useState(user?.email || '');
   const [subject, setSubject] = useState('Prueba de notificaciones MSMALL');
@@ -44,25 +45,52 @@ export const ResendMessagingAdmin: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
+    const mallId = currentMall?.id || '';
 
     const loadConfig = async () => {
-      if (!token) return;
+      if (!token) {
+        setLoading(false);
+        setStatus(null);
+        setSchedule(defaultSchedule(mallId));
+        setCcEmails('');
+        return;
+      }
       setLoading(true);
       setError(null);
+      setScheduleError(null);
+      setSchedule(defaultSchedule(mallId));
+      setCcEmails('');
+
+      const statusPromise = ApiService.getResendMessagingStatus(token)
+        .then((statusData) => {
+          if (!cancelled) setStatus(statusData);
+        })
+        .catch((e: any) => {
+          if (!cancelled) {
+            setStatus(null);
+            setError(e?.message || 'No se pudo cargar Resend.');
+          }
+        });
+
+      const schedulePromise = mallId
+        ? ApiService.getMissingDaysEmailSettings(mallId, token)
+          .then((scheduleData) => {
+            if (!cancelled && scheduleData.mall_id === mallId) {
+              setSchedule(scheduleData);
+              setCcEmails((scheduleData.cc_emails || []).join('\n'));
+            }
+          })
+          .catch((e: any) => {
+            if (!cancelled) {
+              setSchedule(defaultSchedule(mallId));
+              setCcEmails('');
+              setScheduleError(e?.message || 'No se pudo cargar la programación de envío.');
+            }
+          })
+        : Promise.resolve();
+
       try {
-        const [statusData, scheduleData] = await Promise.all([
-          ApiService.getResendMessagingStatus(token),
-          currentMall?.id
-            ? ApiService.getMissingDaysEmailSettings(currentMall.id, token)
-            : Promise.resolve(defaultSchedule('')),
-        ]);
-        if (!cancelled) {
-          setStatus(statusData);
-          setSchedule(scheduleData);
-          setCcEmails((scheduleData.cc_emails || []).join('\n'));
-        }
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || 'No se pudo cargar Resend.');
+        await Promise.allSettled([statusPromise, schedulePromise]);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -73,6 +101,9 @@ export const ResendMessagingAdmin: React.FC = () => {
       cancelled = true;
     };
   }, [token, currentMall?.id]);
+
+  const resendConfigured = status?.configured === true;
+  const resendMissingKey = status?.configured === false;
 
   const toggleWeekday = (day: number) => {
     setSchedule((prev) => {
@@ -144,6 +175,7 @@ export const ResendMessagingAdmin: React.FC = () => {
       );
       setSchedule(saved);
       setCcEmails((saved.cc_emails || []).join('\n'));
+      setScheduleError(null);
       setFlash({ kind: 'success', message: 'Programación de auditoría guardada.' });
     } catch (e: any) {
       setFlash({ kind: 'error', message: e?.message || 'No se pudo guardar la programación.' });
@@ -157,7 +189,7 @@ export const ResendMessagingAdmin: React.FC = () => {
       setFlash({ kind: 'error', message: 'Seleccione un mall antes de enviar.' });
       return;
     }
-    if (!status?.configured) {
+    if (!resendConfigured) {
       setFlash({ kind: 'error', message: 'Configure RESEND_API_KEY antes de enviar auditorías.' });
       return;
     }
@@ -172,6 +204,7 @@ export const ResendMessagingAdmin: React.FC = () => {
       const saved = await ApiService.saveMissingDaysEmailSettings(buildSchedulePayload(), token);
       setSchedule(saved);
       setCcEmails((saved.cc_emails || []).join('\n'));
+      setScheduleError(null);
 
       const result = await ApiService.sendMissingDaysEmailNow(currentMall.id, token);
       const kind = result.failed > 0 ? 'error' : 'success';
@@ -201,15 +234,21 @@ export const ResendMessagingAdmin: React.FC = () => {
           <h2 className="text-2xl font-bold text-slate-800">Mensajería Resend</h2>
           <p className="text-slate-500 text-sm">Dominio mercasend.net para notificaciones operativas.</p>
         </div>
-        <div className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-bold ${status?.configured ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
-          {loading ? <Loader2 size={16} className="animate-spin" /> : status?.configured ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-          {loading ? 'Verificando' : status?.configured ? 'Activo' : 'Pendiente'}
+        <div className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-bold ${resendConfigured ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+          {loading ? <Loader2 size={16} className="animate-spin" /> : resendConfigured ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+          {loading ? 'Verificando' : resendConfigured ? 'Activo' : 'Pendiente'}
         </div>
       </div>
 
       {error && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
           {error}
+        </div>
+      )}
+
+      {scheduleError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+          {scheduleError}
         </div>
       )}
 
@@ -250,7 +289,7 @@ export const ResendMessagingAdmin: React.FC = () => {
             </div>
           </dl>
 
-          {!status?.configured && !loading && (
+          {resendMissingKey && !loading && (
             <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
               <ShieldCheck size={18} className="mt-0.5 shrink-0" />
               <span>Configure RESEND_API_KEY en el entorno del backend para activar el envío real.</span>
@@ -300,7 +339,7 @@ export const ResendMessagingAdmin: React.FC = () => {
           <div className="flex justify-end">
             <button
               type="submit"
-              disabled={saving || loading || !status?.configured}
+              disabled={saving || loading || !resendConfigured}
               className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-indigo-200 transition-all hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {saving ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
@@ -413,7 +452,7 @@ export const ResendMessagingAdmin: React.FC = () => {
           <button
             type="button"
             onClick={handleSendNow}
-            disabled={sendingNow || savingSchedule || loading || !currentMall?.id || !status?.configured}
+            disabled={sendingNow || savingSchedule || loading || !currentMall?.id || !resendConfigured}
             className="inline-flex items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-white px-5 py-2.5 text-sm font-bold text-indigo-700 shadow-sm transition-all hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {sendingNow ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}

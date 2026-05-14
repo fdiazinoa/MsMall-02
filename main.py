@@ -106,6 +106,8 @@ RESEND_DOMAIN = "mercasend.net"
 RESEND_FROM_EMAIL = "notificaciones@mercasend.net"
 RESEND_FROM_NAME = "MercaSend Notificaciones"
 RESEND_USER_AGENT = "MSMALL-API/1.0 (mercasend.net)"
+RESEND_SENDER_EMAIL_KEY = "RESEND_FROM_EMAIL"
+RESEND_SENDER_NAME_KEY = "RESEND_FROM_NAME"
 ADMIN_ROLES = {"admin", "superadmin", "super_admin", "administrador"}
 IT_ROLES = {"it", "tic"}
 
@@ -1124,6 +1126,10 @@ class ResendTestMessageRequest(BaseModel):
     to: str
     subject: Optional[str] = None
     message: Optional[str] = None
+
+class ResendSenderUpdateRequest(BaseModel):
+    from_email: str
+    from_name: str
 
 class MissingDaysEmailPreviewRequest(BaseModel):
     mall_name: str
@@ -4226,12 +4232,75 @@ async def unmark_file(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _get_system_health_value(key: str) -> Optional[str]:
+    if not supabase:
+        return None
+    try:
+        row = (
+            supabase.table("system_health")
+            .select("value")
+            .eq("key", key)
+            .maybe_single()
+            .execute()
+        ).data or {}
+        value = row.get("value")
+        return str(value).strip() if value is not None else None
+    except Exception as exc:
+        logger.warning("No se pudo leer system_health[%s]: %s", key, exc)
+        return None
+
+
+def _upsert_system_health_value_sync(key: str, value: str) -> None:
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    supabase.table("system_health").upsert({
+        "key": key,
+        "value": value,
+        "last_update": datetime.utcnow().isoformat(),
+    }).execute()
+
+
+def _normalize_resend_sender_email(value: str) -> str:
+    email = str(value or "").strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HTTPException(status_code=400, detail="Correo remitente invalido.")
+    if not email.endswith(f"@{RESEND_DOMAIN}"):
+        raise HTTPException(status_code=400, detail=f"El remitente debe usar el dominio {RESEND_DOMAIN}.")
+    return email
+
+
+def _normalize_resend_sender_name(value: str) -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nombre remitente requerido.")
+    if len(name) > 80:
+        raise HTTPException(status_code=400, detail="Nombre remitente demasiado largo.")
+    return name
+
+
+def _resolve_resend_sender_config() -> Dict[str, str]:
+    raw_email = _get_system_health_value(RESEND_SENDER_EMAIL_KEY) or os.getenv("RESEND_FROM_EMAIL") or RESEND_FROM_EMAIL
+    raw_name = _get_system_health_value(RESEND_SENDER_NAME_KEY) or os.getenv("RESEND_FROM_NAME") or RESEND_FROM_NAME
+    try:
+        from_email = _normalize_resend_sender_email(raw_email)
+    except HTTPException:
+        logger.warning("Remitente Resend invalido en configuracion persistida: %s", raw_email)
+        from_email = RESEND_FROM_EMAIL
+    try:
+        from_name = _normalize_resend_sender_name(raw_name)
+    except HTTPException:
+        logger.warning("Nombre remitente Resend invalido en configuracion persistida: %s", raw_name)
+        from_name = RESEND_FROM_NAME
+    return {"from_email": from_email, "from_name": from_name}
+
+
 def _resend_config_status() -> Dict[str, Any]:
+    sender = _resolve_resend_sender_config()
     return {
         "provider": "resend",
         "domain": RESEND_DOMAIN,
-        "from_email": RESEND_FROM_EMAIL,
-        "from_name": RESEND_FROM_NAME,
+        "from_email": sender["from_email"],
+        "from_name": sender["from_name"],
         "configured": bool(os.getenv(RESEND_API_KEY_ENV)),
         "api_key_env": RESEND_API_KEY_ENV,
     }
@@ -4251,8 +4320,9 @@ def _send_resend_email(
             detail=f"Resend no esta configurado. Falta la variable {RESEND_API_KEY_ENV}.",
         )
 
+    sender = _resolve_resend_sender_config()
     payload = {
-        "from": f"{RESEND_FROM_NAME} <{RESEND_FROM_EMAIL}>",
+        "from": f"{sender['from_name']} <{sender['from_email']}>",
         "to": [to_email],
         "subject": subject,
         "text": message,
@@ -4515,6 +4585,22 @@ async def get_resend_messaging_config(admin_ctx: Dict[str, Any] = Depends(requir
     return _resend_config_status()
 
 
+@app.put("/api/v1/admin/messaging/resend/sender")
+async def update_resend_sender_config(
+    payload: ResendSenderUpdateRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    from_email = _normalize_resend_sender_email(payload.from_email)
+    from_name = _normalize_resend_sender_name(payload.from_name)
+    try:
+        _upsert_system_health_value_sync(RESEND_SENDER_EMAIL_KEY, from_email)
+        _upsert_system_health_value_sync(RESEND_SENDER_NAME_KEY, from_name)
+    except Exception as exc:
+        logger.error("Error guardando remitente Resend: %s", exc)
+        raise HTTPException(status_code=500, detail="No se pudo guardar el remitente de Resend.")
+    return _resend_config_status()
+
+
 @app.post("/api/v1/admin/messaging/resend/test")
 async def send_resend_test_message(
     payload: ResendTestMessageRequest,
@@ -4536,7 +4622,7 @@ async def send_resend_test_message(
         "status": "success",
         "id": result.get("id"),
         "to": to_email,
-        "from_email": RESEND_FROM_EMAIL,
+        "from_email": _resolve_resend_sender_config()["from_email"],
         "domain": RESEND_DOMAIN,
         "message": "Mensaje de prueba enviado correctamente.",
     }

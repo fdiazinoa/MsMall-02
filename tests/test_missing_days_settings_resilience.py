@@ -45,5 +45,8 @@ def test_resend_sender_config_is_editable_and_persisted():
     assert '@app.put("/api/v1/admin/messaging/resend/sender")' in main_py
     assert '_upsert_system_health_value_sync(RESEND_SENDER_EMAIL_KEY, from_email)' in main_py
     assert '_upsert_system_health_value_sync(RESEND_SENDER_NAME_KEY, from_name)' in main_py
+    assert '.order("last_update", desc=True)' in main_py
+    assert '.delete().eq("key", key).execute()' in main_py
+    assert '.insert({' in main_py
     assert "sender = _resolve_resend_sender_config()" in main_py
     assert '"from": f"{sender[\'from_name\']} <{sender[\'from_email\']}>"' in main_py

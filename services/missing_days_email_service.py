@@ -19,6 +19,8 @@ RESEND_API_KEY_ENV = "RESEND_API_KEY"
 RESEND_FROM_EMAIL = "notificaciones@mercasend.net"
 RESEND_FROM_NAME = "MercaSend Notificaciones"
 RESEND_USER_AGENT = "MSMALL-API/1.0 (mercasend.net)"
+RESEND_SENDER_EMAIL_KEY = "RESEND_FROM_EMAIL"
+RESEND_SENDER_NAME_KEY = "RESEND_FROM_NAME"
 MISSING_DAYS_NOTIFICATION_TYPE = "missing_days_audit"
 MISSING_DAYS_SCHEDULER_TZ_ENV = "MISSING_DAYS_EMAIL_TIMEZONE"
 DEFAULT_MISSING_DAYS_SCHEDULER_TZ = "America/Santo_Domingo"
@@ -310,19 +312,74 @@ def missing_days_report_url(mall_id: str, local_id: str, fecha_inicio: str, fech
     )
 
 
+def _system_health_value(supabase_client: Any, key: str) -> Optional[str]:
+    if not supabase_client:
+        return None
+    try:
+        row = (
+            supabase_client.table("system_health")
+            .select("value")
+            .eq("key", key)
+            .maybe_single()
+            .execute()
+        ).data or {}
+        value = row.get("value")
+        return str(value).strip() if value is not None else None
+    except Exception:
+        return None
+
+
+def _normalize_sender_email(value: str) -> str:
+    email = str(value or "").strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return RESEND_FROM_EMAIL
+    if not email.endswith("@mercasend.net"):
+        return RESEND_FROM_EMAIL
+    return email
+
+
+def _normalize_sender_name(value: str) -> str:
+    name = str(value or "").strip()
+    if not name or len(name) > 80:
+        return RESEND_FROM_NAME
+    return name
+
+
+def load_resend_sender_config(supabase_client: Any = None) -> Dict[str, str]:
+    raw_email = (
+        _system_health_value(supabase_client, RESEND_SENDER_EMAIL_KEY)
+        or os.getenv("RESEND_FROM_EMAIL")
+        or RESEND_FROM_EMAIL
+    )
+    raw_name = (
+        _system_health_value(supabase_client, RESEND_SENDER_NAME_KEY)
+        or os.getenv("RESEND_FROM_NAME")
+        or RESEND_FROM_NAME
+    )
+    return {
+        "from_email": _normalize_sender_email(raw_email),
+        "from_name": _normalize_sender_name(raw_name),
+    }
+
+
 def send_resend_email(
     to_email: str,
     subject: str,
     text_body: str,
     html_body: Optional[str] = None,
     cc_emails: Optional[List[str]] = None,
+    from_email: Optional[str] = None,
+    from_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     api_key = os.getenv(RESEND_API_KEY_ENV)
     if not api_key:
         raise RuntimeError(f"Falta {RESEND_API_KEY_ENV}.")
 
+    sender = load_resend_sender_config()
+    sender_email = _normalize_sender_email(from_email or sender["from_email"])
+    sender_name = _normalize_sender_name(from_name or sender["from_name"])
     payload: Dict[str, Any] = {
-        "from": f"{RESEND_FROM_NAME} <{RESEND_FROM_EMAIL}>",
+        "from": f"{sender_name} <{sender_email}>",
         "to": [to_email],
         "subject": subject,
         "text": text_body,
@@ -471,6 +528,7 @@ def send_missing_days_emails_for_mall(
     results: List[Dict[str, Any]] = []
     cc_emails = [str(email or "").strip().lower() for email in (settings.get("cc_emails") or []) if email]
     send_only_with_gaps = settings.get("send_only_with_gaps") is not False
+    sender = load_resend_sender_config(supabase_client)
 
     for store in stores:
         local_id = str(store.get("id") or "")
@@ -528,7 +586,15 @@ def send_missing_days_emails_for_mall(
         )
 
         try:
-            resend_result = send_email(local_email, subject, text_body, html_body, cc_emails)
+            resend_result = send_email(
+                local_email,
+                subject,
+                text_body,
+                html_body,
+                cc_emails,
+                from_email=sender["from_email"],
+                from_name=sender["from_name"],
+            )
             results.append({
                 "local_id": local_id,
                 "local_nombre": local_name,

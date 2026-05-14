@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AlertTriangle, CalendarDays, CheckCircle2, Clock, Loader2, Mail, Save, Send, ShieldCheck } from 'lucide-react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
-import { MissingDaysEmailSettings, ResendMessagingStatus } from '../types';
+import { MissingDaysEmailSettings, ResendMessagingStatus, ResendSenderConfigPayload } from '../types';
 
 const DEFAULT_TEST_MESSAGE = 'Mensaje de prueba desde MSMALL usando Resend.';
 const WEEKDAY_OPTIONS = [
@@ -34,6 +34,7 @@ export const ResendMessagingAdmin: React.FC = () => {
   const [ccEmails, setCcEmails] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingSender, setSavingSender] = useState(false);
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [sendingNow, setSendingNow] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +43,10 @@ export const ResendMessagingAdmin: React.FC = () => {
   const [testTo, setTestTo] = useState(user?.email || '');
   const [subject, setSubject] = useState('Prueba de notificaciones MSMALL');
   const [message, setMessage] = useState(DEFAULT_TEST_MESSAGE);
+  const [senderDraft, setSenderDraft] = useState<ResendSenderConfigPayload>({
+    from_email: 'notificaciones@mercasend.net',
+    from_name: 'MercaSend Notificaciones',
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -63,7 +68,13 @@ export const ResendMessagingAdmin: React.FC = () => {
 
       const statusPromise = ApiService.getResendMessagingStatus(token)
         .then((statusData) => {
-          if (!cancelled) setStatus(statusData);
+          if (!cancelled) {
+            setStatus(statusData);
+            setSenderDraft({
+              from_email: statusData.from_email || 'notificaciones@mercasend.net',
+              from_name: statusData.from_name || 'MercaSend Notificaciones',
+            });
+          }
         })
         .catch((e: any) => {
           if (!cancelled) {
@@ -152,6 +163,37 @@ export const ResendMessagingAdmin: React.FC = () => {
       setFlash({ kind: 'error', message: e?.message || 'No se pudo enviar el mensaje.' });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveSender = async () => {
+    if (!token) {
+      setFlash({ kind: 'error', message: 'Sesión no disponible para guardar el remitente.' });
+      return;
+    }
+    const payload = {
+      from_email: senderDraft.from_email.trim().toLowerCase(),
+      from_name: senderDraft.from_name.trim(),
+    };
+    if (!payload.from_email || !payload.from_name) {
+      setFlash({ kind: 'error', message: 'Correo y nombre del remitente son requeridos.' });
+      return;
+    }
+
+    setSavingSender(true);
+    setFlash(null);
+    try {
+      const saved = await ApiService.saveResendSenderConfig(payload, token);
+      setStatus(saved);
+      setSenderDraft({
+        from_email: saved.from_email || payload.from_email,
+        from_name: saved.from_name || payload.from_name,
+      });
+      setFlash({ kind: 'success', message: 'Remitente de Resend guardado.' });
+    } catch (e: any) {
+      setFlash({ kind: 'error', message: e?.message || 'No se pudo guardar el remitente.' });
+    } finally {
+      setSavingSender(false);
     }
   };
 
@@ -270,24 +312,52 @@ export const ResendMessagingAdmin: React.FC = () => {
             </div>
           </div>
 
-          <dl className="space-y-3 text-sm">
+          <div className="space-y-4 text-sm">
             <div className="flex justify-between gap-4 border-b border-slate-100 pb-3">
-              <dt className="text-slate-500">Dominio</dt>
-              <dd className="font-mono font-bold text-slate-800">{status?.domain || 'mercasend.net'}</dd>
+              <span className="text-slate-500">Dominio</span>
+              <span className="font-mono font-bold text-slate-800">{status?.domain || 'mercasend.net'}</span>
             </div>
-            <div className="flex justify-between gap-4 border-b border-slate-100 pb-3">
-              <dt className="text-slate-500">Correo</dt>
-              <dd className="font-mono font-bold text-slate-800 break-all">{status?.from_email || 'notificaciones@mercasend.net'}</dd>
+
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Correo remitente</label>
+              <input
+                type="email"
+                value={senderDraft.from_email}
+                onChange={(e) => setSenderDraft((prev) => ({ ...prev, from_email: e.target.value }))}
+                className="w-full rounded-xl border border-slate-200 px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="notificaciones@mercasend.net"
+              />
             </div>
-            <div className="flex justify-between gap-4 border-b border-slate-100 pb-3">
-              <dt className="text-slate-500">Nombre</dt>
-              <dd className="font-bold text-slate-800">{status?.from_name || 'MercaSend Notificaciones'}</dd>
+
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nombre remitente</label>
+              <input
+                type="text"
+                value={senderDraft.from_name}
+                onChange={(e) => setSenderDraft((prev) => ({ ...prev, from_name: e.target.value }))}
+                className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="MercaSend Notificaciones"
+                maxLength={80}
+              />
             </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-slate-500">Secreto</dt>
-              <dd className="font-mono font-bold text-slate-800">{status?.api_key_env || 'RESEND_API_KEY'}</dd>
+
+            <div className="flex justify-between gap-4 border-t border-slate-100 pt-3">
+              <span className="text-slate-500">Secreto</span>
+              <span className="font-mono font-bold text-slate-800">{status?.api_key_env || 'RESEND_API_KEY'}</span>
             </div>
-          </dl>
+          </div>
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleSaveSender}
+              disabled={savingSender || loading}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm transition-all hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {savingSender ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+              {savingSender ? 'Guardando...' : 'Guardar remitente'}
+            </button>
+          </div>
 
           {resendMissingKey && !loading && (
             <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
@@ -300,7 +370,7 @@ export const ResendMessagingAdmin: React.FC = () => {
         <form onSubmit={handleSendTest} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
           <div>
             <h3 className="font-bold text-slate-800">Prueba de envío</h3>
-            <p className="text-xs text-slate-500">El mensaje saldrá desde notificaciones@mercasend.net.</p>
+            <p className="text-xs text-slate-500">El mensaje saldrá desde {status?.from_email || senderDraft.from_email}.</p>
           </div>
 
           <div className="space-y-1.5">

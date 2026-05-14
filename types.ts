@@ -200,6 +200,11 @@ export interface ResendTestMessageResponse {
   message: string;
 }
 
+export interface ResendSenderConfigPayload {
+  from_email: string;
+  from_name: string;
+}
+
 export interface MissingDaysEmailSettings {
   id?: string;
   mall_id: string;

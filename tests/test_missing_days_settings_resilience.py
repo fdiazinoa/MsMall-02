@@ -35,3 +35,15 @@ def test_missing_days_settings_load_ignores_invalid_cc_values():
     )
 
     assert '_normalize_email_list(row.get("cc_emails") or [], strict=False)' in sanitize_segment
+
+
+def test_resend_sender_config_is_editable_and_persisted():
+    repo = Path(__file__).resolve().parents[1]
+    main_py = (repo / "main.py").read_text(encoding="utf-8")
+
+    assert 'class ResendSenderUpdateRequest(BaseModel):' in main_py
+    assert '@app.put("/api/v1/admin/messaging/resend/sender")' in main_py
+    assert '_upsert_system_health_value_sync(RESEND_SENDER_EMAIL_KEY, from_email)' in main_py
+    assert '_upsert_system_health_value_sync(RESEND_SENDER_NAME_KEY, from_name)' in main_py
+    assert "sender = _resolve_resend_sender_config()" in main_py
+    assert '"from": f"{sender[\'from_name\']} <{sender[\'from_email\']}>"' in main_py

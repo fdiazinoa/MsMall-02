@@ -74,3 +74,6 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "Promise.all([" not in resend_load_segment
     assert "const resendMissingKey = status?.configured === false;" in resend_messaging_admin
     assert "{resendMissingKey && !loading && (" in resend_messaging_admin
+    assert "ApiService.saveResendSenderConfig(payload, token)" in resend_messaging_admin
+    assert "Guardar remitente" in resend_messaging_admin
+    assert "/admin/messaging/resend/sender" in api_ts

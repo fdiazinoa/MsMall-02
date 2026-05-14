@@ -4236,13 +4236,15 @@ def _get_system_health_value(key: str) -> Optional[str]:
     if not supabase:
         return None
     try:
-        row = (
+        rows = (
             supabase.table("system_health")
             .select("value")
             .eq("key", key)
-            .maybe_single()
+            .order("last_update", desc=True)
+            .limit(1)
             .execute()
-        ).data or {}
+        ).data or []
+        row = rows[0] if rows else {}
         value = row.get("value")
         return str(value).strip() if value is not None else None
     except Exception as exc:
@@ -4253,10 +4255,12 @@ def _get_system_health_value(key: str) -> Optional[str]:
 def _upsert_system_health_value_sync(key: str, value: str) -> None:
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado.")
-    supabase.table("system_health").upsert({
+    timestamp = datetime.utcnow().isoformat()
+    supabase.table("system_health").delete().eq("key", key).execute()
+    supabase.table("system_health").insert({
         "key": key,
         "value": value,
-        "last_update": datetime.utcnow().isoformat(),
+        "last_update": timestamp,
     }).execute()
 
 

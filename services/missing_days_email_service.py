@@ -316,13 +316,15 @@ def _system_health_value(supabase_client: Any, key: str) -> Optional[str]:
     if not supabase_client:
         return None
     try:
-        row = (
+        rows = (
             supabase_client.table("system_health")
             .select("value")
             .eq("key", key)
-            .maybe_single()
+            .order("last_update", desc=True)
+            .limit(1)
             .execute()
-        ).data or {}
+        ).data or []
+        row = rows[0] if rows else {}
         value = row.get("value")
         return str(value).strip() if value is not None else None
     except Exception:

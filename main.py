@@ -62,7 +62,7 @@ from services.connection_monitor_service import (
     RetryPolicyBlocked,
 )
 from services.load_log_service import build_load_log_payload, insert_load_log_row
-from services.missing_days_email_service import build_missing_days_email_html
+from services.missing_days_email_service import build_missing_days_email_html, missing_days_email_period
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -4775,11 +4775,7 @@ async def send_missing_days_email_now(
             )
             settings = _default_missing_days_email_settings(mall_id)
 
-    lookback_days = max(1, min(90, int(settings.get("lookback_days") or 7)))
-    fecha_fin_date = datetime.utcnow().date()
-    fecha_inicio_date = fecha_fin_date - timedelta(days=lookback_days - 1)
-    fecha_inicio = fecha_inicio_date.strftime("%Y-%m-%d")
-    fecha_fin = fecha_fin_date.strftime("%Y-%m-%d")
+    fecha_inicio, fecha_fin = missing_days_email_period(settings.get("lookback_days"))
 
     try:
         mall_res = supabase.table("malls").select("nombre").eq("id", mall_id).maybe_single().execute()

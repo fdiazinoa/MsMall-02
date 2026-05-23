@@ -472,6 +472,13 @@ def missing_days_schedule_slot(settings: Dict[str, Any], now: Optional[datetime]
     return True, slot, "due"
 
 
+def missing_days_email_period(lookback_days: Any, now: Optional[datetime] = None) -> Tuple[str, str]:
+    days = max(1, min(90, int(lookback_days or 7)))
+    fecha_fin_date = _local_scheduler_now(now).date() - timedelta(days=1)
+    fecha_inicio_date = fecha_fin_date - timedelta(days=days - 1)
+    return fecha_inicio_date.strftime("%Y-%m-%d"), fecha_fin_date.strftime("%Y-%m-%d")
+
+
 def _system_health_key(mall_id: str, suffix: str) -> str:
     return f"MISSING_DAYS_EMAIL_{suffix}:{mall_id}"
 
@@ -507,11 +514,7 @@ def send_missing_days_emails_for_mall(
     if not mall_id:
         raise ValueError("mall_id es requerido.")
 
-    lookback_days = max(1, min(90, int(settings.get("lookback_days") or 7)))
-    fecha_fin_date = _local_scheduler_now(now).date()
-    fecha_inicio_date = fecha_fin_date - timedelta(days=lookback_days - 1)
-    fecha_inicio = fecha_inicio_date.strftime("%Y-%m-%d")
-    fecha_fin = fecha_fin_date.strftime("%Y-%m-%d")
+    fecha_inicio, fecha_fin = missing_days_email_period(settings.get("lookback_days"), now=now)
 
     try:
         mall_res = supabase_client.table("malls").select("nombre").eq("id", mall_id).maybe_single().execute()

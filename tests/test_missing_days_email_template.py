@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from services.missing_days_email_service import (
     build_missing_days_email_html,
+    missing_days_email_period,
     missing_days_schedule_slot,
 )
 
@@ -67,3 +68,15 @@ def test_missing_days_schedule_slot_waits_until_send_time(monkeypatch):
     assert due is False
     assert slot is None
     assert reason == "send_time_not_reached"
+
+
+def test_missing_days_email_period_ends_on_previous_local_day(monkeypatch):
+    monkeypatch.setenv("MISSING_DAYS_EMAIL_TIMEZONE", "America/Santo_Domingo")
+
+    fecha_inicio, fecha_fin = missing_days_email_period(
+        3,
+        now=datetime(2026, 5, 11, 14, 1, tzinfo=timezone.utc),
+    )
+
+    assert fecha_inicio == "2026-05-08"
+    assert fecha_fin == "2026-05-10"

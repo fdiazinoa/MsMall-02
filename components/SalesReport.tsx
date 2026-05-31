@@ -41,6 +41,7 @@ export const SalesReport: React.FC = () => {
   const [stores, setStores] = useState<any[]>([]);
   const [selectedLocal, setSelectedLocal] = useState<string>('');
   const [localSearchTerm, setLocalSearchTerm] = useState('');
+  const [isLocalPickerOpen, setIsLocalPickerOpen] = useState(false);
 
   const normalizeApiRoot = (value: string): string => {
     const trimmed = String(value || '').trim();
@@ -213,6 +214,9 @@ export const SalesReport: React.FC = () => {
   }, [dates, selectedLocal, currentMall]); // Refetch when dates or local changes
 
   const totalSales = data.reduce((sum, item) => sum + item.total_neto, 0);
+  const formatStoreOption = (store: any) => (
+    `${store?.nombre || 'Local sin nombre'}${store?.codigo_interno ? ` (${store.codigo_interno})` : ''}`
+  );
   const selectedStore = useMemo(
     () => stores.find((store) => String(store.id) === String(selectedLocal)),
     [stores, selectedLocal]
@@ -229,6 +233,12 @@ export const SalesReport: React.FC = () => {
       ].some((value) => String(value || '').toLowerCase().includes(query));
     });
   }, [stores, localSearchTerm]);
+  const showNoStoreResults = localSearchTerm.trim() && filteredStores.length === 0;
+
+  useEffect(() => {
+    if (!selectedStore) return;
+    setLocalSearchTerm(formatStoreOption(selectedStore));
+  }, [selectedStore]);
 
   return (
     <div className="space-y-6 relative">
@@ -320,38 +330,75 @@ export const SalesReport: React.FC = () => {
               <input
                 type="search"
                 value={localSearchTerm}
-                onChange={(e) => setLocalSearchTerm(e.target.value)}
-                placeholder="Buscar local por nombre, código o rubro"
-                className="w-full rounded-lg border border-slate-200 py-2 pl-9 pr-8 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                onChange={(e) => {
+                  setLocalSearchTerm(e.target.value);
+                  setSelectedLocal('');
+                  setIsLocalPickerOpen(true);
+                }}
+                onFocus={() => setIsLocalPickerOpen(true)}
+                onBlur={() => window.setTimeout(() => setIsLocalPickerOpen(false), 120)}
+                placeholder="Todos los Locales"
+                className="w-full rounded-lg border border-slate-200 py-2 pl-9 pr-16 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                role="combobox"
+                aria-expanded={isLocalPickerOpen}
+                aria-controls="sales-local-options"
               />
-              {localSearchTerm && (
+              <ChevronDown size={15} className="pointer-events-none absolute right-9 top-1/2 -translate-y-1/2 text-slate-400" />
+              {(localSearchTerm || selectedLocal) && (
                 <button
                   type="button"
-                  onClick={() => setLocalSearchTerm('')}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setSelectedLocal('');
+                    setLocalSearchTerm('');
+                    setIsLocalPickerOpen(false);
+                  }}
                   className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-                  title="Limpiar búsqueda"
+                  title="Ver todos los locales"
                 >
                   <X size={14} />
                 </button>
               )}
-            </div>
-            <select
-              value={selectedLocal}
-              onChange={(e) => setSelectedLocal(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-            >
-              <option value="">Todos los Locales</option>
-              {selectedStore && localSearchTerm && !filteredStores.some((store) => String(store.id) === String(selectedLocal)) && (
-                <option value={selectedStore.id}>
-                  {selectedStore.nombre} {selectedStore.codigo_interno ? `(${selectedStore.codigo_interno})` : ''}
-                </option>
+              {isLocalPickerOpen && (
+                <div id="sales-local-options" role="listbox" className="absolute z-30 mt-1 max-h-64 w-full overflow-auto rounded-lg border border-slate-200 bg-white py-1 text-sm shadow-xl">
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={!selectedLocal}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setSelectedLocal('');
+                      setLocalSearchTerm('');
+                      setIsLocalPickerOpen(false);
+                    }}
+                    className={`block w-full px-3 py-2 text-left hover:bg-indigo-50 ${!selectedLocal ? 'font-semibold text-indigo-700' : 'text-slate-700'}`}
+                  >
+                    Todos los Locales
+                  </button>
+                  {showNoStoreResults ? (
+                    <div className="px-3 py-2 text-slate-400">No encontramos locales</div>
+                  ) : (
+                    filteredStores.map((store) => (
+                      <button
+                        key={store.id}
+                        type="button"
+                        role="option"
+                        aria-selected={String(store.id) === String(selectedLocal)}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setSelectedLocal(store.id);
+                          setLocalSearchTerm(formatStoreOption(store));
+                          setIsLocalPickerOpen(false);
+                        }}
+                        className={`block w-full px-3 py-2 text-left hover:bg-indigo-50 ${String(store.id) === String(selectedLocal) ? 'font-semibold text-indigo-700' : 'text-slate-700'}`}
+                      >
+                        {formatStoreOption(store)}
+                      </button>
+                    ))
+                  )}
+                </div>
               )}
-              {filteredStores.map((store) => (
-                <option key={store.id} value={store.id}>
-                  {store.nombre} {store.codigo_interno ? `(${store.codigo_interno})` : ''}
-                </option>
-              ))}
-            </select>
+            </div>
           </div>
 
           <button

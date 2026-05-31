@@ -61,7 +61,7 @@ const App: React.FC = () => {
     return (
       <div className="flex items-center justify-center min-h-screen bg-slate-900 text-white p-6">
         <div className="max-w-md w-full bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
-          <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center font-bold text-2xl mx-auto mb-6 shadow-lg shadow-indigo-500/20">M</div>
+          <img src="/msmall-icon-192.png" alt="MSMALL" className="w-16 h-16 rounded-2xl mx-auto mb-6 shadow-lg shadow-indigo-500/20" />
           <h2 className="text-2xl font-bold mb-2 text-center">Bienvenido a MSMALL</h2>
           <p className="text-slate-400 mb-8 text-center">Inicia sesión para acceder al sistema de auditoría.</p>
 

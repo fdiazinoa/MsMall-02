@@ -108,7 +108,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
       <aside className="w-64 bg-slate-900 text-white flex flex-col hidden md:flex h-screen sticky top-0">
       <div className="p-6 flex items-center gap-3">
-        <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center font-bold shadow-lg shadow-indigo-500/20">M</div>
+        <img src="/msmall-icon-192.png" alt="MSMALL" className="w-8 h-8 rounded-lg shadow-lg shadow-indigo-500/20" />
         <h1 className="text-xl font-bold tracking-tight">MSMALL</h1>
       </div>
 

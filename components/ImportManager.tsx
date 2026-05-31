@@ -10,7 +10,7 @@ import {
   Server, Plus, Play, Trash2, Settings2,
   ArrowRightLeft, CheckCircle2, XCircle, Clock,
   Key, Globe, FolderOpen, Database, RefreshCw, AlertCircle, FileSearch, FileText, Wand2, RotateCcw,
-  LayoutGrid, List
+  LayoutGrid, List, Search
 } from 'lucide-react';
 
 const STANDARD_FIELDS = [
@@ -70,6 +70,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const canManageImports = isAdmin || isTic;
   const authToken = session?.access_token || '';
   const [configs, setConfigs] = useState<ImportConfig[]>([]);
+  const [connectionSearchTerm, setConnectionSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
@@ -315,6 +316,22 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
     return [...storeRows, ...orphanRows];
   }, [availableStores, exporterWsConfigs]);
+
+  const filteredConfigs = useMemo(() => {
+    const query = connectionSearchTerm.trim().toLowerCase();
+    if (!query) return configs;
+    return (configs || []).filter((config) => {
+      return [
+        config.nombre,
+        config.protocolo,
+        config.host,
+        config.usuario,
+        config.ruta_remota,
+        config.tipo_archivo,
+        config.estado,
+      ].some((value) => String(value || '').toLowerCase().includes(query));
+    });
+  }, [configs, connectionSearchTerm]);
 
   const saveExporterWebserviceConfig = async () => {
     if (!currentMall?.id) {
@@ -1601,7 +1618,17 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           <h2 className="text-2xl font-bold text-slate-800">Importación Automatizada</h2>
           <p className="text-slate-500 text-sm">Configure conexiones directas vía FTP/SFTP para auditoría automática.</p>
         </div>
-        <div className="flex items-center gap-3 w-full md:w-auto">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full md:w-auto">
+          <div className="relative w-full sm:w-72">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="search"
+              value={connectionSearchTerm}
+              onChange={(e) => setConnectionSearchTerm(e.target.value)}
+              placeholder="Buscar conexión..."
+              className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm font-medium text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+            />
+          </div>
           <div className="inline-flex items-center bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
             <button
               onClick={() => setViewMode('cards')}
@@ -2335,9 +2362,17 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           <p className="text-slate-400 text-sm mt-1 mb-8 max-w-sm">Conecte sus tiendas vía SFTP para que el sistema audite las ventas cada noche sin intervención manual.</p>
           <button onClick={openNewConnectionDrawer} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-xl shadow-indigo-100 hover:scale-105 transition-transform">Configurar Primera Fuente</button>
         </div>
+      ) : filteredConfigs.length === 0 ? (
+        <div className="py-16 bg-white rounded-[2rem] border border-slate-200 text-center">
+          <div className="w-14 h-14 mx-auto bg-slate-50 rounded-full flex items-center justify-center mb-4">
+            <Search size={22} className="text-slate-300" />
+          </div>
+          <h3 className="text-base font-bold text-slate-800">No encontramos conexiones</h3>
+          <p className="text-slate-400 text-sm mt-1">Ajusta la búsqueda para ver otras conexiones configuradas.</p>
+        </div>
       ) : viewMode === 'cards' ? (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {(configs || []).map(config => (
+          {filteredConfigs.map(config => (
             <div key={config.id} className="bg-white rounded-3xl border border-slate-200 p-6 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
               <div className={`absolute top-0 right-0 px-6 py-2 rounded-bl-3xl text-[10px] font-bold uppercase tracking-widest ${config.protocolo === 'SFTP' ? 'bg-indigo-600 text-white' : config.protocolo === 'LOCAL' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}`}>
                 {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
@@ -2447,7 +2482,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {(configs || []).map((config) => {
+                {filteredConfigs.map((config) => {
                   const activeMappings = Object.keys(config.mapping || {}).filter(k => (config.mapping || {})[k]).length;
                   const isActive = config.estado === 'activo';
 

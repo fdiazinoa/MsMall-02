@@ -455,7 +455,7 @@ class ConnectionMonitorService:
             "status": "ok" if result.get("status") == "ok" else "fail",
             "error_code": result.get("error_code"),
             "error_message": sanitize_error_text(result.get("error_message")),
-            "attempted_at": result.get("finished_at") or result.get("started_at") or _format_utc(_utcnow()),
+            "attempted_at": _format_utc(_utcnow()),
             "duration_ms": int(result.get("duration_ms") or 0),
         }
         return self._insert_retry_attempt(payload)

@@ -528,7 +528,7 @@ export interface Store {
   porciento_renta: string | number;
   upsert_activo?: boolean;
   mall_nombre?: string;
-  renta_fija?: number;
+  renta_fija?: string | number;
   breakpoint_venta?: string | number;
   porcentaje_variable?: string | number;
   processing_status?: 'IDLE' | 'BUSY' | 'SUSPENDED_AUTH_ERROR';
@@ -1725,12 +1725,25 @@ export const ApiService = {
     }
   },
 
-  async createStore(store: Partial<Store>): Promise<Store> {
+  async createStore(store: Partial<Store>, token?: string): Promise<Store> {
+    const storeData = normalizeStorePayload(store);
+    if (token) {
+      return fetchJsonWithBaseFallback<Store>(
+        '/locales',
+        {
+          method: 'POST',
+          headers: withAuthHeaders(token, {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          }),
+          body: JSON.stringify(storeData),
+        },
+        'Error creando local'
+      );
+    }
     if (!supabase) throw new Error("Supabase no está configurado");
 
     try {
-      const storeData = normalizeStorePayload(store);
-
       const { data, error } = await supabase
         .from('locales')
         .insert([storeData])
@@ -1745,10 +1758,24 @@ export const ApiService = {
     }
   },
 
-  async updateStore(id: string, store: Partial<Store>): Promise<Store> {
+  async updateStore(id: string, store: Partial<Store>, token?: string): Promise<Store> {
+    const storeData = normalizeStorePayload(store);
+    if (token) {
+      return fetchJsonWithBaseFallback<Store>(
+        `/locales/${encodeURIComponent(id)}`,
+        {
+          method: 'PATCH',
+          headers: withAuthHeaders(token, {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          }),
+          body: JSON.stringify(storeData),
+        },
+        'Error actualizando local'
+      );
+    }
     if (!supabase) throw new Error("Supabase no está configurado");
     try {
-      const storeData = normalizeStorePayload(store);
       const { data, error } = await supabase
         .from('locales')
         .update(storeData)
@@ -1763,7 +1790,18 @@ export const ApiService = {
     }
   },
 
-  async deleteStore(id: string): Promise<void> {
+  async deleteStore(id: string, token?: string): Promise<void> {
+    if (token) {
+      await fetchJsonWithBaseFallback<{ status: string }>(
+        `/locales/${encodeURIComponent(id)}`,
+        {
+          method: 'DELETE',
+          headers: withAuthHeaders(token, { 'Accept': 'application/json' }),
+        },
+        'Error eliminando local'
+      );
+      return;
+    }
     if (!supabase) throw new Error("Supabase no está configurado");
     console.log('[DEBUG] DeleteStore called for ID:', id);
 

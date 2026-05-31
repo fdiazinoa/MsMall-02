@@ -36,9 +36,18 @@ const emptyStore = (mallId?: string): Partial<Store> => ({
   tipo_negocio: '',
   mts: '',
   porciento_renta: '',
+  renta_fija: '',
+  breakpoint_venta: '',
+  porcentaje_variable: '',
   rubro: '',
   upsert_activo: false,
 });
+
+const parseOptionalNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
 
 const emptyFieldDraft = (mallId?: string): Partial<LocalCustomFieldDefinition> => ({
   mall_id: mallId || '',
@@ -315,14 +324,20 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
       return;
     }
 
-    const storeToSave = { ...newStore, mall_id: currentMall.id };
+    const storeToSave = {
+      ...newStore,
+      mall_id: currentMall.id,
+      renta_fija: parseOptionalNumber(newStore.renta_fija),
+      breakpoint_venta: parseOptionalNumber(newStore.breakpoint_venta),
+      porcentaje_variable: parseOptionalNumber(newStore.porcentaje_variable),
+    };
     const customValuesPayload = serializeFieldValues(activeFieldDefinitions, customFieldValues);
 
     setSavingStore(true);
     try {
       const savedStore = storeToSave.id
-        ? await ApiService.updateStore(storeToSave.id, storeToSave)
-        : await ApiService.createStore(storeToSave);
+        ? await ApiService.updateStore(storeToSave.id, storeToSave, authToken)
+        : await ApiService.createStore(storeToSave, authToken);
 
       if (activeFieldDefinitions.length > 0) {
         await ApiService.saveStoreCustomFields(savedStore.id, customValuesPayload, authToken);
@@ -345,7 +360,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   const handleDelete = async (id: string, nombre: string) => {
     if (!confirm(`¿Está seguro de que desea eliminar el local "${nombre}"?\nEsta acción no se puede deshacer.`)) return;
     try {
-      await ApiService.deleteStore(id);
+      await ApiService.deleteStore(id, authToken);
       loadStores();
     } catch (e: any) {
       console.error(e);
@@ -517,6 +532,19 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                     <input type="number" step="0.01" value={newStore.porciento_renta} onChange={(e) => setNewStore({ ...newStore, porciento_renta: e.target.value })} className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none pr-8" placeholder="5.00" />
                     <Percent size={14} className="absolute right-3 top-3 text-slate-400" />
                   </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Renta Fija</label>
+                  <input type="number" step="0.01" value={newStore.renta_fija ?? ''} onChange={(e) => setNewStore({ ...newStore, renta_fija: e.target.value })} className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="0.00" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Breakpoint de Venta</label>
+                  <input type="number" step="0.01" value={newStore.breakpoint_venta ?? ''} onChange={(e) => setNewStore({ ...newStore, breakpoint_venta: e.target.value })} className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="0.00" />
+                  <p className="mt-1 text-[10px] text-slate-400">Umbral contractual. Si el contrato no usa breakpoint, dejelo vacio.</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">% Variable sobre Breakpoint</label>
+                  <input type="number" step="0.01" value={newStore.porcentaje_variable ?? ''} onChange={(e) => setNewStore({ ...newStore, porcentaje_variable: e.target.value })} className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="0.00" />
                 </div>
               </div>
 

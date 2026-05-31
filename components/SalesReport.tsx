@@ -1,10 +1,10 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { SaleReport, DateRange, SaleDetail } from '../types';
 import { ApiService } from '../api';
 import { MissingDaysAlert } from './MissingDaysAlert';
-import { FileSpreadsheet, FileText, ChevronRight, ChevronDown, Loader2 } from 'lucide-react';
+import { FileSpreadsheet, FileText, ChevronRight, ChevronDown, Loader2, Search, X } from 'lucide-react';
 import { formatCurrency, formatNumber } from '../utils/formatters';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 import { ReporteAuditoriaTable } from './ReporteAuditoriaTable';
@@ -40,6 +40,7 @@ export const SalesReport: React.FC = () => {
   // Stores state
   const [stores, setStores] = useState<any[]>([]);
   const [selectedLocal, setSelectedLocal] = useState<string>('');
+  const [localSearchTerm, setLocalSearchTerm] = useState('');
 
   const normalizeApiRoot = (value: string): string => {
     const trimmed = String(value || '').trim();
@@ -212,6 +213,22 @@ export const SalesReport: React.FC = () => {
   }, [dates, selectedLocal, currentMall]); // Refetch when dates or local changes
 
   const totalSales = data.reduce((sum, item) => sum + item.total_neto, 0);
+  const selectedStore = useMemo(
+    () => stores.find((store) => String(store.id) === String(selectedLocal)),
+    [stores, selectedLocal]
+  );
+  const filteredStores = useMemo(() => {
+    const query = localSearchTerm.trim().toLowerCase();
+    if (!query) return stores;
+    return stores.filter((store) => {
+      return [
+        store.nombre,
+        store.codigo_interno,
+        store.rubro,
+        store.tipo_negocio,
+      ].some((value) => String(value || '').toLowerCase().includes(query));
+    });
+  }, [stores, localSearchTerm]);
 
   return (
     <div className="space-y-6 relative">
@@ -296,17 +313,42 @@ export const SalesReport: React.FC = () => {
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-1 min-w-[260px]">
             <span className="text-xs font-medium text-slate-400">Local:</span>
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={localSearchTerm}
+                onChange={(e) => setLocalSearchTerm(e.target.value)}
+                placeholder="Buscar local por nombre, código o rubro"
+                className="w-full rounded-lg border border-slate-200 py-2 pl-9 pr-8 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              {localSearchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setLocalSearchTerm('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  title="Limpiar búsqueda"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
             <select
               value={selectedLocal}
               onChange={(e) => setSelectedLocal(e.target.value)}
-              className="px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none min-w-[150px]"
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
             >
               <option value="">Todos los Locales</option>
-              {stores.map((store) => (
+              {selectedStore && localSearchTerm && !filteredStores.some((store) => String(store.id) === String(selectedLocal)) && (
+                <option value={selectedStore.id}>
+                  {selectedStore.nombre} {selectedStore.codigo_interno ? `(${selectedStore.codigo_interno})` : ''}
+                </option>
+              )}
+              {filteredStores.map((store) => (
                 <option key={store.id} value={store.id}>
-                  {store.nombre}
+                  {store.nombre} {store.codigo_interno ? `(${store.codigo_interno})` : ''}
                 </option>
               ))}
             </select>

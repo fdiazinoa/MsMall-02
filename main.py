@@ -1075,6 +1075,29 @@ class StoreSchema(BaseModel):
     upsert_activo: bool = False
     mall_nombre: Optional[str] = "Mall Plaza"
 
+STORE_WRITE_FIELDS = {
+    "mall_id", "codigo_interno", "nombre", "email", "rubro", "responsable",
+    "contrato_no", "piso", "tipo_negocio", "mts", "porciento_renta",
+    "upsert_activo", "renta_fija", "breakpoint_venta", "porcentaje_variable",
+}
+
+
+def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: Optional[str] = None) -> Dict[str, Any]:
+    data = {
+        key: value
+        for key, value in (payload or {}).items()
+        if key in STORE_WRITE_FIELDS
+    }
+    if existing_mall_id:
+        data["mall_id"] = existing_mall_id
+    if "nombre" in data:
+        data["nombre"] = str(data.get("nombre") or "").strip()
+    if "codigo_interno" in data:
+        data["codigo_interno"] = str(data.get("codigo_interno") or "").strip()
+    if data.get("email") == "":
+        data["email"] = None
+    return data
+
 
 class CustomFieldOptionPayload(BaseModel):
     id: Optional[str] = None
@@ -2593,6 +2616,82 @@ async def get_stores():
           "porciento_renta": "2.00"
         }
     ]
+
+
+@app.post("/api/v1/locales", status_code=status.HTTP_201_CREATED)
+async def create_store_backend(
+    payload: Dict[str, Any] = Body(...),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    data = _sanitize_store_write_payload(payload)
+    mall_id = str(data.get("mall_id") or "").strip()
+    if not mall_id:
+        raise HTTPException(status_code=400, detail="mall_id requerido")
+    if not data.get("nombre") or not data.get("codigo_interno"):
+        raise HTTPException(status_code=400, detail="nombre y codigo_interno son requeridos")
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    try:
+        response = supabase.table("locales").insert(data).execute()
+        if not response.data:
+            raise ValueError("No se recibió el local creado desde Supabase")
+        row = response.data[0]
+        return row
+    except Exception as e:
+        logger.error("Error creando local mall=%s user=%s: %s", mall_id, operator_ctx.get("user_id"), e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/v1/locales/{local_id}")
+async def update_store_backend(
+    local_id: str,
+    payload: Dict[str, Any] = Body(...),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    existing = supabase.table("locales").select("id,mall_id").eq("id", local_id).maybe_single().execute().data
+    if not existing:
+        raise HTTPException(status_code=404, detail="Local no encontrado")
+    mall_id = str(existing.get("mall_id") or "")
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    data = _sanitize_store_write_payload(payload, existing_mall_id=mall_id)
+    data.pop("mall_id", None)
+    if "nombre" in data and not data.get("nombre"):
+        raise HTTPException(status_code=400, detail="nombre es requerido")
+    if "codigo_interno" in data and not data.get("codigo_interno"):
+        raise HTTPException(status_code=400, detail="codigo_interno es requerido")
+    if not data:
+        raise HTTPException(status_code=400, detail="No hay campos válidos para actualizar")
+    try:
+        response = supabase.table("locales").update(data).eq("id", local_id).execute()
+        if not response.data:
+            raise ValueError("No se recibió el local actualizado desde Supabase")
+        row = response.data[0]
+        return row
+    except Exception as e:
+        logger.error("Error actualizando local=%s user=%s: %s", local_id, operator_ctx.get("user_id"), e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v1/locales/{local_id}", status_code=status.HTTP_200_OK)
+async def delete_store_backend(
+    local_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    existing = supabase.table("locales").select("id,mall_id").eq("id", local_id).maybe_single().execute().data
+    if not existing:
+        raise HTTPException(status_code=404, detail="Local no encontrado")
+    _ensure_operator_can_access_mall(operator_ctx, str(existing.get("mall_id") or ""))
+    try:
+        supabase.table("locales").delete().eq("id", local_id).execute()
+        return {"status": "success"}
+    except Exception as e:
+        logger.error("Error eliminando local=%s user=%s: %s", local_id, operator_ctx.get("user_id"), e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/v1/locales/custom-fields")

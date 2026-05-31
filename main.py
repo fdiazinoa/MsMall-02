@@ -9,6 +9,7 @@ import time
 import threading
 import re
 import secrets
+import unicodedata
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple, Set
 from uuid import uuid4
@@ -1097,6 +1098,60 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
     if data.get("email") == "":
         data["email"] = None
     return data
+
+
+def _normalize_store_catalog_key(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip()).lower()
+    return "".join(
+        char for char in unicodedata.normalize("NFD", text)
+        if unicodedata.category(char) != "Mn"
+    )
+
+
+def _validate_store_catalog_values(mall_id: str, data: Dict[str, Any]) -> None:
+    fields = [field for field in ("tipo_negocio", "rubro") if field in data]
+    if not fields:
+        return
+
+    requested = {
+        field: _normalize_store_catalog_key(data.get(field))
+        for field in fields
+    }
+    missing_value = next((field for field, key in requested.items() if not key), None)
+    if missing_value:
+        raise HTTPException(status_code=400, detail=f"{missing_value} debe seleccionarse desde Catálogos Locales")
+
+    try:
+        response = (
+            supabase.table("store_field_options")
+            .select("field_name,value")
+            .eq("mall_id", mall_id)
+            .in_("field_name", fields)
+            .execute()
+        )
+    except Exception as exc:
+        logger.error("Error validando catalogos de locales mall=%s: %s", mall_id, exc)
+        raise HTTPException(status_code=400, detail="Catálogos Locales no está disponible para validar el local")
+
+    allowed: Dict[str, Set[str]] = {field: set() for field in fields}
+    for row in response.data or []:
+        field_name = str(row.get("field_name") or "")
+        if field_name in allowed:
+            allowed[field_name].add(_normalize_store_catalog_key(row.get("value")))
+
+    invalid = [
+        field for field, key in requested.items()
+        if key not in allowed.get(field, set())
+    ]
+    if invalid:
+        labels = {
+            "tipo_negocio": "Tipo de Negocio",
+            "rubro": "Rubro General",
+        }
+        raise HTTPException(
+            status_code=400,
+            detail=f"{labels[invalid[0]]} debe existir en Catálogos Locales antes de guardar el local",
+        )
 
 
 class CustomFieldOptionPayload(BaseModel):
@@ -2632,6 +2687,7 @@ async def create_store_backend(
     if not data.get("nombre") or not data.get("codigo_interno"):
         raise HTTPException(status_code=400, detail="nombre y codigo_interno son requeridos")
     _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    _validate_store_catalog_values(mall_id, data)
     try:
         response = supabase.table("locales").insert(data).execute()
         if not response.data:
@@ -2664,6 +2720,7 @@ async def update_store_backend(
         raise HTTPException(status_code=400, detail="codigo_interno es requerido")
     if not data:
         raise HTTPException(status_code=400, detail="No hay campos válidos para actualizar")
+    _validate_store_catalog_values(mall_id, data)
     try:
         response = supabase.table("locales").update(data).eq("id", local_id).execute()
         if not response.data:

@@ -5,8 +5,14 @@ import {
   LocalCustomFieldOption,
   LocalCustomFieldValue,
   Store,
+  StoreCatalogOption,
 } from '../api';
 import { useAuth } from '../context/AuthProvider';
+import {
+  loadStoreCatalogOptions,
+  normalizeStoreCatalogKey,
+  STORE_CATALOG_MIGRATION_FILE,
+} from '../utils/storeCatalog';
 import {
   Store as StoreIcon, Plus, Search, Building2,
   User, FileText, MapPin, Tag, Maximize2, Percent, X, Settings2, Layers3, Mail
@@ -241,11 +247,35 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, FieldValueState>>({});
   const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
   const [fieldDraft, setFieldDraft] = useState<Partial<LocalCustomFieldDefinition>>(emptyFieldDraft());
+  const [catalogOptions, setCatalogOptions] = useState<StoreCatalogOption[]>([]);
+  const [catalogTableAvailable, setCatalogTableAvailable] = useState<boolean | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
 
   const activeFieldDefinitions = useMemo(
     () => customFieldDefinitions.filter((field) => field.active).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
     [customFieldDefinitions]
   );
+  const catalogValuesByField = useMemo(() => ({
+    tipo_negocio: catalogOptions
+      .filter((option) => option.field_name === 'tipo_negocio')
+      .map((option) => option.value)
+      .filter(Boolean),
+    rubro: catalogOptions
+      .filter((option) => option.field_name === 'rubro')
+      .map((option) => option.value)
+      .filter(Boolean),
+  }), [catalogOptions]);
+
+  const isCatalogValue = (fieldName: 'tipo_negocio' | 'rubro', value: any) => {
+    const valueKey = normalizeStoreCatalogKey(value);
+    if (!valueKey) return false;
+    return catalogValuesByField[fieldName].some((option) => normalizeStoreCatalogKey(option) === valueKey);
+  };
+
+  const hasUncataloguedValue = (fieldName: 'tipo_negocio' | 'rubro') => {
+    const value = fieldName === 'tipo_negocio' ? newStore.tipo_negocio : newStore.rubro;
+    return Boolean(value) && !isCatalogValue(fieldName, value);
+  };
 
   const filteredStores = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
@@ -289,6 +319,26 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
     }
   };
 
+  const loadStoreCatalogs = async () => {
+    if (!currentMall?.id) {
+      setCatalogOptions([]);
+      setCatalogTableAvailable(null);
+      return;
+    }
+    setCatalogLoading(true);
+    try {
+      const result = await loadStoreCatalogOptions(currentMall.id);
+      setCatalogOptions(result.options);
+      setCatalogTableAvailable(result.available);
+    } catch (error) {
+      console.error('Error loading store catalogs:', error);
+      setCatalogOptions([]);
+      setCatalogTableAvailable(false);
+    } finally {
+      setCatalogLoading(false);
+    }
+  };
+
   const loadStoreCustomFieldValues = async (storeId: string) => {
     if (!authToken || !storeId) {
       setCustomFieldValues({});
@@ -321,6 +371,18 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
     }
     if (!authToken && activeFieldDefinitions.length > 0) {
       alert("Error: se requiere sesión válida para guardar campos libres.");
+      return;
+    }
+    if (!catalogTableAvailable) {
+      alert(`Para guardar locales debe configurar Catálogos Locales. Ejecute ${STORE_CATALOG_MIGRATION_FILE} o agregue las opciones desde Catálogos Locales.`);
+      return;
+    }
+    if (!isCatalogValue('tipo_negocio', newStore.tipo_negocio)) {
+      alert('Seleccione un Tipo de Negocio válido desde Catálogos Locales.');
+      return;
+    }
+    if (!isCatalogValue('rubro', newStore.rubro)) {
+      alert('Seleccione un Rubro General válido desde Catálogos Locales.');
       return;
     }
 
@@ -425,6 +487,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
 
   useEffect(() => {
     loadStores();
+    loadStoreCatalogs();
     loadCustomFieldDefinitions();
     resetStoreForm();
     resetFieldDraft();
@@ -512,7 +575,26 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Tipo de Negocio</label>
-                  <input type="text" value={newStore.tipo_negocio} onChange={(e) => setNewStore({ ...newStore, tipo_negocio: e.target.value })} className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Ropa, Restaurante..." />
+                  <select
+                    required
+                    value={newStore.tipo_negocio || ''}
+                    disabled={catalogLoading || catalogValuesByField.tipo_negocio.length === 0}
+                    onChange={(e) => setNewStore({ ...newStore, tipo_negocio: e.target.value })}
+                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                  >
+                    <option value="">{catalogLoading ? 'Cargando catalogo...' : 'Seleccione tipo de negocio'}</option>
+                    {hasUncataloguedValue('tipo_negocio') && (
+                      <option value={newStore.tipo_negocio}>
+                        Actual no catalogado: {newStore.tipo_negocio}
+                      </option>
+                    )}
+                    {catalogValuesByField.tipo_negocio.map((value) => (
+                      <option key={value} value={value}>{value}</option>
+                    ))}
+                  </select>
+                  {hasUncataloguedValue('tipo_negocio') && (
+                    <p className="mt-1 text-[10px] font-medium text-amber-600">Normalice este valor seleccionando una opción de Catálogos Locales.</p>
+                  )}
                 </div>
               </div>
 
@@ -563,7 +645,26 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Rubro General</label>
-                  <input type="text" value={newStore.rubro || ''} onChange={(e) => setNewStore({ ...newStore, rubro: e.target.value })} className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Vestuario, Comida..." />
+                  <select
+                    required
+                    value={newStore.rubro || ''}
+                    disabled={catalogLoading || catalogValuesByField.rubro.length === 0}
+                    onChange={(e) => setNewStore({ ...newStore, rubro: e.target.value })}
+                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                  >
+                    <option value="">{catalogLoading ? 'Cargando catalogo...' : 'Seleccione rubro general'}</option>
+                    {hasUncataloguedValue('rubro') && (
+                      <option value={newStore.rubro || ''}>
+                        Actual no catalogado: {newStore.rubro}
+                      </option>
+                    )}
+                    {catalogValuesByField.rubro.map((value) => (
+                      <option key={value} value={value}>{value}</option>
+                    ))}
+                  </select>
+                  {hasUncataloguedValue('rubro') && (
+                    <p className="mt-1 text-[10px] font-medium text-amber-600">Normalice este valor seleccionando una opción de Catálogos Locales.</p>
+                  )}
                 </div>
                 <div className="pt-2">
                   <label className="flex items-center gap-3 cursor-pointer group">

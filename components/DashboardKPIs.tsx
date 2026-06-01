@@ -89,6 +89,14 @@ const SegmentCard = ({ title, items, format }: { title: string; items: SegmentIt
   );
 };
 
+const formatDisplayName = (value: string) => value
+  .split(' ')
+  .map((part) => {
+    if (!part || part !== part.toLowerCase()) return part;
+    return part.charAt(0).toUpperCase() + part.slice(1);
+  })
+  .join(' ');
+
 export const DashboardKPIs: React.FC = () => {
   const { currentMall, session, user } = useAuth();
   const { format } = useFormatCurrency();
@@ -138,21 +146,22 @@ export const DashboardKPIs: React.FC = () => {
     </div>
   );
 
-  const displayName =
+  const displayName = formatDisplayName(
     user?.nombre ||
     user?.name ||
     session?.user?.user_metadata?.full_name ||
     session?.user?.user_metadata?.name ||
     session?.user?.email?.split('@')[0] ||
-    'usuario';
+    'usuario'
+  );
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <p className="text-sm font-semibold text-indigo-600 mb-1">Bienvenido, {displayName}</p>
-          <h2 className="text-2xl font-bold text-slate-800">Business Intelligence</h2>
-          <p className="text-slate-500">Indicadores clave de rendimiento del mall.</p>
+        <div className="space-y-1">
+          <p className="text-2xl font-bold text-slate-900">Hola, {displayName}</p>
+          <h2 className="pt-1 text-lg font-semibold text-slate-700">Business Intelligence</h2>
+          <p className="text-sm text-slate-500">Indicadores clave de rendimiento del mall.</p>
         </div>
         <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-100 flex flex-wrap items-center gap-2 w-full md:w-auto">
           <Calendar size={16} className="text-slate-400 ml-2" />

@@ -24,6 +24,49 @@ const STANDARD_FIELDS = [
   { key: 'hora_transaccion', label: 'Hora Transacción', required: false }
 ];
 
+const TRANSFORM_MODES = {
+  CONCAT: 'concat',
+  GENERATED_SEQUENCE: 'generated_sequence'
+} as const;
+
+const splitTransformFields = (value?: string) =>
+  String(value || '')
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean);
+
+const fieldModeKey = (fieldKey: string) => `_${fieldKey}_mode`;
+const concatFieldsKey = (fieldKey: string) => `_${fieldKey}_concat_fields`;
+const concatSeparatorKey = (fieldKey: string) => `_${fieldKey}_concat_separator`;
+
+const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
+  const mode = config.constants?.[fieldModeKey(fieldKey)];
+  if (mode === TRANSFORM_MODES.CONCAT) return 'CONCAT';
+  if (mode === TRANSFORM_MODES.GENERATED_SEQUENCE) return 'GENERATED_SEQUENCE';
+  if ((config.constants || {}) && fieldKey in (config.constants || {})) return 'CONSTANT';
+  return 'VARIABLE';
+};
+
+const hasFieldMappingValue = (config: ImportConfig, fieldKey: string) => {
+  const mode = getFieldMappingMode(config, fieldKey);
+  if (mode === 'CONCAT') {
+    return splitTransformFields(config.constants?.[concatFieldsKey(fieldKey)]).length > 0;
+  }
+  if (mode === 'GENERATED_SEQUENCE') return true;
+  return Boolean(config.mapping?.[fieldKey] || config.constants?.[fieldKey]);
+};
+
+const cleanFieldMappingConfig = (config: ImportConfig, fieldKey: string) => {
+  const mapping = { ...(config.mapping || {}) };
+  const constants = { ...(config.constants || {}) };
+  delete mapping[fieldKey];
+  delete constants[fieldKey];
+  delete constants[fieldModeKey(fieldKey)];
+  delete constants[concatFieldsKey(fieldKey)];
+  delete constants[concatSeparatorKey(fieldKey)];
+  return { mapping, constants };
+};
+
 const createDefaultImportConfig = (): ImportConfig => ({
   id: '',
   nombre: '',
@@ -741,7 +784,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const handleSave = async () => {
     // Validar mapeo mínimo
 
-    const missing = STANDARD_FIELDS.filter(f => f.required && !editingConfig.mapping[f.key] && !editingConfig.constants?.[f.key]);
+    const missing = STANDARD_FIELDS.filter(f => f.required && !hasFieldMappingValue(editingConfig, f.key));
     if (missing.length > 0) {
       alert(`Faltan campos obligatorios en el mapeo: ${missing.map(m => m.label).join(', ')}`);
       return;
@@ -897,7 +940,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
   const hasRequiredMapping = (config: ImportConfig) => {
     const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
-    return requiredFields.every(field => Boolean(config.mapping?.[field] || config.constants?.[field]));
+    return requiredFields.every(field => hasFieldMappingValue(config, field));
   };
 
   const isHeaderEnabled = (config: ImportConfig) => (config.constants?.['_has_header'] ?? 'true') !== 'false';
@@ -2163,8 +2206,19 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
                 <div className="grid grid-cols-1 gap-y-6 pt-4">
                   {(STANDARD_FIELDS || []).map(field => {
-                    const isConstant = (editingConfig.constants || {}) && field.key in (editingConfig.constants || {});
+                    const fieldMode = getFieldMappingMode(editingConfig, field.key);
+                    const isConstant = fieldMode === 'CONSTANT';
+                    const isConcat = fieldMode === 'CONCAT';
+                    const isGeneratedSequence = fieldMode === 'GENERATED_SEQUENCE';
                     const currentValue = isConstant ? editingConfig.constants?.[field.key] : (editingConfig.mapping || {})[field.key];
+                    const concatFields = splitTransformFields(editingConfig.constants?.[concatFieldsKey(field.key)]);
+                    const transformOptions = [
+                      ...STANDARD_FIELDS.map(item => ({ value: item.key, label: item.label })),
+                      { value: 'numero_registro', label: 'Número de registro' },
+                      ...remoteHeaders
+                        .filter(header => !STANDARD_FIELDS.some(item => item.key === header))
+                        .map(header => ({ value: header, label: `Columna: ${header}` }))
+                    ];
 
                     return (
                       <div key={field.key} className="relative group bg-slate-50 p-4 rounded-xl border border-slate-200">
@@ -2181,34 +2235,53 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         <div className="flex flex-col md:flex-row gap-3">
                           <div className="md:w-1/3">
                             <select
-                              className={`w-full px-3 py-2.5 rounded-xl border outline-none text-sm font-medium transition-colors ${isConstant ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600'
+                              className={`w-full px-3 py-2.5 rounded-xl border outline-none text-sm font-medium transition-colors ${fieldMode !== 'VARIABLE' ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600'
                                 }`}
-                              value={isConstant ? 'CONSTANT' : 'VARIABLE'}
+                              value={fieldMode}
                               onChange={(e) => {
                                 const value = e.target.value;
+                                const { mapping, constants } = cleanFieldMappingConfig(editingConfig, field.key);
                                 if (value === 'CONSTANT') {
-                                  // Switch to constant, clear mapping, set default empty constant
-                                  const newMapping = { ...editingConfig.mapping };
-                                  delete newMapping[field.key];
-
                                   setEditingConfig({
                                     ...editingConfig,
-                                    mapping: newMapping,
-                                    constants: { ...editingConfig.constants, [field.key]: '' }
+                                    mapping,
+                                    constants: { ...constants, [field.key]: '' }
+                                  });
+                                } else if (value === 'CONCAT') {
+                                  setEditingConfig({
+                                    ...editingConfig,
+                                    mapping,
+                                    constants: {
+                                      ...constants,
+                                      [fieldModeKey(field.key)]: TRANSFORM_MODES.CONCAT,
+                                      [concatFieldsKey(field.key)]: field.key === 'factura_numero' ? 'local_codigo,fecha_venta,numero_registro' : '',
+                                      [concatSeparatorKey(field.key)]: '-'
+                                    }
+                                  });
+                                } else if (value === 'GENERATED_SEQUENCE') {
+                                  setEditingConfig({
+                                    ...editingConfig,
+                                    mapping,
+                                    constants: {
+                                      ...constants,
+                                      [fieldModeKey(field.key)]: TRANSFORM_MODES.GENERATED_SEQUENCE
+                                    }
                                   });
                                 } else {
-                                  // Switch to variable, clear constant
-                                  const newConstants = { ...editingConfig.constants };
-                                  delete newConstants[field.key];
                                   setEditingConfig({
                                     ...editingConfig,
-                                    constants: newConstants
+                                    mapping,
+                                    constants
                                   });
                                 }
                               }}
                             >
                               <option value="VARIABLE">Columna CSV</option>
                               <option value="CONSTANT">Valor Constante</option>
+                              <option value="CONCAT">Concatenar Campos</option>
+                              {field.key === 'factura_numero' && (
+                                <option value="GENERATED_SEQUENCE">Consecutivo Local + Fecha</option>
+                              )}
                             </select>
                           </div>
 
@@ -2230,6 +2303,76 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                                 <div className="absolute right-3 top-3 text-[10px] font-bold text-indigo-300 uppercase pointer-events-none group-focus-within/input:text-indigo-500 transition-colors">
                                   Valor Fijo
                                 </div>
+                              </div>
+                            ) : isConcat ? (
+                              <div className="space-y-3">
+                                <div className="flex flex-col sm:flex-row gap-2">
+                                  <select
+                                    className="flex-1 px-4 py-2.5 rounded-xl border border-indigo-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                                    value=""
+                                    onChange={e => {
+                                      const nextValue = e.target.value;
+                                      if (!nextValue || concatFields.includes(nextValue)) return;
+                                      setEditingConfig({
+                                        ...editingConfig,
+                                        constants: {
+                                          ...editingConfig.constants,
+                                          [concatFieldsKey(field.key)]: [...concatFields, nextValue].join(',')
+                                        }
+                                      });
+                                    }}
+                                  >
+                                    <option value="">Agregar campo a concatenar...</option>
+                                    {transformOptions.map(option => (
+                                      <option key={`${field.key}-${option.value}`} value={option.value}>{option.label}</option>
+                                    ))}
+                                  </select>
+                                  <input
+                                    type="text"
+                                    className="w-full sm:w-28 px-3 py-2.5 rounded-xl border border-indigo-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                                    value={editingConfig.constants?.[concatSeparatorKey(field.key)] ?? '-'}
+                                    onChange={e => setEditingConfig({
+                                      ...editingConfig,
+                                      constants: {
+                                        ...editingConfig.constants,
+                                        [concatSeparatorKey(field.key)]: e.target.value
+                                      }
+                                    })}
+                                    placeholder="Separador"
+                                    aria-label="Separador"
+                                  />
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  {concatFields.length === 0 ? (
+                                    <span className="text-xs text-amber-600 font-semibold">
+                                      Agrega al menos un campo para construir el valor.
+                                    </span>
+                                  ) : concatFields.map(part => (
+                                    <button
+                                      key={`${field.key}-${part}`}
+                                      type="button"
+                                      onClick={() => setEditingConfig({
+                                        ...editingConfig,
+                                        constants: {
+                                          ...editingConfig.constants,
+                                          [concatFieldsKey(field.key)]: concatFields.filter(item => item !== part).join(',')
+                                        }
+                                      })}
+                                      className="px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold hover:bg-indigo-200"
+                                      title="Quitar campo"
+                                    >
+                                      {part} ×
+                                    </button>
+                                  ))}
+                                </div>
+                                <p className="text-xs text-slate-500">
+                                  Se construirá en el orden indicado. Usa “Número de registro” para diferenciar filas repetidas.
+                                </p>
+                              </div>
+                            ) : isGeneratedSequence ? (
+                              <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800">
+                                <p className="font-bold">Formato generado: LOCAL-FECHA-SECUENCIA</p>
+                                <p className="text-xs mt-1">Ejemplo: PABT-01-20260601-000034. La secuencia sale del registro dentro del archivo.</p>
                               </div>
                             ) : (
                               <div className="relative">

@@ -123,8 +123,8 @@ def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
     assert count == 2
     assert errors == []
     assert [row["factura_no"] for row in fake_db.tables["ventas"]] == [
-        "PABT-01-20260301-000001",
-        "PABT-01-20260301-000002",
+        "PABT01202603010001",
+        "PABT01202603010002",
     ]
 
 

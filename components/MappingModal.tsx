@@ -101,7 +101,7 @@ export default function MappingModal({
         } else if (mode === 'CONCAT') {
             nextConstants[fieldModeKey(systemField)] = TRANSFORM_MODES.CONCAT;
             nextConstants[concatFieldsKey(systemField)] = systemField === 'factura_numero' ? 'local_codigo,fecha_venta,numero_registro' : '';
-            nextConstants[concatSeparatorKey(systemField)] = '-';
+            nextConstants[concatSeparatorKey(systemField)] = systemField === 'factura_numero' ? '' : '-';
         } else if (mode === 'GENERATED_SEQUENCE') {
             nextConstants[fieldModeKey(systemField)] = TRANSFORM_MODES.GENERATED_SEQUENCE;
         }
@@ -273,8 +273,8 @@ export default function MappingModal({
                                         </div>
                                     ) : isGeneratedSequence ? (
                                         <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800">
-                                            <p className="font-bold">Formato generado: LOCAL-FECHA-SECUENCIA</p>
-                                            <p className="text-xs mt-1">Ejemplo: PABT-01-20260601-000034.</p>
+                                            <p className="font-bold">Formato generado: LOCALFECHASECUENCIA</p>
+                                            <p className="text-xs mt-1">Ejemplo: PABT01202606010034.</p>
                                         </div>
                                     ) : (
                                         <>

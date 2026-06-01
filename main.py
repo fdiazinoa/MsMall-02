@@ -1416,14 +1416,14 @@ def _split_transform_fields(raw_fields: Any) -> List[str]:
 def _clean_generated_invoice_piece(value: Any) -> str:
     text = str(value or "").strip().strip("'\"")
     text = re.sub(r"\s+", "", text)
-    text = text.replace("/", "").replace("\\", "")
+    text = text.replace("/", "").replace("\\", "").replace("-", "")
     return text
 
 
 def _format_generated_invoice(local_code: Any, sale_date: Any, sequence: int) -> str:
     local_part = _clean_generated_invoice_piece(local_code)
     date_part = _clean_generated_invoice_piece(str(sale_date or "").replace("-", ""))
-    return f"{local_part}-{date_part}-{sequence:06d}"
+    return f"{local_part}{date_part}{sequence:04d}"
 
 
 def process_file_content(content: str, filename: str, config: Dict[str, Any], batch_id: str, mall_id: str = None):
@@ -1727,7 +1727,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 def resolve_transform_value(part: str) -> str:
                     clean_part = str(part or "").strip()
                     if clean_part in ("numero_registro", "linea", "_line_number"):
-                        return f"{i + 1:06d}"
+                        return f"{i + 1:04d}"
                     if clean_part == "fecha_venta" and record.get("fecha_venta"):
                         return str(record.get("fecha_venta")).replace("-", "")
                     if clean_part in record:

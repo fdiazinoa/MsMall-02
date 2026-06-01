@@ -2255,7 +2255,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                                       ...constants,
                                       [fieldModeKey(field.key)]: TRANSFORM_MODES.CONCAT,
                                       [concatFieldsKey(field.key)]: field.key === 'factura_numero' ? 'local_codigo,fecha_venta,numero_registro' : '',
-                                      [concatSeparatorKey(field.key)]: '-'
+                                      [concatSeparatorKey(field.key)]: field.key === 'factura_numero' ? '' : '-'
                                     }
                                   });
                                 } else if (value === 'GENERATED_SEQUENCE') {
@@ -2371,8 +2371,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                               </div>
                             ) : isGeneratedSequence ? (
                               <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800">
-                                <p className="font-bold">Formato generado: LOCAL-FECHA-SECUENCIA</p>
-                                <p className="text-xs mt-1">Ejemplo: PABT-01-20260601-000034. La secuencia sale del registro dentro del archivo.</p>
+                                <p className="font-bold">Formato generado: LOCALFECHASECUENCIA</p>
+                                <p className="text-xs mt-1">Ejemplo: PABT01202606010034. La secuencia sale del registro dentro del archivo.</p>
                               </div>
                             ) : (
                               <div className="relative">

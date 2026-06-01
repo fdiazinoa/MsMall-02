@@ -209,6 +209,83 @@ def test_process_file_content_inserts_rows_with_valid_local_code(monkeypatch):
     }]
 
 
+def test_process_file_content_generates_invoice_sequence(monkeypatch):
+    main = _load_main(monkeypatch)
+    fake_db = _FakeSupabase({
+        "locales": [
+            {"id": "local-1", "codigo_interno": "PABT-01", "mall_id": "mall-1"},
+        ],
+        "ventas": [],
+    })
+    monkeypatch.setattr(main, "supabase", fake_db)
+
+    content = "\n".join([
+        "fecha_venta,local_codigo,total_bruto,total_impuestos,total_neto",
+        "2026-03-01,PABT-01,100,18,82",
+        "2026-03-01,PABT-01,200,36,164",
+    ])
+    config = {
+        "tipo_archivo": "CSV",
+        "mapping": {
+            "fecha_venta": "fecha_venta",
+            "local_codigo": "local_codigo",
+            "total_bruto": "total_bruto",
+            "total_impuestos": "total_impuestos",
+            "total_neto": "total_neto",
+        },
+        "constants": {
+            "_factura_numero_mode": "generated_sequence",
+        },
+    }
+
+    count, errors = main.process_file_content(content, "ventas.csv", config, "batch-1", "mall-1")
+
+    assert count == 2
+    assert errors == []
+    assert [row["factura_no"] for row in fake_db.upserts] == [
+        "PABT-01-20260301-000001",
+        "PABT-01-20260301-000002",
+    ]
+
+
+def test_process_file_content_concatenates_invoice_fields(monkeypatch):
+    main = _load_main(monkeypatch)
+    fake_db = _FakeSupabase({
+        "locales": [
+            {"id": "local-1", "codigo_interno": "PABT-01", "mall_id": "mall-1"},
+        ],
+        "ventas": [],
+    })
+    monkeypatch.setattr(main, "supabase", fake_db)
+
+    content = "\n".join([
+        "fecha_venta,local_codigo,total_bruto,total_impuestos,total_neto",
+        "01/03/2026,PABT-01,100,18,82",
+    ])
+    config = {
+        "tipo_archivo": "CSV",
+        "mapping": {
+            "fecha_venta": "fecha_venta",
+            "local_codigo": "local_codigo",
+            "total_bruto": "total_bruto",
+            "total_impuestos": "total_impuestos",
+            "total_neto": "total_neto",
+        },
+        "constants": {
+            "_date_format": "DD/MM/YYYY",
+            "_factura_numero_mode": "concat",
+            "_factura_numero_concat_fields": "local_codigo,fecha_venta,numero_registro",
+            "_factura_numero_concat_separator": "-",
+        },
+    }
+
+    count, errors = main.process_file_content(content, "ventas.csv", config, "batch-1", "mall-1")
+
+    assert count == 1
+    assert errors == []
+    assert fake_db.upserts[0]["factura_no"] == "PABT-01-20260301-000001"
+
+
 def test_dashboard_ignores_orphan_sales_rows(monkeypatch):
     main = _load_main(monkeypatch)
     fake_db = _FakeSupabase({

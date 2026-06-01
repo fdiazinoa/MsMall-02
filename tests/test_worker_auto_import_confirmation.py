@@ -67,6 +67,67 @@ class _FakeSSH:
         return None
 
 
+class _FakeWorkerTable:
+    def __init__(self, supabase, table_name):
+        self.supabase = supabase
+        self.table_name = table_name
+        self.payload = None
+
+    def insert(self, payload):
+        self.payload = payload
+        return self
+
+    def execute(self):
+        rows = self.payload if isinstance(self.payload, list) else [self.payload]
+        self.supabase.tables.setdefault(self.table_name, []).extend([dict(row) for row in rows])
+        return SimpleNamespace(data=rows)
+
+
+class _FakeWorkerSupabase:
+    def __init__(self):
+        self.tables = {}
+
+    def table(self, table_name):
+        return _FakeWorkerTable(self, table_name)
+
+
+def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = "\n".join([
+        "fecha_venta,total_bruto,total_impuestos,total_neto",
+        "2026-03-01,100,18,82",
+        "2026-03-01,200,36,164",
+    ])
+    config = {
+        "nombre": "PABT-01",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "codigo_interno": "PABT-01",
+        "file_type": "CSV",
+        "mapping_config": {
+            "fecha_venta": "fecha_venta",
+            "total_bruto": "total_bruto",
+            "total_impuestos": "total_impuestos",
+            "total_neto": "total_neto",
+        },
+        "constants_config": {
+            "_factura_numero_mode": "generated_sequence",
+        },
+    }
+
+    count, errors = worker.process_file_logic(config, "ventas.csv", content)
+
+    assert count == 2
+    assert errors == []
+    assert [row["factura_no"] for row in fake_db.tables["ventas"]] == [
+        "PABT-01-20260301-000001",
+        "PABT-01-20260301-000002",
+    ]
+
+
 def test_worker_marks_error_when_no_insert_is_confirmed(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_sftp = _FakeSFTP({"ventas_20260301.json": b'{"rows":[]}'})

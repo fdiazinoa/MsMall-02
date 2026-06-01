@@ -243,8 +243,8 @@ def test_process_file_content_generates_invoice_sequence(monkeypatch):
     assert count == 2
     assert errors == []
     assert [row["factura_no"] for row in fake_db.upserts] == [
-        "PABT-01-20260301-000001",
-        "PABT-01-20260301-000002",
+        "PABT01202603010001",
+        "PABT01202603010002",
     ]
 
 
@@ -275,7 +275,7 @@ def test_process_file_content_concatenates_invoice_fields(monkeypatch):
             "_date_format": "DD/MM/YYYY",
             "_factura_numero_mode": "concat",
             "_factura_numero_concat_fields": "local_codigo,fecha_venta,numero_registro",
-            "_factura_numero_concat_separator": "-",
+            "_factura_numero_concat_separator": "",
         },
     }
 
@@ -283,7 +283,7 @@ def test_process_file_content_concatenates_invoice_fields(monkeypatch):
 
     assert count == 1
     assert errors == []
-    assert fake_db.upserts[0]["factura_no"] == "PABT-01-20260301-000001"
+    assert fake_db.upserts[0]["factura_no"] == "PABT01202603010001"
 
 
 def test_dashboard_ignores_orphan_sales_rows(monkeypatch):

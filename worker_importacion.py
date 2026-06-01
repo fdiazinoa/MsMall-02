@@ -5,6 +5,7 @@ import uuid
 import asyncio
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import paramiko
@@ -13,7 +14,7 @@ import io
 import csv
 import json
 import posixpath
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from services.connection_monitor_service import ConnectionMonitorService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import run_missing_days_email_scheduler
@@ -31,6 +32,7 @@ logger = logging.getLogger("import-worker")
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
+DEFAULT_WORKER_TIMEZONE = "America/Santo_Domingo"
 
 supabase: Optional[Client] = None
 
@@ -812,6 +814,87 @@ def _sanitize_health_error(value: object) -> str:
         text = f"{text[:497]}..."
     return text or "unknown_error"
 
+
+def _worker_timezone() -> ZoneInfo:
+    configured = os.getenv("WORKER_TIMEZONE", DEFAULT_WORKER_TIMEZONE).strip() or DEFAULT_WORKER_TIMEZONE
+    try:
+        return ZoneInfo(configured)
+    except ZoneInfoNotFoundError:
+        logger.warning("WORKER_TIMEZONE invalido '%s'. Usando UTC.", configured)
+        return ZoneInfo("UTC")
+
+
+def _parse_worker_datetime(value: Any, tz: ZoneInfo) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
+
+
+def _parse_scheduled_time(value: Any) -> Optional[Tuple[int, int]]:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parts = raw.split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except (TypeError, ValueError):
+        return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour, minute
+
+
+def _schedule_slot_for_local(local: Dict[str, Any], now: datetime) -> Optional[datetime]:
+    frecuencia = str(local.get("frecuencia_cron") or "manual").strip().lower()
+    if frecuencia == "manual":
+        return None
+
+    if frecuencia == "cada_hora":
+        return now.replace(minute=0, second=0, microsecond=0)
+
+    if frecuencia == "cada_2_horas":
+        slot_hour = now.hour - (now.hour % 2)
+        return now.replace(hour=slot_hour, minute=0, second=0, microsecond=0)
+
+    if frecuencia == "hora_especifica":
+        scheduled_time = _parse_scheduled_time(local.get("hora_especifica"))
+        if not scheduled_time:
+            return None
+        hour, minute = scheduled_time
+        slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now < slot:
+            return None
+        return slot
+
+    return None
+
+
+def should_run_scheduled_local(local: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    tz = _worker_timezone()
+    current_time = now.astimezone(tz) if now else datetime.now(tz)
+    slot = _schedule_slot_for_local(local, current_time)
+    if not slot:
+        return False
+
+    last_run = _parse_worker_datetime(local.get("ultima_ejecucion"), tz)
+    if last_run and last_run >= slot:
+        return False
+
+    return True
+
 async def _upsert_system_health_value(key: str, value: str):
     if not supabase:
         return
@@ -1027,33 +1110,13 @@ async def run_worker_async():
             .execute()
             
         locales = [loc for loc in (response.data or []) if loc.get("mall_id")]
-        current_hour = datetime.now().hour
+        current_time = datetime.now(_worker_timezone())
         
         tasks_to_run = []
         
         for local in locales:
-            # Frequency Check Logic
-            frecuencia = local.get("frecuencia_cron", "manual")
-            if frecuencia == "manual": continue
-            
-            should_run = False
-            if frecuencia == "cada_hora":
-                should_run = True
-            elif frecuencia == "cada_2_horas":
-                if current_hour % 2 == 0: should_run = True
-            elif frecuencia == "hora_especifica":
-                hora_esp = local.get("hora_especifica")
-                if hora_esp:
-                    try:
-                        esp_hour = int(hora_esp.split(":")[0])
-                        if current_hour == esp_hour: should_run = True
-                    except: pass
-            
-            if should_run:
+            if should_run_scheduled_local(local, current_time):
                 tasks_to_run.append(local)
-            else:
-                 # Debug check
-                 pass
 
         if not tasks_to_run:
             logger.info("😴 No active tasks for this hour.")

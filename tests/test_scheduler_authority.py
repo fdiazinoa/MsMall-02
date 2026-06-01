@@ -1,7 +1,9 @@
 import asyncio
 import importlib
 import sys
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 
 def _reset_module(module_name: str):
@@ -98,3 +100,60 @@ def test_worker_run_updates_heartbeat_on_smoke_cycle(monkeypatch):
     assert "CRON_LAST_RUN" in keys
     assert "CRON_LAST_SUCCESS" in keys
     assert "CRON_LAST_ERROR" in keys
+
+
+def test_worker_specific_schedule_waits_until_configured_minute(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    now = datetime(2026, 6, 1, 8, 9, tzinfo=ZoneInfo("America/Santo_Domingo"))
+    local = {
+        "frecuencia_cron": "hora_especifica",
+        "hora_especifica": "08:10:00",
+        "ultima_ejecucion": None,
+    }
+
+    assert worker.should_run_scheduled_local(local, now) is False
+
+
+def test_worker_specific_schedule_runs_once_after_slot(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    now = datetime(2026, 6, 1, 8, 30, tzinfo=ZoneInfo("America/Santo_Domingo"))
+    local = {
+        "frecuencia_cron": "hora_especifica",
+        "hora_especifica": "08:10:00",
+        "ultima_ejecucion": None,
+    }
+
+    assert worker.should_run_scheduled_local(local, now) is True
+
+    local["ultima_ejecucion"] = "2026-06-01T08:12:00-04:00"
+    assert worker.should_run_scheduled_local(local, now) is False
+
+
+def test_worker_hourly_schedule_uses_current_slot(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    now = datetime(2026, 6, 1, 15, 25, tzinfo=ZoneInfo("America/Santo_Domingo"))
+
+    assert worker.should_run_scheduled_local({
+        "frecuencia_cron": "cada_hora",
+        "ultima_ejecucion": "2026-06-01T14:59:00-04:00",
+    }, now) is True
+
+    assert worker.should_run_scheduled_local({
+        "frecuencia_cron": "cada_hora",
+        "ultima_ejecucion": "2026-06-01T15:01:00-04:00",
+    }, now) is False
+
+
+def test_worker_two_hour_schedule_uses_even_hour_slot(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    now = datetime(2026, 6, 1, 15, 25, tzinfo=ZoneInfo("America/Santo_Domingo"))
+
+    assert worker.should_run_scheduled_local({
+        "frecuencia_cron": "cada_2_horas",
+        "ultima_ejecucion": "2026-06-01T13:59:00-04:00",
+    }, now) is True
+
+    assert worker.should_run_scheduled_local({
+        "frecuencia_cron": "cada_2_horas",
+        "ultima_ejecucion": "2026-06-01T14:01:00-04:00",
+    }, now) is False

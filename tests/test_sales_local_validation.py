@@ -213,7 +213,13 @@ def test_dashboard_ignores_orphan_sales_rows(monkeypatch):
     main = _load_main(monkeypatch)
     fake_db = _FakeSupabase({
         "locales": [
-            {"id": "local-1", "nombre": "Tienda Valida", "mall_id": "mall-1"},
+            {
+                "id": "local-1",
+                "nombre": "Tienda Valida",
+                "mall_id": "mall-1",
+                "tipo_negocio": "Moda",
+                "rubro": "Ropa",
+            },
         ],
         "ventas": [
             {
@@ -250,3 +256,79 @@ def test_dashboard_ignores_orphan_sales_rows(monkeypatch):
     assert result["transacciones"] == 1
     assert result["top_locales"] == [{"name": "Tienda Valida", "total": 100.0}]
     assert result["ventas_por_tienda_completo"] == {"Tienda Valida": 100.0}
+    assert result["ventas_por_tipo_negocio"] == [{"name": "Moda", "value": 100.0}]
+    assert result["ventas_por_rubro"] == [{"name": "Ropa", "value": 100.0}]
+
+
+def test_dashboard_groups_sales_by_business_type_and_rubro(monkeypatch):
+    main = _load_main(monkeypatch)
+    fake_db = _FakeSupabase({
+        "locales": [
+            {
+                "id": "local-1",
+                "nombre": "Zapatos Norte",
+                "mall_id": "mall-1",
+                "tipo_negocio": "Calzado",
+                "rubro": "Moda",
+            },
+            {
+                "id": "local-2",
+                "nombre": "Ropa Sur",
+                "mall_id": "mall-1",
+                "tipo_negocio": "Boutique",
+                "rubro": "Moda",
+            },
+            {
+                "id": "local-3",
+                "nombre": "Cafe Central",
+                "mall_id": "mall-1",
+                "tipo_negocio": "",
+                "rubro": None,
+            },
+        ],
+        "ventas": [
+            {
+                "local_id": "local-1",
+                "mall_id": "mall-1",
+                "fecha": "2026-03-01",
+                "total_bruto": 100,
+                "total_neto": 82,
+            },
+            {
+                "local_id": "local-1",
+                "mall_id": "mall-1",
+                "fecha": "2026-03-02",
+                "total_bruto": 50,
+                "total_neto": 41,
+            },
+            {
+                "local_id": "local-2",
+                "mall_id": "mall-1",
+                "fecha": "2026-03-01",
+                "total_bruto": 300,
+                "total_neto": 246,
+            },
+            {
+                "local_id": "local-3",
+                "mall_id": "mall-1",
+                "fecha": "2026-03-01",
+                "total_bruto": 25,
+                "total_neto": 20.5,
+            },
+        ],
+    })
+    monkeypatch.setattr(main, "supabase", fake_db)
+    monkeypatch.setattr(main, "_cache_get", lambda _key: main._CACHE_MISS)
+    monkeypatch.setattr(main, "_cache_set", lambda *_args, **_kwargs: None)
+
+    result = asyncio.run(main.get_dashboard_data("2026-03-01", "2026-03-31", "mall-1"))
+
+    assert result["ventas_por_tipo_negocio"] == [
+        {"name": "Boutique", "value": 300.0},
+        {"name": "Calzado", "value": 150.0},
+        {"name": "Sin tipo de negocio", "value": 25.0},
+    ]
+    assert result["ventas_por_rubro"] == [
+        {"name": "Moda", "value": 450.0},
+        {"name": "Sin rubro", "value": 25.0},
+    ]

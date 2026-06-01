@@ -54,14 +54,16 @@ type SegmentSelection = {
   stores: SegmentStoreDetail[];
 };
 
-const SegmentTooltip = ({ active, payload, format }: any) => {
+const SegmentTooltip = ({ active, payload, format, total }: any) => {
   if (!active || !payload?.length) return null;
   const item = payload[0]?.payload;
   if (!item) return null;
+  const share = total > 0 ? (Number(item.value || 0) / total) * 100 : 0;
   return (
     <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-lg">
       <p className="text-xs font-bold text-slate-800">{item.name}</p>
       <p className="text-xs text-slate-500">{format(item.value || 0)}</p>
+      <p className="text-xs font-semibold text-indigo-500">{share.toFixed(1)}%</p>
     </div>
   );
 };
@@ -93,66 +95,39 @@ const SegmentDonutCard = ({
           Sin ventas en el periodo.
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-[210px_1fr] gap-4 items-center">
-          <div className="relative h-[210px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={visibleItems}
-                  dataKey="value"
-                  nameKey="name"
-                  innerRadius={58}
-                  outerRadius={86}
-                  paddingAngle={2}
-                  stroke="white"
-                  strokeWidth={3}
-                  onClick={(item) => onSelect({
-                    kind: 'tipo_negocio',
-                    title,
-                    item: item as SegmentItem,
-                    stores: detailMap?.[(item as SegmentItem).name] || [],
-                  })}
-                >
-                  {visibleItems.map((item, index) => (
-                    <Cell
-                      key={`tipo-cell-${item.name}`}
-                      fill={COLORS[index % COLORS.length]}
-                      className="cursor-pointer focus:outline-none"
-                    />
-                  ))}
-                </Pie>
-                <Tooltip content={<SegmentTooltip format={format} />} />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-              <span className="text-[11px] font-bold uppercase text-slate-400">Total</span>
-              <span className="text-sm font-bold text-slate-800">{format(total)}</span>
-            </div>
-          </div>
-          <div className="space-y-2">
-            {visibleItems.map((item, index) => {
-              const share = total > 0 ? (item.value / total) * 100 : 0;
-              return (
-                <button
-                  key={`tipo-${item.name}`}
-                  type="button"
-                  onClick={() => onSelect({
-                    kind: 'tipo_negocio',
-                    title,
-                    item,
-                    stores: detailMap?.[item.name] || [],
-                  })}
-                  className="w-full flex items-center gap-3 rounded-lg border border-transparent px-2.5 py-2 text-left hover:border-slate-200 hover:bg-slate-50 transition-colors"
-                >
-                  <span className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-slate-700 truncate">{item.name}</span>
-                    <span className="block text-xs text-slate-400">{share.toFixed(1)}%</span>
-                  </span>
-                  <span className="text-xs font-mono text-slate-500 whitespace-nowrap">{format(item.value)}</span>
-                </button>
-              );
-            })}
+        <div className="relative h-[260px] sm:h-[300px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={visibleItems}
+                dataKey="value"
+                nameKey="name"
+                innerRadius="52%"
+                outerRadius="84%"
+                paddingAngle={2}
+                stroke="white"
+                strokeWidth={3}
+                onClick={(item) => onSelect({
+                  kind: 'tipo_negocio',
+                  title,
+                  item: item as SegmentItem,
+                  stores: detailMap?.[(item as SegmentItem).name] || [],
+                })}
+              >
+                {visibleItems.map((item, index) => (
+                  <Cell
+                    key={`tipo-cell-${item.name}`}
+                    fill={COLORS[index % COLORS.length]}
+                    className="cursor-pointer focus:outline-none"
+                  />
+                ))}
+              </Pie>
+              <Tooltip content={<SegmentTooltip format={format} total={total} />} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <span className="text-[11px] font-bold uppercase text-slate-400">Total</span>
+            <span className="text-base font-bold text-slate-800">{format(total)}</span>
           </div>
         </div>
       )}

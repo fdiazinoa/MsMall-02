@@ -109,6 +109,43 @@ class _AsyncNullContext:
         return False
 
 
+def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    inserted_rows = []
+    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
+
+    content = "\n".join([
+        "fecha_venta,total_bruto,total_impuestos,total_neto",
+        "2026-03-01,100,18,82",
+        "2026-03-01,200,36,164",
+    ])
+    config = {
+        "nombre": "PABT-01",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "codigo_interno": "PABT-01",
+        "file_type": "CSV",
+        "mapping_config": {
+            "fecha_venta": "fecha_venta",
+            "total_bruto": "total_bruto",
+            "total_impuestos": "total_impuestos",
+            "total_neto": "total_neto",
+        },
+        "constants_config": {
+            "_factura_numero_mode": "generated_sequence",
+        },
+    }
+
+    count, errors = worker.process_file_logic(config, "ventas.csv", content)
+
+    assert count == 2
+    assert errors == []
+    assert [row["factura_no"] for row in inserted_rows] == [
+        "PABT01202603010001",
+        "PABT01202603010002",
+    ]
+
+
 def test_worker_marks_error_when_no_insert_is_confirmed(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_sftp = _FakeSFTP({"ventas_20260301.json": b'{"rows":[]}'})

@@ -1407,6 +1407,25 @@ def insert_load_log(
         logger.error(f"Error CRÍTICO insertando log en Supabase: {e}")
         logger.error(f"Data intentada: {log_data}")
 
+def _split_transform_fields(raw_fields: Any) -> List[str]:
+    if isinstance(raw_fields, list):
+        return [str(field).strip() for field in raw_fields if str(field or "").strip()]
+    return [part.strip() for part in str(raw_fields or "").split(",") if part.strip()]
+
+
+def _clean_generated_invoice_piece(value: Any) -> str:
+    text = str(value or "").strip().strip("'\"")
+    text = re.sub(r"\s+", "", text)
+    text = text.replace("/", "").replace("\\", "").replace("-", "")
+    return text
+
+
+def _format_generated_invoice(local_code: Any, sale_date: Any, sequence: int) -> str:
+    local_part = _clean_generated_invoice_piece(local_code)
+    date_part = _clean_generated_invoice_piece(str(sale_date or "").replace("-", ""))
+    return f"{local_part}{date_part}{sequence:04d}"
+
+
 def process_file_content(content: str, filename: str, config: Dict[str, Any], batch_id: str, mall_id: str = None):
     """
     Parses content based on config mapping and inserts into Supabase 'ventas' table.
@@ -1561,7 +1580,8 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         for field in req_sys_fields:
             has_mapping = field in effective_mapping and effective_mapping[field]
             has_constant = field in constants and constants[field]
-            if not (has_mapping or has_constant):
+            has_transform = constants.get(f"_{field}_mode") in ("generated_sequence", "concat")
+            if not (has_mapping or has_constant or has_transform):
                 missing_mapping.append(field)
         
         if missing_mapping:
@@ -1703,6 +1723,41 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 else:
                     errors.append({"linea": line_no, "error": f"Formato de fecha inválido: {raw_date}"})
                     continue
+
+                def resolve_transform_value(part: str) -> str:
+                    clean_part = str(part or "").strip()
+                    if clean_part in ("numero_registro", "linea", "_line_number"):
+                        return f"{i + 1:04d}"
+                    if clean_part == "fecha_venta" and record.get("fecha_venta"):
+                        return str(record.get("fecha_venta")).replace("-", "")
+                    if clean_part in record:
+                        return _clean_cell_value(record.get(clean_part))
+
+                    header_key = _clean_csv_header_name(clean_part)
+                    if header_key in normalized_row:
+                        return _clean_cell_value(normalized_row[header_key])
+                    if header_key.lower() in lowered_row:
+                        return _clean_cell_value(lowered_row[header_key.lower()])
+                    return ""
+
+                for sys_field in list(req_sys_fields) + ["total_impuestos", "total_neto", "comprobante", "hora_transaccion"]:
+                    transform_mode = constants.get(f"_{sys_field}_mode")
+                    if transform_mode == "generated_sequence" and sys_field == "factura_numero":
+                        record["factura_numero"] = _format_generated_invoice(
+                            record.get("local_codigo"),
+                            record.get("fecha_venta"),
+                            i + 1
+                        )
+                    elif transform_mode == "concat":
+                        transform_fields = _split_transform_fields(constants.get(f"_{sys_field}_concat_fields"))
+                        separator = str(constants.get(f"_{sys_field}_concat_separator", "-"))
+                        values = [
+                            _clean_generated_invoice_piece(resolve_transform_value(part))
+                            for part in transform_fields
+                        ]
+                        values = [value for value in values if value]
+                        if values:
+                            record[sys_field] = separator.join(values)
                 
                 # Ensure numeric types
                 for num_field in ['total_bruto', 'total_impuestos', 'total_neto']:

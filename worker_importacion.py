@@ -15,7 +15,7 @@ import csv
 import json
 import posixpath
 import pandas as pd
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 
 try:
@@ -275,6 +275,24 @@ def normalize_date(date_str):
             continue
     return None
 
+
+def _split_transform_fields(raw_fields: Any) -> List[str]:
+    if isinstance(raw_fields, list):
+        return [str(field).strip() for field in raw_fields if str(field or "").strip()]
+    return [part.strip() for part in str(raw_fields or "").split(",") if part.strip()]
+
+
+def _clean_generated_invoice_piece(value: Any) -> str:
+    text = str(value or "").strip().strip("'\"")
+    text = " ".join(text.split())
+    return text.replace(" ", "").replace("/", "").replace("\\", "").replace("-", "")
+
+
+def _format_generated_invoice(local_code: Any, sale_date: Any, sequence: int) -> str:
+    local_part = _clean_generated_invoice_piece(local_code)
+    date_part = _clean_generated_invoice_piece(str(sale_date or "").replace("-", ""))
+    return f"{local_part}{date_part}{sequence:04d}"
+
 def _clean_csv_header_name(name) -> str:
     return str(name or "").replace("\ufeff", "").strip()
 
@@ -443,7 +461,14 @@ def process_file_logic(config, filename, content):
             
         # Get mapping
         mapping = config.get('mapping_config') or {}
-        constants = config.get('constants_config') or {}
+        constants = config.get('constants_config') or config.get('constants') or {}
+        configured_local_code = (
+            config.get('codigo_interno')
+            or config.get('local_codigo')
+            or config.get('codigo')
+            or config.get('nombre')
+            or local_id
+        )
         
         valid_rows = []
         valid_line_numbers = []
@@ -480,6 +505,34 @@ def process_file_logic(config, filename, content):
                 if fecha_venta_raw and not fecha_venta:
                      detalles.append({"linea": i, "error": f"Formato de fecha inválido: {fecha_venta_raw}"})
                      continue
+
+                def resolve_transform_value(part: str) -> str:
+                    clean_part = str(part or "").strip()
+                    if clean_part in ("numero_registro", "linea", "_line_number"):
+                        return f"{i - 1:04d}"
+                    if clean_part == "local_codigo":
+                        return str(configured_local_code or "")
+                    if clean_part == "fecha_venta" and fecha_venta:
+                        return fecha_venta.replace("-", "")
+
+                    if clean_part in mapping:
+                        return str(pick_value(mapping.get(clean_part), clean_part) or "")
+
+                    return str(pick_value(clean_part, clean_part) or "")
+
+                transform_mode = constants.get("_factura_numero_mode")
+                if transform_mode == "generated_sequence":
+                    factura_no = _format_generated_invoice(configured_local_code, fecha_venta, i - 1)
+                elif transform_mode == "concat":
+                    transform_fields = _split_transform_fields(constants.get("_factura_numero_concat_fields"))
+                    separator = str(constants.get("_factura_numero_concat_separator", "-"))
+                    values = [
+                        _clean_generated_invoice_piece(resolve_transform_value(part))
+                        for part in transform_fields
+                    ]
+                    values = [value for value in values if value]
+                    if values:
+                        factura_no = separator.join(values)
 
                 # Normalización Numérica
                 def clean_float(val):

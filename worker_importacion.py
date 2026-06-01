@@ -6,6 +6,7 @@ import asyncio
 import time
 import hashlib
 from datetime import datetime, time as dt_time, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import paramiko
@@ -51,6 +52,7 @@ logger = logging.getLogger("import-worker")
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
+DEFAULT_WORKER_TIMEZONE = "America/Santo_Domingo"
 
 supabase: Optional[Client] = None
 
@@ -84,8 +86,17 @@ HOURLY_STAGGER_MINUTES = _read_int_env("HOURLY_STAGGER_MINUTES", 15, minimum=0, 
 MAX_FILES_PER_BATCH = _read_int_env("MAX_FILES_PER_BATCH", 20, minimum=1)
 
 
+def _worker_timezone() -> ZoneInfo:
+    configured = os.getenv("WORKER_TIMEZONE", DEFAULT_WORKER_TIMEZONE).strip() or DEFAULT_WORKER_TIMEZONE
+    try:
+        return ZoneInfo(configured)
+    except ZoneInfoNotFoundError:
+        logger.warning("WORKER_TIMEZONE invalido '%s'. Usando UTC.", configured)
+        return ZoneInfo("UTC")
+
+
 def _now_local() -> datetime:
-    return datetime.now().astimezone()
+    return datetime.now(_worker_timezone())
 
 
 def _coerce_datetime_to_reference(value: datetime, reference: datetime) -> datetime:
@@ -1021,6 +1032,7 @@ def _sanitize_health_error(value: object) -> str:
     if len(text) > 500:
         text = f"{text[:497]}..."
     return text or "unknown_error"
+
 
 async def _upsert_system_health_value(key: str, value: str):
     if not supabase:

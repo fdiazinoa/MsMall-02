@@ -3,6 +3,7 @@ import importlib
 import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 
 def _reset_module(module_name: str):
@@ -208,3 +209,9 @@ def test_run_worker_async_only_enqueues_due_locals(monkeypatch):
     asyncio.run(worker.run_worker_async())
 
     assert [local_id for local_id, _due_at in queued] == ["hourly-1", "specific-1"]
+
+
+def test_worker_now_local_defaults_to_santo_domingo(monkeypatch):
+    worker = _load_worker(monkeypatch)
+
+    assert worker._now_local().tzinfo == ZoneInfo("America/Santo_Domingo")

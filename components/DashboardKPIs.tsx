@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell
@@ -9,7 +9,7 @@ import {
   CreditCard, BarChart3, Calendar, Info, X, Store, ArrowUpRight
 } from 'lucide-react';
 import { KPIData, DateRange, SegmentStoreDetail } from '../types';
-import { ApiService } from '../api';
+import { ApiService, type Store as MallStore } from '../api';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
 const COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
@@ -254,6 +254,7 @@ const SegmentDetailModal = ({
             <div className="space-y-3">
               {stores.map((store, index) => {
                 const percent = maxValue > 0 ? (store.total / maxValue) * 100 : 0;
+                const hasOperationalMetrics = store.transacciones > 0;
                 return (
                   <div key={`${selection.item.name}-${store.name}`} className="rounded-xl border border-slate-100 p-4">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -262,12 +263,17 @@ const SegmentDetailModal = ({
                           {index + 1}. {store.name}
                         </p>
                         <p className="text-xs text-slate-400 mt-1">
-                          {store.transacciones} transacciones · {store.participacion.toFixed(1)}% participación
+                          {hasOperationalMetrics ? `${store.transacciones} transacciones · ` : ''}
+                          {store.participacion.toFixed(1)}% participación
                         </p>
                       </div>
                       <div className="text-left sm:text-right">
                         <p className="text-sm font-bold text-slate-900">{format(store.total)}</p>
-                        <p className="text-xs text-slate-400">Neto {format(store.total_neto)} · Ticket {format(store.ticket_promedio)}</p>
+                        <p className="text-xs text-slate-400">
+                          {hasOperationalMetrics
+                            ? `Neto ${format(store.total_neto)} · Ticket ${format(store.ticket_promedio)}`
+                            : 'Detalle calculado desde ventas por tienda'}
+                        </p>
                       </div>
                     </div>
                     <div className="mt-3 h-2 w-full rounded-full bg-slate-100 overflow-hidden">
@@ -295,10 +301,77 @@ const formatDisplayName = (value: string) => value
   })
   .join(' ');
 
+const normalizeSegmentLabel = (value: string | null | undefined, fallback: string) => {
+  const label = String(value || '').trim();
+  return label || fallback;
+};
+
+const buildFallbackSegmentDetails = (
+  segmentName: string,
+  kind: SegmentSelection['kind'],
+  salesByStore: Record<string, number> | undefined,
+  stores: MallStore[]
+): SegmentStoreDetail[] => {
+  if (!salesByStore || stores.length === 0) return [];
+
+  const fallback = kind === 'tipo_negocio' ? 'Sin tipo de negocio' : 'Sin rubro';
+  const rows = stores
+    .filter((store) => {
+      const segment = kind === 'tipo_negocio' ? store.tipo_negocio : store.rubro;
+      return normalizeSegmentLabel(segment, fallback) === segmentName;
+    })
+    .map((store) => ({
+      name: store.nombre,
+      total: Number(salesByStore[store.nombre] || 0),
+      total_neto: 0,
+      transacciones: 0,
+      ticket_promedio: 0,
+      participacion: 0,
+    }))
+    .filter((store) => store.total > 0)
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10);
+
+  const segmentTotal = rows.reduce((sum, store) => sum + store.total, 0);
+  return rows.map((store) => ({
+    ...store,
+    participacion: segmentTotal > 0 ? (store.total / segmentTotal) * 100 : 0,
+  }));
+};
+
+const buildFallbackDetailMap = (
+  kind: SegmentSelection['kind'],
+  items: SegmentItem[] | undefined,
+  salesByStore: Record<string, number> | undefined,
+  stores: MallStore[]
+) => {
+  return (items || []).reduce<Record<string, SegmentStoreDetail[]>>((map, item) => {
+    const details = buildFallbackSegmentDetails(item.name, kind, salesByStore, stores);
+    if (details.length > 0) {
+      map[item.name] = details;
+    }
+    return map;
+  }, {});
+};
+
+const mergeDetailMaps = (
+  fallbackMap: Record<string, SegmentStoreDetail[]>,
+  backendMap?: Record<string, SegmentStoreDetail[]>
+) => {
+  const merged = { ...fallbackMap };
+  Object.entries(backendMap || {}).forEach(([segment, details]) => {
+    if (details?.length) {
+      merged[segment] = details;
+    }
+  });
+  return merged;
+};
+
 export const DashboardKPIs: React.FC = () => {
   const { currentMall, session, user } = useAuth();
   const { format } = useFormatCurrency();
   const [data, setData] = useState<KPIData | null>(null);
+  const [stores, setStores] = useState<MallStore[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedSegment, setSelectedSegment] = useState<SegmentSelection | null>(null);
   const [dates, setDates] = useState<DateRange>(() => {
@@ -313,13 +386,18 @@ export const DashboardKPIs: React.FC = () => {
   const loadKPIs = async () => {
     if (!currentMall?.id || !session?.access_token) {
       setData(null);
+      setStores([]);
       setLoading(false);
       return;
     }
     setLoading(true);
     try {
-      const kpis = await ApiService.getKPIs({ ...dates, mallId: currentMall.id }, session.access_token);
+      const [kpis, mallStores] = await Promise.all([
+        ApiService.getKPIs({ ...dates, mallId: currentMall.id }, session.access_token),
+        ApiService.getStores(currentMall.id),
+      ]);
       setData(kpis);
+      setStores(mallStores);
     } catch (e) {
       console.error(e);
     } finally {
@@ -330,6 +408,26 @@ export const DashboardKPIs: React.FC = () => {
   useEffect(() => {
     loadKPIs();
   }, [dates, currentMall?.id, session?.access_token]);
+
+  const businessTypeDetailMap = useMemo(() => {
+    const fallbackMap = buildFallbackDetailMap(
+      'tipo_negocio',
+      data?.ventas_por_tipo_negocio,
+      data?.ventas_por_tienda_completo,
+      stores
+    );
+    return mergeDetailMaps(fallbackMap, data?.ventas_por_tipo_negocio_top_locales);
+  }, [data?.ventas_por_tipo_negocio, data?.ventas_por_tienda_completo, data?.ventas_por_tipo_negocio_top_locales, stores]);
+
+  const rubroDetailMap = useMemo(() => {
+    const fallbackMap = buildFallbackDetailMap(
+      'rubro',
+      data?.ventas_por_rubro,
+      data?.ventas_por_tienda_completo,
+      stores
+    );
+    return mergeDetailMaps(fallbackMap, data?.ventas_por_rubro_top_locales);
+  }, [data?.ventas_por_rubro, data?.ventas_por_tienda_completo, data?.ventas_por_rubro_top_locales, stores]);
 
   if (!currentMall?.id) {
     return (
@@ -487,14 +585,14 @@ export const DashboardKPIs: React.FC = () => {
           title="Ventas por Tipo de Negocio"
           items={data.ventas_por_tipo_negocio || []}
           format={format}
-          detailMap={data.ventas_por_tipo_negocio_top_locales}
+          detailMap={businessTypeDetailMap}
           onSelect={setSelectedSegment}
         />
         <RubroExplorerCard
           title="Ventas por Rubro"
           items={data.ventas_por_rubro || []}
           format={format}
-          detailMap={data.ventas_por_rubro_top_locales}
+          detailMap={rubroDetailMap}
           onSelect={setSelectedSegment}
         />
       </div>

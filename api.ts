@@ -1526,6 +1526,7 @@ export const ApiService = {
         variacion_ventas: 0,
         top_locales: [],
         ventas_por_dia: [],
+        ventas_por_tipo_negocio: [],
         ventas_por_rubro: [],
         ventas_por_tienda_completo: {}
       };

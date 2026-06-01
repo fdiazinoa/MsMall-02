@@ -5156,6 +5156,8 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
             "ventas_por_dia": [],
             "ventas_por_tipo_negocio": [],
             "ventas_por_rubro": [],
+            "ventas_por_tipo_negocio_top_locales": {},
+            "ventas_por_rubro_top_locales": {},
             "ventas_por_tienda_completo": {}
         }
 
@@ -5193,10 +5195,24 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
         sales_by_day = {}
         sales_by_business_type = {}
         sales_by_rubro = {}
+        stores_by_business_type = {}
+        stores_by_rubro = {}
 
         def segment_label(value, fallback):
             label = str(value or "").strip()
             return label if label else fallback
+
+        def add_segment_store(segment_store_map, segment, store_name, bruto, neto):
+            store_totals = segment_store_map.setdefault(segment, {})
+            totals = store_totals.setdefault(store_name, {
+                "name": store_name,
+                "total": 0,
+                "total_neto": 0,
+                "transacciones": 0,
+            })
+            totals["total"] += bruto
+            totals["total_neto"] += neto
+            totals["transacciones"] += 1
         
         for s in sales:
             lid = str(s.get('local_id') or "")
@@ -5215,6 +5231,8 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
             rubro = segment_label(store.get('rubro'), "Sin rubro")
             sales_by_business_type[business_type] = sales_by_business_type.get(business_type, 0) + bruto
             sales_by_rubro[rubro] = sales_by_rubro.get(rubro, 0) + bruto
+            add_segment_store(stores_by_business_type, business_type, s_name, bruto, neto)
+            add_segment_store(stores_by_rubro, rubro, s_name, bruto, neto)
             
             day = s.get('fecha')
             sales_by_day[day] = sales_by_day.get(day, 0) + bruto
@@ -5224,6 +5242,24 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
                 {"name": k, "value": v}
                 for k, v in sorted(values.items(), key=lambda item: item[1], reverse=True)
             ]
+
+        def segment_top_stores(segment_store_map):
+            out = {}
+            for segment, stores_in_segment in segment_store_map.items():
+                segment_total = sum(float(item.get("total") or 0) for item in stores_in_segment.values())
+                out[segment] = []
+                for item in sorted(stores_in_segment.values(), key=lambda row: row["total"], reverse=True)[:10]:
+                    bruto = float(item.get("total") or 0)
+                    transacciones = int(item.get("transacciones") or 0)
+                    out[segment].append({
+                        "name": item["name"],
+                        "total": bruto,
+                        "total_neto": float(item.get("total_neto") or 0),
+                        "transacciones": transacciones,
+                        "ticket_promedio": (bruto / transacciones) if transacciones > 0 else 0,
+                        "participacion": (bruto / segment_total * 100) if segment_total > 0 else 0,
+                    })
+            return out
             
         result = {
             "ventas_totales_bruto": total_bruto,
@@ -5235,6 +5271,8 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
             "ventas_por_dia": [ {"fecha": k, "total": v} for k, v in sorted(sales_by_day.items()) ],
             "ventas_por_tipo_negocio": segment_items(sales_by_business_type),
             "ventas_por_rubro": segment_items(sales_by_rubro),
+            "ventas_por_tipo_negocio_top_locales": segment_top_stores(stores_by_business_type),
+            "ventas_por_rubro_top_locales": segment_top_stores(stores_by_rubro),
             "ventas_por_tienda_completo": sales_by_store
         }
         _cache_set(cache_key, result, TTL_DASHBOARD)

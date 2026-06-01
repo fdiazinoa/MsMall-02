@@ -32,6 +32,15 @@ export interface DateRange {
   endDate: string;
 }
 
+export interface SegmentStoreDetail {
+  name: string;
+  total: number;
+  total_neto: number;
+  transacciones: number;
+  ticket_promedio: number;
+  participacion: number;
+}
+
 export interface KPIData {
   ventas_totales_bruto: number;
   ventas_totales_neto: number;
@@ -42,6 +51,8 @@ export interface KPIData {
   ventas_por_dia: { fecha: string; total: number }[];
   ventas_por_tipo_negocio: { name: string; value: number }[];
   ventas_por_rubro: { name: string; value: number }[];
+  ventas_por_tipo_negocio_top_locales?: Record<string, SegmentStoreDetail[]>;
+  ventas_por_rubro_top_locales?: Record<string, SegmentStoreDetail[]>;
   ventas_por_tienda_completo?: Record<string, number>;
 }
 

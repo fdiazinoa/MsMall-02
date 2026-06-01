@@ -335,6 +335,22 @@ def test_dashboard_ignores_orphan_sales_rows(monkeypatch):
     assert result["ventas_por_tienda_completo"] == {"Tienda Valida": 100.0}
     assert result["ventas_por_tipo_negocio"] == [{"name": "Moda", "value": 100.0}]
     assert result["ventas_por_rubro"] == [{"name": "Ropa", "value": 100.0}]
+    assert result["ventas_por_tipo_negocio_top_locales"]["Moda"] == [{
+        "name": "Tienda Valida",
+        "total": 100.0,
+        "total_neto": 82.0,
+        "transacciones": 1,
+        "ticket_promedio": 100.0,
+        "participacion": 100.0,
+    }]
+    assert result["ventas_por_rubro_top_locales"]["Ropa"] == [{
+        "name": "Tienda Valida",
+        "total": 100.0,
+        "total_neto": 82.0,
+        "transacciones": 1,
+        "ticket_promedio": 100.0,
+        "participacion": 100.0,
+    }]
 
 
 def test_dashboard_groups_sales_by_business_type_and_rubro(monkeypatch):
@@ -408,4 +424,30 @@ def test_dashboard_groups_sales_by_business_type_and_rubro(monkeypatch):
     assert result["ventas_por_rubro"] == [
         {"name": "Moda", "value": 450.0},
         {"name": "Sin rubro", "value": 25.0},
+    ]
+    assert result["ventas_por_tipo_negocio_top_locales"]["Calzado"] == [{
+        "name": "Zapatos Norte",
+        "total": 150.0,
+        "total_neto": 123.0,
+        "transacciones": 2,
+        "ticket_promedio": 75.0,
+        "participacion": 100.0,
+    }]
+    assert result["ventas_por_rubro_top_locales"]["Moda"] == [
+        {
+            "name": "Ropa Sur",
+            "total": 300.0,
+            "total_neto": 246.0,
+            "transacciones": 1,
+            "ticket_promedio": 300.0,
+            "participacion": 300.0 / 450.0 * 100,
+        },
+        {
+            "name": "Zapatos Norte",
+            "total": 150.0,
+            "total_neto": 123.0,
+            "transacciones": 2,
+            "ticket_promedio": 75.0,
+            "participacion": 150.0 / 450.0 * 100,
+        },
     ]

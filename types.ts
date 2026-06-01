@@ -40,6 +40,7 @@ export interface KPIData {
   variacion_ventas: number;
   top_locales: { name: string; total: number }[];
   ventas_por_dia: { fecha: string; total: number }[];
+  ventas_por_tipo_negocio: { name: string; value: number }[];
   ventas_por_rubro: { name: string; value: number }[];
   ventas_por_tienda_completo?: Record<string, number>;
 }

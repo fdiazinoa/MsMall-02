@@ -128,6 +128,45 @@ def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
     ]
 
 
+def test_worker_process_file_logic_parses_comma_decimal_mapping(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = "\n".join([
+        "NCF\tFECHA\tHORA\tTOTALBRUTO\tTOTALIMPUESTOS\tTOTALNETO",
+        "E320000378096\t1/05/2026\t15:57\t3,385,593,220\t609,406,780\t3995,00",
+    ])
+    config = {
+        "nombre": "L001",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "codigo_interno": "L001",
+        "file_type": "TXT",
+        "mapping_config": {
+            "factura_numero": "NCF",
+            "fecha_venta": "FECHA",
+            "total_bruto": "TOTALNETO",
+            "total_impuestos": "TOTALIMPUESTOS",
+            "total_neto": "TOTALBRUTO",
+        },
+        "constants_config": {
+            "_decimal_separator": ",",
+        },
+    }
+
+    count, errors = worker.process_file_logic(config, "ventas.txt", content)
+
+    assert count == 1
+    assert errors == []
+    row = fake_db.tables["ventas"][0]
+    assert row["factura_no"] == "E320000378096"
+    assert row["fecha"] == "2026-05-01"
+    assert row["total_bruto"] == 3995.0
+    assert row["total_impuestos"] == 609.40678
+    assert row["total_neto"] == 3385.59322
+
+
 def test_worker_marks_error_when_no_insert_is_confirmed(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_sftp = _FakeSFTP({"ventas_20260301.json": b'{"rows":[]}'})

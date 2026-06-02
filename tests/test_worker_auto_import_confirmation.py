@@ -148,8 +148,8 @@ def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
 
 def test_worker_process_file_logic_rejects_closed_import_period(monkeypatch):
     worker = _load_worker(monkeypatch)
-    fake_db = _FakeWorkerSupabase()
-    monkeypatch.setattr(worker, "supabase", fake_db)
+    inserted_rows = []
+    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
 
     content = "\n".join([
         "fecha_venta,total_bruto,total_impuestos,total_neto",
@@ -180,8 +180,8 @@ def test_worker_process_file_logic_rejects_closed_import_period(monkeypatch):
     assert len(errors) == 1
     assert errors[0]["linea"] == 2
     assert "periodo cerrado" in errors[0]["error"]
-    assert fake_db.tables["ventas"][0]["factura_no"] == "PABT01202606010002"
-    assert fake_db.tables["ventas"][0]["fecha"] == "2026-06-01"
+    assert inserted_rows[0]["factura_no"] == "PABT01202606010002"
+    assert inserted_rows[0]["fecha"] == "2026-06-01"
 
 
 def test_worker_process_file_logic_parses_comma_decimal_mapping(monkeypatch):

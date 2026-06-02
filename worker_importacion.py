@@ -351,6 +351,20 @@ def _parse_mapped_decimal(value: Any, decimal_separator: Any = ".") -> float:
         return 0.0
 
 
+def _parse_import_cutoff_date(raw: Any) -> Optional[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _is_import_date_closed(sale_date: str, cutoff_date: Optional[str]) -> bool:
+    return bool(sale_date and cutoff_date and sale_date <= cutoff_date)
+
+
 def _clean_csv_header_name(name) -> str:
     return str(name or "").replace("\ufeff", "").strip()
 
@@ -583,6 +597,7 @@ def process_file_logic(config, filename, content):
         mapping = config.get('mapping_config') or {}
         constants = config.get('constants_config') or config.get('constants') or {}
         decimal_separator = constants.get("_decimal_separator", ".")
+        import_cutoff_date = _parse_import_cutoff_date(config.get("fecha_corte_importacion"))
         configured_local_code = (
             config.get('codigo_interno')
             or config.get('local_codigo')
@@ -626,6 +641,13 @@ def process_file_logic(config, filename, content):
                 if fecha_venta_raw and not fecha_venta:
                      detalles.append({"linea": i, "error": f"Formato de fecha inválido: {fecha_venta_raw}"})
                      continue
+
+                if _is_import_date_closed(fecha_venta, import_cutoff_date):
+                    detalles.append({
+                        "linea": i,
+                        "error": f"Fecha {fecha_venta} pertenece a un periodo cerrado (cierre hasta {import_cutoff_date})."
+                    })
+                    continue
 
                 def resolve_transform_value(part: str) -> str:
                     clean_part = str(part or "").strip()

@@ -408,6 +408,11 @@ const normalizeCsvSaleDate = (raw: any, preferredFormat: CsvDateFormatPreference
   return null;
 };
 
+const isDateOnOrBefore = (value: string | null | undefined, cutoff: string | null | undefined): boolean => {
+  if (!value || !cutoff) return false;
+  return value <= cutoff;
+};
+
 const normalizeCsvSaleTime = (raw: any): string | null => {
   if (raw === null || raw === undefined) return null;
   let text = String(raw).trim();
@@ -533,6 +538,7 @@ export interface Store {
   porcentaje_variable?: string | number;
   processing_status?: 'IDLE' | 'BUSY' | 'SUSPENDED_AUTH_ERROR';
   consecutive_failures?: number;
+  fecha_corte_importacion?: string | null;
 }
 
 export type StoreCatalogFieldName = 'tipo_negocio' | 'rubro';
@@ -737,6 +743,7 @@ export const ApiService = {
       prefijo_renombrado: local.prefijo_backup || 'PR_',
       mapping: local.mapping_config || {},
       constants: local.constants_config || {},
+      fecha_corte_importacion: local.fecha_corte_importacion || null,
       tipo_ejecucion: local.tipo_ejecucion || 'MANUAL',
       ultima_ejecucion: local.ultima_ejecucion,
       resultado_ultimo: local.resultado_ultimo
@@ -765,7 +772,8 @@ export const ApiService = {
       accion_post_procesado: (config.accion_post_procesado === 'RENOMBRAR_PROCESADO' || config.accion_post_procesado === 'renombrar') ? 'RENOMBRAR_BACKUP' : (config.accion_post_procesado === 'ELIMINAR' || config.accion_post_procesado === 'eliminar' ? 'ELIMINAR' : 'NINGUNA'),
       prefijo_backup: config.prefijo_renombrado || 'PR_',
       mapping_config: config.mapping,
-      constants_config: config.constants
+      constants_config: config.constants,
+      fecha_corte_importacion: config.fecha_corte_importacion || null
     };
 
     if (mallId) {
@@ -1992,6 +2000,14 @@ export const ApiService = {
 
               if (!store.id) {
                 lineErrors.push({ linea: i + 1, error: `Configuración inválida para local '${storeCode}'. ID no encontrado.` });
+                continue;
+              }
+
+              if (isDateOnOrBefore(fecha, store.fecha_corte_importacion)) {
+                lineErrors.push({
+                  linea: i + 1,
+                  error: `Fecha ${fecha} pertenece a un periodo cerrado para el local '${storeCode}' (cierre hasta ${store.fecha_corte_importacion}).`
+                });
                 continue;
               }
 

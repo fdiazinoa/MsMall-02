@@ -109,6 +109,7 @@ export interface ImportConfig {
   estado: 'activo' | 'pausado';
   ultima_ejecucion?: string;
   resultado_ultimo?: 'exito' | 'error';
+  fecha_corte_importacion?: string | null;
   mapping: Record<string, string>; // Estructura: internal_field -> external_column_name
   constants?: Record<string, string>;
   password?: string;

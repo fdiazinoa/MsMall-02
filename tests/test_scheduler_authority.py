@@ -114,6 +114,27 @@ def test_worker_specific_schedule_waits_until_configured_minute(monkeypatch):
     assert worker.should_run_scheduled_local(local, now) is False
 
 
+def test_worker_specific_schedule_uses_dominican_timezone_for_utc_server(monkeypatch):
+    worker = _load_worker(monkeypatch, WORKER_TIMEZONE="America/Santo_Domingo")
+    utc_now = datetime(2026, 6, 1, 10, 1, tzinfo=ZoneInfo("UTC"))
+    local = {
+        "frecuencia_cron": "hora_especifica",
+        "hora_especifica": "10:00:00",
+        "ultima_ejecucion": None,
+    }
+
+    assert worker.should_run_scheduled_local(local, utc_now) is False
+
+    utc_after_local_slot = datetime(2026, 6, 1, 14, 1, tzinfo=ZoneInfo("UTC"))
+    assert worker.should_run_scheduled_local(local, utc_after_local_slot) is True
+
+
+def test_worker_timezone_falls_back_to_dominican_timezone(monkeypatch):
+    worker = _load_worker(monkeypatch, WORKER_TIMEZONE="Invalid/Timezone", TZ="UTC")
+
+    assert worker._worker_timezone().key == "America/Santo_Domingo"
+
+
 def test_worker_specific_schedule_runs_once_after_slot(monkeypatch):
     worker = _load_worker(monkeypatch)
     now = datetime(2026, 6, 1, 8, 30, tzinfo=ZoneInfo("America/Santo_Domingo"))

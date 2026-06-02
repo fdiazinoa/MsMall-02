@@ -38,6 +38,7 @@ const splitTransformFields = (value?: string) =>
 const fieldModeKey = (fieldKey: string) => `_${fieldKey}_mode`;
 const concatFieldsKey = (fieldKey: string) => `_${fieldKey}_concat_fields`;
 const concatSeparatorKey = (fieldKey: string) => `_${fieldKey}_concat_separator`;
+const decimalSeparatorKey = '_decimal_separator';
 
 const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
   const mode = config.constants?.[fieldModeKey(fieldKey)];
@@ -193,6 +194,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     fileHeaders: string[],
     suggestedMapping: Record<string, any>,
     currentMapping: Record<string, string>,
+    currentConstants: Record<string, string>,
     sampleRow: Record<string, any>,
     filename: string
   } | null>(null);
@@ -1114,6 +1116,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
             fileHeaders: analysis.csv_headers,
             suggestedMapping: analysis.suggested_mapping,
             currentMapping: analysis.current_mapping,
+            currentConstants: config.constants || {},
             sampleRow: analysis.sample_row,
             filename: filename
           });
@@ -2146,6 +2149,22 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm"
                     />
                   </label>
+
+                  <label className="text-xs font-semibold text-slate-700 flex flex-col gap-1 md:col-span-2">
+                    Separador decimal de montos
+                    <select
+                      value={editingConfig.constants?.[decimalSeparatorKey] || '.'}
+                      onChange={(e) => {
+                        const nextConstants = { ...(editingConfig.constants || {}) } as Record<string, string>;
+                        nextConstants[decimalSeparatorKey] = e.target.value === ',' ? ',' : '.';
+                        setEditingConfig(prev => ({ ...prev, constants: nextConstants }));
+                      }}
+                      className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm"
+                    >
+                      <option value=".">Punto: 1234.56</option>
+                      <option value=",">Coma: 1234,56</option>
+                    </select>
+                  </label>
                 </div>
 
                 {selectedFilePreview && (
@@ -3005,6 +3024,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         fileHeaders={mappingData?.fileHeaders || []}
         suggestedMapping={mappingData?.suggestedMapping || {}}
         currentMapping={mappingData?.currentMapping || {}}
+        currentConstants={mappingData?.currentConstants || {}}
         sampleRow={mappingData?.sampleRow || {}}
         filename={mappingData?.filename || ''}
       />

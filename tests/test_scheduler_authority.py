@@ -115,6 +115,31 @@ def test_schedule_due_at_respects_specific_minute_and_last_attempt(monkeypatch):
     assert worker._schedule_due_at(local, now) is None
 
 
+def test_worker_specific_schedule_uses_dominican_timezone_for_utc_server(monkeypatch):
+    worker = _load_worker(monkeypatch, WORKER_TIMEZONE="America/Santo_Domingo")
+    local = {
+        "frecuencia_cron": "hora_especifica",
+        "hora_especifica": "10:00:00",
+        "ultima_ejecucion": None,
+    }
+
+    utc_now = datetime(2026, 6, 1, 10, 1, tzinfo=ZoneInfo("UTC"))
+    local_now = utc_now.astimezone(worker._worker_timezone())
+    assert worker._schedule_due_at(local, local_now) is None
+
+    utc_after_local_slot = datetime(2026, 6, 1, 14, 1, tzinfo=ZoneInfo("UTC"))
+    local_after_slot = utc_after_local_slot.astimezone(worker._worker_timezone())
+    assert worker._schedule_due_at(local, local_after_slot) == datetime(
+        2026, 6, 1, 10, 0, tzinfo=ZoneInfo("America/Santo_Domingo")
+    )
+
+
+def test_worker_timezone_falls_back_to_dominican_timezone(monkeypatch):
+    worker = _load_worker(monkeypatch, WORKER_TIMEZONE="Invalid/Timezone", TZ="UTC")
+
+    assert worker._worker_timezone().key == "America/Santo_Domingo"
+
+
 def test_run_worker_async_only_enqueues_due_locals(monkeypatch):
     worker = _load_worker(monkeypatch)
     queued = []

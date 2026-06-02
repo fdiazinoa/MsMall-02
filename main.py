@@ -1426,6 +1426,43 @@ def _format_generated_invoice(local_code: Any, sale_date: Any, sequence: int) ->
     return f"{local_part}{date_part}{sequence:04d}"
 
 
+def _parse_mapped_decimal(value: Any, decimal_separator: Any = ".") -> float:
+    if value is None:
+        return 0.0
+
+    text = str(value).strip().strip("'\"")
+    if not text:
+        return 0.0
+
+    text = re.sub(r"\s+", "", text)
+    text = text.replace("$", "").replace("RD", "").replace("rd", "")
+    if decimal_separator == ",":
+        text = text.replace(".", "")
+        if text.count(",") > 1:
+            sign = "-" if text.startswith("-") else ""
+            unsigned = text[1:] if sign else text
+            parts = unsigned.split(",")
+            if len(parts) >= 3 and all(len(part) == 3 for part in parts[-2:]):
+                digits = "".join(parts)
+                if len(digits) > 6:
+                    text = f"{sign}{digits[:-6]}.{digits[-6:]}"
+                else:
+                    text = f"{sign}0.{digits.zfill(6)}"
+            else:
+                text = "".join(parts[:-1]) + "." + parts[-1]
+                if sign and not text.startswith("-"):
+                    text = f"-{text}"
+        else:
+            text = text.replace(",", ".")
+    else:
+        text = text.replace(",", "")
+
+    try:
+        return float(text)
+    except Exception:
+        return 0.0
+
+
 def process_file_content(content: str, filename: str, config: Dict[str, Any], batch_id: str, mall_id: str = None):
     """
     Parses content based on config mapping and inserts into Supabase 'ventas' table.
@@ -1433,6 +1470,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
     """
     mapping = config.get("mapping", {})
     constants = config.get("constants", {})
+    decimal_separator = constants.get("_decimal_separator", ".")
     tipo_archivo = config.get("tipo_archivo", "CSV").upper()
     local_nombre = config.get("nombre", "Desconocido")
     effective_mall_id = mall_id or config.get("mall_id")
@@ -1761,12 +1799,10 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 
                 # Ensure numeric types
                 for num_field in ['total_bruto', 'total_impuestos', 'total_neto']:
-                    val = record.get(num_field, 0.0)
-                    if val is None: val = 0.0
-                    try:
-                        record[num_field] = float(str(val).replace(',', '').strip().strip("'\""))
-                    except:
-                        record[num_field] = 0.0
+                    record[num_field] = _parse_mapped_decimal(
+                        record.get(num_field, 0.0),
+                        decimal_separator
+                    )
                 
                 # Validation: Reject if Total/Net is 0 but Tax > 0
                 if record['total_bruto'] == 0:

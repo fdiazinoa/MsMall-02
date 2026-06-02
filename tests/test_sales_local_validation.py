@@ -209,6 +209,50 @@ def test_process_file_content_inserts_rows_with_valid_local_code(monkeypatch):
     }]
 
 
+def test_process_file_content_parses_comma_decimal_mapping(monkeypatch):
+    main = _load_main(monkeypatch)
+    fake_db = _FakeSupabase({
+        "locales": [
+            {"id": "local-1", "codigo_interno": "L001", "mall_id": "mall-1"},
+        ],
+        "ventas": [],
+    })
+    monkeypatch.setattr(main, "supabase", fake_db)
+
+    content = "\n".join([
+        "Id_NumeroOperacion\tNCF\tFECHA\tHORA\tTOTALBRUTO\tTOTALIMPUESTOS\tTOTALNETO\tLOCAL",
+        "13718\tE320000378096\t1/05/2026\t15:57\t3,385,593,220\t609,406,780\t3995,00\tL001",
+    ])
+    config = {
+        "tipo_archivo": "TXT",
+        "mapping": {
+            "factura_numero": "NCF",
+            "fecha_venta": "FECHA",
+            "local_codigo": "LOCAL",
+            "total_bruto": "TOTALNETO",
+            "total_impuestos": "TOTALIMPUESTOS",
+            "total_neto": "TOTALBRUTO",
+            "hora_transaccion": "HORA",
+        },
+        "constants": {
+            "_date_format": "DD/MM/YYYY",
+            "_decimal_separator": ",",
+        },
+    }
+
+    count, errors = main.process_file_content(content, "ventas.txt", config, "batch-1", "mall-1")
+
+    assert count == 1
+    assert errors == []
+    row = fake_db.upserts[0]
+    assert row["factura_no"] == "E320000378096"
+    assert row["fecha"] == "2026-05-01"
+    assert row["total_bruto"] == 3995.0
+    assert row["total_impuestos"] == 609.40678
+    assert row["total_neto"] == 3385.59322
+    assert row["hora_transaccion"] == "15:57:00"
+
+
 def test_process_file_content_generates_invoice_sequence(monkeypatch):
     main = _load_main(monkeypatch)
     fake_db = _FakeSupabase({

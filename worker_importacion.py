@@ -798,9 +798,9 @@ async def mark_local_status(local_id: str, status: str):
             "processing_status": status
         }
         if status == 'BUSY':
-            payload["processing_started_at"] = datetime.now().isoformat()
+            payload["processing_started_at"] = datetime.now(_worker_timezone()).isoformat()
         elif status == 'IDLE':
-            payload["ultima_ejecucion"] = datetime.now().isoformat()
+            payload["ultima_ejecucion"] = datetime.now(_worker_timezone()).isoformat()
             
         await asyncio.to_thread(
             lambda: supabase.table("locales").update(payload).eq("id", local_id).execute()
@@ -816,12 +816,20 @@ def _sanitize_health_error(value: object) -> str:
 
 
 def _worker_timezone() -> ZoneInfo:
-    configured = os.getenv("WORKER_TIMEZONE", DEFAULT_WORKER_TIMEZONE).strip() or DEFAULT_WORKER_TIMEZONE
+    configured = (
+        os.getenv("WORKER_TIMEZONE")
+        or os.getenv("TZ")
+        or DEFAULT_WORKER_TIMEZONE
+    ).strip() or DEFAULT_WORKER_TIMEZONE
     try:
         return ZoneInfo(configured)
     except ZoneInfoNotFoundError:
-        logger.warning("WORKER_TIMEZONE invalido '%s'. Usando UTC.", configured)
-        return ZoneInfo("UTC")
+        logger.warning(
+            "Zona horaria del worker invalida '%s'. Usando %s.",
+            configured,
+            DEFAULT_WORKER_TIMEZONE,
+        )
+        return ZoneInfo(DEFAULT_WORKER_TIMEZONE)
 
 
 def _parse_worker_datetime(value: Any, tz: ZoneInfo) -> Optional[datetime]:

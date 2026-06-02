@@ -209,6 +209,44 @@ def test_process_file_content_inserts_rows_with_valid_local_code(monkeypatch):
     }]
 
 
+def test_process_file_content_rejects_rows_in_closed_import_period(monkeypatch):
+    main = _load_main(monkeypatch)
+    fake_db = _FakeSupabase({
+        "locales": [
+            {"id": "local-1", "codigo_interno": "L001", "mall_id": "mall-1"},
+        ],
+        "ventas": [],
+    })
+    monkeypatch.setattr(main, "supabase", fake_db)
+
+    content = "\n".join([
+        "factura_numero,fecha_venta,local_codigo,total_bruto,total_impuestos,total_neto",
+        "1001,2026-05-31,L001,100,18,82",
+        "1002,2026-06-01,L001,200,36,164",
+    ])
+    config = {
+        "tipo_archivo": "CSV",
+        "fecha_corte_importacion": "2026-05-31",
+        "mapping": {
+            "factura_numero": "factura_numero",
+            "fecha_venta": "fecha_venta",
+            "local_codigo": "local_codigo",
+            "total_bruto": "total_bruto",
+            "total_impuestos": "total_impuestos",
+            "total_neto": "total_neto",
+        },
+    }
+
+    count, errors = main.process_file_content(content, "ventas.csv", config, "batch-1", "mall-1")
+
+    assert count == 1
+    assert len(errors) == 1
+    assert errors[0]["linea"] == 2
+    assert "periodo cerrado" in errors[0]["error"]
+    assert fake_db.upserts[0]["factura_no"] == "1002"
+    assert fake_db.upserts[0]["fecha"] == "2026-06-01"
+
+
 def test_process_file_content_parses_comma_decimal_mapping(monkeypatch):
     main = _load_main(monkeypatch)
     fake_db = _FakeSupabase({

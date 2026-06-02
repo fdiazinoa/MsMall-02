@@ -51,6 +51,8 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert ".from('local_custom_field_values')" not in save_custom_values_segment
 
     assert "ApiService.getRemoteConnections(currentMall.id, authToken)" in import_manager
+    assert "fecha_corte_importacion: null" in import_manager
+    assert "Bloquea importaciones con fecha igual o anterior." in import_manager
     assert "}, authToken);" in import_manager  # saveRemoteConnection call includes token
     assert "ApiService.deleteRemoteConnection(selectedConnectionId, authToken)" in import_manager
     assert "ApiService.getLoadLogs(currentMall?.id, authToken)" in import_manager

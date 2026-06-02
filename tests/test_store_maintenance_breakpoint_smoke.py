@@ -10,3 +10,6 @@ def test_store_maintenance_exposes_breakpoint_field_with_hint():
     assert "Umbral contractual" in store_maintenance
     assert "Si el contrato no usa breakpoint, dejelo vacio." in store_maintenance
     assert "breakpoint_venta: parseOptionalNumber(newStore.breakpoint_venta)" in store_maintenance
+    assert "fecha_corte_importacion: ''" in store_maintenance
+    assert "Cierre de ventas hasta" in store_maintenance
+    assert "Bloquea importaciones con fecha igual o anterior." in store_maintenance

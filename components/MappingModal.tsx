@@ -9,6 +9,7 @@ interface MappingModalProps {
     fileHeaders: string[];
     suggestedMapping: Record<string, any>;
     currentMapping: Record<string, string>;
+    currentConstants?: Record<string, string>;
     sampleRow: Record<string, any>;
     filename: string;
 }
@@ -38,6 +39,7 @@ const splitTransformFields = (value?: string) =>
 const fieldModeKey = (fieldKey: string) => `_${fieldKey}_mode`;
 const concatFieldsKey = (fieldKey: string) => `_${fieldKey}_concat_fields`;
 const concatSeparatorKey = (fieldKey: string) => `_${fieldKey}_concat_separator`;
+const decimalSeparatorKey = '_decimal_separator';
 
 export default function MappingModal({
     isOpen,
@@ -46,6 +48,7 @@ export default function MappingModal({
     fileHeaders,
     suggestedMapping,
     currentMapping,
+    currentConstants = {},
     sampleRow,
     filename
 }: MappingModalProps) {
@@ -67,8 +70,23 @@ export default function MappingModal({
             }
         });
         setMapping(initialMapping);
-        setFieldModes({});
-    }, [currentMapping, suggestedMapping]);
+        const initialConstants = { ...(currentConstants || {}) };
+        setConstants(initialConstants);
+        setDateFormat(initialConstants._date_format || 'auto');
+
+        const initialModes: Record<string, string> = {};
+        SYSTEM_FIELDS.forEach(field => {
+            const configuredMode = initialConstants[fieldModeKey(field.key)];
+            if (configuredMode === TRANSFORM_MODES.CONCAT) {
+                initialModes[field.key] = 'CONCAT';
+            } else if (configuredMode === TRANSFORM_MODES.GENERATED_SEQUENCE) {
+                initialModes[field.key] = 'GENERATED_SEQUENCE';
+            } else if (field.key in initialConstants) {
+                initialModes[field.key] = 'CONSTANT';
+            }
+        });
+        setFieldModes(initialModes);
+    }, [currentMapping, suggestedMapping, currentConstants]);
 
     const handleMappingChange = (systemField: string, csvHeader: string) => {
         setMapping({ ...mapping, [systemField]: csvHeader });
@@ -141,7 +159,11 @@ export default function MappingModal({
         console.log("Date Format:", dateFormat);
 
         // Pass date format as part of constants for backend processing
-        const finalConstants = { ...constants, _date_format: dateFormat };
+        const finalConstants = {
+            ...constants,
+            _date_format: dateFormat,
+            [decimalSeparatorKey]: constants[decimalSeparatorKey] === ',' ? ',' : '.'
+        };
         onConfirm(cleanMapping, finalConstants);
     };
 
@@ -166,6 +188,21 @@ export default function MappingModal({
 
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-6">
+                    <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Separador decimal de montos</label>
+                        <select
+                            value={constants[decimalSeparatorKey] || '.'}
+                            onChange={(e) => setConstants({
+                                ...constants,
+                                [decimalSeparatorKey]: e.target.value
+                            })}
+                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white text-sm"
+                        >
+                            <option value=".">Punto: 1234.56</option>
+                            <option value=",">Coma: 1234,56</option>
+                        </select>
+                    </div>
+
                     <div className="space-y-4">
                         {(SYSTEM_FIELDS || []).map(field => {
                             const isRequired = field.required;

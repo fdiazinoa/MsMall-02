@@ -14,6 +14,7 @@ import io
 import csv
 import json
 import posixpath
+import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from services.connection_monitor_service import ConnectionMonitorService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
@@ -167,6 +168,44 @@ def _format_generated_invoice(local_code: Any, sale_date: Any, sequence: int) ->
     date_part = _clean_generated_invoice_piece(str(sale_date or "").replace("-", ""))
     return f"{local_part}{date_part}{sequence:04d}"
 
+
+def _parse_mapped_decimal(value: Any, decimal_separator: Any = ".") -> float:
+    if value is None:
+        return 0.0
+
+    text = str(value).strip().strip("'\"")
+    if not text:
+        return 0.0
+
+    text = re.sub(r"\s+", "", text)
+    text = text.replace("$", "").replace("RD", "").replace("rd", "")
+    if decimal_separator == ",":
+        text = text.replace(".", "")
+        if text.count(",") > 1:
+            sign = "-" if text.startswith("-") else ""
+            unsigned = text[1:] if sign else text
+            parts = unsigned.split(",")
+            if len(parts) >= 3 and all(len(part) == 3 for part in parts[-2:]):
+                digits = "".join(parts)
+                if len(digits) > 6:
+                    text = f"{sign}{digits[:-6]}.{digits[-6:]}"
+                else:
+                    text = f"{sign}0.{digits.zfill(6)}"
+            else:
+                text = "".join(parts[:-1]) + "." + parts[-1]
+                if sign and not text.startswith("-"):
+                    text = f"-{text}"
+        else:
+            text = text.replace(",", ".")
+    else:
+        text = text.replace(",", "")
+
+    try:
+        return float(text)
+    except Exception:
+        return 0.0
+
+
 def _clean_csv_header_name(name) -> str:
     return str(name or "").replace("\ufeff", "").strip()
 
@@ -191,6 +230,63 @@ def _clean_cell_value(value):
             cleaned = cleaned[1:-1].strip()
         return cleaned
     return value
+
+
+def _normalize_text_for_csv(content: str) -> str:
+    text = str(content or "")
+    text = text.replace("\x00", "")
+    text = text.replace("\u2028", "\n").replace("\u2029", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    for sep in ["\x1e", "\x1d", "\x1c", "\x85", "\x0b", "\x0c"]:
+        text = text.replace(sep, "\n")
+    if "\n" not in text and text.count("\\n") >= 1:
+        text = text.replace("\\n", "\n")
+    return text
+
+
+def _detect_delimiter(content: str) -> str:
+    lines = [line for line in _normalize_text_for_csv(content).split("\n") if line.strip()]
+    first = lines[0] if lines else ""
+    return max([",", ";", "\t", "|"], key=lambda delimiter: first.count(delimiter))
+
+
+def _decode_worker_text(raw_bytes: bytes, is_json: bool = False) -> str:
+    if raw_bytes is None:
+        return ""
+
+    candidates = []
+    for enc in ["utf-8-sig", "utf-8", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1"]:
+        try:
+            decoded = raw_bytes.decode(enc)
+        except Exception:
+            continue
+
+        replacement_count = decoded.count("�")
+        if is_json:
+            stripped = decoded.lstrip()
+            json_hint = 1 if (stripped.startswith("{") or stripped.startswith("[")) else 0
+            score = (json_hint, -replacement_count, len(decoded), -abs(len(raw_bytes) - len(decoded)))
+        else:
+            normalized = _normalize_text_for_csv(decoded)
+            lines = [line for line in normalized.split("\n") if line.strip()]
+            first = lines[0] if lines else ""
+            max_delim = max([first.count(delimiter) for delimiter in [",", ";", "\t", "|"]], default=0)
+            structured = sum(
+                1 for line in lines[:500]
+                if max([line.count(delimiter) for delimiter in [",", ";", "\t", "|"]], default=0) >= 1
+            )
+            score = (structured, len(lines), max_delim, -replacement_count)
+
+        candidates.append((score, decoded, enc))
+
+    if not candidates:
+        return raw_bytes.decode("utf-8", errors="replace")
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_decoded, best_enc = candidates[0]
+    logger.info(f"Worker decodificación seleccionada: {best_enc} score={best_score} bytes={len(raw_bytes)}")
+    return best_decoded
+
 
 def get_sftp_client(host, port, user, password):
     ssh = paramiko.SSHClient()
@@ -303,7 +399,12 @@ def process_file_logic(config, filename, content):
                 return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}]
         else:
             # Default to CSV/TXT
-            reader = csv.DictReader(io.StringIO(content), skipinitialspace=True)
+            normalized_content = _normalize_text_for_csv(content)
+            reader = csv.DictReader(
+                io.StringIO(normalized_content),
+                delimiter=_detect_delimiter(normalized_content),
+                skipinitialspace=True
+            )
             raw_records = [_normalize_csv_row_keys(r) for r in reader]
             
         if not raw_records:
@@ -321,6 +422,7 @@ def process_file_logic(config, filename, content):
         # Get mapping
         mapping = config.get('mapping_config') or {}
         constants = config.get('constants_config') or config.get('constants') or {}
+        decimal_separator = constants.get("_decimal_separator", ".")
         configured_local_code = (
             config.get('codigo_interno')
             or config.get('local_codigo')
@@ -392,11 +494,7 @@ def process_file_logic(config, filename, content):
 
                 # Normalización Numérica
                 def clean_float(val):
-                    if val is None: return 0.0
-                    try:
-                        return float(str(val).replace(',', '').strip().strip("'\""))
-                    except:
-                        return 0.0
+                    return _parse_mapped_decimal(val, decimal_separator)
 
                 total_bruto = clean_float(pick_value(mapping.get('total_bruto', 'total_bruto')))
                 total_impuestos = clean_float(pick_value(mapping.get('total_impuestos', 'total_impuestos')))
@@ -544,9 +642,11 @@ def process_local_files(config):
                 logger.info(f"🔄 [{processed_count + 1}/{len(batch_files)}] Procesando SFTP: {filename}")
                 
                 try:
-                    with sftp.open(f"{remote_path}/{filename}", 'r') as f:
-                        # Use utf-8-sig to handle BOM if present
-                        content = f.read().decode('utf-8-sig', errors='replace')
+                    with sftp.open(f"{remote_path}/{filename}", 'rb') as f:
+                        content = _decode_worker_text(
+                            f.read(),
+                            is_json=str(filename or "").lower().endswith(".json")
+                        )
                     
                     count, errors = process_file_logic(config, filename, content)
 
@@ -693,8 +793,10 @@ def process_local_files(config):
                     bio = io.BytesIO()
                     ftp.retrbinary(f"RETR {filename}", bio.write)
                     bio.seek(0)
-                    # Use utf-8-sig to handle BOM if present
-                    content = bio.read().decode('utf-8-sig', errors='replace')
+                    content = _decode_worker_text(
+                        bio.read(),
+                        is_json=str(filename or "").lower().endswith(".json")
+                    )
                     
                     count, errors = process_file_logic(config, filename, content)
 

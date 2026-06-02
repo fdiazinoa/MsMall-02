@@ -91,6 +91,7 @@ const createDefaultImportConfig = (): ImportConfig => ({
     hora_transaccion: ''
   },
   constants: {},
+  fecha_corte_importacion: null,
   password: ''
 });
 
@@ -2164,6 +2165,17 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       <option value=".">Punto: 1234.56</option>
                       <option value=",">Coma: 1234,56</option>
                     </select>
+                  </label>
+
+                  <label className="text-xs font-semibold text-slate-700 flex flex-col gap-1 md:col-span-2">
+                    Cierre de ventas hasta
+                    <input
+                      type="date"
+                      value={editingConfig.fecha_corte_importacion || ''}
+                      onChange={(e) => setEditingConfig({ ...editingConfig, fecha_corte_importacion: e.target.value || null })}
+                      className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm"
+                    />
+                    <span className="text-[10px] font-normal text-slate-400">Bloquea importaciones con fecha igual o anterior.</span>
                   </label>
                 </div>
 

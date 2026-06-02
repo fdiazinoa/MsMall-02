@@ -47,6 +47,7 @@ const emptyStore = (mallId?: string): Partial<Store> => ({
   porcentaje_variable: '',
   rubro: '',
   upsert_activo: false,
+  fecha_corte_importacion: '',
 });
 
 const parseOptionalNumber = (value: unknown): number | null => {
@@ -392,6 +393,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
       renta_fija: parseOptionalNumber(newStore.renta_fija),
       breakpoint_venta: parseOptionalNumber(newStore.breakpoint_venta),
       porcentaje_variable: parseOptionalNumber(newStore.porcentaje_variable),
+      fecha_corte_importacion: newStore.fecha_corte_importacion || null,
     };
     const customValuesPayload = serializeFieldValues(activeFieldDefinitions, customFieldValues);
 
@@ -627,6 +629,16 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">% Variable sobre Breakpoint</label>
                   <input type="number" step="0.01" value={newStore.porcentaje_variable ?? ''} onChange={(e) => setNewStore({ ...newStore, porcentaje_variable: e.target.value })} className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="0.00" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Cierre de ventas hasta</label>
+                  <input
+                    type="date"
+                    value={newStore.fecha_corte_importacion || ''}
+                    onChange={(e) => setNewStore({ ...newStore, fecha_corte_importacion: e.target.value })}
+                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-400">Bloquea importaciones con fecha igual o anterior.</p>
                 </div>
               </div>
 

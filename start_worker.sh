@@ -3,6 +3,9 @@
 
 cd "$(dirname "$0")"
 
+export TZ="${TZ:-America/Santo_Domingo}"
+export WORKER_TIMEZONE="${WORKER_TIMEZONE:-$TZ}"
+
 # Activar entorno virtual si existe
 if [ -d ".venv" ]; then
     # shellcheck disable=SC1091
@@ -26,7 +29,7 @@ fi
 shutdown_requested=0
 trap 'shutdown_requested=1; echo "[$(date -Is)] Señal recibida; el worker se detendrá al terminar el ciclo actual."' TERM INT
 
-echo "[$(date -Is)] Worker de importacion iniciado. Intervalo=${WORKER_POLL_SECONDS}s"
+echo "[$(date -Is)] Worker de importacion iniciado. Intervalo=${WORKER_POLL_SECONDS}s TZ=${TZ} WORKER_TIMEZONE=${WORKER_TIMEZONE}"
 
 while [ "$shutdown_requested" -eq 0 ]; do
     echo "[$(date -Is)] Ejecutando ciclo worker_importacion.py"

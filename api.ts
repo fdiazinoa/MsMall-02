@@ -1540,6 +1540,8 @@ export const ApiService = {
         ventas_por_dia: [],
         ventas_por_tipo_negocio: [],
         ventas_por_rubro: [],
+        ventas_por_tipo_negocio_top_locales: {},
+        ventas_por_rubro_top_locales: {},
         ventas_por_tienda_completo: {}
       };
     }

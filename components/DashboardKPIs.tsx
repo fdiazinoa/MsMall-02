@@ -1,14 +1,15 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell
 } from 'recharts';
 import {
   TrendingUp, TrendingDown, DollarSign, ShoppingBag,
-  CreditCard, BarChart3, Calendar, Info
+  CreditCard, BarChart3, Calendar, Info, X, Store, ArrowUpRight
 } from 'lucide-react';
-import { KPIData, DateRange } from '../types';
-import { ApiService } from '../api';
+import { KPIData, DateRange, SegmentStoreDetail } from '../types';
+import { ApiService, type Store as MallStore } from '../api';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
 const COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
@@ -46,45 +47,248 @@ type SegmentItem = {
   value: number;
 };
 
-const SegmentCard = ({ title, items, format }: { title: string; items: SegmentItem[]; format: (value: number) => string }) => {
-  const visibleItems = (items || []).filter((item) => item.value > 0).slice(0, 6);
+type SegmentSelection = {
+  kind: 'tipo_negocio' | 'rubro';
+  title: string;
+  item: SegmentItem;
+  stores: SegmentStoreDetail[];
+};
+
+const SegmentTooltip = ({ active, payload, format, total }: any) => {
+  if (!active || !payload?.length) return null;
+  const item = payload[0]?.payload;
+  if (!item) return null;
+  const share = total > 0 ? (Number(item.value || 0) / total) * 100 : 0;
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-lg">
+      <p className="text-xs font-bold text-slate-800">{item.name}</p>
+      <p className="text-xs text-slate-500">{format(item.value || 0)}</p>
+      <p className="text-xs font-semibold text-indigo-500">{share.toFixed(1)}%</p>
+    </div>
+  );
+};
+
+const SegmentDonutCard = ({
+  title,
+  items,
+  format,
+  detailMap,
+  onSelect,
+}: {
+  title: string;
+  items: SegmentItem[];
+  format: (value: number) => string;
+  detailMap?: Record<string, SegmentStoreDetail[]>;
+  onSelect: (selection: SegmentSelection) => void;
+}) => {
+  const visibleItems = (items || []).filter((item) => item.value > 0).slice(0, 5);
+  const total = visibleItems.reduce((sum, item) => sum + item.value, 0);
+
+  return (
+    <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm min-h-[300px]">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-bold text-slate-800">{title}</h4>
+        <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
+      </div>
+      {visibleItems.length === 0 ? (
+        <div className="h-48 flex items-center justify-center text-sm text-slate-400">
+          Sin ventas en el periodo.
+        </div>
+      ) : (
+        <div className="relative h-[260px] sm:h-[300px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={visibleItems}
+                dataKey="value"
+                nameKey="name"
+                innerRadius="52%"
+                outerRadius="84%"
+                paddingAngle={2}
+                stroke="white"
+                strokeWidth={3}
+                onClick={(item) => onSelect({
+                  kind: 'tipo_negocio',
+                  title,
+                  item: item as SegmentItem,
+                  stores: detailMap?.[(item as SegmentItem).name] || [],
+                })}
+              >
+                {visibleItems.map((item, index) => (
+                  <Cell
+                    key={`tipo-cell-${item.name}`}
+                    fill={COLORS[index % COLORS.length]}
+                    className="cursor-pointer focus:outline-none"
+                  />
+                ))}
+              </Pie>
+              <Tooltip content={<SegmentTooltip format={format} total={total} />} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <span className="text-[11px] font-bold uppercase text-slate-400">Total</span>
+            <span className="text-base font-bold text-slate-800">{format(total)}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const RubroExplorerCard = ({
+  title,
+  items,
+  format,
+  detailMap,
+  onSelect,
+}: {
+  title: string;
+  items: SegmentItem[];
+  format: (value: number) => string;
+  detailMap?: Record<string, SegmentStoreDetail[]>;
+  onSelect: (selection: SegmentSelection) => void;
+}) => {
+  const visibleItems = (items || []).filter((item) => item.value > 0).slice(0, 8);
+  const total = visibleItems.reduce((sum, item) => sum + item.value, 0);
   const maxValue = Math.max(...visibleItems.map((item) => item.value), 0);
 
   return (
-    <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm min-h-[260px]">
+    <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm min-h-[300px]">
       <div className="flex items-center justify-between mb-5">
         <h4 className="font-bold text-slate-800">{title}</h4>
         <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
       </div>
       {visibleItems.length === 0 ? (
-        <div className="h-40 flex items-center justify-center text-sm text-slate-400">
+        <div className="h-48 flex items-center justify-center text-sm text-slate-400">
           Sin ventas en el periodo.
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-3">
           {visibleItems.map((item, index) => {
             const percent = maxValue > 0 ? (item.value / maxValue) * 100 : 0;
-
+            const share = total > 0 ? (item.value / total) * 100 : 0;
             return (
-              <div key={`${title}-${item.name}-${index}`} className="flex flex-col gap-1">
-                <div className="flex items-center justify-between gap-3 text-sm">
-                  <span className="font-medium text-slate-700 truncate">{item.name}</span>
-                  <span className="text-slate-500 font-mono text-xs whitespace-nowrap">{format(item.value)}</span>
+              <button
+                key={`rubro-${item.name}-${index}`}
+                type="button"
+                onClick={() => onSelect({
+                  kind: 'rubro',
+                  title,
+                  item,
+                  stores: detailMap?.[item.name] || [],
+                })}
+                className="group w-full rounded-lg border border-transparent px-2 py-2.5 text-left hover:border-slate-200 hover:bg-slate-50 transition-colors"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-400 w-5">{String(index + 1).padStart(2, '0')}</span>
+                    <span className="text-sm font-semibold text-slate-700 truncate">{item.name}</span>
+                  </span>
+                  <span className="flex items-center gap-2 text-xs font-mono text-slate-500 whitespace-nowrap">
+                    {format(item.value)}
+                    <ArrowUpRight size={13} className="text-slate-300 group-hover:text-indigo-500" />
+                  </span>
                 </div>
-                <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{
-                      width: `${percent}%`,
-                      backgroundColor: COLORS[index % COLORS.length]
-                    }}
-                  />
+                <div className="mt-2 flex items-center gap-3">
+                  <div className="h-2 flex-1 rounded-full bg-slate-100 overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${percent}%`,
+                        background: `linear-gradient(90deg, ${COLORS[index % COLORS.length]}, ${COLORS[(index + 1) % COLORS.length]})`,
+                      }}
+                    />
+                  </div>
+                  <span className="w-12 text-right text-xs font-semibold text-slate-400">{share.toFixed(1)}%</span>
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
       )}
+    </div>
+  );
+};
+
+const SegmentDetailModal = ({
+  selection,
+  format,
+  onClose,
+}: {
+  selection: SegmentSelection | null;
+  format: (value: number) => string;
+  onClose: () => void;
+}) => {
+  if (!selection) return null;
+  const stores = selection.stores || [];
+  const maxValue = Math.max(...stores.map((store) => store.total), 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4 py-6">
+      <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl border border-slate-200 max-h-[88vh] overflow-hidden">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wide text-indigo-500">
+              {selection.kind === 'tipo_negocio' ? 'Tipo de negocio' : 'Rubro'}
+            </p>
+            <h3 className="text-xl font-bold text-slate-900 mt-1">{selection.item.name}</h3>
+            <p className="text-sm text-slate-500 mt-1">{format(selection.item.value)}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+            aria-label="Cerrar"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-6 py-5 overflow-y-auto max-h-[68vh]">
+          {stores.length === 0 ? (
+            <div className="h-40 flex flex-col items-center justify-center text-center text-slate-400">
+              <Store size={24} />
+              <p className="mt-2 text-sm">Sin detalle de locales para el periodo.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {stores.map((store, index) => {
+                const percent = maxValue > 0 ? (store.total / maxValue) * 100 : 0;
+                const hasOperationalMetrics = store.transacciones > 0;
+                return (
+                  <div key={`${selection.item.name}-${store.name}`} className="rounded-xl border border-slate-100 p-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-800 truncate">
+                          {index + 1}. {store.name}
+                        </p>
+                        <p className="text-xs text-slate-400 mt-1">
+                          {hasOperationalMetrics ? `${store.transacciones} transacciones · ` : ''}
+                          {store.participacion.toFixed(1)}% participación
+                        </p>
+                      </div>
+                      <div className="text-left sm:text-right">
+                        <p className="text-sm font-bold text-slate-900">{format(store.total)}</p>
+                        <p className="text-xs text-slate-400">
+                          {hasOperationalMetrics
+                            ? `Neto ${format(store.total_neto)} · Ticket ${format(store.ticket_promedio)}`
+                            : 'Detalle calculado desde ventas por tienda'}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-3 h-2 w-full rounded-full bg-slate-100 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-indigo-500"
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
@@ -97,11 +301,79 @@ const formatDisplayName = (value: string) => value
   })
   .join(' ');
 
+const normalizeSegmentLabel = (value: string | null | undefined, fallback: string) => {
+  const label = String(value || '').trim();
+  return label || fallback;
+};
+
+const buildFallbackSegmentDetails = (
+  segmentName: string,
+  kind: SegmentSelection['kind'],
+  salesByStore: Record<string, number> | undefined,
+  stores: MallStore[]
+): SegmentStoreDetail[] => {
+  if (!salesByStore || stores.length === 0) return [];
+
+  const fallback = kind === 'tipo_negocio' ? 'Sin tipo de negocio' : 'Sin rubro';
+  const rows = stores
+    .filter((store) => {
+      const segment = kind === 'tipo_negocio' ? store.tipo_negocio : store.rubro;
+      return normalizeSegmentLabel(segment, fallback) === segmentName;
+    })
+    .map((store) => ({
+      name: store.nombre,
+      total: Number(salesByStore[store.nombre] || 0),
+      total_neto: 0,
+      transacciones: 0,
+      ticket_promedio: 0,
+      participacion: 0,
+    }))
+    .filter((store) => store.total > 0)
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10);
+
+  const segmentTotal = rows.reduce((sum, store) => sum + store.total, 0);
+  return rows.map((store) => ({
+    ...store,
+    participacion: segmentTotal > 0 ? (store.total / segmentTotal) * 100 : 0,
+  }));
+};
+
+const buildFallbackDetailMap = (
+  kind: SegmentSelection['kind'],
+  items: SegmentItem[] | undefined,
+  salesByStore: Record<string, number> | undefined,
+  stores: MallStore[]
+) => {
+  return (items || []).reduce<Record<string, SegmentStoreDetail[]>>((map, item) => {
+    const details = buildFallbackSegmentDetails(item.name, kind, salesByStore, stores);
+    if (details.length > 0) {
+      map[item.name] = details;
+    }
+    return map;
+  }, {});
+};
+
+const mergeDetailMaps = (
+  fallbackMap: Record<string, SegmentStoreDetail[]>,
+  backendMap?: Record<string, SegmentStoreDetail[]>
+) => {
+  const merged = { ...fallbackMap };
+  Object.entries(backendMap || {}).forEach(([segment, details]) => {
+    if (details?.length) {
+      merged[segment] = details;
+    }
+  });
+  return merged;
+};
+
 export const DashboardKPIs: React.FC = () => {
   const { currentMall, session, user } = useAuth();
   const { format } = useFormatCurrency();
   const [data, setData] = useState<KPIData | null>(null);
+  const [stores, setStores] = useState<MallStore[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedSegment, setSelectedSegment] = useState<SegmentSelection | null>(null);
   const [dates, setDates] = useState<DateRange>(() => {
     const now = new Date();
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -114,13 +386,18 @@ export const DashboardKPIs: React.FC = () => {
   const loadKPIs = async () => {
     if (!currentMall?.id || !session?.access_token) {
       setData(null);
+      setStores([]);
       setLoading(false);
       return;
     }
     setLoading(true);
     try {
-      const kpis = await ApiService.getKPIs({ ...dates, mallId: currentMall.id }, session.access_token);
+      const [kpis, mallStores] = await Promise.all([
+        ApiService.getKPIs({ ...dates, mallId: currentMall.id }, session.access_token),
+        ApiService.getStores(currentMall.id),
+      ]);
       setData(kpis);
+      setStores(mallStores);
     } catch (e) {
       console.error(e);
     } finally {
@@ -131,6 +408,26 @@ export const DashboardKPIs: React.FC = () => {
   useEffect(() => {
     loadKPIs();
   }, [dates, currentMall?.id, session?.access_token]);
+
+  const businessTypeDetailMap = useMemo(() => {
+    const fallbackMap = buildFallbackDetailMap(
+      'tipo_negocio',
+      data?.ventas_por_tipo_negocio,
+      data?.ventas_por_tienda_completo,
+      stores
+    );
+    return mergeDetailMaps(fallbackMap, data?.ventas_por_tipo_negocio_top_locales);
+  }, [data?.ventas_por_tipo_negocio, data?.ventas_por_tienda_completo, data?.ventas_por_tipo_negocio_top_locales, stores]);
+
+  const rubroDetailMap = useMemo(() => {
+    const fallbackMap = buildFallbackDetailMap(
+      'rubro',
+      data?.ventas_por_rubro,
+      data?.ventas_por_tienda_completo,
+      stores
+    );
+    return mergeDetailMaps(fallbackMap, data?.ventas_por_rubro_top_locales);
+  }, [data?.ventas_por_rubro, data?.ventas_por_tienda_completo, data?.ventas_por_rubro_top_locales, stores]);
 
   if (!currentMall?.id) {
     return (
@@ -284,17 +581,27 @@ export const DashboardKPIs: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <SegmentCard
+        <SegmentDonutCard
           title="Ventas por Tipo de Negocio"
           items={data.ventas_por_tipo_negocio || []}
           format={format}
+          detailMap={businessTypeDetailMap}
+          onSelect={setSelectedSegment}
         />
-        <SegmentCard
+        <RubroExplorerCard
           title="Ventas por Rubro"
           items={data.ventas_por_rubro || []}
           format={format}
+          detailMap={rubroDetailMap}
+          onSelect={setSelectedSegment}
         />
       </div>
+
+      <SegmentDetailModal
+        selection={selectedSegment}
+        format={format}
+        onClose={() => setSelectedSegment(null)}
+      />
 
     </div>
   );

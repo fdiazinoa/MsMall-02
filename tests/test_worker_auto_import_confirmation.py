@@ -128,6 +128,44 @@ def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
     ]
 
 
+def test_worker_process_file_logic_rejects_closed_import_period(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = "\n".join([
+        "fecha_venta,total_bruto,total_impuestos,total_neto",
+        "2026-05-31,100,18,82",
+        "2026-06-01,200,36,164",
+    ])
+    config = {
+        "nombre": "PABT-01",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "codigo_interno": "PABT-01",
+        "fecha_corte_importacion": "2026-05-31",
+        "file_type": "CSV",
+        "mapping_config": {
+            "fecha_venta": "fecha_venta",
+            "total_bruto": "total_bruto",
+            "total_impuestos": "total_impuestos",
+            "total_neto": "total_neto",
+        },
+        "constants_config": {
+            "_factura_numero_mode": "generated_sequence",
+        },
+    }
+
+    count, errors = worker.process_file_logic(config, "ventas.csv", content)
+
+    assert count == 1
+    assert len(errors) == 1
+    assert errors[0]["linea"] == 2
+    assert "periodo cerrado" in errors[0]["error"]
+    assert fake_db.tables["ventas"][0]["factura_no"] == "PABT01202606010002"
+    assert fake_db.tables["ventas"][0]["fecha"] == "2026-06-01"
+
+
 def test_worker_process_file_logic_parses_comma_decimal_mapping(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_db = _FakeWorkerSupabase()

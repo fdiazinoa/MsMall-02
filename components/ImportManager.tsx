@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 // Fix: Import types from '../types' instead of '../api'
-import { ImportConfig, ImportProtocol, RemoteConnection, SecurityExporterWebserviceConfig } from '../types';
+import { ImportConfig, ImportProtocol, LoadLogEntry, RemoteConnection, SecurityExporterWebserviceConfig } from '../types';
 import { SmartMappingModal } from './SmartMappingModal';
 import MappingModal from './MappingModal';
 import {
@@ -105,6 +105,78 @@ const createDefaultExporterWebserviceDraft = () => ({
   notes: ''
 });
 
+const safeLoadLogDate = (value?: string | null): Date | null => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const formatLoadLogDateTime = (value?: string | null): string => {
+  const parsed = safeLoadLogDate(value);
+  return parsed ? parsed.toLocaleString() : 'Sin fecha';
+};
+
+const getLoadLogErrorCount = (log: LoadLogEntry | null): number => {
+  if (!log) return 0;
+  const explicit = Number(log.error_count);
+  if (Number.isFinite(explicit)) return explicit;
+  return Array.isArray(log.detalles) ? log.detalles.length : 0;
+};
+
+const getLoadLogProcessedCount = (log: LoadLogEntry | null): number => {
+  if (!log) return 0;
+  const explicit = Number(log.records_processed);
+  return Number.isFinite(explicit) ? explicit : 0;
+};
+
+const getLoadLogStatus = (log: LoadLogEntry | null): string => {
+  if (!log) return 'error';
+  const status = String(log.estado || '').trim().toLowerCase();
+  if (status === 'parcial') return 'parcial';
+  if (status === 'exito' && getLoadLogErrorCount(log) > 0) return 'parcial';
+  return status || 'error';
+};
+
+const getLoadLogFileName = (log: LoadLogEntry | null): string => {
+  const archivo = String(log?.archivo || '').trim();
+  if (archivo && archivo.toUpperCase() !== 'N/A') return archivo;
+  if (log?.batch_id) return `Batch ${log.batch_id}`;
+  return 'Sin archivo';
+};
+
+const getLoadLogChannel = (log: LoadLogEntry | null): string => {
+  const raw = String(log?.canal || log?.metadata?.canal || '').trim();
+  return raw || 'Sin canal';
+};
+
+const getLoadLogMessage = (log: LoadLogEntry | null): string => {
+  const message = String(log?.mensaje || '').trim();
+  if (message) return message;
+  const processed = getLoadLogProcessedCount(log);
+  const errors = getLoadLogErrorCount(log);
+  if (getLoadLogStatus(log) === 'exito') {
+    return `Carga completada. ${processed} registros procesados.`;
+  }
+  if (getLoadLogStatus(log) === 'parcial') {
+    return `Carga parcial. ${processed} registros procesados y ${errors} errores.`;
+  }
+  return 'Sin detalle adicional.';
+};
+
+const getLoadLogStatusBadge = (log: LoadLogEntry) => {
+  const status = getLoadLogStatus(log);
+  if (status === 'exito') {
+    return <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-0.5 text-[11px] font-bold text-green-700"><CheckCircle2 size={12} /> Exito</span>;
+  }
+  if (status === 'parcial') {
+    return <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-700"><AlertCircle size={12} /> Parcial</span>;
+  }
+  if (status === 'no_encontrado') {
+    return <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-700"><AlertCircle size={12} /> No encontrado</span>;
+  }
+  return <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-0.5 text-[11px] font-bold text-red-700"><XCircle size={12} /> Fallido</span>;
+};
+
 interface ImportManagerProps {
   initialSection?: 'ftp' | 'webservice';
   onCloseWebserviceModal?: () => void;
@@ -188,6 +260,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const [progressStep, setProgressStep] = useState<'downloading' | 'processing' | 'inserting' | 'complete' | 'error'>('downloading');
   const [progressMessage, setProgressMessage] = useState('');
   const [progressRecords, setProgressRecords] = useState(0);
+  const [auditConfig, setAuditConfig] = useState<ImportConfig | null>(null);
+  const [auditLogs, setAuditLogs] = useState<LoadLogEntry[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
 
   // Mapping Modal State
   const [showMappingModal, setShowMappingModal] = useState(false);
@@ -676,6 +752,45 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     setActiveStep(1);
     setSelectedConnectionId('');
     setShowForm(true);
+  };
+
+  const openQuickAudit = async (config: ImportConfig) => {
+    if (!currentMall?.id) {
+      setAuditError('Selecciona un mall antes de consultar la auditoria.');
+      return;
+    }
+
+    setAuditConfig(config);
+    setAuditLoading(true);
+    setAuditError(null);
+
+    try {
+      const logs = await ApiService.getLoadLogs(currentMall.id, authToken);
+      const localId = String(config.id || '');
+      const localName = String(config.nombre || '').trim().toLowerCase();
+      const filteredLogs = (logs || [])
+        .filter((log) => {
+          const logLocalId = String(log.local_id || '');
+          const logLocalName = String(log.local_nombre || '').trim().toLowerCase();
+          return (localId && logLocalId === localId) || (localName && logLocalName === localName);
+        })
+        .slice(0, 30);
+
+      setAuditLogs(filteredLogs);
+    } catch (error: any) {
+      console.error('Error loading quick audit logs:', error);
+      setAuditLogs([]);
+      setAuditError(error?.message || 'No se pudo cargar el monitor de carga para este local.');
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const closeQuickAudit = () => {
+    setAuditConfig(null);
+    setAuditLogs([]);
+    setAuditError(null);
+    setAuditLoading(false);
   };
 
   const resetManualExecutionState = () => {
@@ -2613,6 +2728,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
                 <div className="flex items-center gap-2">
                   <button
+                    onClick={() => openQuickAudit(config)}
+                    className="p-2.5 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-xl transition-all"
+                    title="Auditoria rapida"
+                  >
+                    <FileSearch size={20} />
+                  </button>
+                  <button
                     onClick={() => openEditConnectionDrawer(config)}
                     className="p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
                     title="Editar Mapeo"
@@ -2716,6 +2838,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       <td className="px-5 py-4 text-center">
                         <div className="inline-flex items-center gap-2">
                           <button
+                            onClick={() => openQuickAudit(config)}
+                            className="p-2 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition-all"
+                            title="Auditoria rapida"
+                          >
+                            <FileSearch size={16} />
+                          </button>
+                          <button
                             onClick={() => openEditConnectionDrawer(config)}
                             className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
                             title="Editar"
@@ -2744,6 +2873,137 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 })}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Audit Modal */}
+      {auditConfig && (
+        <div className="fixed inset-0 z-[105] flex items-center justify-center bg-slate-950/45 backdrop-blur-md p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-5xl max-h-[86vh] overflow-hidden rounded-[2rem] border border-white/60 bg-white/85 shadow-2xl shadow-slate-900/20 backdrop-blur-xl animate-in zoom-in-95 duration-200 flex flex-col">
+            <div className="flex items-start justify-between gap-4 border-b border-white/70 bg-white/55 px-6 py-5">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full bg-sky-50 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-sky-700">
+                  <FileSearch size={13} />
+                  Auditoria rapida
+                </div>
+                <h3 className="mt-3 text-2xl font-black text-slate-900">{auditConfig.nombre}</h3>
+                <p className="mt-1 text-xs font-medium text-slate-500">
+                  Monitor de carga filtrado por este local. Se muestran las ultimas 30 ejecuciones.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => openQuickAudit(auditConfig)}
+                  disabled={auditLoading}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-xs font-bold text-slate-600 shadow-sm transition-all hover:bg-white disabled:opacity-50"
+                  title="Recargar auditoria"
+                >
+                  <RefreshCw size={14} className={auditLoading ? 'animate-spin' : ''} />
+                  Recargar
+                </button>
+                <button
+                  type="button"
+                  onClick={closeQuickAudit}
+                  className="rounded-xl border border-slate-200 bg-white/80 p-2 text-slate-400 shadow-sm transition-all hover:bg-white hover:text-slate-700"
+                  title="Cerrar"
+                >
+                  <XCircle size={20} />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
+                <div className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Local ID</p>
+                  <p className="mt-1 break-all text-xs font-bold text-slate-700">{auditConfig.id}</p>
+                </div>
+                <div className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Via</p>
+                  <p className="mt-1 text-sm font-bold text-slate-700">{auditConfig.protocolo}</p>
+                </div>
+                <div className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Ruta</p>
+                  <p className="mt-1 truncate text-xs font-bold text-slate-700" title={auditConfig.ruta_remota}>{auditConfig.ruta_remota || '-'}</p>
+                </div>
+                <div className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Resultados</p>
+                  <p className="mt-1 text-sm font-bold text-slate-700">{auditLogs.length} cargas</p>
+                </div>
+              </div>
+
+              {auditError && (
+                <div className="mb-5 flex items-start gap-3 rounded-2xl border border-rose-100 bg-rose-50/90 p-4 text-sm font-medium text-rose-700">
+                  <AlertCircle size={18} className="mt-0.5 shrink-0" />
+                  <span>{auditError}</span>
+                </div>
+              )}
+
+              {auditLoading ? (
+                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-3xl border border-white/70 bg-white/65 text-slate-500">
+                  <RefreshCw size={30} className="mb-3 animate-spin text-sky-500" />
+                  <p className="text-sm font-bold">Cargando monitor del local...</p>
+                </div>
+              ) : auditLogs.length === 0 ? (
+                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/65 text-center">
+                  <FileSearch size={34} className="mb-3 text-slate-300" />
+                  <p className="text-sm font-bold text-slate-700">Sin cargas registradas para este local.</p>
+                  <p className="mt-1 max-w-md text-xs text-slate-500">
+                    Si existen ejecuciones recientes, valida que el monitor tenga el local_id correcto en el log.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-3xl border border-white/70 bg-white/80 shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[920px] text-left">
+                      <thead>
+                        <tr className="border-b border-slate-100 bg-slate-50/80">
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Fecha y hora</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Via</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Archivo</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Estado</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Registros</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Mensaje</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {auditLogs.map((log) => (
+                          <tr key={log.id} className="hover:bg-sky-50/50">
+                            <td className="px-4 py-3 text-xs font-semibold text-slate-700">{formatLoadLogDateTime(log.fecha_hora)}</td>
+                            <td className="px-4 py-3 text-xs font-bold text-slate-600">{getLoadLogChannel(log)}</td>
+                            <td className="px-4 py-3 text-xs font-medium text-slate-600">
+                              <span className="line-clamp-2 max-w-[220px]" title={getLoadLogFileName(log)}>{getLoadLogFileName(log)}</span>
+                            </td>
+                            <td className="px-4 py-3">{getLoadLogStatusBadge(log)}</td>
+                            <td className="px-4 py-3 text-xs font-bold text-slate-700">
+                              {getLoadLogProcessedCount(log)}
+                              {getLoadLogErrorCount(log) > 0 && (
+                                <span className="ml-2 text-[11px] font-bold text-amber-600">{getLoadLogErrorCount(log)} err.</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-xs text-slate-600">
+                              <span className="line-clamp-2 max-w-[280px]" title={getLoadLogMessage(log)}>{getLoadLogMessage(log)}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end border-t border-white/70 bg-white/55 px-6 py-4">
+              <button
+                type="button"
+                onClick={closeQuickAudit}
+                className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-slate-200 transition-all hover:bg-sky-600 active:scale-95"
+              >
+                Cerrar
+              </button>
+            </div>
           </div>
         </div>
       )}

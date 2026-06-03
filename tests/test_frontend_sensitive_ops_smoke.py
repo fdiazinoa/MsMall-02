@@ -56,6 +56,10 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "}, authToken);" in import_manager  # saveRemoteConnection call includes token
     assert "ApiService.deleteRemoteConnection(selectedConnectionId, authToken)" in import_manager
     assert "ApiService.getLoadLogs(currentMall?.id, authToken)" in import_manager
+    assert "const [auditConfig, setAuditConfig] = useState<ImportConfig | null>(null)" in import_manager
+    assert "ApiService.getLoadLogs(currentMall.id, authToken)" in import_manager
+    assert "log.local_id" in import_manager
+    assert "Auditoria rapida" in import_manager
     assert "ApiService.getLoadLogs(currentMall.id, session?.access_token)" in load_monitor
     assert "LOAD_MONITOR_PAGE_SIZE" in load_monitor
     assert "Retroceder" in load_monitor

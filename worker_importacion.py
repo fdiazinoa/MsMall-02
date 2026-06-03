@@ -942,7 +942,6 @@ def _sanitize_health_error(value: object) -> str:
 def _worker_timezone() -> ZoneInfo:
     configured = (
         os.getenv("WORKER_TIMEZONE")
-        or os.getenv("TZ")
         or DEFAULT_WORKER_TIMEZONE
     ).strip() or DEFAULT_WORKER_TIMEZONE
     try:

@@ -90,7 +90,6 @@ MAX_FILES_PER_BATCH = _read_int_env("MAX_FILES_PER_BATCH", 20, minimum=1)
 def _worker_timezone() -> ZoneInfo:
     configured = (
         os.getenv("WORKER_TIMEZONE")
-        or os.getenv("TZ")
         or DEFAULT_WORKER_TIMEZONE
     ).strip() or DEFAULT_WORKER_TIMEZONE
     try:

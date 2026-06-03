@@ -143,14 +143,13 @@ def test_worker_ignores_generic_tz_env_for_specific_schedule(monkeypatch):
     }
 
     assert worker._worker_timezone().key == "America/Santo_Domingo"
-    assert worker.should_run_scheduled_local(
-        local,
-        datetime(2026, 6, 1, 13, 3, tzinfo=ZoneInfo("UTC")),
-    ) is False
-    assert worker.should_run_scheduled_local(
-        local,
-        datetime(2026, 6, 1, 17, 3, tzinfo=ZoneInfo("UTC")),
-    ) is True
+    early_local_now = datetime(2026, 6, 1, 13, 3, tzinfo=ZoneInfo("UTC")).astimezone(worker._worker_timezone())
+    due_local_now = datetime(2026, 6, 1, 17, 3, tzinfo=ZoneInfo("UTC")).astimezone(worker._worker_timezone())
+
+    assert worker._schedule_due_at(local, early_local_now) is None
+    assert worker._schedule_due_at(local, due_local_now) == datetime(
+        2026, 6, 1, 13, 0, tzinfo=ZoneInfo("America/Santo_Domingo")
+    )
 
 
 def test_worker_honors_explicit_worker_timezone(monkeypatch):

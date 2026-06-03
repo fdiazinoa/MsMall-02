@@ -134,6 +134,30 @@ def test_worker_specific_schedule_uses_dominican_timezone_for_utc_server(monkeyp
     )
 
 
+def test_worker_ignores_generic_tz_env_for_specific_schedule(monkeypatch):
+    worker = _load_worker(monkeypatch, TZ="UTC")
+    local = {
+        "frecuencia_cron": "hora_especifica",
+        "hora_especifica": "13:00:00",
+        "ultima_ejecucion": None,
+    }
+
+    assert worker._worker_timezone().key == "America/Santo_Domingo"
+    early_local_now = datetime(2026, 6, 1, 13, 3, tzinfo=ZoneInfo("UTC")).astimezone(worker._worker_timezone())
+    due_local_now = datetime(2026, 6, 1, 17, 3, tzinfo=ZoneInfo("UTC")).astimezone(worker._worker_timezone())
+
+    assert worker._schedule_due_at(local, early_local_now) is None
+    assert worker._schedule_due_at(local, due_local_now) == datetime(
+        2026, 6, 1, 13, 0, tzinfo=ZoneInfo("America/Santo_Domingo")
+    )
+
+
+def test_worker_honors_explicit_worker_timezone(monkeypatch):
+    worker = _load_worker(monkeypatch, WORKER_TIMEZONE="UTC", TZ="America/Santo_Domingo")
+
+    assert worker._worker_timezone().key == "UTC"
+
+
 def test_worker_timezone_falls_back_to_dominican_timezone(monkeypatch):
     worker = _load_worker(monkeypatch, WORKER_TIMEZONE="Invalid/Timezone", TZ="UTC")
 

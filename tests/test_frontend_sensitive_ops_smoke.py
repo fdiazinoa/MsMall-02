@@ -57,6 +57,10 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "ApiService.deleteRemoteConnection(selectedConnectionId, authToken)" in import_manager
     assert "ApiService.getLoadLogs(currentMall?.id, authToken)" in import_manager
     assert "ApiService.getLoadLogs(currentMall.id, session?.access_token)" in load_monitor
+    assert "LOAD_MONITOR_PAGE_SIZE" in load_monitor
+    assert "Retroceder" in load_monitor
+    assert "Siguiente" in load_monitor
+    assert "Mostrando ${pageStart + 1}-${pageEnd} de ${filteredLogs.length} registros" in load_monitor
     assert "ApiService.reactivateStore(store.id, session?.access_token)" in store_maintenance
     assert "case 'store-import':" in dashboard
     assert "Importador Locales" in header

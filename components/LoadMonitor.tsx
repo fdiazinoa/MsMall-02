@@ -5,6 +5,8 @@ import { LoadLogEntry } from '../types';
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   FileText,
   RefreshCw,
@@ -14,6 +16,7 @@ import {
 } from 'lucide-react';
 
 type MonitorStatusFilter = 'all' | 'exito' | 'parcial' | 'error';
+const LOAD_MONITOR_PAGE_SIZE = 20;
 
 const StatCard = ({ title, count, icon: Icon, color, bgColor }: any) => (
   <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
@@ -138,6 +141,7 @@ export const LoadMonitor: React.FC = () => {
   const [selectedLog, setSelectedLog] = useState<LoadLogEntry | null>(null);
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [statusFilter, setStatusFilter] = useState<MonitorStatusFilter>('all');
+  const [currentPage, setCurrentPage] = useState(1);
 
   const loadData = async () => {
     if (!currentMall?.id) return;
@@ -233,6 +237,22 @@ export const LoadMonitor: React.FC = () => {
 
     return result;
   }, [logs, searchTerm, dateRange, statusFilter]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, dateRange.start, dateRange.end, statusFilter, currentMall?.id]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredLogs.length / LOAD_MONITOR_PAGE_SIZE));
+  const safeCurrentPage = Math.min(Math.max(currentPage, 1), totalPages);
+  const pageStart = (safeCurrentPage - 1) * LOAD_MONITOR_PAGE_SIZE;
+  const paginatedLogs = filteredLogs.slice(pageStart, pageStart + LOAD_MONITOR_PAGE_SIZE);
+  const pageEnd = filteredLogs.length > 0 ? pageStart + paginatedLogs.length : 0;
+
+  useEffect(() => {
+    if (currentPage !== safeCurrentPage) {
+      setCurrentPage(safeCurrentPage);
+    }
+  }, [currentPage, safeCurrentPage]);
 
   const selectedLogErrors = Array.isArray(selectedLog?.detalles) ? selectedLog.detalles : [];
   const selectedLogStatus = getNormalizedStatus(selectedLog);
@@ -347,7 +367,7 @@ export const LoadMonitor: React.FC = () => {
                   </td>
                 </tr>
               ) : filteredLogs.length > 0 ? (
-                filteredLogs.map((log) => (
+                paginatedLogs.map((log) => (
                   <tr key={String(log.id)} className="hover:bg-slate-50/80 transition-colors group">
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-slate-700">{formatDate(log.fecha_hora)}</div>
@@ -404,6 +424,36 @@ export const LoadMonitor: React.FC = () => {
               )}
             </tbody>
           </table>
+        </div>
+        <div className="flex flex-col gap-3 border-t border-slate-100 bg-slate-50/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-xs font-medium text-slate-500">
+            {filteredLogs.length > 0
+              ? `Mostrando ${pageStart + 1}-${pageEnd} de ${filteredLogs.length} registros`
+              : 'Sin registros para mostrar'}
+          </div>
+          <div className="flex items-center justify-between gap-3 sm:justify-end">
+            <button
+              type="button"
+              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+              disabled={safeCurrentPage <= 1}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-600 transition-all hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-200 disabled:hover:text-slate-600"
+            >
+              <ChevronLeft size={16} />
+              Retroceder
+            </button>
+            <span className="min-w-[88px] text-center text-xs font-bold text-slate-500">
+              Pagina {safeCurrentPage} de {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+              disabled={safeCurrentPage >= totalPages}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-600 transition-all hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-200 disabled:hover:text-slate-600"
+            >
+              Siguiente
+              <ChevronRight size={16} />
+            </button>
+          </div>
         </div>
       </div>
 

@@ -109,6 +109,35 @@ class _AsyncNullContext:
         return False
 
 
+class _FakeLogQuery:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self.rows)
+
+
+class _FakeLogSupabase:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def table(self, table_name):
+        assert table_name == "logs_carga"
+        return _FakeLogQuery(self.rows)
+
+
 def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
     worker = _load_worker(monkeypatch)
     inserted_rows = []
@@ -281,6 +310,82 @@ def test_worker_marks_success_with_pr_prefix_after_confirmed_insert(monkeypatch)
 
     assert fake_sftp.renames == [("ventas_20260301.json", "PR_ventas_20260301.json")]
     assert triggered == ["worker_auto_import"]
+
+
+def test_worker_builds_no_new_file_message_from_last_import_log(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    monkeypatch.setattr(worker, "supabase", _FakeLogSupabase([
+        {
+            "fecha_hora": "2026-05-31T13:15:00-04:00",
+            "archivo": "ventas_20260531.csv",
+            "estado": "exito",
+            "records_processed": 259,
+        }
+    ]))
+
+    message = worker._build_no_new_file_message({"id": "local-1"})
+
+    assert message == "Archivo nuevo no encontrado, ultimo archivo importado fecha 31/05/2026"
+
+
+def test_worker_logs_no_new_file_message_when_sftp_has_no_pending_files(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_sftp = _FakeSFTP({})
+    logs = []
+
+    monkeypatch.setattr(worker, "connect_with_retries", lambda connector, attempts=3, base_delay=2: connector())
+    monkeypatch.setattr(worker, "get_sftp_client", lambda *args, **kwargs: (_FakeSSH(), fake_sftp))
+    monkeypatch.setattr(worker, "_build_no_new_file_message", lambda config: "Archivo nuevo no encontrado, ultimo archivo importado fecha 31/05/2026")
+    monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: logs.append((args, kwargs)))
+
+    worker.process_local_files({
+        "nombre": "Cafe Santo Domingo",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "sftp_protocol": "SFTP",
+        "sftp_host": "example.com",
+        "sftp_port": 22,
+        "sftp_user": "demo",
+        "sftp_pass": "secret",
+        "sftp_path": ".",
+        "file_type": "CSV",
+    })
+
+    assert logs[0][0][3] == "Archivo nuevo no encontrado, ultimo archivo importado fecha 31/05/2026"
+    assert logs[0][1]["metadata"]["reason"] == "no_new_file"
+    assert logs[0][1]["records_processed"] == 0
+
+
+def test_worker_empty_file_outcome_uses_zero_data_message(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_sftp = _FakeSFTP({"ventas_20260301.csv": b"fecha_venta,total_bruto\n"})
+    logs = []
+
+    monkeypatch.setattr(worker, "connect_with_retries", lambda connector, attempts=3, base_delay=2: connector())
+    monkeypatch.setattr(worker, "get_sftp_client", lambda *args, **kwargs: (_FakeSSH(), fake_sftp))
+    monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: logs.append((args, kwargs)))
+    monkeypatch.setattr(worker, "run_local_risk_analysis_if_possible", lambda *args, **kwargs: None)
+
+    worker.process_local_files({
+        "nombre": "Cafe Santo Domingo",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "sftp_protocol": "SFTP",
+        "sftp_host": "example.com",
+        "sftp_port": 22,
+        "sftp_user": "demo",
+        "sftp_pass": "secret",
+        "sftp_path": ".",
+        "file_type": "CSV",
+        "mapping_config": {
+            "fecha_venta": "fecha_venta",
+            "total_bruto": "total_bruto",
+        },
+    })
+
+    assert logs[0][0][3] == "Archivo leido con 0 Datos"
+    assert logs[0][0][2] == "error"
+    assert fake_sftp.renames == [("ventas_20260301.csv", "ERR_ventas_20260301.csv")]
 
 
 def test_worker_strips_legacy_custom_prefix_when_building_standard_marker(monkeypatch):

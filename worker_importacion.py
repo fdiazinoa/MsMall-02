@@ -446,21 +446,68 @@ def _decode_worker_text(raw_bytes: bytes, is_json: bool = False) -> str:
     return best_decoded
 
 
+def _normalize_remote_host(host: str) -> str:
+    normalized = (host or "").strip()
+    if normalized.startswith("sftp://"):
+        normalized = normalized[len("sftp://"):]
+    elif normalized.startswith("ftp://"):
+        normalized = normalized[len("ftp://"):]
+    if "/" in normalized:
+        normalized = normalized.split("/", 1)[0]
+    return normalized
+
+
+def _candidate_hosts(host: str) -> List[str]:
+    normalized = _normalize_remote_host(host)
+    if not normalized:
+        return []
+    candidates = [normalized]
+    if normalized.startswith("www.") and len(normalized) > 4:
+        candidates.append(normalized[4:])
+    return candidates
+
+
 def get_sftp_client(host, port, user, password):
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(host, port=port, username=user, password=password, timeout=10)
-    transport = ssh.get_transport()
-    if transport:
-        transport.set_keepalive(30)
-    return ssh, ssh.open_sftp()
+    last_error = None
+    for candidate in _candidate_hosts(host):
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            ssh.connect(candidate, port=int(port), username=user, password=password, timeout=10)
+            transport = ssh.get_transport()
+            if transport:
+                transport.set_keepalive(30)
+            return ssh, ssh.open_sftp()
+        except Exception as exc:
+            last_error = exc
+            try:
+                ssh.close()
+            except Exception:
+                pass
+            logger.warning(f"SFTP connect failed for host '{candidate}': {exc}")
+    if last_error:
+        raise last_error
+    raise ValueError("Host remoto inválido o vacío para conexión SFTP")
 
 def get_ftp_client(host, port, user, password):
-    ftp = FTP()
-    ftp.connect(host, port, timeout=10)
-    ftp.login(user, password)
-    ftp.set_pasv(True)
-    return ftp
+    last_error = None
+    for candidate in _candidate_hosts(host):
+        ftp = FTP()
+        try:
+            ftp.connect(candidate, int(port), timeout=10)
+            ftp.login(user, password)
+            ftp.set_pasv(True)
+            return ftp
+        except Exception as exc:
+            last_error = exc
+            try:
+                ftp.close()
+            except Exception:
+                pass
+            logger.warning(f"FTP connect failed for host '{candidate}': {exc}")
+    if last_error:
+        raise last_error
+    raise ValueError("Host remoto inválido o vacío para conexión FTP")
 
 def connect_with_retries(connector, attempts=3, base_delay=2):
     last_error = None

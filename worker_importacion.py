@@ -520,12 +520,93 @@ def _resolve_worker_processing_outcome(count: int, errors: list) -> Tuple[str, s
             mensaje += f" Se encontraron {len(errors)} errores parciales."
         return estado, mensaje, True
 
+    if _is_empty_file_outcome(errors):
+        return "error", "Archivo leido con 0 Datos", False
+
     mensaje = "Worker: No se confirmó inserción en BD."
     if errors:
         mensaje += f" Se encontraron {len(errors)} errores."
     else:
         mensaje += " El archivo se marcará con error para revisión."
     return "error", mensaje, False
+
+
+def _is_empty_file_outcome(errors: Optional[list]) -> bool:
+    if not errors:
+        return False
+    empty_markers = ("archivo vacio", "archivo vacío", "sin datos validos", "sin datos válidos")
+    for error in errors:
+        text = str((error or {}).get("error") if isinstance(error, dict) else error).strip().lower()
+        if all(marker in text for marker in ("archivo", "sin datos")):
+            return True
+        if any(marker in text for marker in empty_markers):
+            return True
+    return False
+
+
+def _format_worker_date_for_message(value: Any) -> Optional[str]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = f"{raw[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    if parsed.tzinfo:
+        parsed = parsed.astimezone(_worker_timezone())
+    return parsed.strftime("%d/%m/%Y")
+
+
+def _last_successful_import_date(config: Dict[str, Any]) -> Optional[str]:
+    if not supabase:
+        return None
+    local_id = str(config.get("id") or "").strip()
+    if not local_id:
+        return None
+
+    try:
+        response = (
+            supabase.table("logs_carga")
+            .select("fecha_hora,archivo,estado,records_processed")
+            .eq("local_id", local_id)
+            .order("fecha_hora", desc=True)
+            .limit(25)
+            .execute()
+        )
+        for row in response.data or []:
+            archivo = str(row.get("archivo") or "").strip()
+            estado = str(row.get("estado") or "").strip().lower()
+            processed = row.get("records_processed")
+            try:
+                processed_count = int(processed) if processed is not None else None
+            except (TypeError, ValueError):
+                processed_count = None
+
+            has_real_file = bool(archivo) and archivo.upper() != "N/A"
+            has_success_status = estado in {"exito", "parcial"}
+            has_inserted_rows = processed_count is None or processed_count > 0
+            if has_real_file and has_success_status and has_inserted_rows:
+                formatted = _format_worker_date_for_message(row.get("fecha_hora"))
+                if formatted:
+                    return formatted
+    except Exception as exc:
+        logger.warning("No se pudo consultar ultimo archivo importado para %s: %s", local_id, exc)
+
+    return None
+
+
+def _build_no_new_file_message(config: Dict[str, Any]) -> str:
+    last_import_date = _last_successful_import_date(config)
+    if last_import_date:
+        return f"Archivo nuevo no encontrado, ultimo archivo importado fecha {last_import_date}"
+    return "Archivo nuevo no encontrado, sin importaciones previas"
 
 
 def _normalize_worker_import_config(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -817,8 +898,8 @@ def process_local_files(config):
             batch_size = len(batch_files)
 
             if total_pending == 0:
-                message = "Conexión exitosa: 0 pendientes."
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
+                message = _build_no_new_file_message(config)
                 insert_load_log(
                     config['nombre'], "N/A", "exito", message,
                     mall_id=config.get("mall_id"),
@@ -826,7 +907,7 @@ def process_local_files(config):
                     canal=protocol,
                     records_processed=0,
                     error_count=0,
-                    metadata={"source": "worker_auto_import", "pending_files": 0},
+                    metadata={"source": "worker_auto_import", "pending_files": 0, "reason": "no_new_file"},
                 )
                 return _result(True, message)
 
@@ -984,8 +1065,8 @@ def process_local_files(config):
             batch_size = len(batch_files)
 
             if total_pending == 0:
-                message = "Conexión exitosa: 0 pendientes."
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
+                message = _build_no_new_file_message(config)
                 insert_load_log(
                     config['nombre'], "N/A", "exito", message,
                     mall_id=config.get("mall_id"),
@@ -993,7 +1074,7 @@ def process_local_files(config):
                     canal=protocol,
                     records_processed=0,
                     error_count=0,
-                    metadata={"source": "worker_auto_import", "pending_files": 0},
+                    metadata={"source": "worker_auto_import", "pending_files": 0, "reason": "no_new_file"},
                 )
                 return _result(True, message)
 

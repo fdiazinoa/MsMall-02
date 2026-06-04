@@ -120,6 +120,40 @@ class _FakeLogSupabase:
         return _FakeLogQuery(self.rows)
 
 
+def test_worker_normalizes_remote_host_with_protocol_and_path(monkeypatch):
+    worker = _load_worker(monkeypatch)
+
+    assert worker._normalize_remote_host("ftp://ftp.sambilftp.com/") == "ftp.sambilftp.com"
+    assert worker._normalize_remote_host("sftp://www.example.com/inbox") == "www.example.com"
+    assert worker._candidate_hosts("sftp://www.example.com/inbox") == ["www.example.com", "example.com"]
+
+
+def test_worker_ftp_client_uses_normalized_host(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    calls = []
+
+    class FakeFTP:
+        def connect(self, host, port, timeout=0):
+            calls.append(("connect", host, port, timeout))
+
+        def login(self, user, password):
+            calls.append(("login", user, password))
+
+        def set_pasv(self, enabled):
+            calls.append(("set_pasv", enabled))
+
+        def close(self):
+            calls.append(("close",))
+
+    monkeypatch.setattr(worker, "FTP", FakeFTP)
+
+    worker.get_ftp_client("ftp://ftp.sambilftp.com/", 21, "demo", "secret")
+
+    assert calls[0] == ("connect", "ftp.sambilftp.com", 21, 10)
+    assert ("login", "demo", "secret") in calls
+    assert ("set_pasv", True) in calls
+
+
 def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_db = _FakeWorkerSupabase()

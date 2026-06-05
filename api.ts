@@ -407,6 +407,14 @@ const normalizeCsvSaleTime = (raw: any): string | null => {
   if (!text) return null;
   text = text.replace(/^"(.*)"$/, '$1').trim().replace(/^'(.*)'$/, '$1').trim();
 
+  let hourOnly = text.match(/^(\d{1,2})$/);
+  if (hourOnly) {
+    const hh = Number(hourOnly[1]);
+    if (hh >= 0 && hh <= 23) {
+      return `${pad2(hh)}:00:00`;
+    }
+  }
+
   let m = text.match(/\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/);
   if (m) {
     const hh = Number(m[1]);
@@ -1953,6 +1961,13 @@ export const ApiService = {
               const neto = parseCsvAmount(columns[5]);
               const horaRaw = (columns[6] ?? '').trim();
               const hora = horaRaw ? normalizeCsvSaleTime(horaRaw) : null;
+              const normalizedStoreCode = storeCode.toUpperCase();
+              const store = storeMap.get(normalizedStoreCode);
+
+              if (store?.id) {
+                currentLocalName = store.nombre;
+                touchedLocalIds.add(store.id);
+              }
 
               if (!fecha) {
                 lineErrors.push({
@@ -1978,9 +1993,6 @@ export const ApiService = {
                 continue;
               }
 
-              const normalizedStoreCode = storeCode.toUpperCase();
-              const store = storeMap.get(normalizedStoreCode);
-
               if (!store) {
                 lineErrors.push({ linea: i + 1, error: `Local '${storeCode}' no encontrado.` });
                 continue;
@@ -1998,9 +2010,6 @@ export const ApiService = {
                 });
                 continue;
               }
-
-              currentLocalName = store.nombre;
-              touchedLocalIds.add(store.id);
 
               recordsToInsert.push({
                 local_id: store.id,

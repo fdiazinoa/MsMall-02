@@ -45,6 +45,7 @@ const fieldModeKey = (fieldKey: string) => `_${fieldKey}_mode`;
 const concatFieldsKey = (fieldKey: string) => `_${fieldKey}_concat_fields`;
 const concatSeparatorKey = (fieldKey: string) => `_${fieldKey}_concat_separator`;
 const decimalSeparatorKey = '_decimal_separator';
+const movingWindowModeKey = '_moving_window_mode';
 
 const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
   const mode = config.constants?.[fieldModeKey(fieldKey)];
@@ -2255,6 +2256,26 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       <option value=".">Punto: 1234.56</option>
                       <option value=",">Coma: 1234,56</option>
                     </select>
+                  </label>
+
+                  <label className="flex items-start gap-3 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-xs font-semibold text-slate-700 md:col-span-2">
+                    <input
+                      type="checkbox"
+                      checked={editingConfig.constants?.[movingWindowModeKey] === 'true'}
+                      onChange={(e) => {
+                        const nextConstants = { ...(editingConfig.constants || {}) } as Record<string, string>;
+                        nextConstants[movingWindowModeKey] = e.target.checked ? 'true' : 'false';
+                        setEditingConfig(prev => ({ ...prev, constants: nextConstants }));
+                      }}
+                      className="mt-0.5 rounded border-slate-300"
+                    />
+                    <span>
+                      Archivo de ventana móvil
+                      <span className="block pt-1 text-[11px] font-normal leading-relaxed text-slate-500">
+                        Usar cuando el locatario envía siempre un rango de días y cada archivo sustituye el día más viejo por el día nuevo.
+                        Los documentos ya cargados se omiten y solo se insertan los nuevos.
+                      </span>
+                    </span>
                   </label>
 
                   <label className="text-xs font-semibold text-slate-700 flex flex-col gap-1 md:col-span-2">

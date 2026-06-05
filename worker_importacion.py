@@ -426,6 +426,50 @@ def _moving_window_enabled(constants: Dict[str, Any]) -> bool:
     return _parse_worker_bool(constants.get("_moving_window_mode"))
 
 
+def _special_char_cleanup_enabled(constants: Dict[str, Any]) -> bool:
+    return _parse_worker_bool(constants.get("_remove_special_chars"))
+
+
+def _split_special_chars_to_remove(value: Any) -> List[str]:
+    raw_value = str(value or "")
+    if not raw_value:
+        return []
+
+    if "," in raw_value:
+        raw_parts = [part.strip() for part in raw_value.split(",")]
+    else:
+        raw_parts = [part for part in raw_value if not part.isspace()]
+
+    chars: List[str] = []
+    aliases = {
+        "\\t": "\t",
+        "\\n": "\n",
+        "\\r": "\r",
+        "tab": "\t",
+        "<tab>": "\t",
+        "space": " ",
+        "<space>": " ",
+    }
+    for part in raw_parts:
+        if not part:
+            continue
+        normalized = aliases.get(part.lower(), part)
+        if normalized not in chars:
+            chars.append(normalized)
+    return chars
+
+
+def _remove_configured_special_chars(value: Any, chars_to_remove: Sequence[str]) -> Any:
+    if value is None or not isinstance(value, str) or not chars_to_remove:
+        return value
+
+    cleaned = value
+    for char in chars_to_remove:
+        if char:
+            cleaned = cleaned.replace(char, "")
+    return cleaned.strip()
+
+
 def _format_worker_range_date(value: Any) -> Optional[str]:
     parsed = _format_worker_date_for_message(value)
     if parsed:
@@ -682,6 +726,11 @@ def process_file_logic(config, filename, content):
         constants = config.get('constants_config') or config.get('constants') or {}
         decimal_separator = constants.get("_decimal_separator", ".")
         moving_window_mode = _moving_window_enabled(constants)
+        chars_to_remove = (
+            _split_special_chars_to_remove(constants.get("_special_chars_to_remove"))
+            if _special_char_cleanup_enabled(constants)
+            else []
+        )
         stats["moving_window_mode"] = moving_window_mode
         import_cutoff_date = _parse_import_cutoff_date(config.get("fecha_corte_importacion"))
         configured_local_code = (
@@ -702,16 +751,21 @@ def process_file_logic(config, filename, content):
 
                 def pick_value(mapped_header, fallback_header=""):
                     key = _clean_csv_header_name(mapped_header)
+                    value = ""
                     if key and key in normalized_row:
-                        return _clean_cell_value(normalized_row[key])
-                    if key and key.lower() in lowered_row:
-                        return _clean_cell_value(lowered_row[key.lower()])
-                    fallback = _clean_csv_header_name(fallback_header)
-                    if fallback and fallback in normalized_row:
-                        return _clean_cell_value(normalized_row[fallback])
-                    if fallback and fallback.lower() in lowered_row:
-                        return _clean_cell_value(lowered_row[fallback.lower()])
-                    return ""
+                        value = normalized_row[key]
+                    elif key and key.lower() in lowered_row:
+                        value = lowered_row[key.lower()]
+                    else:
+                        fallback = _clean_csv_header_name(fallback_header)
+                        if fallback and fallback in normalized_row:
+                            value = normalized_row[fallback]
+                        elif fallback and fallback.lower() in lowered_row:
+                            value = lowered_row[fallback.lower()]
+                    return _remove_configured_special_chars(
+                        _clean_cell_value(value),
+                        chars_to_remove,
+                    )
 
                 # Map fields using mapping_config
                 # mapping_config usually translates system_field -> file_header

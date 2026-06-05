@@ -46,6 +46,8 @@ const concatFieldsKey = (fieldKey: string) => `_${fieldKey}_concat_fields`;
 const concatSeparatorKey = (fieldKey: string) => `_${fieldKey}_concat_separator`;
 const decimalSeparatorKey = '_decimal_separator';
 const movingWindowModeKey = '_moving_window_mode';
+const removeSpecialCharsKey = '_remove_special_chars';
+const specialCharsToRemoveKey = '_special_chars_to_remove';
 
 const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
   const mode = config.constants?.[fieldModeKey(fieldKey)];
@@ -2257,6 +2259,46 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       <option value=",">Coma: 1234,56</option>
                     </select>
                   </label>
+
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 md:col-span-2">
+                    <label className="flex items-start gap-3 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={editingConfig.constants?.[removeSpecialCharsKey] === 'true'}
+                        onChange={(e) => {
+                          const nextConstants = { ...(editingConfig.constants || {}) } as Record<string, string>;
+                          nextConstants[removeSpecialCharsKey] = e.target.checked ? 'true' : 'false';
+                          if (e.target.checked && !nextConstants[specialCharsToRemoveKey]) {
+                            nextConstants[specialCharsToRemoveKey] = '"';
+                          }
+                          setEditingConfig(prev => ({ ...prev, constants: nextConstants }));
+                        }}
+                        className="mt-0.5 rounded border-slate-300"
+                      />
+                      <span>
+                        Eliminar caracteres especiales
+                        <span className="block pt-1 text-[11px] font-normal leading-relaxed text-slate-500">
+                          Limpia esos caracteres después de leer el archivo, sin alterar el delimitador del CSV.
+                        </span>
+                      </span>
+                    </label>
+                    {editingConfig.constants?.[removeSpecialCharsKey] === 'true' && (
+                      <label className="mt-3 block text-[11px] font-semibold text-slate-500">
+                        Caracteres a eliminar
+                        <input
+                          type="text"
+                          value={editingConfig.constants?.[specialCharsToRemoveKey] || ''}
+                          onChange={(e) => {
+                            const nextConstants = { ...(editingConfig.constants || {}) } as Record<string, string>;
+                            nextConstants[specialCharsToRemoveKey] = e.target.value;
+                            setEditingConfig(prev => ({ ...prev, constants: nextConstants }));
+                          }}
+                          placeholder={'Ej: " $ #'}
+                          className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm text-slate-700"
+                        />
+                      </label>
+                    )}
+                  </div>
 
                   <label className="flex items-start gap-3 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-xs font-semibold text-slate-700 md:col-span-2">
                     <input

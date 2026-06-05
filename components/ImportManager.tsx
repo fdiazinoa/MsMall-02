@@ -4,6 +4,12 @@ import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 // Fix: Import types from '../types' instead of '../api'
 import { ImportConfig, ImportProtocol, LoadLogEntry, RemoteConnection, SecurityExporterWebserviceConfig } from '../types';
+import {
+  describeLoadLog,
+  getLoadLogErrorCount,
+  getLoadLogProcessedCount,
+  getLoadLogStatus,
+} from '../utils/loadLogMessages';
 import { SmartMappingModal } from './SmartMappingModal';
 import MappingModal from './MappingModal';
 import {
@@ -116,27 +122,6 @@ const formatLoadLogDateTime = (value?: string | null): string => {
   return parsed ? parsed.toLocaleString() : 'Sin fecha';
 };
 
-const getLoadLogErrorCount = (log: LoadLogEntry | null): number => {
-  if (!log) return 0;
-  const explicit = Number(log.error_count);
-  if (Number.isFinite(explicit)) return explicit;
-  return Array.isArray(log.detalles) ? log.detalles.length : 0;
-};
-
-const getLoadLogProcessedCount = (log: LoadLogEntry | null): number => {
-  if (!log) return 0;
-  const explicit = Number(log.records_processed);
-  return Number.isFinite(explicit) ? explicit : 0;
-};
-
-const getLoadLogStatus = (log: LoadLogEntry | null): string => {
-  if (!log) return 'error';
-  const status = String(log.estado || '').trim().toLowerCase();
-  if (status === 'parcial') return 'parcial';
-  if (status === 'exito' && getLoadLogErrorCount(log) > 0) return 'parcial';
-  return status || 'error';
-};
-
 const getLoadLogFileName = (log: LoadLogEntry | null): string => {
   const archivo = String(log?.archivo || '').trim();
   if (archivo && archivo.toUpperCase() !== 'N/A') return archivo;
@@ -150,17 +135,7 @@ const getLoadLogChannel = (log: LoadLogEntry | null): string => {
 };
 
 const getLoadLogMessage = (log: LoadLogEntry | null): string => {
-  const message = String(log?.mensaje || '').trim();
-  if (message) return message;
-  const processed = getLoadLogProcessedCount(log);
-  const errors = getLoadLogErrorCount(log);
-  if (getLoadLogStatus(log) === 'exito') {
-    return `Carga completada. ${processed} registros procesados.`;
-  }
-  if (getLoadLogStatus(log) === 'parcial') {
-    return `Carga parcial. ${processed} registros procesados y ${errors} errores.`;
-  }
-  return 'Sin detalle adicional.';
+  return describeLoadLog(log).summary;
 };
 
 const getLoadLogStatusBadge = (log: LoadLogEntry) => {
@@ -2984,7 +2959,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                               )}
                             </td>
                             <td className="px-4 py-3 text-xs text-slate-600">
-                              <span className="line-clamp-2 max-w-[280px]" title={getLoadLogMessage(log)}>{getLoadLogMessage(log)}</span>
+                              <span className="block max-w-[280px]" title={getLoadLogMessage(log)}>
+                                <span className="block font-bold text-slate-700">{describeLoadLog(log).title}</span>
+                                <span className="line-clamp-2">{getLoadLogMessage(log)}</span>
+                              </span>
                             </td>
                           </tr>
                         ))}

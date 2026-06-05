@@ -3,6 +3,12 @@ import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 import { LoadLogEntry } from '../types';
 import {
+  describeLoadLog,
+  getLoadLogErrorCount,
+  getLoadLogProcessedCount,
+  getLoadLogStatus,
+} from '../utils/loadLogMessages';
+import {
   AlertCircle,
   Building2,
   CheckCircle2,
@@ -61,26 +67,9 @@ const truncateMiddle = (value?: string | null, left = 10, right = 6): string => 
   return `${text.slice(0, left)}...${text.slice(-right)}`;
 };
 
-const getErrorCount = (log: LoadLogEntry | null): number => {
-  if (!log) return 0;
-  const explicit = Number(log.error_count);
-  if (Number.isFinite(explicit)) return explicit;
-  return Array.isArray(log.detalles) ? log.detalles.length : 0;
-};
-
-const getProcessedCount = (log: LoadLogEntry | null): number => {
-  if (!log) return 0;
-  const explicit = Number(log.records_processed);
-  return Number.isFinite(explicit) ? explicit : 0;
-};
-
-const getNormalizedStatus = (log: LoadLogEntry | null): string => {
-  if (!log) return 'error';
-  const status = String(log.estado || '').trim().toLowerCase();
-  if (status === 'parcial') return 'parcial';
-  if (status === 'exito' && getErrorCount(log) > 0) return 'parcial';
-  return status || 'error';
-};
+const getErrorCount = getLoadLogErrorCount;
+const getProcessedCount = getLoadLogProcessedCount;
+const getNormalizedStatus = getLoadLogStatus;
 
 const getDisplayChannel = (log: LoadLogEntry | null): string => {
   const raw = String(log?.canal || log?.metadata?.canal || '').trim();
@@ -113,17 +102,7 @@ const getDisplayFileName = (log: LoadLogEntry | null): string => {
 };
 
 const getReadableMessage = (log: LoadLogEntry | null): string => {
-  const message = String(log?.mensaje || '').trim();
-  if (message) return message;
-  const processed = getProcessedCount(log);
-  const errors = getErrorCount(log);
-  if (getNormalizedStatus(log) === 'exito') {
-    return `Carga completada. ${processed} registros procesados.`;
-  }
-  if (getNormalizedStatus(log) === 'parcial') {
-    return `Carga parcial. ${processed} registros procesados y ${errors} errores.`;
-  }
-  return 'Sin detalle adicional.';
+  return describeLoadLog(log).summary;
 };
 
 const getStatusBadge = (log: LoadLogEntry) => {
@@ -270,29 +249,11 @@ export const LoadMonitor: React.FC = () => {
     }
   }, [currentPage, safeCurrentPage]);
 
-  const inferFailureKind = (log: LoadLogEntry | null) => {
-    if (!log) return 'Fallo de ejecucion';
-    const msg = getReadableMessage(log).toLowerCase();
-    const channel = getDisplayChannel(log).toLowerCase();
-    if (msg.includes('conexion') || channel === 'ftp' || channel === 'sftp') {
-      return 'Fallo de conexion';
-    }
-    if (msg.includes('no se pudo descargar') || msg.includes('no encontrado') || msg.includes('not found')) {
-      return 'Archivo no encontrado';
-    }
-    if (msg.includes('vacio') || msg.includes('sin datos') || msg.includes('solo encabezado') || msg.includes('no contiene registros')) {
-      return 'Archivo sin datos';
-    }
-    if (channel === 'webservice') {
-      return 'Fallo de validacion WebService';
-    }
-    return 'Fallo de ejecucion';
-  };
-
   const selectedLogErrors = Array.isArray(selectedLog?.detalles) ? selectedLog.detalles : [];
   const selectedLogStatus = getNormalizedStatus(selectedLog);
   const hasLineErrors = selectedLogErrors.length > 0;
   const isExecutionFailure = selectedLogStatus === 'error' && !hasLineErrors;
+  const selectedOperationalMessage = describeLoadLog(selectedLog);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
@@ -440,8 +401,9 @@ export const LoadMonitor: React.FC = () => {
                       <div className="text-xs text-slate-500">{getErrorCount(log)} errores</div>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="text-xs text-slate-500 max-w-sm line-clamp-2" title={getReadableMessage(log)}>
-                        {getReadableMessage(log)}
+                      <div className="max-w-sm" title={getReadableMessage(log)}>
+                        <div className="text-xs font-bold text-slate-700">{describeLoadLog(log).title}</div>
+                        <div className="text-xs text-slate-500 line-clamp-2">{describeLoadLog(log).summary}</div>
                       </div>
                     </td>
                     <td className="px-6 py-4 text-right">
@@ -528,8 +490,21 @@ export const LoadMonitor: React.FC = () => {
               </div>
 
               <div className="p-5 rounded-2xl bg-indigo-50 border border-indigo-100">
-                <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest mb-2">Mensaje</p>
-                <p className="text-sm text-slate-700 leading-relaxed">{getReadableMessage(selectedLog)}</p>
+                <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest mb-2">
+                  Mensaje operativo · {selectedOperationalMessage.category}
+                </p>
+                <p className="text-sm font-bold text-slate-800">{selectedOperationalMessage.title}</p>
+                <p className="text-sm text-slate-700 leading-relaxed mt-1">{selectedOperationalMessage.summary}</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+                  <div className="rounded-xl bg-white/70 border border-indigo-100 p-3">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Causa probable</p>
+                    <p className="text-xs text-slate-700 leading-relaxed">{selectedOperationalMessage.cause}</p>
+                  </div>
+                  <div className="rounded-xl bg-white/70 border border-indigo-100 p-3">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Accion recomendada</p>
+                    <p className="text-xs text-slate-700 leading-relaxed">{selectedOperationalMessage.action}</p>
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -538,7 +513,7 @@ export const LoadMonitor: React.FC = () => {
                   {hasLineErrors
                     ? `Resultado de Validacion (${selectedLogErrors.length} errores)`
                     : isExecutionFailure
-                      ? inferFailureKind(selectedLog)
+                      ? selectedOperationalMessage.title
                       : 'Resultado de Validacion'}
                 </h4>
 
@@ -555,8 +530,9 @@ export const LoadMonitor: React.FC = () => {
                   </div>
                 ) : isExecutionFailure ? (
                   <div className="p-5 rounded-2xl bg-red-50 border border-red-100 space-y-2">
-                    <p className="text-sm font-bold text-red-700">La carga fallo antes de completar el procesamiento.</p>
-                    <p className="text-xs text-red-700/90">{getReadableMessage(selectedLog)}</p>
+                    <p className="text-sm font-bold text-red-700">{selectedOperationalMessage.title}</p>
+                    <p className="text-xs text-red-700/90">{selectedOperationalMessage.summary}</p>
+                    <p className="text-xs text-red-700/90">Causa probable: {selectedOperationalMessage.cause}</p>
                     <p className="text-[11px] text-red-600/80">
                       No hay errores por linea porque el fallo ocurrio en conexion, descarga, validacion inicial o persistencia.
                     </p>

@@ -72,14 +72,40 @@ class _FakeWorkerTable:
         self.supabase = supabase
         self.table_name = table_name
         self.payload = None
+        self._select = None
+        self._filters = []
+        self._in_filters = []
+
+    def select(self, value, *_args, **_kwargs):
+        self._select = value
+        return self
+
+    def eq(self, column, value):
+        self._filters.append((column, value))
+        return self
+
+    def in_(self, column, values):
+        self._in_filters.append((column, set(values or [])))
+        return self
 
     def insert(self, payload):
         self.payload = payload
         return self
 
     def execute(self):
-        rows = self.payload if isinstance(self.payload, list) else [self.payload]
-        self.supabase.tables.setdefault(self.table_name, []).extend([dict(row) for row in rows])
+        if self.payload is not None:
+            rows = self.payload if isinstance(self.payload, list) else [self.payload]
+            self.supabase.tables.setdefault(self.table_name, []).extend([dict(row) for row in rows])
+            return SimpleNamespace(data=rows)
+
+        rows = list(self.supabase.tables.get(self.table_name, []))
+        for column, value in self._filters:
+            rows = [row for row in rows if row.get(column) == value]
+        for column, values in self._in_filters:
+            rows = [row for row in rows if row.get(column) in values]
+        if self._select and self._select != "*":
+            columns = [col.strip() for col in str(self._select).split(",")]
+            rows = [{col: row.get(col) for col in columns} for row in rows]
         return SimpleNamespace(data=rows)
 
 
@@ -181,10 +207,11 @@ def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
         },
     }
 
-    count, errors = worker.process_file_logic(config, "ventas.csv", content)
+    count, errors, stats = worker.process_file_logic(config, "ventas.csv", content)
 
     assert count == 2
     assert errors == []
+    assert stats["moving_window_mode"] is False
     assert [row["factura_no"] for row in fake_db.tables["ventas"]] == [
         "PABT01202603010001",
         "PABT01202603010002",
@@ -219,7 +246,7 @@ def test_worker_process_file_logic_rejects_closed_import_period(monkeypatch):
         },
     }
 
-    count, errors = worker.process_file_logic(config, "ventas.csv", content)
+    count, errors, _stats = worker.process_file_logic(config, "ventas.csv", content)
 
     assert count == 1
     assert len(errors) == 1
@@ -256,7 +283,7 @@ def test_worker_process_file_logic_parses_comma_decimal_mapping(monkeypatch):
         },
     }
 
-    count, errors = worker.process_file_logic(config, "ventas.txt", content)
+    count, errors, _stats = worker.process_file_logic(config, "ventas.txt", content)
 
     assert count == 1
     assert errors == []
@@ -266,6 +293,75 @@ def test_worker_process_file_logic_parses_comma_decimal_mapping(monkeypatch):
     assert row["total_bruto"] == 3995.0
     assert row["total_impuestos"] == 609.40678
     assert row["total_neto"] == 3385.59322
+
+
+def test_worker_moving_window_skips_existing_documents(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    fake_db.tables["ventas"] = [
+        {
+            "local_id": "local-1",
+            "fecha": "2026-05-01",
+            "factura_no": "632026050110",
+            "total_bruto": 8170.0,
+        }
+    ]
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = "\n".join([
+        "ID_TRANSACCION,FECHA,TOTALBRUTO,TOTALIMPUESTOS,TOTALNETO",
+        "632026050110,20260501,8170.0,1470.6,6699.4",
+        "632026050210,20260502,19155.0,3447.9,15707.1",
+    ])
+    config = {
+        "nombre": "ZH_PC",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "file_type": "CSV",
+        "mapping_config": {
+            "factura_numero": "ID_TRANSACCION",
+            "fecha_venta": "FECHA",
+            "total_bruto": "TOTALBRUTO",
+            "total_impuestos": "TOTALIMPUESTOS",
+            "total_neto": "TOTALNETO",
+        },
+        "constants_config": {
+            "_moving_window_mode": "true",
+        },
+    }
+
+    count, errors, stats = worker.process_file_logic(config, "ZH_PC.txt", content)
+
+    assert count == 1
+    assert errors == []
+    assert stats["moving_window_mode"] is True
+    assert stats["duplicate_skipped"] == 1
+    assert stats["date_min"] == "2026-05-01"
+    assert stats["date_max"] == "2026-05-02"
+    inserted = [row for row in fake_db.tables["ventas"] if row["factura_no"] == "632026050210"]
+    assert len(inserted) == 1
+    assert inserted[0]["fecha"] == "2026-05-02"
+
+
+def test_worker_moving_window_all_duplicates_is_success(monkeypatch):
+    worker = _load_worker(monkeypatch)
+
+    estado, mensaje, confirmed = worker._resolve_worker_processing_outcome(
+        0,
+        [],
+        {
+            "moving_window_mode": True,
+            "duplicate_skipped": 2,
+            "date_min": "2026-05-01",
+            "date_max": "2026-05-02",
+        },
+    )
+
+    assert estado == "exito"
+    assert confirmed is True
+    assert "Archivo de ventana móvil procesado" in mensaje
+    assert "0 registros nuevos insertados" in mensaje
+    assert "2 registros ya existentes omitidos" in mensaje
 
 
 def test_worker_marks_error_when_no_insert_is_confirmed(monkeypatch):

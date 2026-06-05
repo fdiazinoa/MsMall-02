@@ -415,12 +415,58 @@ def _build_marked_filename(filename: str, prefix: str, extra_prefixes: Sequence[
 
     return f"{prefix}{base_name}"
 
-def _resolve_worker_processing_outcome(count: int, errors: list) -> Tuple[str, str, bool]:
-    if isinstance(count, int) and count > 0:
+def _parse_worker_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "si", "sí", "on"}
+
+
+def _moving_window_enabled(constants: Dict[str, Any]) -> bool:
+    return _parse_worker_bool(constants.get("_moving_window_mode"))
+
+
+def _format_worker_range_date(value: Any) -> Optional[str]:
+    parsed = _format_worker_date_for_message(value)
+    if parsed:
+        return parsed
+    normalized = normalize_date(str(value or ""))
+    if normalized:
+        try:
+            return datetime.strptime(normalized, "%Y-%m-%d").strftime("%d/%m/%Y")
+        except ValueError:
+            return normalized
+    return None
+
+
+def _format_moving_window_message(count: int, stats: Dict[str, Any], errors: list) -> str:
+    duplicate_skipped = int(stats.get("duplicate_skipped") or 0)
+    date_min = _format_worker_range_date(stats.get("date_min"))
+    date_max = _format_worker_range_date(stats.get("date_max"))
+    range_text = f" Rango detectado: {date_min} - {date_max}." if date_min and date_max else ""
+    message = (
+        f"Archivo de ventana móvil procesado.{range_text} "
+        f"{count} registros nuevos insertados. "
+        f"{duplicate_skipped} registros ya existentes omitidos."
+    )
+    if errors:
+        message += f" Se encontraron {len(errors)} errores parciales."
+    return message
+
+
+def _resolve_worker_processing_outcome(count: int, errors: list, stats: Optional[Dict[str, Any]] = None) -> Tuple[str, str, bool]:
+    stats = stats or {}
+    moving_window_processed = bool(stats.get("moving_window_mode")) and int(stats.get("duplicate_skipped") or 0) > 0
+    if isinstance(count, int) and (count > 0 or moving_window_processed):
         estado = "parcial" if errors else "exito"
-        mensaje = f"Worker: Inserción confirmada de {count} registros."
+        mensaje = (
+            _format_moving_window_message(count, stats, errors)
+            if stats.get("moving_window_mode")
+            else f"Worker: Inserción confirmada de {count} registros."
+        )
         if errors:
-            mensaje += f" Se encontraron {len(errors)} errores parciales."
+            if not stats.get("moving_window_mode"):
+                mensaje += f" Se encontraron {len(errors)} errores parciales."
         return estado, mensaje, True
 
     if _is_empty_file_outcome(errors):
@@ -445,6 +491,14 @@ def _is_empty_file_outcome(errors: Optional[list]) -> bool:
         if any(marker in text for marker in empty_markers):
             return True
     return False
+
+
+def _unpack_process_file_result(result: Any) -> Tuple[int, list, Dict[str, Any]]:
+    if isinstance(result, tuple) and len(result) >= 3:
+        return result[0], result[1], result[2] or {}
+    if isinstance(result, tuple) and len(result) >= 2:
+        return result[0], result[1], {}
+    return 0, [{"linea": 0, "error": "Resultado de procesamiento inválido."}], {}
 
 
 def _format_worker_date_for_message(value: Any) -> Optional[str]:
@@ -511,6 +565,62 @@ def _build_no_new_file_message(config: Dict[str, Any]) -> str:
         return f"Archivo nuevo no encontrado, ultimo archivo importado fecha {last_import_date}"
     return "Archivo nuevo no encontrado, sin importaciones previas"
 
+
+def _filter_existing_moving_window_rows(
+    rows: List[Dict[str, Any]],
+    line_numbers: List[int],
+    local_id: str,
+) -> Tuple[List[Dict[str, Any]], List[int], int]:
+    if not rows or not supabase:
+        return rows, line_numbers, 0
+
+    factura_values = [
+        str(row.get("factura_no") or "").strip()
+        for row in rows
+        if row.get("factura_no")
+    ]
+    factura_values = [value for value in factura_values if value]
+    if not factura_values:
+        return rows, line_numbers, 0
+
+    existing: set[str] = set()
+    unique_facturas = list(dict.fromkeys(factura_values))
+    chunk_size = 500
+    for start in range(0, len(unique_facturas), chunk_size):
+        chunk = unique_facturas[start:start + chunk_size]
+        try:
+            response = (
+                supabase.table("ventas")
+                .select("factura_no")
+                .eq("local_id", local_id)
+                .in_("factura_no", chunk)
+                .execute()
+            )
+            for item in response.data or []:
+                factura = str(item.get("factura_no") or "").strip()
+                if factura:
+                    existing.add(factura)
+        except Exception as exc:
+            logger.warning("No se pudo consultar duplicados de ventana móvil para %s: %s", local_id, exc)
+            return rows, line_numbers, 0
+
+    filtered_rows: List[Dict[str, Any]] = []
+    filtered_lines: List[int] = []
+    seen_in_file: set[str] = set()
+    skipped = 0
+    for row, line_no in zip(rows, line_numbers):
+        factura = str(row.get("factura_no") or "").strip()
+        if factura and (factura in existing or factura in seen_in_file):
+            skipped += 1
+            continue
+        if factura:
+            seen_in_file.add(factura)
+        filtered_rows.append(row)
+        filtered_lines.append(line_no)
+
+    return filtered_rows, filtered_lines, skipped
+
+
 def process_file_logic(config, filename, content):
     """
     Process file content (CSV or JSON) and insert to database.
@@ -518,6 +628,12 @@ def process_file_logic(config, filename, content):
     logger.info(f"Procesando contenido de {filename} para {config['nombre']}")
     detalles = []
     registros_exito = 0
+    stats: Dict[str, Any] = {
+        "moving_window_mode": False,
+        "duplicate_skipped": 0,
+        "date_min": None,
+        "date_max": None,
+    }
     
     try:
         file_type = config.get("file_type", "CSV").upper()
@@ -538,7 +654,7 @@ def process_file_logic(config, filename, content):
                     if not raw_records:
                         raw_records = [data] # Single object
             except Exception as e:
-                return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}]
+                return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}], stats
         else:
             # Default to CSV/TXT
             normalized_content = _normalize_text_for_csv(content)
@@ -550,21 +666,23 @@ def process_file_logic(config, filename, content):
             raw_records = [_normalize_csv_row_keys(r) for r in reader]
             
         if not raw_records:
-            return 0, [{"linea": 0, "error": "Archivo vacío o sin datos válidos"}]
+            return 0, [{"linea": 0, "error": "Archivo vacío o sin datos válidos"}], stats
             
         # Get store ID and Mall ID
         local_id = config.get('id')
         mall_id = config.get('mall_id')
         
         if not local_id:
-            return 0, [{"linea": 0, "error": "No se pudo determinar el local_id"}]
+            return 0, [{"linea": 0, "error": "No se pudo determinar el local_id"}], stats
         if not mall_id:
-            return 0, [{"linea": 0, "error": "La configuración no tiene mall_id. Importación cancelada para evitar mezcla entre malls."}]
+            return 0, [{"linea": 0, "error": "La configuración no tiene mall_id. Importación cancelada para evitar mezcla entre malls."}], stats
             
         # Get mapping
         mapping = config.get('mapping_config') or {}
         constants = config.get('constants_config') or config.get('constants') or {}
         decimal_separator = constants.get("_decimal_separator", ".")
+        moving_window_mode = _moving_window_enabled(constants)
+        stats["moving_window_mode"] = moving_window_mode
         import_cutoff_date = _parse_import_cutoff_date(config.get("fecha_corte_importacion"))
         configured_local_code = (
             config.get('codigo_interno')
@@ -653,6 +771,10 @@ def process_file_logic(config, filename, content):
                 if not fecha_venta or total_bruto == 0:
                     detalles.append({"linea": i, "error": "Datos incompletos (Fecha o Total Bruto faltante/cero)"})
                     continue
+
+                if moving_window_mode and not factura_no:
+                    detalles.append({"linea": i, "error": "Datos incompletos (ID_Documento o No. Factura faltante)"})
+                    continue
                 
                 payload = {
                     "local_id": local_id,
@@ -668,10 +790,28 @@ def process_file_logic(config, filename, content):
 
                 valid_rows.append(payload)
                 valid_line_numbers.append(i)
+                if fecha_venta:
+                    stats["date_min"] = min(stats["date_min"], fecha_venta) if stats["date_min"] else fecha_venta
+                    stats["date_max"] = max(stats["date_max"], fecha_venta) if stats["date_max"] else fecha_venta
                 
             except Exception as e:
                 detalles.append({"linea": i, "error": str(e)})
                 logger.error(f"Error en línea {i}: {e}")
+
+        if moving_window_mode and valid_rows:
+            valid_rows, valid_line_numbers, duplicate_skipped = _filter_existing_moving_window_rows(
+                valid_rows,
+                valid_line_numbers,
+                local_id,
+            )
+            stats["duplicate_skipped"] = duplicate_skipped
+            if duplicate_skipped:
+                logger.info(
+                    "%s: ventana móvil omitió %s registros existentes en %s",
+                    config.get("nombre"),
+                    duplicate_skipped,
+                    filename,
+                )
 
         # Bulk insert for better throughput; fallback to row insert if a chunk fails.
         BATCH_SIZE = 500
@@ -693,9 +833,9 @@ def process_file_logic(config, filename, content):
                 
     except Exception as e:
         logger.error(f"Error general procesando archivo: {e}")
-        return 0, [{"linea": 0, "error": str(e)}]
+        return 0, [{"linea": 0, "error": str(e)}], stats
             
-    return registros_exito, detalles
+    return registros_exito, detalles, stats
 
 def process_local_files(config):
     protocol = config.get("sftp_protocol", "SFTP")
@@ -799,9 +939,11 @@ def process_local_files(config):
                             is_json=str(filename or "").lower().endswith(".json")
                         )
                     
-                    count, errors = process_file_logic(config, filename, content)
+                    count, errors, stats = _unpack_process_file_result(
+                        process_file_logic(config, filename, content)
+                    )
 
-                    estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors)
+                    estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors, stats)
 
                     if insert_confirmed:
                         insert_load_log(
@@ -811,7 +953,7 @@ def process_local_files(config):
                             canal=protocol,
                             records_processed=count,
                             error_count=len(errors or []),
-                            metadata={"source": "worker_auto_import"},
+                            metadata={"source": "worker_auto_import", **(stats or {})},
                         )
                         if post_action == "RENOMBRAR_BACKUP":
                             handle_post_process_sftp(
@@ -950,9 +1092,11 @@ def process_local_files(config):
                         is_json=str(filename or "").lower().endswith(".json")
                     )
                     
-                    count, errors = process_file_logic(config, filename, content)
+                    count, errors, stats = _unpack_process_file_result(
+                        process_file_logic(config, filename, content)
+                    )
 
-                    estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors)
+                    estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors, stats)
 
                     if insert_confirmed:
                         insert_load_log(
@@ -962,7 +1106,7 @@ def process_local_files(config):
                             canal=protocol,
                             records_processed=count,
                             error_count=len(errors or []),
-                            metadata={"source": "worker_auto_import"},
+                            metadata={"source": "worker_auto_import", **(stats or {})},
                         )
                         if post_action == "RENOMBRAR_BACKUP":
                             handle_post_process_ftp(

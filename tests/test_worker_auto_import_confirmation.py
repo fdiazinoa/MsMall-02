@@ -295,6 +295,45 @@ def test_worker_process_file_logic_parses_comma_decimal_mapping(monkeypatch):
     assert row["total_neto"] == 3385.59322
 
 
+def test_worker_process_file_logic_removes_configured_special_characters(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = "\n".join([
+        "ID_TRANSACCION,FECHA,TOTALBRUTO,TOTALIMPUESTOS,TOTALNETO",
+        '"INV#1001","2026-03-06","1#18.00","1#8.00","1#00.00"',
+    ])
+    config = {
+        "nombre": "Prestige",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "file_type": "CSV",
+        "mapping_config": {
+            "factura_numero": "ID_TRANSACCION",
+            "fecha_venta": "FECHA",
+            "total_bruto": "TOTALBRUTO",
+            "total_impuestos": "TOTALIMPUESTOS",
+            "total_neto": "TOTALNETO",
+        },
+        "constants_config": {
+            "_remove_special_chars": "true",
+            "_special_chars_to_remove": "#",
+        },
+    }
+
+    count, errors, _stats = worker.process_file_logic(config, "prestige.csv", content)
+
+    assert count == 1
+    assert errors == []
+    row = fake_db.tables["ventas"][0]
+    assert row["factura_no"] == "INV1001"
+    assert row["fecha"] == "2026-03-06"
+    assert row["total_bruto"] == 118.0
+    assert row["total_impuestos"] == 18.0
+    assert row["total_neto"] == 100.0
+
+
 def test_worker_moving_window_skips_existing_documents(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_db = _FakeWorkerSupabase()

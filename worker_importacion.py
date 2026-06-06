@@ -668,6 +668,16 @@ def _resolve_worker_processing_outcome(count: int, errors: list, stats: Optional
     return "error", mensaje, False
 
 
+def _append_post_process_warning(message: str, warning: str) -> str:
+    """Append a human-friendly warning without converting a successful insert into an error."""
+    if not warning:
+        return message
+    warning_text = str(warning).strip().replace("\n", "; ")
+    if not warning_text:
+        return message
+    return f"{message} Advertencia: {warning_text}"
+
+
 def _is_empty_file_outcome(errors: Optional[list]) -> bool:
     if not errors:
         return False
@@ -818,7 +828,6 @@ def _filter_existing_moving_window_rows(
         filtered_lines.append(line_no)
 
     return filtered_rows, filtered_lines, skipped
-
 
 def process_file_logic(config, filename, content):
     """
@@ -1172,35 +1181,64 @@ def process_local_files(config):
                     estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors, stats)
 
                     if insert_confirmed:
+                        post_process_warnings = []
+                        if post_action == "RENOMBRAR_BACKUP":
+                            try:
+                                handle_post_process_sftp(
+                                    sftp,
+                                    remote_path,
+                                    filename,
+                                    post_action,
+                                    processed_suffix,
+                                    AUTO_SUCCESS_PREFIX,
+                                    strip_prefixes=(custom_backup_prefix,)
+                                )
+                            except Exception as post_err:
+                                warning = (
+                                    "No se pudo renombrar el archivo a respaldo luego de insertar. "
+                                    f"Acción={post_action}. Error={post_err}"
+                                )
+                                logger.warning(f"⚠️ {config['nombre']}: {warning}")
+                                post_process_warnings.append(warning)
+                        else:
+                            try:
+                                handle_post_process_sftp(
+                                    sftp,
+                                    remote_path,
+                                    filename,
+                                    post_action,
+                                    processed_suffix,
+                                    custom_backup_prefix,
+                                    strip_prefixes=(custom_backup_prefix,)
+                                )
+                            except Exception as post_err:
+                                warning = (
+                                    "No se pudo aplicar acción post-proceso luego de insertar. "
+                                    f"Acción={post_action}. Error={post_err}"
+                                )
+                                logger.warning(f"⚠️ {config['nombre']}: {warning}")
+                                post_process_warnings.append(warning)
+
+                        mensaje_final = mensaje
+                        if post_process_warnings:
+                            mensaje_final = _append_post_process_warning(
+                                mensaje,
+                                " | ".join(post_process_warnings),
+                            )
+
+                        metadata = {"source": "worker_auto_import", **(stats or {})}
+                        if post_process_warnings:
+                            metadata["post_process_warnings"] = post_process_warnings
+
                         insert_load_log(
-                            config['nombre'], filename, estado, mensaje, batch_id, errors,
+                            config['nombre'], filename, estado, mensaje_final, batch_id, errors,
                             mall_id=config.get("mall_id"),
                             local_id=config.get("id"),
                             canal=protocol,
                             records_processed=count,
                             error_count=len(errors or []),
-                            metadata={"source": "worker_auto_import", **(stats or {})},
+                            metadata=metadata,
                         )
-                        if post_action == "RENOMBRAR_BACKUP":
-                            handle_post_process_sftp(
-                                sftp,
-                                remote_path,
-                                filename,
-                                post_action,
-                                processed_suffix,
-                                AUTO_SUCCESS_PREFIX,
-                                strip_prefixes=(custom_backup_prefix,)
-                            )
-                        else:
-                            handle_post_process_sftp(
-                                sftp,
-                                remote_path,
-                                filename,
-                                post_action,
-                                processed_suffix,
-                                custom_backup_prefix,
-                                strip_prefixes=(custom_backup_prefix,)
-                            )
                     else:
                         file_errors += 1
                         last_error_message = mensaje
@@ -1342,33 +1380,62 @@ def process_local_files(config):
                     estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors, stats)
 
                     if insert_confirmed:
+                        post_process_warnings = []
+                        if post_action == "RENOMBRAR_BACKUP":
+                            try:
+                                handle_post_process_ftp(
+                                    ftp,
+                                    filename,
+                                    post_action,
+                                    processed_suffix,
+                                    AUTO_SUCCESS_PREFIX,
+                                    strip_prefixes=(custom_backup_prefix,)
+                                )
+                            except Exception as post_err:
+                                warning = (
+                                    "No se pudo renombrar el archivo a respaldo luego de insertar. "
+                                    f"Acción={post_action}. Error={post_err}"
+                                )
+                                logger.warning(f"⚠️ {config['nombre']}: {warning}")
+                                post_process_warnings.append(warning)
+                        else:
+                            try:
+                                handle_post_process_ftp(
+                                    ftp,
+                                    filename,
+                                    post_action,
+                                    processed_suffix,
+                                    custom_backup_prefix,
+                                    strip_prefixes=(custom_backup_prefix,)
+                                )
+                            except Exception as post_err:
+                                warning = (
+                                    "No se pudo aplicar acción post-proceso luego de insertar. "
+                                    f"Acción={post_action}. Error={post_err}"
+                                )
+                                logger.warning(f"⚠️ {config['nombre']}: {warning}")
+                                post_process_warnings.append(warning)
+
+                        mensaje_final = mensaje
+                        if post_process_warnings:
+                            mensaje_final = _append_post_process_warning(
+                                mensaje,
+                                " | ".join(post_process_warnings),
+                            )
+
+                        metadata = {"source": "worker_auto_import", **(stats or {})}
+                        if post_process_warnings:
+                            metadata["post_process_warnings"] = post_process_warnings
+
                         insert_load_log(
-                            config['nombre'], filename, estado, mensaje, batch_id, errors,
+                            config['nombre'], filename, estado, mensaje_final, batch_id, errors,
                             mall_id=config.get("mall_id"),
                             local_id=config.get("id"),
                             canal=protocol,
                             records_processed=count,
                             error_count=len(errors or []),
-                            metadata={"source": "worker_auto_import", **(stats or {})},
+                            metadata=metadata,
                         )
-                        if post_action == "RENOMBRAR_BACKUP":
-                            handle_post_process_ftp(
-                                ftp,
-                                filename,
-                                post_action,
-                                processed_suffix,
-                                AUTO_SUCCESS_PREFIX,
-                                strip_prefixes=(custom_backup_prefix,)
-                            )
-                        else:
-                            handle_post_process_ftp(
-                                ftp,
-                                filename,
-                                post_action,
-                                processed_suffix,
-                                custom_backup_prefix,
-                                strip_prefixes=(custom_backup_prefix,)
-                            )
                     else:
                         file_errors += 1
                         last_error_message = mensaje

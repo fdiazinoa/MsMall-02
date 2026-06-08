@@ -15,7 +15,7 @@ import { useFormatCurrency } from '../hooks/useFormatCurrency';
 const COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
 
 const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
-  <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow relative group">
+  <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow relative group">
     {tooltip && (
       <div className="absolute top-3 right-3 text-slate-300 hover:text-indigo-500 transition-colors cursor-help">
         <Info size={14} />
@@ -24,8 +24,8 @@ const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
         </div>
       </div>
     )}
-    <div className="flex justify-between items-start mb-3">
-      <div className={`p-2.5 rounded-lg ${color} bg-opacity-10`}>
+    <div className="flex justify-between items-start mb-2">
+      <div className={`p-2 rounded-lg ${color} bg-opacity-10`}>
         <Icon className={`w-5 h-5 ${color.replace('bg-', 'text-')}`} />
       </div>
       {trend && (
@@ -35,8 +35,8 @@ const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
         </span>
       )}
     </div>
-    <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide">{title}</p>
-    <h3 className="text-xl font-bold text-slate-900 mt-1">{value}</h3>
+    <p className="text-slate-500 text-[11px] font-semibold uppercase tracking-wide">{title}</p>
+    <h3 className="text-lg font-bold text-slate-900 mt-1 leading-tight">{value}</h3>
   </div>
 );
 
@@ -85,17 +85,17 @@ const SegmentDonutCard = ({
   const total = visibleItems.reduce((sum, item) => sum + item.value, 0);
 
   return (
-    <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm min-h-[300px]">
-      <div className="flex items-center justify-between mb-4">
+    <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm min-h-[250px]">
+      <div className="flex items-center justify-between mb-3">
         <h4 className="font-bold text-slate-800">{title}</h4>
         <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
       </div>
       {visibleItems.length === 0 ? (
-        <div className="h-48 flex items-center justify-center text-sm text-slate-400">
+        <div className="h-40 flex items-center justify-center text-sm text-slate-400">
           Sin ventas en el periodo.
         </div>
       ) : (
-        <div className="relative h-[260px] sm:h-[300px]">
+        <div className="relative h-[210px] sm:h-[230px]">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
@@ -153,17 +153,17 @@ const RubroExplorerCard = ({
   const maxValue = Math.max(...visibleItems.map((item) => item.value), 0);
 
   return (
-    <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm min-h-[300px]">
-      <div className="flex items-center justify-between mb-5">
+    <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm min-h-[250px]">
+      <div className="flex items-center justify-between mb-3">
         <h4 className="font-bold text-slate-800">{title}</h4>
         <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
       </div>
       {visibleItems.length === 0 ? (
-        <div className="h-48 flex items-center justify-center text-sm text-slate-400">
+        <div className="h-40 flex items-center justify-center text-sm text-slate-400">
           Sin ventas en el periodo.
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           {visibleItems.map((item, index) => {
             const percent = maxValue > 0 ? (item.value / maxValue) * 100 : 0;
             const share = total > 0 ? (item.value / total) * 100 : 0;
@@ -177,7 +177,7 @@ const RubroExplorerCard = ({
                   item,
                   stores: detailMap?.[item.name] || [],
                 })}
-                className="group w-full rounded-lg border border-transparent px-2 py-2.5 text-left hover:border-slate-200 hover:bg-slate-50 transition-colors"
+                    className="group w-full rounded-lg border border-transparent px-2 py-2 text-left hover:border-slate-200 hover:bg-slate-50 transition-colors"
               >
                 <div className="flex items-center justify-between gap-3">
                   <span className="min-w-0 flex items-center gap-2">
@@ -225,7 +225,7 @@ const SegmentDetailModal = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4 py-6">
-      <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl border border-slate-200 max-h-[88vh] overflow-hidden">
+    <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl border border-slate-200 max-h-[82vh] overflow-hidden">
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
           <div>
             <p className="text-xs font-bold uppercase tracking-wide text-indigo-500">
@@ -244,7 +244,7 @@ const SegmentDetailModal = ({
           </button>
         </div>
 
-        <div className="px-6 py-5 overflow-y-auto max-h-[68vh]">
+        <div className="px-6 py-5 overflow-y-auto max-h-[62vh]">
           {stores.length === 0 ? (
             <div className="h-40 flex flex-col items-center justify-center text-center text-slate-400">
               <Store size={24} />
@@ -453,11 +453,11 @@ export const DashboardKPIs: React.FC = () => {
   );
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div className="space-y-1">
-          <p className="text-2xl font-bold text-slate-900">Hola, {displayName}</p>
-          <h2 className="pt-1 text-lg font-semibold text-slate-700">Business Intelligence</h2>
+    <div className="space-y-4 animate-in fade-in duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+        <div className="space-y-0.5">
+          <p className="text-xl font-bold text-slate-900">Hola, {displayName}</p>
+          <h2 className="pt-0.5 text-base font-semibold text-slate-700">Business Intelligence</h2>
           <p className="text-sm text-slate-500">Indicadores clave de rendimiento del mall.</p>
         </div>
         <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-100 flex flex-wrap items-center gap-2 w-full md:w-auto">
@@ -466,19 +466,19 @@ export const DashboardKPIs: React.FC = () => {
             type="date"
             value={dates.startDate}
             onChange={(e) => setDates({ ...dates, startDate: e.target.value })}
-            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[130px]"
+            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[120px]"
           />
           <span className="text-slate-300">-</span>
           <input
             type="date"
             value={dates.endDate}
             onChange={(e) => setDates({ ...dates, endDate: e.target.value })}
-            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[130px]"
+            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[120px]"
           />
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
         <KPICard
           title="Ventas Netas"
           value={format(data.ventas_totales_neto || 0)}
@@ -512,13 +512,13 @@ export const DashboardKPIs: React.FC = () => {
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex justify-between items-center mb-4">
             <h4 className="font-bold text-slate-800">Tendencia de Ventas Diarias</h4>
             <div className="text-xs text-slate-400">Últimos 7 días</div>
           </div>
-          <div className="h-[300px] w-full">
+          <div className="h-[220px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={data.ventas_por_dia} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
                 <defs>
@@ -551,8 +551,8 @@ export const DashboardKPIs: React.FC = () => {
 
         <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
           <h4 className="font-bold text-slate-800 mb-6">Top 5 Locales</h4>
-          <div className="h-80 w-full overflow-y-auto pr-2">
-            <div className="space-y-4">
+          <div className="h-56 w-full overflow-y-auto pr-2">
+            <div className="space-y-3">
               {data.top_locales.map((locale, index) => {
                 const maxTotal = Math.max(...data.top_locales.map(l => l.total));
                 const percent = maxTotal > 0 ? (locale.total / maxTotal) * 100 : 0;
@@ -580,7 +580,7 @@ export const DashboardKPIs: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <SegmentDonutCard
           title="Ventas por Tipo de Negocio"
           items={data.ventas_por_tipo_negocio || []}

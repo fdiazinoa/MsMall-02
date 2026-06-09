@@ -5,6 +5,7 @@ import { Header } from './components/Header';
 import { AppTab } from './components/appTabs';
 import { useAuth } from './context/AuthProvider';
 import { supabase } from './api';
+import { CopilotWidget } from './components/CopilotWidget';
 
 // Suppress Recharts deprecation warnings (XAxis, YAxis defaultProps)
 const originalConsoleError = console.error;
@@ -146,6 +147,8 @@ const App: React.FC = () => {
           &copy; MercaSend, SRL. MsMall v.20
         </footer>
       </div>
+
+      <CopilotWidget onOpenSettings={() => setActiveTab('copilot')} />
     </div>
   );
 };

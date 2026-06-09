@@ -109,6 +109,16 @@ RESEND_FROM_NAME = "MercaSend Notificaciones"
 RESEND_USER_AGENT = "MSMALL-API/1.0 (mercasend.net)"
 RESEND_SENDER_EMAIL_KEY = "RESEND_FROM_EMAIL"
 RESEND_SENDER_NAME_KEY = "RESEND_FROM_NAME"
+COPILOT_ENABLED_KEY = "COPILOT_ENABLED"
+COPILOT_PROVIDER_KEY = "COPILOT_PROVIDER"
+COPILOT_OPENAI_API_KEY_KEY = "COPILOT_OPENAI_API_KEY"
+COPILOT_GEMINI_API_KEY_KEY = "COPILOT_GEMINI_API_KEY"
+COPILOT_OPENAI_MODEL_KEY = "COPILOT_OPENAI_MODEL"
+COPILOT_GEMINI_MODEL_KEY = "COPILOT_GEMINI_MODEL"
+COPILOT_DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "gemini": "gemini-1.5-flash",
+}
 ADMIN_ROLES = {"admin", "superadmin", "super_admin", "administrador"}
 IT_ROLES = {"it", "tic"}
 
@@ -1241,6 +1251,22 @@ class MissingDaysEmailSettingsRequest(BaseModel):
 
 class MissingDaysSendNowRequest(BaseModel):
     mall_id: str
+
+class CopilotSettingsRequest(BaseModel):
+    enabled: bool = False
+    provider: str = "openai"
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    clear_api_key: bool = False
+
+class CopilotChatMessage(BaseModel):
+    role: str
+    content: str
+
+class CopilotChatRequest(BaseModel):
+    mall_id: str
+    message: str
+    history: List[CopilotChatMessage] = []
 
 class RemoteRequest(BaseModel):
     protocolo: str = "SFTP"
@@ -4543,6 +4569,511 @@ def _upsert_system_health_value_sync(key: str, value: str) -> None:
         "value": value,
         "last_update": timestamp,
     }).execute()
+
+
+def _normalize_copilot_provider(value: Optional[str]) -> str:
+    provider = str(value or "openai").strip().lower()
+    if provider in {"chatgpt", "gpt", "open_ai"}:
+        provider = "openai"
+    if provider not in {"openai", "gemini"}:
+        raise HTTPException(status_code=400, detail="Proveedor de Copilot invalido.")
+    return provider
+
+
+def _copilot_api_key_name(provider: str) -> str:
+    return COPILOT_GEMINI_API_KEY_KEY if provider == "gemini" else COPILOT_OPENAI_API_KEY_KEY
+
+
+def _copilot_model_key(provider: str) -> str:
+    return COPILOT_GEMINI_MODEL_KEY if provider == "gemini" else COPILOT_OPENAI_MODEL_KEY
+
+
+def _mask_secret(value: Optional[str]) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= 4:
+        return "****"
+    return f"****{raw[-4:]}"
+
+
+def _copilot_enabled_from_value(value: Optional[str]) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _copilot_config_status() -> Dict[str, Any]:
+    provider = _normalize_copilot_provider(_get_system_health_value(COPILOT_PROVIDER_KEY) or "openai")
+    model = (
+        _get_system_health_value(_copilot_model_key(provider))
+        or COPILOT_DEFAULT_MODELS[provider]
+    )
+    api_key = _get_system_health_value(_copilot_api_key_name(provider)) or ""
+    enabled = _copilot_enabled_from_value(_get_system_health_value(COPILOT_ENABLED_KEY))
+    return {
+        "enabled": enabled,
+        "provider": provider,
+        "model": model,
+        "api_key_configured": bool(api_key),
+        "api_key_masked": _mask_secret(api_key),
+        "available": enabled and bool(api_key),
+    }
+
+
+def _save_copilot_settings(payload: CopilotSettingsRequest) -> Dict[str, Any]:
+    provider = _normalize_copilot_provider(payload.provider)
+    model = str(payload.model or "").strip() or COPILOT_DEFAULT_MODELS[provider]
+    api_key = None if payload.api_key is None else str(payload.api_key).strip()
+
+    _upsert_system_health_value_sync(COPILOT_ENABLED_KEY, "true" if payload.enabled else "false")
+    _upsert_system_health_value_sync(COPILOT_PROVIDER_KEY, provider)
+    _upsert_system_health_value_sync(_copilot_model_key(provider), model)
+
+    if payload.clear_api_key:
+        _upsert_system_health_value_sync(_copilot_api_key_name(provider), "")
+    elif api_key:
+        _upsert_system_health_value_sync(_copilot_api_key_name(provider), api_key)
+
+    return _copilot_config_status()
+
+
+def _truncate_text(value: Any, limit: int = 260) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit - 3]}..."
+
+
+def _safe_date_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
+
+
+def _compact_copilot_log(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "fecha_hora": _safe_date_text(row.get("fecha_hora")),
+        "local": row.get("local_nombre"),
+        "estado": row.get("estado"),
+        "archivo": row.get("archivo"),
+        "mensaje": _truncate_text(row.get("mensaje"), 220),
+        "records_processed": row.get("records_processed"),
+        "error_count": row.get("error_count"),
+        "canal": row.get("canal"),
+    }
+
+
+def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
+    preferred_columns = (
+        "id,nombre,codigo_interno,email,rubro,tipo_negocio,processing_status,"
+        "consecutive_failures,upsert_activo,ultima_ejecucion,resultado_ultimo,"
+        "sftp_protocol,sftp_host,frecuencia_cron,hora_especifica"
+    )
+    fallback_columns = "id,nombre,codigo_interno,rubro,tipo_negocio,mall_id"
+    try:
+        response = (
+            supabase.table("locales")
+            .select(preferred_columns)
+            .eq("mall_id", mall_id)
+            .order("nombre")
+            .limit(80)
+            .execute()
+        )
+        return response.data or []
+    except Exception as exc:
+        logger.warning("Copilot locales preferred query failed: %s", sanitize_sensitive_ops_error(exc))
+        response = (
+            supabase.table("locales")
+            .select(fallback_columns)
+            .eq("mall_id", mall_id)
+            .order("nombre")
+            .limit(80)
+            .execute()
+        )
+        return response.data or []
+
+
+def _load_copilot_missing_days(locales: List[Dict[str, Any]], lookback_days: int = 7) -> Dict[str, Any]:
+    local_ids = [str(row.get("id")) for row in locales if row.get("id")]
+    end_date = datetime.utcnow().date()
+    start_date = end_date - timedelta(days=max(1, lookback_days) - 1)
+    expected_dates = {
+        (start_date + timedelta(days=offset)).isoformat()
+        for offset in range((end_date - start_date).days + 1)
+    }
+
+    if not local_ids:
+        return {
+            "lookback_days": lookback_days,
+            "fecha_inicio": start_date.isoformat(),
+            "fecha_fin": end_date.isoformat(),
+            "status": "sin_locales",
+            "locales_con_brechas": 0,
+            "locales_completos": 0,
+            "top_brechas": [],
+        }
+
+    dates_by_local: Dict[str, Set[str]] = {local_id: set() for local_id in local_ids}
+    page_size = 5000
+    max_pages = 4
+    try:
+        for page in range(max_pages):
+            chunk = (
+                supabase.table("ventas")
+                .select("local_id,fecha")
+                .in_("local_id", local_ids)
+                .gte("fecha", start_date.isoformat())
+                .lte("fecha", end_date.isoformat())
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            ).data or []
+            for row in chunk:
+                local_id = str(row.get("local_id") or "")
+                normalized = _normalize_missing_days_sale_date(row.get("fecha"))
+                if local_id and normalized:
+                    dates_by_local.setdefault(local_id, set()).add(normalized)
+            if len(chunk) < page_size:
+                break
+    except Exception as exc:
+        logger.warning("Copilot missing days query failed: %s", sanitize_sensitive_ops_error(exc))
+        return {
+            "lookback_days": lookback_days,
+            "fecha_inicio": start_date.isoformat(),
+            "fecha_fin": end_date.isoformat(),
+            "status": "no_disponible",
+            "error": "No se pudo consultar ventas para dias de informacion.",
+        }
+
+    rows = []
+    for local in locales:
+        local_id = str(local.get("id") or "")
+        actual = dates_by_local.get(local_id, set())
+        missing = sorted(expected_dates - actual)
+        rows.append({
+            "local_id": local_id,
+            "local": local.get("nombre"),
+            "dias_con_informacion": len(actual & expected_dates),
+            "dias_faltantes": len(missing),
+            "fechas_faltantes": missing[:10],
+        })
+
+    with_gaps = [row for row in rows if row["dias_faltantes"] > 0]
+    return {
+        "lookback_days": lookback_days,
+        "fecha_inicio": start_date.isoformat(),
+        "fecha_fin": end_date.isoformat(),
+        "status": "ok",
+        "locales_con_brechas": len(with_gaps),
+        "locales_completos": len(rows) - len(with_gaps),
+        "dias_esperados_por_local": len(expected_dates),
+        "top_brechas": sorted(with_gaps, key=lambda item: item["dias_faltantes"], reverse=True)[:15],
+    }
+
+
+def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+
+    try:
+        mall_row = (
+            supabase.table("malls")
+            .select("id,nombre")
+            .eq("id", mall_id)
+            .maybe_single()
+            .execute()
+        ).data or {}
+    except Exception:
+        mall_row = {"id": mall_id, "nombre": "Mall seleccionado"}
+
+    locales = _load_copilot_locales(mall_id)
+    compact_locales = [
+        {
+            "id": row.get("id"),
+            "codigo": row.get("codigo_interno"),
+            "nombre": row.get("nombre"),
+            "email": row.get("email"),
+            "rubro": row.get("rubro"),
+            "tipo_negocio": row.get("tipo_negocio"),
+            "processing_status": row.get("processing_status"),
+            "consecutive_failures": row.get("consecutive_failures"),
+            "upsert_activo": row.get("upsert_activo"),
+            "ultima_ejecucion": _safe_date_text(row.get("ultima_ejecucion")),
+            "resultado_ultimo": row.get("resultado_ultimo"),
+            "protocolo": row.get("sftp_protocol"),
+            "frecuencia": row.get("frecuencia_cron"),
+            "hora_especifica": row.get("hora_especifica"),
+        }
+        for row in locales[:60]
+    ]
+
+    try:
+        logs = (
+            supabase.table("logs_carga")
+            .select("*")
+            .eq("mall_id", mall_id)
+            .order("fecha_hora", desc=True)
+            .limit(40)
+            .execute()
+        ).data or []
+    except Exception as exc:
+        logger.warning("Copilot load logs query failed: %s", sanitize_sensitive_ops_error(exc))
+        logs = []
+
+    status_counts: Dict[str, int] = {}
+    for log in logs:
+        status_key = str(log.get("estado") or "desconocido").strip().lower() or "desconocido"
+        status_counts[status_key] = status_counts.get(status_key, 0) + 1
+
+    try:
+        connection_monitor = _connection_monitor_service().get_status_summary(
+            mall_id=mall_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except Exception as exc:
+        logger.warning("Copilot connection monitor query failed: %s", sanitize_sensitive_ops_error(exc))
+        connection_monitor = {"status": "no_disponible"}
+
+    missing_days = _load_copilot_missing_days(locales)
+
+    return {
+        "generated_at_utc": datetime.utcnow().isoformat(),
+        "mall": {
+            "id": mall_id,
+            "nombre": mall_row.get("nombre") or "Mall seleccionado",
+        },
+        "locales": {
+            "total": len(locales),
+            "con_importacion_activa": sum(1 for row in locales if row.get("upsert_activo") or row.get("sftp_host")),
+            "en_proceso": sum(1 for row in locales if row.get("processing_status") == "BUSY"),
+            "con_fallas_consecutivas": sum(1 for row in locales if int(row.get("consecutive_failures") or 0) > 0),
+            "muestra": compact_locales,
+        },
+        "monitor_carga": {
+            "total_logs_recientes": len(logs),
+            "conteo_por_estado": status_counts,
+            "logs_recientes": [_compact_copilot_log(row) for row in logs[:15]],
+        },
+        "monitor_conexiones": connection_monitor,
+        "dias_informacion": missing_days,
+    }
+
+
+def _copilot_system_prompt() -> str:
+    return (
+        "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
+        "Responde en español, de forma breve y accionable. Usa solamente el contexto JSON del sistema: "
+        "monitor de carga, monitor de conexiones, locales y dias de informacion. "
+        "Si el contexto no contiene un dato solicitado, dilo claramente y sugiere donde revisarlo. "
+        "No inventes cifras, locales, fechas ni estados. Cuando sea util, menciona la fuente del dato."
+    )
+
+
+def _sanitize_copilot_history(history: List[CopilotChatMessage]) -> List[Dict[str, str]]:
+    sanitized = []
+    for item in (history or [])[-8:]:
+        role = str(item.role or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = _truncate_text(item.content, 900)
+        if content:
+            sanitized.append({"role": role, "content": content})
+    return sanitized
+
+
+def _build_copilot_user_context(context: Dict[str, Any], message: str) -> str:
+    context_json = json.dumps(context, ensure_ascii=False, default=str)
+    return (
+        "Contexto operacional de MsMall en JSON:\n"
+        f"{context_json}\n\n"
+        "Pregunta del usuario:\n"
+        f"{message.strip()}"
+    )
+
+
+def _extract_llm_error(prefix: str, raw: str) -> str:
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            error = parsed.get("error")
+            if isinstance(error, dict):
+                return error.get("message") or error.get("status") or prefix
+            if isinstance(error, str):
+                return error
+            if isinstance(parsed.get("message"), str):
+                return parsed["message"]
+    except Exception:
+        pass
+    return raw[:240] if raw else prefix
+
+
+def _call_openai_copilot(api_key: str, model: str, context: Dict[str, Any], message: str, history: List[CopilotChatMessage]) -> str:
+    messages = [{"role": "system", "content": _copilot_system_prompt()}]
+    messages.extend(_sanitize_copilot_history(history))
+    messages.append({"role": "user", "content": _build_copilot_user_context(context, message)})
+    payload = {
+        "model": model or COPILOT_DEFAULT_MODELS["openai"],
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 700,
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": RESEND_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as response:
+            parsed = json.loads(response.read().decode("utf-8"))
+        return (
+            parsed.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        ) or "No recibi una respuesta del proveedor."
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=502, detail=f"OpenAI: {_extract_llm_error('Error consultando OpenAI.', raw)}")
+    except urllib.error.URLError:
+        raise HTTPException(status_code=502, detail="No se pudo conectar con OpenAI.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Copilot OpenAI error: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="Error inesperado consultando OpenAI.")
+
+
+def _call_gemini_copilot(api_key: str, model: str, context: Dict[str, Any], message: str, history: List[CopilotChatMessage]) -> str:
+    history_text = "\n".join(
+        f"{item['role']}: {item['content']}"
+        for item in _sanitize_copilot_history(history)
+    )
+    prompt = (
+        f"{_build_copilot_user_context(context, message)}\n\n"
+        f"Historial reciente:\n{history_text or 'Sin historial previo.'}"
+    )
+    payload = {
+        "systemInstruction": {"parts": [{"text": _copilot_system_prompt()}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 700,
+        },
+    }
+    safe_model = (model or COPILOT_DEFAULT_MODELS["gemini"]).strip()
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{safe_model}:generateContent?key={api_key}"
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": RESEND_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as response:
+            parsed = json.loads(response.read().decode("utf-8"))
+        parts = (
+            parsed.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [])
+        )
+        return "\n".join(str(part.get("text") or "").strip() for part in parts if part.get("text")).strip() or "No recibi una respuesta del proveedor."
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=502, detail=f"Gemini: {_extract_llm_error('Error consultando Gemini.', raw)}")
+    except urllib.error.URLError:
+        raise HTTPException(status_code=502, detail="No se pudo conectar con Gemini.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Copilot Gemini error: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="Error inesperado consultando Gemini.")
+
+
+def _call_copilot_provider(settings: Dict[str, Any], context: Dict[str, Any], message: str, history: List[CopilotChatMessage]) -> str:
+    provider = _normalize_copilot_provider(settings.get("provider"))
+    api_key = _get_system_health_value(_copilot_api_key_name(provider)) or ""
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Copilot no tiene API key configurada.")
+    if provider == "gemini":
+        return _call_gemini_copilot(api_key, settings.get("model") or "", context, message, history)
+    return _call_openai_copilot(api_key, settings.get("model") or "", context, message, history)
+
+
+@app.get("/api/v1/admin/copilot/settings")
+async def get_copilot_settings(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+    return _copilot_config_status()
+
+
+@app.put("/api/v1/admin/copilot/settings")
+async def save_copilot_settings(
+    payload: CopilotSettingsRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    try:
+        return _save_copilot_settings(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error guardando configuracion de Copilot: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudo guardar la configuracion de Copilot.")
+
+
+@app.get("/api/v1/copilot/status")
+async def get_copilot_status(
+    mall_id: str = Query(...),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    return _copilot_config_status()
+
+
+@app.post("/api/v1/copilot/chat")
+async def chat_with_copilot(
+    payload: CopilotChatRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    mall_id = str(payload.mall_id or "").strip()
+    message = str(payload.message or "").strip()
+    if not mall_id:
+        raise HTTPException(status_code=400, detail="mall_id es requerido.")
+    if not message:
+        raise HTTPException(status_code=400, detail="Escribe una pregunta para Copilot.")
+    if len(message) > 1400:
+        raise HTTPException(status_code=400, detail="La pregunta es demasiado larga.")
+
+    settings = _copilot_config_status()
+    if not settings.get("enabled"):
+        raise HTTPException(status_code=503, detail="Copilot MsMall esta desactivado.")
+    if not settings.get("api_key_configured"):
+        raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
+
+    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx)
+    answer = await asyncio.to_thread(
+        _call_copilot_provider,
+        settings,
+        context,
+        message,
+        payload.history or [],
+    )
+    return {
+        "answer": answer,
+        "provider": settings["provider"],
+        "model": settings["model"],
+        "context_generated_at": context.get("generated_at_utc"),
+        "sources": ["monitor_carga", "monitor_conexiones", "locales", "dias_informacion"],
+    }
 
 
 def _normalize_resend_sender_email(value: str) -> str:

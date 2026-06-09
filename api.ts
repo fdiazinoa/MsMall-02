@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -2344,6 +2344,67 @@ export const ApiService = {
         body: JSON.stringify({ mall_id: mallId })
       },
       "No se pudo ejecutar el envío inmediato"
+    );
+  },
+
+  async getCopilotSettings(token: string): Promise<CopilotSettings> {
+    return fetchJsonWithBaseFallback<CopilotSettings>(
+      '/admin/copilot/settings',
+      {
+        method: 'GET',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudo cargar la configuración de Copilot"
+    );
+  },
+
+  async saveCopilotSettings(payload: CopilotSettingsPayload, token: string): Promise<CopilotSettings> {
+    return fetchJsonWithBaseFallback<CopilotSettings>(
+      '/admin/copilot/settings',
+      {
+        method: 'PUT',
+        headers: withAuthHeaders(token, {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }),
+        body: JSON.stringify(payload)
+      },
+      "No se pudo guardar la configuración de Copilot"
+    );
+  },
+
+  async getCopilotStatus(mallId: string, token: string): Promise<CopilotSettings> {
+    return fetchJsonWithBaseFallback<CopilotSettings>(
+      `/copilot/status?mall_id=${encodeURIComponent(mallId)}`,
+      {
+        method: 'GET',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudo consultar el estado de Copilot"
+    );
+  },
+
+  async sendCopilotMessage(
+    mallId: string,
+    message: string,
+    history: CopilotChatMessage[],
+    token: string
+  ): Promise<CopilotChatResponse> {
+    return fetchJsonWithBaseFallback<CopilotChatResponse>(
+      '/copilot/chat',
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }),
+        body: JSON.stringify({
+          mall_id: mallId,
+          message,
+          history: history.slice(-8)
+        })
+      },
+      "Copilot no pudo responder"
     );
   },
 

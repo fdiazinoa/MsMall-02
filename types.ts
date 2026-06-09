@@ -253,6 +253,38 @@ export interface MissingDaysSendNowResponse {
   message: string;
 }
 
+export type CopilotProvider = 'openai' | 'gemini';
+
+export interface CopilotSettings {
+  enabled: boolean;
+  provider: CopilotProvider;
+  model: string;
+  api_key_configured: boolean;
+  api_key_masked?: string;
+  available: boolean;
+}
+
+export interface CopilotSettingsPayload {
+  enabled: boolean;
+  provider: CopilotProvider;
+  model?: string;
+  api_key?: string;
+  clear_api_key?: boolean;
+}
+
+export interface CopilotChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface CopilotChatResponse {
+  answer: string;
+  provider: CopilotProvider;
+  model: string;
+  context_generated_at?: string;
+  sources: string[];
+}
+
 export type SecurityTokenType = 'app' | 'exporter';
 export type SecurityTokenStatus = 'active' | 'disabled' | 'revoked';
 

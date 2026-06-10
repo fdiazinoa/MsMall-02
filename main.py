@@ -4651,6 +4651,13 @@ def _safe_date_text(value: Any) -> Optional[str]:
     return str(value)
 
 
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _compact_copilot_log(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "fecha_hora": _safe_date_text(row.get("fecha_hora")),
@@ -4771,6 +4778,114 @@ def _load_copilot_missing_days(locales: List[Dict[str, Any]], lookback_days: int
     }
 
 
+def _load_copilot_sales_summary(locales: List[Dict[str, Any]], lookback_days: int = 30) -> Dict[str, Any]:
+    local_ids = [str(row.get("id")) for row in locales if row.get("id")]
+    end_date = datetime.utcnow().date()
+    start_date = end_date - timedelta(days=max(1, lookback_days) - 1)
+
+    if not local_ids:
+        return {
+            "lookback_days": lookback_days,
+            "fecha_inicio": start_date.isoformat(),
+            "fecha_fin": end_date.isoformat(),
+            "status": "sin_locales",
+            "ventas_totales_bruto": 0,
+            "ventas_totales_neto": 0,
+            "transacciones": 0,
+            "ticket_promedio": 0,
+            "top_locales": [],
+            "ventas_por_dia": [],
+        }
+
+    store_map = {str(row.get("id")): row for row in locales if row.get("id")}
+    sales: List[Dict[str, Any]] = []
+    page_size = 5000
+    max_pages = 8
+
+    try:
+        for page in range(max_pages):
+            chunk = (
+                supabase.table("ventas")
+                .select("local_id,fecha,total_bruto,total_neto")
+                .in_("local_id", local_ids)
+                .gte("fecha", start_date.isoformat())
+                .lte("fecha", end_date.isoformat())
+                .order("fecha")
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            ).data or []
+            sales.extend(chunk)
+            if len(chunk) < page_size:
+                break
+    except Exception as exc:
+        logger.warning("Copilot sales query failed: %s", sanitize_sensitive_ops_error(exc))
+        return {
+            "lookback_days": lookback_days,
+            "fecha_inicio": start_date.isoformat(),
+            "fecha_fin": end_date.isoformat(),
+            "status": "no_disponible",
+            "error": "No se pudo consultar ventas recientes.",
+        }
+
+    total_bruto = 0.0
+    total_neto = 0.0
+    by_store: Dict[str, Dict[str, Any]] = {}
+    by_day: Dict[str, float] = {}
+    by_business_type: Dict[str, float] = {}
+    by_rubro: Dict[str, float] = {}
+
+    for sale in sales:
+        local_id = str(sale.get("local_id") or "")
+        store = store_map.get(local_id) or {}
+        store_name = store.get("nombre") or "Local sin nombre"
+        business_type = str(store.get("tipo_negocio") or "Sin tipo de negocio").strip()
+        rubro = str(store.get("rubro") or "Sin rubro").strip()
+        sale_date = _normalize_missing_days_sale_date(sale.get("fecha")) or str(sale.get("fecha") or "")
+        bruto = _safe_float(sale.get("total_bruto"))
+        neto = _safe_float(sale.get("total_neto"))
+
+        total_bruto += bruto
+        total_neto += neto
+        by_day[sale_date] = by_day.get(sale_date, 0.0) + bruto
+        by_business_type[business_type] = by_business_type.get(business_type, 0.0) + bruto
+        by_rubro[rubro] = by_rubro.get(rubro, 0.0) + bruto
+
+        store_totals = by_store.setdefault(store_name, {
+            "local": store_name,
+            "total_bruto": 0.0,
+            "total_neto": 0.0,
+            "transacciones": 0,
+        })
+        store_totals["total_bruto"] += bruto
+        store_totals["total_neto"] += neto
+        store_totals["transacciones"] += 1
+
+    transactions = len(sales)
+    return {
+        "lookback_days": lookback_days,
+        "fecha_inicio": start_date.isoformat(),
+        "fecha_fin": end_date.isoformat(),
+        "status": "ok",
+        "ventas_totales_bruto": total_bruto,
+        "ventas_totales_neto": total_neto,
+        "transacciones": transactions,
+        "ticket_promedio": (total_bruto / transactions) if transactions else 0,
+        "top_locales": sorted(by_store.values(), key=lambda item: item["total_bruto"], reverse=True)[:10],
+        "ventas_por_dia": [
+            {"fecha": sale_date, "total_bruto": total}
+            for sale_date, total in sorted(by_day.items())[-30:]
+        ],
+        "ventas_por_tipo_negocio": [
+            {"tipo_negocio": label, "total_bruto": total}
+            for label, total in sorted(by_business_type.items(), key=lambda item: item[1], reverse=True)[:10]
+        ],
+        "ventas_por_rubro": [
+            {"rubro": label, "total_bruto": total}
+            for label, total in sorted(by_rubro.items(), key=lambda item: item[1], reverse=True)[:10]
+        ],
+    }
+
+
 def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado.")
@@ -4837,6 +4952,7 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
         connection_monitor = {"status": "no_disponible"}
 
     missing_days = _load_copilot_missing_days(locales)
+    sales_summary = _load_copilot_sales_summary(locales)
 
     return {
         "generated_at_utc": datetime.utcnow().isoformat(),
@@ -4858,6 +4974,7 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
         },
         "monitor_conexiones": connection_monitor,
         "dias_informacion": missing_days,
+        "ventas_recientes": sales_summary,
     }
 
 
@@ -4865,7 +4982,7 @@ def _copilot_system_prompt() -> str:
     return (
         "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
         "Responde en español, de forma breve y accionable. Usa solamente el contexto JSON del sistema: "
-        "monitor de carga, monitor de conexiones, locales y dias de informacion. "
+        "ventas recientes, monitor de carga, monitor de conexiones, locales y dias de informacion. "
         "Si el contexto no contiene un dato solicitado, dilo claramente y sugiere donde revisarlo. "
         "No inventes cifras, locales, fechas ni estados. Cuando sea util, menciona la fuente del dato."
     )
@@ -5072,7 +5189,7 @@ async def chat_with_copilot(
         "provider": settings["provider"],
         "model": settings["model"],
         "context_generated_at": context.get("generated_at_utc"),
-        "sources": ["monitor_carga", "monitor_conexiones", "locales", "dias_informacion"],
+        "sources": ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion"],
     }
 
 

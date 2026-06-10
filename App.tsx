@@ -148,7 +148,7 @@ const App: React.FC = () => {
         </footer>
       </div>
 
-      <CopilotWidget onOpenSettings={() => setActiveTab('copilot')} />
+      <CopilotWidget />
     </div>
   );
 };

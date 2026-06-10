@@ -276,6 +276,7 @@ export interface CopilotChatMessage {
   role: 'user' | 'assistant';
   content: string;
   attachments?: CopilotAttachment[];
+  email_actions?: CopilotEmailAction[];
 }
 
 export interface CopilotAttachment {
@@ -297,6 +298,23 @@ export interface CopilotChatResponse {
   context_generated_at?: string;
   sources: string[];
   attachments?: CopilotAttachment[];
+  email_actions?: CopilotEmailAction[];
+}
+
+export interface CopilotEmailAction {
+  id: string;
+  recipients: string[];
+  subject: string;
+  report_type?: string;
+  row_count?: number;
+  attachment_count?: number;
+  expires_at?: string;
+}
+
+export interface CopilotEmailSendResponse {
+  sent: Array<{ email: string; resend_id?: string | null }>;
+  subject: string;
+  attachment_count: number;
 }
 
 export type SecurityTokenType = 'app' | 'exporter';

@@ -125,13 +125,13 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex min-h-screen overflow-x-hidden bg-slate-50">
+    <div className="flex h-screen overflow-hidden bg-slate-50">
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
 
-      <div className="min-w-0 flex-1 flex flex-col">
+      <div className="min-h-0 min-w-0 flex-1 flex flex-col">
         <Header activeTab={activeTab} setActiveTab={setActiveTab} />
 
-        <main className="min-w-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5 md:px-8 lg:px-10">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5 md:px-8 lg:px-10">
           <div className="mx-auto w-full max-w-7xl min-w-0">
             <Suspense fallback={
               <div className="flex items-center justify-center h-64">

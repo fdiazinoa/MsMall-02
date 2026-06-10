@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ChevronRight, ChevronDown, Loader2, ArrowUpDown } from 'lucide-react';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
@@ -20,6 +20,8 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
     expandedLocalId
 }) => {
     const { format, formatAmount } = useFormatCurrency();
+    const PAGE_SIZE = 10;
+    const [page, setPage] = useState(1);
     const [detailSort, setDetailSort] = useState<{
         key: 'fecha' | 'factura_no' | 'total_bruto' | 'total_impuestos' | 'total_neto';
         direction: 'asc' | 'desc';
@@ -27,6 +29,14 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
         key: 'fecha',
         direction: 'desc'
     });
+    const totalPages = Math.max(1, Math.ceil(data.length / PAGE_SIZE));
+    const currentPage = Math.min(page, totalPages);
+    const pageStart = (currentPage - 1) * PAGE_SIZE;
+    const paginatedData = data.slice(pageStart, pageStart + PAGE_SIZE);
+
+    useEffect(() => {
+        setPage(1);
+    }, [data]);
 
     const toggleDetailSort = (key: 'fecha' | 'factura_no' | 'total_bruto' | 'total_impuestos' | 'total_neto') => {
         setDetailSort((prev) => (
@@ -96,25 +106,26 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
     };
 
     return (
-        <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-50 border-b border-slate-200">
-                    <tr>
-                        <th className="w-10 px-4 py-4"></th>
-                        <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Local</th>
-                        <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Centro Comercial</th>
-                        <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Bruto</th>
-                        <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Impuestos</th>
-                        <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Neto</th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                    {isLoading ? (
+        <div>
+            <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                    <thead className="bg-slate-50 border-b border-slate-200">
                         <tr>
-                            <td colSpan={6} className="px-6 py-20 text-center text-slate-400">Cargando datos...</td>
+                            <th className="w-10 px-4 py-4"></th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Local</th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Centro Comercial</th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Bruto</th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Impuestos</th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Neto</th>
                         </tr>
-                    ) : data.length > 0 ? (
-                        data.map((row) => {
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                        {isLoading ? (
+                            <tr>
+                                <td colSpan={6} className="px-6 py-20 text-center text-slate-400">Cargando datos...</td>
+                            </tr>
+                        ) : data.length > 0 ? (
+                            paginatedData.map((row) => {
                             const details = detailsData[row.local_id] || [];
                             const sortedDetails = sortDetails(details);
                             const subTotalBruto = details.reduce((sum, d) => sum + d.total_bruto, 0);
@@ -225,14 +236,44 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                     )}
                                 </React.Fragment>
                             );
-                        })
-                    ) : (
-                        <tr>
-                            <td colSpan={6} className="px-6 py-20 text-center text-slate-400">No hay ventas registradas en este periodo.</td>
-                        </tr>
-                    )}
-                </tbody>
-            </table>
+                            })
+                        ) : (
+                            <tr>
+                                <td colSpan={6} className="px-6 py-20 text-center text-slate-400">No hay ventas registradas en este periodo.</td>
+                            </tr>
+                        )}
+                    </tbody>
+                </table>
+            </div>
+
+            {!isLoading && data.length > PAGE_SIZE && (
+                <div className="flex flex-col gap-3 border-t border-slate-100 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs text-slate-500">
+                        Mostrando {pageStart + 1}-{Math.min(pageStart + PAGE_SIZE, data.length)} de {data.length} locales
+                    </p>
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => setPage((value) => Math.max(1, value - 1))}
+                            disabled={currentPage === 1}
+                            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            Anterior
+                        </button>
+                        <span className="text-xs font-medium text-slate-500">
+                            Página {currentPage} de {totalPages}
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+                            disabled={currentPage === totalPages}
+                            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            Siguiente
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

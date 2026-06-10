@@ -15,6 +15,7 @@ from typing import List, Optional, Dict, Any, Tuple, Set
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, Request, status, Body
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -155,6 +156,9 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_MISS = object()
 _INFLIGHT_MANUAL_EXEC: set = set()
 _INFLIGHT_MANUAL_EXEC_LOCK = threading.Lock()
+_COPILOT_DOWNLOADS: Dict[str, Dict[str, Any]] = {}
+_COPILOT_DOWNLOADS_LOCK = threading.Lock()
+_COPILOT_DOWNLOAD_TTL_SECONDS = 15 * 60
 
 def _env_int(name: str, default: int, min_value: int = 1, max_value: int = 3600) -> int:
     raw = os.getenv(name)
@@ -4861,6 +4865,7 @@ def _load_copilot_sales_summary(locales: List[Dict[str, Any]], lookback_days: in
         store_totals["transacciones"] += 1
 
     transactions = len(sales)
+    stores_ranked = sorted(by_store.values(), key=lambda item: item["total_bruto"], reverse=True)
     return {
         "lookback_days": lookback_days,
         "fecha_inicio": start_date.isoformat(),
@@ -4870,7 +4875,8 @@ def _load_copilot_sales_summary(locales: List[Dict[str, Any]], lookback_days: in
         "ventas_totales_neto": total_neto,
         "transacciones": transactions,
         "ticket_promedio": (total_bruto / transactions) if transactions else 0,
-        "top_locales": sorted(by_store.values(), key=lambda item: item["total_bruto"], reverse=True)[:10],
+        "top_locales": stores_ranked[:10],
+        "locales": stores_ranked[:80],
         "ventas_por_dia": [
             {"fecha": sale_date, "total_bruto": total}
             for sale_date, total in sorted(by_day.items())[-30:]
@@ -4976,6 +4982,331 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
         "dias_informacion": missing_days,
         "ventas_recientes": sales_summary,
     }
+
+
+def _normalize_copilot_report_format(message: str) -> Optional[str]:
+    text = _normalize_store_catalog_key(message)
+    if re.search(r"\b(pdf)\b", text):
+        return "pdf"
+    if re.search(r"\b(excel|xlsx|xls|hoja de calculo)\b", text):
+        return "xlsx"
+    return None
+
+
+def _normalize_copilot_report_type(message: str) -> Optional[str]:
+    text = _normalize_store_catalog_key(message)
+    if any(term in text for term in ["venta", "sales", "facturacion", "ingreso"]):
+        return "ventas"
+    if any(term in text for term in ["faltante", "dias", "brecha", "informacion"]):
+        return "dias_faltantes"
+    if any(term in text for term in ["monitor", "carga", "log", "importacion", "error"]):
+        return "monitor_carga"
+    if any(term in text for term in ["local", "tienda", "listado", "establecimiento"]):
+        return "locales"
+    return "locales"
+
+
+def _parse_copilot_report_request(message: str) -> Optional[Dict[str, str]]:
+    report_format = _normalize_copilot_report_format(message)
+    if not report_format:
+        return None
+    return {
+        "format": report_format,
+        "type": _normalize_copilot_report_type(message) or "locales",
+    }
+
+
+def _report_value(value: Any) -> Any:
+    if isinstance(value, float):
+        return round(value, 2)
+    return value if value is not None else ""
+
+
+def _copilot_report_definition(report_type: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    mall_name = (context.get("mall") or {}).get("nombre") or "MsMall"
+    generated_at = context.get("generated_at_utc") or datetime.utcnow().isoformat()
+
+    if report_type == "ventas":
+        sales = context.get("ventas_recientes") or {}
+        rows = sales.get("locales") or sales.get("top_locales") or []
+        return {
+            "title": "Ventas recientes por local",
+            "subtitle": f"{mall_name} | {sales.get('fecha_inicio', '')} al {sales.get('fecha_fin', '')}",
+            "filename_base": "msmall_ventas_recientes",
+            "sources": ["ventas_recientes"],
+            "headers": ["Local", "Total Bruto", "Total Neto", "Transacciones", "Ticket Promedio"],
+            "rows": [
+                [
+                    row.get("local") or row.get("name"),
+                    _report_value(row.get("total_bruto") or row.get("total") or 0),
+                    _report_value(row.get("total_neto") or 0),
+                    row.get("transacciones") or 0,
+                    _report_value((row.get("total_bruto") or row.get("total") or 0) / max(1, int(row.get("transacciones") or 0))),
+                ]
+                for row in rows
+            ],
+            "summary": [
+                ["Total Bruto", _report_value(sales.get("ventas_totales_bruto") or 0)],
+                ["Total Neto", _report_value(sales.get("ventas_totales_neto") or 0)],
+                ["Transacciones", sales.get("transacciones") or 0],
+                ["Ticket Promedio", _report_value(sales.get("ticket_promedio") or 0)],
+            ],
+            "generated_at": generated_at,
+        }
+
+    if report_type == "dias_faltantes":
+        missing = context.get("dias_informacion") or {}
+        rows = missing.get("top_brechas") or []
+        return {
+            "title": "Dias faltantes por local",
+            "subtitle": f"{mall_name} | {missing.get('fecha_inicio', '')} al {missing.get('fecha_fin', '')}",
+            "filename_base": "msmall_dias_faltantes",
+            "sources": ["dias_informacion"],
+            "headers": ["Local", "Dias con informacion", "Dias faltantes", "Fechas faltantes"],
+            "rows": [
+                [
+                    row.get("local"),
+                    row.get("dias_con_informacion") or 0,
+                    row.get("dias_faltantes") or 0,
+                    ", ".join(row.get("fechas_faltantes") or []),
+                ]
+                for row in rows
+            ],
+            "summary": [
+                ["Locales con brechas", missing.get("locales_con_brechas") or 0],
+                ["Locales completos", missing.get("locales_completos") or 0],
+                ["Dias esperados por local", missing.get("dias_esperados_por_local") or 0],
+            ],
+            "generated_at": generated_at,
+        }
+
+    if report_type == "monitor_carga":
+        monitor = context.get("monitor_carga") or {}
+        rows = monitor.get("logs_recientes") or []
+        return {
+            "title": "Monitor de carga reciente",
+            "subtitle": f"{mall_name} | ultimos {len(rows)} registros",
+            "filename_base": "msmall_monitor_carga",
+            "sources": ["monitor_carga"],
+            "headers": ["Fecha/Hora", "Local", "Estado", "Canal", "Archivo", "Procesados", "Errores", "Mensaje"],
+            "rows": [
+                [
+                    row.get("fecha_hora"),
+                    row.get("local"),
+                    row.get("estado"),
+                    row.get("canal"),
+                    row.get("archivo"),
+                    row.get("records_processed") or 0,
+                    row.get("error_count") or 0,
+                    row.get("mensaje"),
+                ]
+                for row in rows
+            ],
+            "summary": [[key, value] for key, value in (monitor.get("conteo_por_estado") or {}).items()],
+            "generated_at": generated_at,
+        }
+
+    locales = (context.get("locales") or {}).get("muestra") or []
+    return {
+        "title": "Listado de locales",
+        "subtitle": f"{mall_name} | {len(locales)} locales incluidos",
+        "filename_base": "msmall_listado_locales",
+        "sources": ["locales"],
+        "headers": ["Codigo", "Nombre", "Email", "Rubro", "Tipo de Negocio", "Estado Proceso", "Fallas", "Importacion Activa"],
+        "rows": [
+            [
+                row.get("codigo"),
+                row.get("nombre"),
+                row.get("email"),
+                row.get("rubro"),
+                row.get("tipo_negocio"),
+                row.get("processing_status"),
+                row.get("consecutive_failures") or 0,
+                "Si" if row.get("upsert_activo") else "No",
+            ]
+            for row in locales
+        ],
+        "summary": [
+            ["Total locales", (context.get("locales") or {}).get("total") or len(locales)],
+            ["Con importacion activa", (context.get("locales") or {}).get("con_importacion_activa") or 0],
+            ["En proceso", (context.get("locales") or {}).get("en_proceso") or 0],
+            ["Con fallas consecutivas", (context.get("locales") or {}).get("con_fallas_consecutivas") or 0],
+        ],
+        "generated_at": generated_at,
+    }
+
+
+def _build_copilot_excel(definition: Dict[str, Any]) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Reporte"
+
+    title_font = Font(size=14, bold=True, color="111827")
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="111827")
+
+    sheet.append([definition["title"]])
+    sheet["A1"].font = title_font
+    sheet.append([definition.get("subtitle") or ""])
+    sheet.append(["Generado", definition.get("generated_at") or datetime.utcnow().isoformat()])
+    sheet.append([])
+
+    summary = definition.get("summary") or []
+    if summary:
+        sheet.append(["Resumen"])
+        sheet.cell(row=sheet.max_row, column=1).font = Font(bold=True)
+        for label, value in summary:
+            sheet.append([label, _report_value(value)])
+        sheet.append([])
+
+    headers = definition.get("headers") or []
+    sheet.append(headers)
+    header_row = sheet.max_row
+    for column in range(1, len(headers) + 1):
+        cell = sheet.cell(row=header_row, column=column)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    for row in definition.get("rows") or []:
+        sheet.append([_report_value(value) for value in row])
+
+    for column_cells in sheet.columns:
+        max_length = 10
+        column_letter = column_cells[0].column_letter
+        for cell in column_cells:
+            max_length = max(max_length, len(str(cell.value or "")))
+        sheet.column_dimensions[column_letter].width = min(max_length + 2, 48)
+
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def _build_copilot_pdf(definition: Dict[str, Any]) -> bytes:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    output = io.BytesIO()
+    doc = SimpleDocTemplate(output, pagesize=landscape(letter), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph(definition["title"], styles["Title"]),
+        Paragraph(definition.get("subtitle") or "", styles["Normal"]),
+        Paragraph(f"Generado: {definition.get('generated_at') or datetime.utcnow().isoformat()}", styles["Normal"]),
+        Spacer(1, 12),
+    ]
+
+    summary = definition.get("summary") or []
+    if summary:
+        story.append(Paragraph("Resumen", styles["Heading3"]))
+        summary_table = Table([["Indicador", "Valor"], *[[_truncate_text(label, 60), _report_value(value)] for label, value in summary]])
+        summary_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+        ]))
+        story.extend([summary_table, Spacer(1, 12)])
+
+    headers = definition.get("headers") or []
+    rows = definition.get("rows") or []
+    table_rows = [headers] + [
+        [_truncate_text(_report_value(value), 72) for value in row]
+        for row in rows[:80]
+    ]
+    if len(table_rows) == 1:
+        table_rows.append(["Sin datos disponibles"] + [""] * max(0, len(headers) - 1))
+
+    table = Table(table_rows, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(table)
+    doc.build(story)
+    return output.getvalue()
+
+
+def _cleanup_copilot_downloads(now: Optional[float] = None) -> None:
+    current_time = now or time.time()
+    expired = [
+        key for key, item in _COPILOT_DOWNLOADS.items()
+        if float(item.get("expires_at_epoch") or 0) <= current_time
+    ]
+    for key in expired:
+        _COPILOT_DOWNLOADS.pop(key, None)
+
+
+def _store_copilot_download(filename: str, mime_type: str, content: bytes) -> Dict[str, Any]:
+    download_id = secrets.token_urlsafe(24)
+    expires_at_epoch = time.time() + _COPILOT_DOWNLOAD_TTL_SECONDS
+    safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename).strip("_") or "msmall_reporte"
+    with _COPILOT_DOWNLOADS_LOCK:
+        _cleanup_copilot_downloads()
+        _COPILOT_DOWNLOADS[download_id] = {
+            "filename": safe_filename,
+            "mime_type": mime_type,
+            "content": content,
+            "expires_at_epoch": expires_at_epoch,
+        }
+    return {
+        "id": download_id,
+        "filename": safe_filename,
+        "mime_type": mime_type,
+        "download_url": f"/api/v1/copilot/download/{download_id}",
+        "expires_at": datetime.utcfromtimestamp(expires_at_epoch).isoformat(),
+    }
+
+
+def _generate_copilot_report_attachment(report_request: Dict[str, str], context: Dict[str, Any]) -> Dict[str, Any]:
+    definition = _copilot_report_definition(report_request["type"], context)
+    generated_date = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    if report_request["format"] == "pdf":
+        filename = f"{definition['filename_base']}_{generated_date}.pdf"
+        content = _build_copilot_pdf(definition)
+        mime_type = "application/pdf"
+    else:
+        filename = f"{definition['filename_base']}_{generated_date}.xlsx"
+        content = _build_copilot_excel(definition)
+        mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    attachment = _store_copilot_download(filename, mime_type, content)
+    attachment.update({
+        "label": definition["title"],
+        "report_type": report_request["type"],
+        "format": report_request["format"],
+        "sources": definition.get("sources") or [],
+        "row_count": len(definition.get("rows") or []),
+    })
+    return attachment
+
+
+@app.get("/api/v1/copilot/download/{download_id}")
+async def download_copilot_report(download_id: str):
+    with _COPILOT_DOWNLOADS_LOCK:
+        _cleanup_copilot_downloads()
+        item = _COPILOT_DOWNLOADS.get(download_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Reporte no encontrado o expirado.")
+
+    filename = item["filename"]
+    return StreamingResponse(
+        io.BytesIO(item["content"]),
+        media_type=item["mime_type"],
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _copilot_system_prompt() -> str:
@@ -5180,6 +5511,24 @@ async def chat_with_copilot(
         raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
 
     context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx)
+    report_request = _parse_copilot_report_request(message)
+    if report_request:
+        attachment = await asyncio.to_thread(_generate_copilot_report_attachment, report_request, context)
+        return {
+            "answer": (
+                f"**Reporte listo**\n"
+                f"- Archivo: **{attachment['filename']}**\n"
+                f"- Formato: **{report_request['format'].upper()}**\n"
+                f"- Filas incluidas: **{attachment.get('row_count', 0)}**\n"
+                f"- El enlace expira en aproximadamente 15 minutos."
+            ),
+            "provider": settings["provider"],
+            "model": settings["model"],
+            "context_generated_at": context.get("generated_at_utc"),
+            "sources": attachment.get("sources") or [],
+            "attachments": [attachment],
+        }
+
     answer = await asyncio.to_thread(
         _call_copilot_provider,
         settings,
@@ -5193,6 +5542,7 @@ async def chat_with_copilot(
         "model": settings["model"],
         "context_generated_at": context.get("generated_at_utc"),
         "sources": ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion"],
+        "attachments": [],
     }
 
 

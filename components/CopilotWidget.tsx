@@ -1,22 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Loader2, MessageCircle, RefreshCw, Send, Settings, Sparkles, X } from 'lucide-react';
+import { AlertCircle, Bot, Loader2, MessageCircle, RefreshCw, Send, Sparkles, X } from 'lucide-react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import { CopilotChatMessage, CopilotSettings } from '../types';
 
-interface CopilotWidgetProps {
-  onOpenSettings?: () => void;
-}
-
 const SUGGESTED_PROMPTS = [
+  'Resumen de ventas recientes',
   'Resumen del monitor de carga',
   '¿Qué locales tienen días faltantes?',
   '¿Qué locales tienen fallas recientes?',
   '¿Cómo está el monitor de conexiones?',
 ];
 
-export const CopilotWidget: React.FC<CopilotWidgetProps> = ({ onOpenSettings }) => {
-  const { session, currentMall, isAdmin } = useAuth();
+export const CopilotWidget: React.FC = () => {
+  const { session, currentMall } = useAuth();
   const token = session?.access_token || '';
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<CopilotSettings | null>(null);
@@ -99,11 +96,6 @@ export const CopilotWidget: React.FC<CopilotWidgetProps> = ({ onOpenSettings }) 
     askCopilot(draft);
   };
 
-  const openSettings = () => {
-    setOpen(false);
-    onOpenSettings?.();
-  };
-
   if (!session) return null;
 
   return (
@@ -132,16 +124,6 @@ export const CopilotWidget: React.FC<CopilotWidgetProps> = ({ onOpenSettings }) 
                 >
                   <RefreshCw size={15} className={loadingStatus ? 'animate-spin' : ''} />
                 </button>
-                {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={openSettings}
-                    className="p-2 rounded-lg hover:bg-white/10 transition-colors"
-                    title="Configurar Copilot"
-                  >
-                    <Settings size={15} />
-                  </button>
-                )}
                 <button
                   type="button"
                   onClick={() => setOpen(false)}
@@ -174,16 +156,6 @@ export const CopilotWidget: React.FC<CopilotWidgetProps> = ({ onOpenSettings }) 
                             ? 'Falta configurar la API key.'
                             : error || 'No se pudo confirmar el estado.'}
                       </p>
-                      {isAdmin && (
-                        <button
-                          type="button"
-                          onClick={openSettings}
-                          className="mt-3 inline-flex items-center gap-2 rounded-lg bg-amber-900 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800"
-                        >
-                          <Settings size={14} />
-                          Abrir configuración
-                        </button>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -239,7 +211,7 @@ export const CopilotWidget: React.FC<CopilotWidgetProps> = ({ onOpenSettings }) 
                 <textarea
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
-                  placeholder="Pregunta sobre cargas, locales o días de información..."
+                  placeholder="Pregunta sobre ventas, cargas, locales o días de información..."
                   rows={2}
                   disabled={!status?.available || sending}
                   className="min-h-[44px] max-h-28 flex-1 resize-none rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:bg-slate-100 disabled:text-slate-400"

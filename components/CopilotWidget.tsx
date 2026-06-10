@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Loader2, MessageCircle, RefreshCw, Send, Sparkles, X } from 'lucide-react';
+import { AlertCircle, Bot, Download, FileSpreadsheet, FileText, Loader2, MessageCircle, RefreshCw, Send, Sparkles, X } from 'lucide-react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
-import { CopilotChatMessage, CopilotSettings } from '../types';
+import { CopilotAttachment, CopilotChatMessage, CopilotSettings } from '../types';
 
 const SUGGESTED_PROMPTS = [
+  'Genera un Excel de ventas recientes',
   'Resumen de ventas recientes',
   'Resumen del monitor de carga',
   '¿Qué locales tienen días faltantes?',
@@ -96,6 +97,41 @@ const CopilotMessageContent: React.FC<{ content: string; isUser: boolean }> = ({
   return <div className="space-y-1">{blocks}</div>;
 };
 
+const CopilotAttachmentCard: React.FC<{ attachment: CopilotAttachment }> = ({ attachment }) => {
+  const isPdf = attachment.format === 'pdf' || attachment.mime_type === 'application/pdf';
+  const Icon = isPdf ? FileText : FileSpreadsheet;
+  const expiresAt = attachment.expires_at ? new Date(attachment.expires_at) : null;
+  const expiresLabel = expiresAt && !Number.isNaN(expiresAt.getTime())
+    ? expiresAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+
+  return (
+    <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 h-9 w-9 shrink-0 rounded-lg bg-white text-indigo-600 flex items-center justify-center border border-indigo-100">
+          <Icon size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-bold text-slate-900 truncate">{attachment.label || 'Reporte MsMall'}</p>
+          <p className="mt-0.5 text-[11px] text-slate-500 truncate">{attachment.filename}</p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            {attachment.row_count !== undefined ? `${attachment.row_count} filas` : 'Archivo listo'}
+            {expiresLabel ? ` · expira ${expiresLabel}` : ''}
+          </p>
+        </div>
+      </div>
+      <a
+        href={attachment.download_url}
+        download={attachment.filename}
+        className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-700 transition-colors"
+      >
+        <Download size={14} />
+        Descargar {isPdf ? 'PDF' : 'Excel'}
+      </a>
+    </div>
+  );
+};
+
 export const CopilotWidget: React.FC = () => {
   const { session, currentMall } = useAuth();
   const token = session?.access_token || '';
@@ -155,7 +191,7 @@ export const CopilotWidget: React.FC = () => {
 
     try {
       const response = await ApiService.sendCopilotMessage(mallId, question, messages, token);
-      setMessages([...nextMessages, { role: 'assistant', content: response.answer }]);
+      setMessages([...nextMessages, { role: 'assistant', content: response.answer, attachments: response.attachments || [] }]);
       if (!status) {
         setStatus({
           enabled: true,
@@ -276,6 +312,9 @@ export const CopilotWidget: React.FC = () => {
                     : 'bg-white text-slate-700 border border-slate-200 rounded-bl-md'
                     }`}>
                     <CopilotMessageContent content={message.content} isUser={message.role === 'user'} />
+                    {message.role === 'assistant' && (message.attachments || []).map((attachment) => (
+                      <CopilotAttachmentCard key={attachment.id} attachment={attachment} />
+                    ))}
                   </div>
                 </div>
               ))}

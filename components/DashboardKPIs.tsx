@@ -15,7 +15,7 @@ import { useFormatCurrency } from '../hooks/useFormatCurrency';
 const COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
 
 const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
-  <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow relative group">
+  <div className="min-w-0 bg-white p-3 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow relative group">
     {tooltip && (
       <div className="absolute top-3 right-3 text-slate-300 hover:text-indigo-500 transition-colors cursor-help">
         <Info size={14} />
@@ -36,7 +36,7 @@ const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
       )}
     </div>
     <p className="text-slate-500 text-[11px] font-semibold uppercase tracking-wide">{title}</p>
-    <h3 className="text-lg font-bold text-slate-900 mt-1 leading-tight">{value}</h3>
+    <h3 className="break-words text-lg font-bold text-slate-900 mt-1 leading-tight">{value}</h3>
   </div>
 );
 
@@ -453,27 +453,27 @@ export const DashboardKPIs: React.FC = () => {
   );
 
   return (
-    <div className="space-y-4 animate-in fade-in duration-500">
+    <div className="min-w-0 space-y-4 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
         <div className="space-y-0.5">
           <p className="text-xl font-bold text-slate-900">Hola, {displayName}</p>
           <h2 className="pt-0.5 text-base font-semibold text-slate-700">Business Intelligence</h2>
           <p className="text-sm text-slate-500">Indicadores clave de rendimiento del mall.</p>
         </div>
-        <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-100 flex flex-wrap items-center gap-2 w-full md:w-auto">
-          <Calendar size={16} className="text-slate-400 ml-2" />
+        <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-100 grid grid-cols-[auto_1fr_auto_1fr] items-center gap-2 w-full md:flex md:w-auto">
+          <Calendar size={16} className="text-slate-400 ml-1 md:ml-2" />
           <input
             type="date"
             value={dates.startDate}
             onChange={(e) => setDates({ ...dates, startDate: e.target.value })}
-            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[120px]"
+            className="min-w-0 text-sm border-none focus:ring-0 outline-none p-1 md:min-w-[120px]"
           />
           <span className="text-slate-300">-</span>
           <input
             type="date"
             value={dates.endDate}
             onChange={(e) => setDates({ ...dates, endDate: e.target.value })}
-            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[120px]"
+            className="min-w-0 text-sm border-none focus:ring-0 outline-none p-1 md:min-w-[120px]"
           />
         </div>
       </div>
@@ -513,12 +513,12 @@ export const DashboardKPIs: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
-          <div className="flex justify-between items-center mb-4">
+        <div className="min-w-0 lg:col-span-2 bg-white p-4 sm:p-5 rounded-xl border border-slate-100 shadow-sm">
+          <div className="flex flex-col gap-1 sm:flex-row sm:justify-between sm:items-center mb-4">
             <h4 className="font-bold text-slate-800">Tendencia de Ventas Diarias</h4>
             <div className="text-xs text-slate-400">Últimos 7 días</div>
           </div>
-          <div className="h-[220px] w-full">
+          <div className="h-[220px] w-full min-w-0">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={data.ventas_por_dia} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
                 <defs>
@@ -549,7 +549,7 @@ export const DashboardKPIs: React.FC = () => {
           </div>
         </div>
 
-        <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
+        <div className="min-w-0 bg-white p-4 sm:p-5 rounded-xl border border-slate-100 shadow-sm">
           <h4 className="font-bold text-slate-800 mb-6">Top 5 Locales</h4>
           <div className="h-56 w-full overflow-y-auto pr-2">
             <div className="space-y-3">
@@ -559,9 +559,9 @@ export const DashboardKPIs: React.FC = () => {
 
                 return (
                   <div key={index} className="flex flex-col gap-1">
-                    <div className="flex justify-between text-sm">
-                      <span className="font-medium text-slate-700">{locale.name}</span>
-                      <span className="text-slate-500 font-mono">{format(locale.total)}</span>
+                    <div className="flex flex-col gap-1 sm:flex-row sm:justify-between text-sm">
+                      <span className="min-w-0 font-medium text-slate-700 truncate">{locale.name}</span>
+                      <span className="text-slate-500 font-mono sm:whitespace-nowrap">{format(locale.total)}</span>
                     </div>
                     <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
                       <div

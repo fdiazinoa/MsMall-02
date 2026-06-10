@@ -312,25 +312,25 @@ export const FinancialDashboard: React.FC = () => {
     };
 
     return (
-        <div className="space-y-8 animate-in fade-in duration-500">
-            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <div className="min-w-0 space-y-6 sm:space-y-8 animate-in fade-in duration-500">
+            <div className="min-w-0 bg-white p-4 sm:p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
                 <div>
                     <h2 className="text-xl font-bold text-slate-800">Salud Financiera</h2>
                     <p className="text-slate-500 text-sm">Análisis de OCR y proyecciones con mayor claridad operativa.</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 w-full md:w-auto">
+                    <div className="grid grid-cols-[auto_1fr] sm:flex sm:items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 w-full md:w-auto">
                         <Calendar size={16} className="text-slate-400" />
                         <input
                             type="date"
-                            className="bg-transparent border-none text-sm outline-none w-full sm:w-32 text-slate-600"
+                            className="min-w-0 bg-transparent border-none text-sm outline-none w-full sm:w-32 text-slate-600"
                             value={dates.startDate}
                             onChange={(e) => setDates({ ...dates, startDate: e.target.value })}
                         />
                         <ArrowRight size={14} className="text-slate-300 hidden sm:block" />
                         <input
                             type="date"
-                            className="bg-transparent border-none text-sm outline-none w-full sm:w-32 text-slate-600"
+                            className="min-w-0 bg-transparent border-none text-sm outline-none w-full sm:w-32 text-slate-600"
                             value={dates.endDate}
                             onChange={(e) => setDates({ ...dates, endDate: e.target.value })}
                         />
@@ -356,7 +356,7 @@ export const FinancialDashboard: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm relative group">
+                <div className="min-w-0 bg-white p-5 sm:p-6 rounded-3xl border border-slate-100 shadow-sm relative group">
                     <div className="absolute top-6 right-6 text-slate-300 hover:text-indigo-500 transition-colors cursor-help">
                         <Info size={16} />
                         <div className="absolute right-0 w-64 p-3 mt-2 text-xs text-white bg-slate-800 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg top-full">
@@ -365,10 +365,10 @@ export const FinancialDashboard: React.FC = () => {
                     </div>
                     <div className="p-2 bg-indigo-50 text-indigo-600 w-fit rounded-xl mb-4"><DollarSign size={20} /></div>
                     <p className="text-slate-500 text-sm font-medium">Venta Prom m² Mall</p>
-                    <h3 className="text-2xl font-bold text-slate-900 mt-1">{format(avgSalesM2)}</h3>
+                    <h3 className="break-words text-2xl font-bold text-slate-900 mt-1">{format(avgSalesM2)}</h3>
                 </div>
 
-                <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm relative group">
+                <div className="min-w-0 bg-white p-5 sm:p-6 rounded-3xl border border-slate-100 shadow-sm relative group">
                     <div className="absolute top-6 right-6 text-slate-300 hover:text-red-500 transition-colors cursor-help">
                         <Info size={16} />
                         <div className="absolute right-0 w-64 p-3 mt-2 text-xs text-white bg-slate-800 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg top-full">
@@ -377,26 +377,26 @@ export const FinancialDashboard: React.FC = () => {
                     </div>
                     <div className="p-2 bg-red-50 text-red-600 w-fit rounded-xl mb-4"><AlertCircle size={20} /></div>
                     <p className="text-slate-500 text-sm font-medium">Locales en Riesgo (OCR {'>'} 20%)</p>
-                    <h3 className="text-2xl font-bold text-slate-900 mt-1">{storesAtRisk} Locales</h3>
+                    <h3 className="break-words text-2xl font-bold text-slate-900 mt-1">{storesAtRisk} Locales</h3>
                 </div>
 
-                <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+                <div className="min-w-0 bg-white p-5 sm:p-6 rounded-3xl border border-slate-100 shadow-sm">
                     <div className="p-2 bg-emerald-50 text-emerald-600 w-fit rounded-xl mb-4"><TrendingUp size={20} /></div>
                     <p className="text-slate-500 text-sm font-medium">Venta Proyectada Mall</p>
-                    <h3 className="text-2xl font-bold text-slate-900 mt-1">{format(totalProjectedSales)}</h3>
+                    <h3 className="break-words text-2xl font-bold text-slate-900 mt-1">{format(totalProjectedSales)}</h3>
                     <p className="text-xs text-slate-400 mt-2">{projectionBasis}</p>
                 </div>
 
-                <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+                <div className="min-w-0 bg-white p-5 sm:p-6 rounded-3xl border border-slate-100 shadow-sm">
                     <div className="p-2 bg-amber-50 text-amber-600 w-fit rounded-xl mb-4"><Target size={20} /></div>
                     <p className="text-slate-500 text-sm font-medium">Locales sobre Breakpoint</p>
-                    <h3 className="text-2xl font-bold text-slate-900 mt-1">{storesAboveBreakpoint}</h3>
+                    <h3 className="break-words text-2xl font-bold text-slate-900 mt-1">{storesAboveBreakpoint}</h3>
                     <p className="text-xs text-slate-400 mt-2">Con opción real de activar renta variable</p>
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)] gap-8">
-                <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm">
+            <div className="grid min-w-0 grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)] gap-6 lg:gap-8">
+                <div className="min-w-0 bg-white p-4 sm:p-8 rounded-3xl border border-slate-100 shadow-sm">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
                         <div>
                             <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
@@ -425,12 +425,12 @@ export const FinancialDashboard: React.FC = () => {
 
                     <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4 sm:p-6">
                         {topPortfolioRows.length > 0 ? (
-                            <div className="h-[420px]">
+                            <div className="h-[360px] min-w-0 sm:h-[420px]">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart
                                         data={[...topPortfolioRows].reverse()}
                                         layout="vertical"
-                                        margin={{ top: 8, right: 24, bottom: 8, left: 24 }}
+                                        margin={{ top: 8, right: 12, bottom: 8, left: 8 }}
                                     >
                                         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={true} vertical={false} />
                                         <XAxis
@@ -479,7 +479,7 @@ export const FinancialDashboard: React.FC = () => {
                     </div>
                 </div>
 
-                <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm">
+                <div className="min-w-0 bg-white p-4 sm:p-8 rounded-3xl border border-slate-100 shadow-sm">
                     <h3 className="text-lg font-bold text-slate-800 mb-2">Watchlist de cartera</h3>
                     <p className="text-sm text-slate-500 mb-6">Lista corta para seguimiento semanal. Se ordena por OCR y peso comercial.</p>
 
@@ -515,7 +515,7 @@ export const FinancialDashboard: React.FC = () => {
                 </div>
             </div>
 
-            <div className="bg-white p-4 sm:p-8 rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+            <div className="min-w-0 bg-white p-4 sm:p-8 rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
                 <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-6">
                     <div>
                         <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
@@ -535,23 +535,23 @@ export const FinancialDashboard: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                     <div className="rounded-2xl border border-indigo-200 bg-indigo-50/70 px-4 py-4">
                         <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-indigo-500">Cierre estimado mall</p>
-                        <p className="text-2xl font-bold text-slate-900 mt-2">{format(totalProjectedSales)}</p>
+                        <p className="break-words text-2xl font-bold text-slate-900 mt-2">{format(totalProjectedSales)}</p>
                         <p className="text-xs text-slate-500 mt-2">Con el ritmo actual del periodo seleccionado.</p>
                     </div>
                     <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-4">
                         <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-500">Renta variable estimada</p>
-                        <p className="text-2xl font-bold text-slate-900 mt-2">{format(totalProjectedVariable)}</p>
+                        <p className="break-words text-2xl font-bold text-slate-900 mt-2">{format(totalProjectedVariable)}</p>
                         <p className="text-xs text-slate-500 mt-2">Suma estimada si el mall mantiene el mismo run-rate.</p>
                     </div>
                     <div className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-4">
                         <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-500">Locales sobre breakpoint</p>
-                        <p className="text-2xl font-bold text-slate-900 mt-2">{storesAboveBreakpoint}</p>
+                        <p className="break-words text-2xl font-bold text-slate-900 mt-2">{storesAboveBreakpoint}</p>
                         <p className="text-xs text-slate-500 mt-2">Locales que ya cruzan el umbral contractual proyectado.</p>
                     </div>
                 </div>
 
-                <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
-                    <table className="w-full min-w-[920px] text-left">
+                <div className="-mx-4 overflow-x-auto max-h-[520px] overflow-y-auto px-4 sm:mx-0 sm:px-0">
+                    <table className="w-full min-w-[760px] text-left">
                         <thead className="sticky top-0 bg-white z-10">
                             <tr className="text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
                                 <th className="pb-4">Local</th>

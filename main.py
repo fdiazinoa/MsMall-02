@@ -4995,6 +4995,9 @@ def _normalize_copilot_report_format(message: str) -> Optional[str]:
 
 def _normalize_copilot_report_type(message: str) -> Optional[str]:
     text = _normalize_store_catalog_key(message)
+    gross_income_terms = ["ingreso bruto", "ingresos brutos", "venta bruta", "ventas brutas", "total bruto", "gross income", "gross sales"]
+    if any(term in text for term in gross_income_terms):
+        return "ingresos_brutos_local"
     if any(term in text for term in ["venta", "sales", "facturacion", "ingreso"]):
         return "ventas"
     if any(term in text for term in ["faltante", "dias", "brecha", "informacion"]):
@@ -5050,6 +5053,32 @@ def _copilot_report_definition(report_type: str, context: Dict[str, Any]) -> Dic
                 ["Total Neto", _report_value(sales.get("ventas_totales_neto") or 0)],
                 ["Transacciones", sales.get("transacciones") or 0],
                 ["Ticket Promedio", _report_value(sales.get("ticket_promedio") or 0)],
+            ],
+            "generated_at": generated_at,
+        }
+
+    if report_type == "ingresos_brutos_local":
+        sales = context.get("ventas_recientes") or {}
+        rows = sales.get("locales") or sales.get("top_locales") or []
+        return {
+            "title": "Ingresos brutos por local",
+            "subtitle": f"{mall_name} | {sales.get('fecha_inicio', '')} al {sales.get('fecha_fin', '')}",
+            "filename_base": "msmall_ingresos_brutos_por_local",
+            "sources": ["ventas_recientes"],
+            "headers": ["Local", "Ingreso Bruto", "Transacciones", "Ticket Promedio Bruto"],
+            "rows": [
+                [
+                    row.get("local") or row.get("name"),
+                    _report_value(row.get("total_bruto") or row.get("total") or 0),
+                    row.get("transacciones") or 0,
+                    _report_value((row.get("total_bruto") or row.get("total") or 0) / max(1, int(row.get("transacciones") or 0))),
+                ]
+                for row in rows
+            ],
+            "summary": [
+                ["Ingreso Bruto Total", _report_value(sales.get("ventas_totales_bruto") or 0)],
+                ["Transacciones", sales.get("transacciones") or 0],
+                ["Ticket Promedio Bruto", _report_value(sales.get("ticket_promedio") or 0)],
             ],
             "generated_at": generated_at,
         }

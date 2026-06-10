@@ -1,6 +1,7 @@
 
 # Backend: FastAPI API para MSMALL Audit
 import asyncio
+import base64
 import csv
 import html
 import io
@@ -159,6 +160,8 @@ _INFLIGHT_MANUAL_EXEC_LOCK = threading.Lock()
 _COPILOT_DOWNLOADS: Dict[str, Dict[str, Any]] = {}
 _COPILOT_DOWNLOADS_LOCK = threading.Lock()
 _COPILOT_DOWNLOAD_TTL_SECONDS = 15 * 60
+_COPILOT_EMAIL_DRAFTS: Dict[str, Dict[str, Any]] = {}
+_COPILOT_EMAIL_DRAFTS_LOCK = threading.Lock()
 
 def _env_int(name: str, default: int, min_value: int = 1, max_value: int = 3600) -> int:
     raw = os.getenv(name)
@@ -1271,6 +1274,10 @@ class CopilotChatRequest(BaseModel):
     mall_id: str
     message: str
     history: List[CopilotChatMessage] = []
+
+class CopilotEmailSendRequest(BaseModel):
+    mall_id: str
+    draft_id: str
 
 class RemoteRequest(BaseModel):
     protocolo: str = "SFTP"
@@ -5019,6 +5026,28 @@ def _parse_copilot_report_request(message: str) -> Optional[Dict[str, str]]:
     }
 
 
+def _parse_copilot_email_request(message: str) -> Optional[Dict[str, Any]]:
+    text = _normalize_store_catalog_key(message)
+    if not any(term in text for term in ["correo", "email", "mail", "enviar", "mandar", "envialo", "enviarlo", "enviame"]):
+        return None
+
+    recipients = _normalize_email_list(re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", message), strict=False)
+    wants_pdf = "pdf" in text
+    wants_xlsx = any(term in text for term in ["excel", "xlsx", "xls", "hoja de calculo"])
+    wants_html = "html" in text or any(term in text for term in ["cuerpo", "resumen", "correo"])
+    if not wants_pdf and not wants_xlsx and not wants_html:
+        wants_html = True
+        wants_xlsx = True
+
+    attachment_format = "pdf" if wants_pdf else "xlsx" if wants_xlsx else None
+    return {
+        "recipients": recipients,
+        "report_type": _normalize_copilot_report_type(message) or "locales",
+        "include_html": True,
+        "attachment_format": attachment_format,
+    }
+
+
 def _report_value(value: Any) -> Any:
     if isinstance(value, float):
         return round(value, 2)
@@ -5268,6 +5297,47 @@ def _build_copilot_pdf(definition: Dict[str, Any]) -> bytes:
     return output.getvalue()
 
 
+def _build_copilot_report_html(definition: Dict[str, Any]) -> str:
+    summary_rows = "".join(
+        f"<tr><td>{html.escape(str(label))}</td><td><strong>{html.escape(str(_report_value(value)))}</strong></td></tr>"
+        for label, value in (definition.get("summary") or [])
+    )
+    headers = definition.get("headers") or []
+    body_rows = ""
+    for row in (definition.get("rows") or [])[:80]:
+        cells = "".join(f"<td>{html.escape(str(_report_value(value)))}</td>" for value in row)
+        body_rows += f"<tr>{cells}</tr>"
+    if not body_rows:
+        body_rows = f"<tr><td colspan=\"{max(1, len(headers))}\">Sin datos disponibles.</td></tr>"
+    header_cells = "".join(f"<th>{html.escape(str(header))}</th>" for header in headers)
+    return f"""
+    <div style="font-family:Arial,sans-serif;color:#0f172a;background:#f8fafc;padding:24px">
+      <div style="max-width:920px;margin:auto;background:white;border:1px solid #e2e8f0;border-radius:18px;overflow:hidden">
+        <div style="background:#111827;color:white;padding:20px 24px">
+          <h1 style="margin:0;font-size:20px">{html.escape(str(definition.get('title') or 'Reporte MsMall'))}</h1>
+          <p style="margin:6px 0 0;color:#cbd5e1">{html.escape(str(definition.get('subtitle') or ''))}</p>
+        </div>
+        <div style="padding:22px 24px">
+          <p style="margin:0 0 16px;color:#64748b;font-size:13px">Generado: {html.escape(str(definition.get('generated_at') or datetime.utcnow().isoformat()))}</p>
+          {f'<h2 style="font-size:15px">Resumen</h2><table style="width:100%;border-collapse:collapse;margin-bottom:20px">{summary_rows}</table>' if summary_rows else ''}
+          <h2 style="font-size:15px">Detalle</h2>
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead><tr style="background:#f1f5f9">{header_cells}</tr></thead>
+              <tbody>{body_rows}</tbody>
+            </table>
+          </div>
+          <p style="margin-top:20px;color:#94a3b8;font-size:12px">Enviado por Copilot MsMall. Fuente: {html.escape(', '.join(definition.get('sources') or []))}</p>
+        </div>
+      </div>
+    </div>
+    <style>
+      th, td {{ border-bottom:1px solid #e2e8f0; padding:10px 12px; text-align:left; vertical-align:top; }}
+      th {{ color:#475569; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
+    </style>
+    """
+
+
 def _cleanup_copilot_downloads(now: Optional[float] = None) -> None:
     current_time = now or time.time()
     expired = [
@@ -5296,6 +5366,76 @@ def _store_copilot_download(filename: str, mime_type: str, content: bytes) -> Di
         "mime_type": mime_type,
         "download_url": f"/api/v1/copilot/download/{download_id}",
         "expires_at": datetime.utcfromtimestamp(expires_at_epoch).isoformat(),
+    }
+
+
+def _store_copilot_email_draft(draft: Dict[str, Any]) -> Dict[str, Any]:
+    draft_id = secrets.token_urlsafe(24)
+    expires_at_epoch = time.time() + _COPILOT_DOWNLOAD_TTL_SECONDS
+    with _COPILOT_EMAIL_DRAFTS_LOCK:
+        _cleanup_copilot_email_drafts()
+        _COPILOT_EMAIL_DRAFTS[draft_id] = {
+            **draft,
+            "expires_at_epoch": expires_at_epoch,
+        }
+    return {
+        "id": draft_id,
+        "expires_at": datetime.utcfromtimestamp(expires_at_epoch).isoformat(),
+    }
+
+
+def _cleanup_copilot_email_drafts(now: Optional[float] = None) -> None:
+    current_time = now or time.time()
+    expired = [
+        key for key, item in _COPILOT_EMAIL_DRAFTS.items()
+        if float(item.get("expires_at_epoch") or 0) <= current_time
+    ]
+    for key in expired:
+        _COPILOT_EMAIL_DRAFTS.pop(key, None)
+
+
+def _build_copilot_email_draft(email_request: Dict[str, Any], context: Dict[str, Any], mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    recipients = email_request.get("recipients") or []
+    if not recipients:
+        raise HTTPException(status_code=400, detail="Indica al menos un correo destinatario para enviar el reporte.")
+
+    definition = _copilot_report_definition(email_request["report_type"], context)
+    html_body = _build_copilot_report_html(definition)
+    subject = f"{definition['title']} - MsMall"
+    attachments = []
+    attachment_format = email_request.get("attachment_format")
+    if attachment_format:
+        generated_date = datetime.utcnow().strftime("%Y%m%d_%H%M")
+        if attachment_format == "pdf":
+            content = _build_copilot_pdf(definition)
+            filename = f"{definition['filename_base']}_{generated_date}.pdf"
+            mime_type = "application/pdf"
+        else:
+            content = _build_copilot_excel(definition)
+            filename = f"{definition['filename_base']}_{generated_date}.xlsx"
+            mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        attachments.append({"filename": filename, "content": content, "mime_type": mime_type})
+
+    stored = _store_copilot_email_draft({
+        "mall_id": mall_id,
+        "recipients": recipients,
+        "subject": subject,
+        "html_body": html_body,
+        "text": f"{definition['title']}\n{definition.get('subtitle') or ''}",
+        "attachments": attachments,
+        "report_type": email_request["report_type"],
+        "row_count": len(definition.get("rows") or []),
+        "sources": definition.get("sources") or [],
+        "created_by": operator_ctx.get("email") or operator_ctx.get("user_id"),
+    })
+    return {
+        **stored,
+        "recipients": recipients,
+        "subject": subject,
+        "report_type": email_request["report_type"],
+        "row_count": len(definition.get("rows") or []),
+        "attachment_count": len(attachments),
+        "sources": definition.get("sources") or [],
     }
 
 
@@ -5336,6 +5476,50 @@ async def download_copilot_report(download_id: str):
         media_type=item["mime_type"],
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.post("/api/v1/copilot/email/send")
+async def send_copilot_email(
+    payload: CopilotEmailSendRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    mall_id = str(payload.mall_id or "").strip()
+    draft_id = str(payload.draft_id or "").strip()
+    if not mall_id or not draft_id:
+        raise HTTPException(status_code=400, detail="mall_id y draft_id son requeridos.")
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+
+    with _COPILOT_EMAIL_DRAFTS_LOCK:
+        _cleanup_copilot_email_drafts()
+        draft = _COPILOT_EMAIL_DRAFTS.get(draft_id)
+    if not draft or draft.get("mall_id") != mall_id:
+        raise HTTPException(status_code=404, detail="Borrador de correo no encontrado o expirado.")
+
+    recipients = draft.get("recipients") or []
+    if not recipients:
+        raise HTTPException(status_code=400, detail="El borrador no tiene destinatarios.")
+
+    sent = []
+    for recipient in recipients:
+        result = await asyncio.to_thread(
+            _send_resend_email,
+            recipient,
+            draft.get("subject") or "Reporte MsMall",
+            draft.get("text") or "Reporte generado por Copilot MsMall.",
+            draft.get("html_body"),
+            None,
+            draft.get("attachments") or [],
+        )
+        sent.append({"email": recipient, "resend_id": result.get("id")})
+
+    with _COPILOT_EMAIL_DRAFTS_LOCK:
+        _COPILOT_EMAIL_DRAFTS.pop(draft_id, None)
+
+    return {
+        "sent": sent,
+        "subject": draft.get("subject"),
+        "attachment_count": len(draft.get("attachments") or []),
+    }
 
 
 def _copilot_system_prompt() -> str:
@@ -5540,6 +5724,46 @@ async def chat_with_copilot(
         raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
 
     context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx)
+    email_request = _parse_copilot_email_request(message)
+    if email_request:
+        try:
+            email_draft = await asyncio.to_thread(_build_copilot_email_draft, email_request, context, mall_id, operator_ctx)
+        except HTTPException as exc:
+            if exc.status_code == 400:
+                return {
+                    "answer": (
+                        "**Falta destinatario**\n"
+                        "- Puedo preparar el reporte en HTML y enviarlo por correo.\n"
+                        "- Indica el email destino, por ejemplo: `envialo a operaciones@empresa.com`."
+                    ),
+                    "provider": settings["provider"],
+                    "model": settings["model"],
+                    "context_generated_at": context.get("generated_at_utc"),
+                    "sources": [],
+                    "attachments": [],
+                    "email_actions": [],
+                }
+            raise
+        attachment_text = "HTML"
+        if email_draft.get("attachment_count"):
+            attachment_text += " + adjunto"
+        return {
+            "answer": (
+                f"**Correo preparado**\n"
+                f"- Para: **{', '.join(email_draft['recipients'])}**\n"
+                f"- Asunto: **{email_draft['subject']}**\n"
+                f"- Formato: **{attachment_text}**\n"
+                f"- Filas incluidas: **{email_draft.get('row_count', 0)}**\n"
+                f"- Confirma con el boton para enviarlo."
+            ),
+            "provider": settings["provider"],
+            "model": settings["model"],
+            "context_generated_at": context.get("generated_at_utc"),
+            "sources": email_draft.get("sources") or [],
+            "attachments": [],
+            "email_actions": [email_draft],
+        }
+
     report_request = _parse_copilot_report_request(message)
     if report_request:
         attachment = await asyncio.to_thread(_generate_copilot_report_attachment, report_request, context)
@@ -5627,6 +5851,7 @@ def _send_resend_email(
     message: str,
     html_body: Optional[str] = None,
     cc_emails: Optional[List[str]] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     api_key = os.getenv(RESEND_API_KEY_ENV)
     if not api_key:
@@ -5646,6 +5871,20 @@ def _send_resend_email(
     cc_list = _normalize_email_list(cc_emails or [])
     if cc_list:
         payload["cc"] = cc_list
+    attachment_payload = []
+    for attachment in attachments or []:
+        content = attachment.get("content") or b""
+        if isinstance(content, str):
+            content_bytes = content.encode("utf-8")
+        else:
+            content_bytes = bytes(content)
+        attachment_payload.append({
+            "filename": attachment.get("filename") or "msmall_reporte",
+            "content": base64.b64encode(content_bytes).decode("ascii"),
+            "content_type": attachment.get("mime_type") or "application/octet-stream",
+        })
+    if attachment_payload:
+        payload["attachments"] = attachment_payload
 
     req = urllib.request.Request(
         "https://api.resend.com/emails",

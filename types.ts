@@ -275,6 +275,19 @@ export interface CopilotSettingsPayload {
 export interface CopilotChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  attachments?: CopilotAttachment[];
+}
+
+export interface CopilotAttachment {
+  id: string;
+  filename: string;
+  mime_type: string;
+  download_url: string;
+  expires_at?: string;
+  label?: string;
+  report_type?: string;
+  format?: 'xlsx' | 'pdf' | string;
+  row_count?: number;
 }
 
 export interface CopilotChatResponse {
@@ -283,6 +296,7 @@ export interface CopilotChatResponse {
   model: string;
   context_generated_at?: string;
   sources: string[];
+  attachments?: CopilotAttachment[];
 }
 
 export type SecurityTokenType = 'app' | 'exporter';

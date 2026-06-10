@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Download, FileSpreadsheet, FileText, Loader2, MessageCircle, RefreshCw, Send, Sparkles, X } from 'lucide-react';
+import { AlertCircle, Bot, Download, FileSpreadsheet, FileText, Loader2, Mail, MessageCircle, RefreshCw, Send, Sparkles, X } from 'lucide-react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
-import { CopilotAttachment, CopilotChatMessage, CopilotSettings } from '../types';
+import { CopilotAttachment, CopilotChatMessage, CopilotEmailAction, CopilotSettings } from '../types';
 
 const SUGGESTED_PROMPTS = [
   'Genera un Excel de ventas recientes',
@@ -132,6 +132,40 @@ const CopilotAttachmentCard: React.FC<{ attachment: CopilotAttachment }> = ({ at
   );
 };
 
+const CopilotEmailActionCard: React.FC<{
+  action: CopilotEmailAction;
+  sending: boolean;
+  sent: boolean;
+  onSend: (action: CopilotEmailAction) => void;
+}> = ({ action, sending, sent, onSend }) => {
+  return (
+    <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50/80 p-3">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 h-9 w-9 shrink-0 rounded-lg bg-white text-emerald-600 flex items-center justify-center border border-emerald-100">
+          <Mail size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-bold text-slate-900 truncate">{action.subject || 'Reporte MsMall'}</p>
+          <p className="mt-0.5 text-[11px] text-slate-500 truncate">{action.recipients.join(', ')}</p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            HTML{action.attachment_count ? ` + ${action.attachment_count} adjunto` : ''}
+            {action.row_count !== undefined ? ` · ${action.row_count} filas` : ''}
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => onSend(action)}
+        disabled={sending || sent}
+        className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {sending ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
+        {sent ? 'Correo enviado' : sending ? 'Enviando...' : 'Enviar correo'}
+      </button>
+    </div>
+  );
+};
+
 export const CopilotWidget: React.FC = () => {
   const { session, currentMall } = useAuth();
   const token = session?.access_token || '';
@@ -141,6 +175,8 @@ export const CopilotWidget: React.FC = () => {
   const [draft, setDraft] = useState('');
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendingEmailIds, setSendingEmailIds] = useState<Record<string, boolean>>({});
+  const [sentEmailIds, setSentEmailIds] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -191,7 +227,7 @@ export const CopilotWidget: React.FC = () => {
 
     try {
       const response = await ApiService.sendCopilotMessage(mallId, question, messages, token);
-      setMessages([...nextMessages, { role: 'assistant', content: response.answer, attachments: response.attachments || [] }]);
+      setMessages([...nextMessages, { role: 'assistant', content: response.answer, attachments: response.attachments || [], email_actions: response.email_actions || [] }]);
       if (!status) {
         setStatus({
           enabled: true,
@@ -214,6 +250,27 @@ export const CopilotWidget: React.FC = () => {
     e.preventDefault();
     if (!canAsk) return;
     askCopilot(draft);
+  };
+
+  const sendEmailAction = async (action: CopilotEmailAction) => {
+    if (!token || !mallId || !action.id || sendingEmailIds[action.id] || sentEmailIds[action.id]) return;
+    setSendingEmailIds((prev) => ({ ...prev, [action.id]: true }));
+    setError(null);
+    try {
+      const result = await ApiService.sendCopilotEmailDraft(mallId, action.id, token);
+      setSentEmailIds((prev) => ({ ...prev, [action.id]: true }));
+      setMessages((prev) => ([
+        ...prev,
+        {
+          role: 'assistant',
+          content: `**Correo enviado**\n- Para: **${result.sent.map((item) => item.email).join(', ')}**\n- Asunto: **${result.subject}**`,
+        }
+      ]));
+    } catch (e: any) {
+      setError(e?.message || 'No se pudo enviar el correo.');
+    } finally {
+      setSendingEmailIds((prev) => ({ ...prev, [action.id]: false }));
+    }
   };
 
   if (!session) return null;
@@ -314,6 +371,15 @@ export const CopilotWidget: React.FC = () => {
                     <CopilotMessageContent content={message.content} isUser={message.role === 'user'} />
                     {message.role === 'assistant' && (message.attachments || []).map((attachment) => (
                       <CopilotAttachmentCard key={attachment.id} attachment={attachment} />
+                    ))}
+                    {message.role === 'assistant' && (message.email_actions || []).map((action) => (
+                      <CopilotEmailActionCard
+                        key={action.id}
+                        action={action}
+                        sending={Boolean(sendingEmailIds[action.id])}
+                        sent={Boolean(sentEmailIds[action.id])}
+                        onSend={sendEmailAction}
+                      />
                     ))}
                   </div>
                 </div>

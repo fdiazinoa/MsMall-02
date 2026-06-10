@@ -12,6 +12,90 @@ const SUGGESTED_PROMPTS = [
   '¿Cómo está el monitor de conexiones?',
 ];
 
+const renderInlineMarkdown = (text: string): React.ReactNode[] => {
+  const nodes: React.ReactNode[] = [];
+  const pattern = /\*\*(.+?)\*\*/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index));
+    }
+    nodes.push(
+      <strong key={`${match.index}-${match[1]}`} className="font-bold text-slate-900">
+        {match[1]}
+      </strong>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+};
+
+const CopilotMessageContent: React.FC<{ content: string; isUser: boolean }> = ({ content, isUser }) => {
+  const normalizedLines = content
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trimEnd());
+
+  if (isUser) {
+    return <div className="whitespace-pre-wrap">{content}</div>;
+  }
+
+  const blocks: React.ReactNode[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    const items = listItems;
+    listItems = [];
+    blocks.push(
+      <ul key={`list-${blocks.length}`} className="my-2 space-y-1.5 pl-4">
+        {items.map((item, itemIndex) => (
+          <li key={`${itemIndex}-${item}`} className="list-disc marker:text-indigo-400">
+            {renderInlineMarkdown(item)}
+          </li>
+        ))}
+      </ul>
+    );
+  };
+
+  normalizedLines.forEach((line, index) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushList();
+      return;
+    }
+
+    const bulletMatch = trimmed.match(/^[-*]\s+(.+)$/);
+    const numberedMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+    if (bulletMatch || numberedMatch) {
+      listItems.push((bulletMatch?.[1] || numberedMatch?.[1] || '').trim());
+      return;
+    }
+
+    flushList();
+    const isHeading = trimmed.startsWith('**') && trimmed.endsWith('**') && trimmed.length <= 80;
+    blocks.push(
+      <p
+        key={`line-${index}`}
+        className={isHeading ? 'mt-2 first:mt-0 font-bold text-slate-900' : 'my-1.5 first:mt-0 last:mb-0'}
+      >
+        {renderInlineMarkdown(trimmed)}
+      </p>
+    );
+  });
+
+  flushList();
+
+  return <div className="space-y-1">{blocks}</div>;
+};
+
 export const CopilotWidget: React.FC = () => {
   const { session, currentMall } = useAuth();
   const token = session?.access_token || '';
@@ -191,7 +275,7 @@ export const CopilotWidget: React.FC = () => {
                     ? 'bg-slate-900 text-white rounded-br-md'
                     : 'bg-white text-slate-700 border border-slate-200 rounded-bl-md'
                     }`}>
-                    {message.content}
+                    <CopilotMessageContent content={message.content} isUser={message.role === 'user'} />
                   </div>
                 </div>
               ))}

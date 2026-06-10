@@ -39,9 +39,12 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
     const [analysis, setAnalysis] = useState<GapAnalysisResult | null>(null);
     const [loading, setLoading] = useState(false);
     const [expanded, setExpanded] = useState(false);
+    const [matrixPage, setMatrixPage] = useState(1);
+    const MATRIX_PAGE_SIZE = 10;
 
     useEffect(() => {
         if (!startDate || !endDate || !currentMall) return;
+        setMatrixPage(1);
 
         const fetchAnalysis = async () => {
             setLoading(true);
@@ -120,6 +123,10 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
     if (analysis.modo === 'global' && analysis.resumen) {
         const criticalItems = analysis.resumen.filter(i => i.dias_faltantes_count > 0);
         const completeCount = analysis.resumen.length - criticalItems.length;
+        const totalMatrixPages = Math.max(1, Math.ceil(criticalItems.length / MATRIX_PAGE_SIZE));
+        const currentMatrixPage = Math.min(matrixPage, totalMatrixPages);
+        const pageStart = (currentMatrixPage - 1) * MATRIX_PAGE_SIZE;
+        const paginatedCriticalItems = criticalItems.slice(pageStart, pageStart + MATRIX_PAGE_SIZE);
 
         if (criticalItems.length === 0) return null; // Todo perfecto (o mostrar banner verde global)
 
@@ -147,7 +154,7 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                            {criticalItems.map((item) => {
+                            {paginatedCriticalItems.map((item) => {
                                 const totalDays = item.dias_totales_periodo || 0;
                                 const missingDays = item.dias_faltantes_count || 0;
                                 const reportedDays = Math.max(0, totalDays - missingDays);
@@ -211,6 +218,35 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                         </tbody>
                     </table>
                 </div>
+
+                {totalMatrixPages > 1 && (
+                    <div className="flex flex-col gap-3 border-t border-slate-100 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-xs text-slate-500">
+                            Mostrando {pageStart + 1}-{Math.min(pageStart + MATRIX_PAGE_SIZE, criticalItems.length)} de {criticalItems.length} locales con brechas
+                        </p>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setMatrixPage((page) => Math.max(1, page - 1))}
+                                disabled={currentMatrixPage === 1}
+                                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                Anterior
+                            </button>
+                            <span className="text-xs font-medium text-slate-500">
+                                Página {currentMatrixPage} de {totalMatrixPages}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setMatrixPage((page) => Math.min(totalMatrixPages, page + 1))}
+                                disabled={currentMatrixPage === totalMatrixPages}
+                                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                Siguiente
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
         );
     }

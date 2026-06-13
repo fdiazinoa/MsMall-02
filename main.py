@@ -5228,6 +5228,8 @@ def _normalize_copilot_report_format(message: str) -> Optional[str]:
 def _normalize_copilot_report_type(message: str) -> Optional[str]:
     text = _normalize_store_catalog_key(message)
     gross_income_terms = ["ingreso bruto", "ingresos brutos", "venta bruta", "ventas brutas", "total bruto", "gross income", "gross sales"]
+    if any(term in text for term in ["diagnost", "conciliar", "cubo", "no aparece", "no se ve"]) and any(term in text for term in ["monitor", "carga", "importacion", "venta", "ventas"]):
+        return "diagnostico_carga_ventas"
     if any(term in text for term in gross_income_terms):
         return "ingresos_brutos_local"
     if any(term in text for term in ["venta", "sales", "facturacion", "ingreso"]):
@@ -5251,7 +5253,26 @@ def _parse_copilot_report_request(message: str) -> Optional[Dict[str, str]]:
     }
 
 
-def _parse_copilot_email_request(message: str) -> Optional[Dict[str, Any]]:
+def _latest_copilot_intent_message(message: str, history: List[CopilotChatMessage]) -> str:
+    text = _normalize_store_catalog_key(message)
+    followup_terms = ["envialo", "enviarlo", "mandalo", "mandarlo", "por mail", "por correo", "por email"]
+    is_followup = any(term in text for term in followup_terms)
+    if not is_followup:
+        return message
+
+    for item in reversed(history or []):
+        role = str(item.role or "").strip().lower()
+        content = str(item.content or "").strip()
+        if role != "user" or not content:
+            continue
+        normalized = _normalize_store_catalog_key(content)
+        if any(term in normalized for term in followup_terms):
+            continue
+        return content
+    return message
+
+
+def _parse_copilot_email_request(message: str, intent_message: Optional[str] = None) -> Optional[Dict[str, Any]]:
     text = _normalize_store_catalog_key(message)
     if not any(term in text for term in ["correo", "email", "mail", "enviar", "mandar", "envialo", "enviarlo", "enviame"]):
         return None
@@ -5267,7 +5288,7 @@ def _parse_copilot_email_request(message: str) -> Optional[Dict[str, Any]]:
     attachment_format = "pdf" if wants_pdf else "xlsx" if wants_xlsx else None
     return {
         "recipients": recipients,
-        "report_type": _normalize_copilot_report_type(message) or "locales",
+        "report_type": _normalize_copilot_report_type(intent_message or message) or "locales",
         "include_html": True,
         "attachment_format": attachment_format,
     }
@@ -5386,6 +5407,49 @@ def _copilot_report_definition(report_type: str, context: Dict[str, Any]) -> Dic
                 for row in rows
             ],
             "summary": [[key, value] for key, value in (monitor.get("conteo_por_estado") or {}).items()],
+            "generated_at": generated_at,
+        }
+
+    if report_type == "diagnostico_carga_ventas":
+        diagnostic = context.get("diagnostico_carga_ventas") or {}
+        period = diagnostic.get("periodo") or {}
+        rows = []
+        for item in diagnostic.get("diagnosticos") or []:
+            ventas_dates = ", ".join(row.get("fecha") or "" for row in (item.get("ventas_por_fecha") or [])[:12])
+            missing_dates = ", ".join(item.get("dias_faltantes") or [])
+            out_of_period_files = ", ".join(
+                f"{log.get('archivo')} -> {log.get('fecha_detectada_archivo')}"
+                for log in (item.get("logs_con_fecha_archivo_fuera_periodo") or [])[:6]
+                if log.get("archivo")
+            )
+            rows.append([
+                item.get("local"),
+                item.get("codigo"),
+                item.get("dias_con_ventas") or 0,
+                item.get("registros_ventas") or 0,
+                _report_value(item.get("total_bruto") or 0),
+                _report_value(item.get("total_neto") or 0),
+                ventas_dates,
+                missing_dates,
+                out_of_period_files,
+            ])
+        return {
+            "title": "Diagnostico de carga vs ventas",
+            "subtitle": f"{mall_name} | {period.get('fecha_inicio', '')} al {period.get('fecha_fin', '')}",
+            "filename_base": "msmall_diagnostico_carga_ventas",
+            "sources": ["diagnostico_carga_ventas"],
+            "headers": [
+                "Local", "Codigo", "Dias con ventas", "Registros ventas",
+                "Total Bruto", "Total Neto", "Fechas con ventas",
+                "Dias faltantes", "Archivos fuera del periodo",
+            ],
+            "rows": rows,
+            "summary": [
+                ["Estado", diagnostic.get("status") or ""],
+                ["Periodo inicio", period.get("fecha_inicio") or ""],
+                ["Periodo fin", period.get("fecha_fin") or ""],
+                ["Locales analizados", diagnostic.get("locales_analizados") or 0],
+            ],
             "generated_at": generated_at,
         }
 
@@ -5950,8 +6014,9 @@ async def chat_with_copilot(
     if not settings.get("api_key_configured"):
         raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
 
-    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx, message)
-    email_request = _parse_copilot_email_request(message)
+    intent_message = _latest_copilot_intent_message(message, payload.history or [])
+    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx, intent_message)
+    email_request = _parse_copilot_email_request(message, intent_message)
     if email_request:
         try:
             email_draft = await asyncio.to_thread(_build_copilot_email_draft, email_request, context, mall_id, operator_ctx)

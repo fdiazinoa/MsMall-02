@@ -4899,7 +4899,230 @@ def _load_copilot_sales_summary(locales: List[Dict[str, Any]], lookback_days: in
     }
 
 
-def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
+_COPILOT_MONTHS = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+
+
+def _last_day_of_month(year: int, month: int) -> date:
+    if month == 12:
+        return date(year, month, 31)
+    return date(year, month + 1, 1) - timedelta(days=1)
+
+
+def _parse_copilot_period(message: str) -> Dict[str, str]:
+    text = _normalize_store_catalog_key(message)
+    today = datetime.utcnow().date()
+
+    iso_dates = re.findall(r"\b(20\d{2}-\d{2}-\d{2})\b", message)
+    if len(iso_dates) >= 2:
+        return {"fecha_inicio": min(iso_dates[:2]), "fecha_fin": max(iso_dates[:2]), "origen": "fechas_explicitas"}
+    if len(iso_dates) == 1:
+        return {"fecha_inicio": iso_dates[0], "fecha_fin": iso_dates[0], "origen": "fecha_explicita"}
+
+    slash_dates = re.findall(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b", message)
+    if len(slash_dates) >= 2:
+        parsed = [
+            date(int(year), int(month), int(day)).isoformat()
+            for day, month, year in slash_dates[:2]
+        ]
+        return {"fecha_inicio": min(parsed), "fecha_fin": max(parsed), "origen": "fechas_explicitas"}
+    if len(slash_dates) == 1:
+        day, month, year = slash_dates[0]
+        parsed = date(int(year), int(month), int(day)).isoformat()
+        return {"fecha_inicio": parsed, "fecha_fin": parsed, "origen": "fecha_explicita"}
+
+    year_match = re.search(r"\b(20\d{2})\b", text)
+    year = int(year_match.group(1)) if year_match else today.year
+    for month_name, month_number in _COPILOT_MONTHS.items():
+        if month_name in text:
+            start = date(year, month_number, 1)
+            end = _last_day_of_month(year, month_number)
+            return {"fecha_inicio": start.isoformat(), "fecha_fin": end.isoformat(), "origen": f"mes_{month_name}"}
+
+    start = today - timedelta(days=29)
+    return {"fecha_inicio": start.isoformat(), "fecha_fin": today.isoformat(), "origen": "ultimos_30_dias"}
+
+
+def _should_build_copilot_diagnostics(message: str) -> bool:
+    text = _normalize_store_catalog_key(message)
+    terms = [
+        "diagnost", "conciliar", "cubo", "monitor", "carga", "importacion",
+        "importar", "faltante", "brecha", "no aparece", "no se ve", "dias",
+    ]
+    return any(term in text for term in terms)
+
+
+def _find_copilot_target_locales(message: str, locales: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    text = _normalize_store_catalog_key(message)
+    matches = []
+    for local in locales:
+        name = _normalize_store_catalog_key(local.get("nombre"))
+        code = _normalize_store_catalog_key(local.get("codigo_interno"))
+        if (name and name in text) or (code and re.search(rf"\b{re.escape(code)}\b", text)):
+            matches.append(local)
+    if matches:
+        return matches[:4]
+
+    choices = {
+        str(local.get("nombre") or ""): local
+        for local in locales
+        if local.get("nombre")
+    }
+    if not choices:
+        return []
+    fuzzy = process.extract(text, list(choices.keys()), scorer=fuzz.partial_ratio, limit=4)
+    return [choices[name] for name, score in fuzzy if score >= 88]
+
+
+def _extract_file_date_from_name(filename: Any) -> Optional[str]:
+    text = str(filename or "")
+    matches = re.findall(r"(?<!\d)(\d{8})(?!\d)", text)
+    for raw in reversed(matches):
+        for fmt in ("%d%m%Y", "%Y%m%d"):
+            try:
+                return datetime.strptime(raw, fmt).date().isoformat()
+            except ValueError:
+                continue
+    return None
+
+
+def _aggregate_sales_by_local_date(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for row in rows:
+        local_id = str(row.get("local_id") or "")
+        sale_date = _normalize_missing_days_sale_date(row.get("fecha")) or str(row.get("fecha") or "")
+        if not local_id or not sale_date:
+            continue
+        day = grouped.setdefault(local_id, {}).setdefault(sale_date, {
+            "fecha": sale_date,
+            "registros": 0,
+            "total_bruto": 0.0,
+            "total_neto": 0.0,
+        })
+        day["registros"] += 1
+        day["total_bruto"] += _safe_float(row.get("total_bruto"))
+        day["total_neto"] += _safe_float(row.get("total_neto"))
+    return grouped
+
+
+def _load_copilot_sales_load_diagnostics(
+    mall_id: str,
+    locales: List[Dict[str, Any]],
+    message: str,
+) -> Dict[str, Any]:
+    period = _parse_copilot_period(message)
+    target_locales = _find_copilot_target_locales(message, locales)
+    if not _should_build_copilot_diagnostics(message) and not target_locales:
+        return {"status": "omitido", "motivo": "consulta_general"}
+
+    selected = target_locales or locales[:8]
+    local_ids = [str(row.get("id")) for row in selected if row.get("id")]
+    if not local_ids:
+        return {"status": "sin_locales", "periodo": period, "locales": []}
+
+    sales_rows: List[Dict[str, Any]] = []
+    try:
+        for page in range(6):
+            chunk = (
+                supabase.table("ventas")
+                .select("local_id,fecha,total_bruto,total_neto,factura_no,mall_id")
+                .in_("local_id", local_ids)
+                .gte("fecha", period["fecha_inicio"])
+                .lte("fecha", period["fecha_fin"])
+                .order("fecha")
+                .range(page * 1000, (page + 1) * 1000 - 1)
+                .execute()
+            ).data or []
+            sales_rows.extend(chunk)
+            if len(chunk) < 1000:
+                break
+    except Exception as exc:
+        logger.warning("Copilot sales/load diagnostic sales query failed: %s", sanitize_sensitive_ops_error(exc))
+        return {"status": "no_disponible", "periodo": period, "error": "No se pudieron consultar ventas para diagnostico."}
+
+    logs: List[Dict[str, Any]] = []
+    try:
+        logs = (
+            supabase.table("logs_carga")
+            .select("*")
+            .eq("mall_id", mall_id)
+            .in_("local_id", local_ids)
+            .order("fecha_hora", desc=True)
+            .limit(80)
+            .execute()
+        ).data or []
+    except Exception as exc:
+        logger.warning("Copilot sales/load diagnostic logs query failed: %s", sanitize_sensitive_ops_error(exc))
+
+    sales_by_local = _aggregate_sales_by_local_date(sales_rows)
+    expected_dates = [
+        (datetime.strptime(period["fecha_inicio"], "%Y-%m-%d").date() + timedelta(days=offset)).isoformat()
+        for offset in range(
+            (datetime.strptime(period["fecha_fin"], "%Y-%m-%d").date() - datetime.strptime(period["fecha_inicio"], "%Y-%m-%d").date()).days + 1
+        )
+    ]
+    logs_by_local: Dict[str, List[Dict[str, Any]]] = {}
+    for log in logs:
+        local_id = str(log.get("local_id") or "")
+        file_date = _extract_file_date_from_name(log.get("archivo"))
+        compact = _compact_copilot_log(log)
+        compact["fecha_detectada_archivo"] = file_date
+        compact["archivo_en_periodo_consultado"] = (
+            bool(file_date)
+            and period["fecha_inicio"] <= file_date <= period["fecha_fin"]
+        )
+        logs_by_local.setdefault(local_id, []).append(compact)
+
+    diagnostics = []
+    for local in selected:
+        local_id = str(local.get("id") or "")
+        days = sales_by_local.get(local_id, {})
+        missing = [item for item in expected_dates if item not in days]
+        recent_logs = logs_by_local.get(local_id, [])[:12]
+        diagnostics.append({
+            "local_id": local_id,
+            "local": local.get("nombre"),
+            "codigo": local.get("codigo_interno"),
+            "dias_con_ventas": len(days),
+            "registros_ventas": sum(int(day.get("registros") or 0) for day in days.values()),
+            "total_bruto": round(sum(float(day.get("total_bruto") or 0) for day in days.values()), 2),
+            "total_neto": round(sum(float(day.get("total_neto") or 0) for day in days.values()), 2),
+            "ventas_por_fecha": sorted(days.values(), key=lambda item: item["fecha"])[:45],
+            "dias_faltantes": missing[:45],
+            "logs_recientes": recent_logs,
+            "logs_con_fecha_archivo_fuera_periodo": [
+                log for log in recent_logs
+                if log.get("fecha_detectada_archivo") and not log.get("archivo_en_periodo_consultado")
+            ][:8],
+        })
+
+    return {
+        "status": "ok",
+        "periodo": period,
+        "locales_analizados": len(diagnostics),
+        "diagnosticos": diagnostics,
+        "guia_uso": [
+            "Usa ventas_por_fecha para responder que dias si estan en el cubo.",
+            "Usa dias_faltantes para responder que dias faltan en el periodo.",
+            "Usa logs_recientes y fecha_detectada_archivo para explicar cargas exitosas fuera del periodo consultado.",
+        ],
+    }
+
+
+def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any], message: str = "") -> Dict[str, Any]:
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado.")
     _ensure_operator_can_access_mall(operator_ctx, mall_id)
@@ -4966,6 +5189,7 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
 
     missing_days = _load_copilot_missing_days(locales)
     sales_summary = _load_copilot_sales_summary(locales)
+    sales_load_diagnostics = _load_copilot_sales_load_diagnostics(mall_id, locales, message)
 
     return {
         "generated_at_utc": datetime.utcnow().isoformat(),
@@ -4988,6 +5212,7 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
         "monitor_conexiones": connection_monitor,
         "dias_informacion": missing_days,
         "ventas_recientes": sales_summary,
+        "diagnostico_carga_ventas": sales_load_diagnostics,
     }
 
 
@@ -5526,7 +5751,9 @@ def _copilot_system_prompt() -> str:
     return (
         "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
         "Responde en español, de forma breve y accionable. Usa solamente el contexto JSON del sistema: "
-        "ventas recientes, monitor de carga, monitor de conexiones, locales y dias de informacion. "
+        "ventas recientes, monitor de carga, monitor de conexiones, locales, dias de informacion y diagnostico_carga_ventas. "
+        "Cuando el usuario pregunte por diferencias entre cubo, monitor e importaciones, prioriza diagnostico_carga_ventas: "
+        "explica dias con ventas, dias faltantes, logs recientes y fechas detectadas en archivos. "
         "Si el contexto no contiene un dato solicitado, dilo claramente y sugiere donde revisarlo. "
         "No inventes cifras, locales, fechas ni estados. Cuando sea util, menciona la fuente del dato. "
         "Formato obligatorio: usa un titulo corto en negrita, luego lineas separadas con bullets. "
@@ -5723,7 +5950,7 @@ async def chat_with_copilot(
     if not settings.get("api_key_configured"):
         raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
 
-    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx)
+    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx, message)
     email_request = _parse_copilot_email_request(message)
     if email_request:
         try:
@@ -5794,7 +6021,7 @@ async def chat_with_copilot(
         "provider": settings["provider"],
         "model": settings["model"],
         "context_generated_at": context.get("generated_at_utc"),
-        "sources": ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion"],
+        "sources": ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion", "diagnostico_carga_ventas"],
         "attachments": [],
     }
 

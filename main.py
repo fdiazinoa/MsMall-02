@@ -66,6 +66,7 @@ from services.connection_monitor_service import (
 )
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import build_missing_days_email_html, missing_days_email_period
+from services.operations_auditor_service import OperationsAuditorService
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -137,6 +138,10 @@ def _connection_monitor_service() -> ConnectionMonitorService:
 
 def _analytics_service() -> AnalyticsService:
     return AnalyticsService(supabase_client=supabase, logger=logger)
+
+
+def _operations_auditor_service() -> OperationsAuditorService:
+    return OperationsAuditorService(supabase, logger)
 
 
 async def _run_local_risk_analysis_async(local_id: Optional[str], trigger: str) -> Optional[Dict[str, Any]]:
@@ -4966,6 +4971,11 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
 
     missing_days = _load_copilot_missing_days(locales)
     sales_summary = _load_copilot_sales_summary(locales)
+    try:
+        operations_auditor = _operations_auditor_service().build_copilot_summary(mall_id)
+    except Exception as exc:
+        logger.warning("Copilot operations auditor query failed: %s", sanitize_sensitive_ops_error(exc))
+        operations_auditor = {"health": "NO_DISPONIBLE", "open_findings": [], "summary": {"total_open": 0}}
 
     return {
         "generated_at_utc": datetime.utcnow().isoformat(),
@@ -4986,6 +4996,7 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
             "logs_recientes": [_compact_copilot_log(row) for row in logs[:15]],
         },
         "monitor_conexiones": connection_monitor,
+        "operations_auditor": operations_auditor,
         "dias_informacion": missing_days,
         "ventas_recientes": sales_summary,
     }
@@ -5002,6 +5013,8 @@ def _normalize_copilot_report_format(message: str) -> Optional[str]:
 
 def _normalize_copilot_report_type(message: str) -> Optional[str]:
     text = _normalize_store_catalog_key(message)
+    if any(term in text for term in ["operations auditor", "operations center", "estado operativo", "hallazgo", "hallazgos", "algo raro", "alerta operativa", "auditor operativo"]):
+        return "operations_auditor"
     gross_income_terms = ["ingreso bruto", "ingresos brutos", "venta bruta", "ventas brutas", "total bruto", "gross income", "gross sales"]
     if any(term in text for term in gross_income_terms):
         return "ingresos_brutos_local"
@@ -5134,6 +5147,40 @@ def _copilot_report_definition(report_type: str, context: Dict[str, Any]) -> Dic
                 ["Locales con brechas", missing.get("locales_con_brechas") or 0],
                 ["Locales completos", missing.get("locales_completos") or 0],
                 ["Dias esperados por local", missing.get("dias_esperados_por_local") or 0],
+            ],
+            "generated_at": generated_at,
+        }
+
+    if report_type == "operations_auditor":
+        auditor = context.get("operations_auditor") or {}
+        summary = auditor.get("summary") or {}
+        rows = auditor.get("open_findings") or []
+        return {
+            "title": "Hallazgos operativos",
+            "subtitle": f"{mall_name} | Estado {auditor.get('health') or 'NO_DISPONIBLE'}",
+            "filename_base": "msmall_hallazgos_operativos",
+            "sources": ["operations_auditor"],
+            "headers": ["Severidad", "Local", "Tipo", "Fuente", "Titulo", "Causa probable", "Recomendacion", "Confianza"],
+            "rows": [
+                [
+                    row.get("severity"),
+                    row.get("local"),
+                    row.get("type"),
+                    row.get("source"),
+                    row.get("title"),
+                    row.get("root_cause"),
+                    row.get("recommendation"),
+                    _report_value(row.get("confidence") or 0),
+                ]
+                for row in rows
+            ],
+            "summary": [
+                ["Estado", auditor.get("health") or "NO_DISPONIBLE"],
+                ["Abiertos", summary.get("total_open") or 0],
+                ["Criticos", summary.get("critical") or 0],
+                ["Altos", summary.get("high") or 0],
+                ["Advertencias", summary.get("warning") or 0],
+                ["Locales afectados", summary.get("affected_locals") or 0],
             ],
             "generated_at": generated_at,
         }
@@ -5462,6 +5509,103 @@ def _generate_copilot_report_attachment(report_request: Dict[str, str], context:
     return attachment
 
 
+@app.get("/api/v1/operations/findings")
+async def list_operational_findings(
+    mall_id: str = Query(...),
+    status: Optional[str] = Query("OPEN"),
+    severity: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    local_id: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=300),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    try:
+        return await asyncio.to_thread(
+            _operations_auditor_service().list_findings,
+            mall_id,
+            status,
+            severity,
+            source,
+            local_id,
+            limit,
+        )
+    except Exception as exc:
+        logger.error("Error listando hallazgos operativos: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudieron cargar los hallazgos operativos.")
+
+
+@app.get("/api/v1/operations/findings/{finding_id}")
+async def get_operational_finding(
+    finding_id: str,
+    mall_id: str = Query(...),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    finding = await asyncio.to_thread(_operations_auditor_service().get_finding, mall_id, finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="Hallazgo operativo no encontrado.")
+    return finding
+
+
+@app.post("/api/v1/operations/findings/{finding_id}/acknowledge")
+async def acknowledge_operational_finding(
+    finding_id: str,
+    mall_id: str = Query(...),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    operator = operator_ctx.get("email") or operator_ctx.get("user_id") or "operador"
+    try:
+        return await asyncio.to_thread(
+            _operations_auditor_service().acknowledge_finding,
+            mall_id,
+            finding_id,
+            operator,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Hallazgo operativo no encontrado.")
+
+
+@app.post("/api/v1/operations/findings/{finding_id}/resolve")
+async def resolve_operational_finding(
+    finding_id: str,
+    mall_id: str = Query(...),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    operator = operator_ctx.get("email") or operator_ctx.get("user_id") or "operador"
+    try:
+        return await asyncio.to_thread(
+            _operations_auditor_service().resolve_finding,
+            mall_id,
+            finding_id,
+            operator,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Hallazgo operativo no encontrado.")
+
+
+@app.post("/api/v1/operations/auditor/run")
+async def run_operations_auditor(
+    mall_id: str = Query(...),
+    lookback_days: int = Query(7, ge=1, le=45),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    operator = operator_ctx.get("email") or operator_ctx.get("user_id") or "operador"
+    try:
+        return await asyncio.to_thread(
+            _operations_auditor_service().run_audit,
+            mall_id,
+            operator,
+            lookback_days,
+        )
+    except Exception as exc:
+        logger.error("Error ejecutando Operations Auditor: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudo ejecutar Operations Auditor.")
+
+
 @app.get("/api/v1/copilot/download/{download_id}")
 async def download_copilot_report(download_id: str):
     with _COPILOT_DOWNLOADS_LOCK:
@@ -5526,7 +5670,9 @@ def _copilot_system_prompt() -> str:
     return (
         "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
         "Responde en español, de forma breve y accionable. Usa solamente el contexto JSON del sistema: "
-        "ventas recientes, monitor de carga, monitor de conexiones, locales y dias de informacion. "
+        "Operations Auditor, ventas recientes, monitor de carga, monitor de conexiones, locales y dias de informacion. "
+        "Cuando exista operations_auditor.open_findings, consultalo primero y explica el impacto operativo antes del detalle tecnico. "
+        "Usa semaforo VERDE/AMARILLO/ROJO si el usuario pide estado general. "
         "Si el contexto no contiene un dato solicitado, dilo claramente y sugiere donde revisarlo. "
         "No inventes cifras, locales, fechas ni estados. Cuando sea util, menciona la fuente del dato. "
         "Formato obligatorio: usa un titulo corto en negrita, luego lineas separadas con bullets. "

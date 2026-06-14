@@ -540,6 +540,9 @@ export interface Store {
   mts: string;
   porciento_renta: string | number;
   upsert_activo?: boolean;
+  activo?: boolean;
+  fecha_inactivacion?: string | null;
+  motivo_inactivacion?: string | null;
   mall_nombre?: string;
   renta_fija?: string | number;
   breakpoint_venta?: string | number;
@@ -727,6 +730,8 @@ export const ApiService = {
       query = query.eq('mall_id', mallId);
     }
 
+    query = query.or('activo.is.true,activo.is.null');
+
     const { data, error } = await query;
 
     if (error) {
@@ -746,7 +751,7 @@ export const ApiService = {
       tipo_archivo: (local.file_type || 'CSV') as FileType,
       frecuencia: (local.frecuencia_cron || 'manual') as ImportFrequency,
       hora_especifica: local.hora_especifica || '',
-      estado: 'activo',
+      estado: local.activo === false ? 'inactivo' : 'activo',
       accion_post_procesado: (local.accion_post_procesado === 'RENOMBRAR_BACKUP' || local.accion_post_procesado === 'RENOMBRAR_PROCESADO') ? 'RENOMBRAR_PROCESADO' : (local.accion_post_procesado === 'ELIMINAR' ? 'ELIMINAR' : 'NINGUNA'),
       prefijo_renombrado: local.prefijo_backup || 'PR_',
       mapping: local.mapping_config || {},
@@ -1563,7 +1568,7 @@ export const ApiService = {
     }
   },
 
-  async getStores(mallId?: string): Promise<Store[]> {
+  async getStores(mallId?: string, includeInactive = false): Promise<Store[]> {
     if (!supabase) return [];
 
     try {
@@ -1571,6 +1576,9 @@ export const ApiService = {
 
       if (mallId) {
         query = query.eq('mall_id', mallId);
+      }
+      if (!includeInactive) {
+        query = query.or('activo.is.true,activo.is.null');
       }
 
       const { data, error } = await query;

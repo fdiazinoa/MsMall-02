@@ -4946,11 +4946,19 @@ def _parse_copilot_period(message: str) -> Dict[str, str]:
 
     year_match = re.search(r"\b(20\d{2})\b", text)
     year = int(year_match.group(1)) if year_match else today.year
-    for month_name, month_number in _COPILOT_MONTHS.items():
-        if month_name in text:
-            start = date(year, month_number, 1)
-            end = _last_day_of_month(year, month_number)
-            return {"fecha_inicio": start.isoformat(), "fecha_fin": end.isoformat(), "origen": f"mes_{month_name}"}
+    mentioned_months = [
+        (month_name, month_number)
+        for month_name, month_number in _COPILOT_MONTHS.items()
+        if month_name in text
+    ]
+    if mentioned_months:
+        month_numbers = [month_number for _, month_number in mentioned_months]
+        start_month = min(month_numbers)
+        end_month = max(month_numbers)
+        start = date(year, start_month, 1)
+        end = _last_day_of_month(year, end_month)
+        origin = "mes_" + "_".join(name for name, _ in mentioned_months)
+        return {"fecha_inicio": start.isoformat(), "fecha_fin": end.isoformat(), "origen": origin}
 
     start = today - timedelta(days=29)
     return {"fecha_inicio": start.isoformat(), "fecha_fin": today.isoformat(), "origen": "ultimos_30_dias"}
@@ -5101,7 +5109,7 @@ def _load_copilot_sales_load_diagnostics(
             "total_bruto": round(sum(float(day.get("total_bruto") or 0) for day in days.values()), 2),
             "total_neto": round(sum(float(day.get("total_neto") or 0) for day in days.values()), 2),
             "ventas_por_fecha": sorted(days.values(), key=lambda item: item["fecha"])[:45],
-            "dias_faltantes": missing[:45],
+            "dias_faltantes": missing[:90],
             "logs_recientes": recent_logs,
             "logs_con_fecha_archivo_fuera_periodo": [
                 log for log in recent_logs
@@ -5230,6 +5238,11 @@ def _normalize_copilot_report_type(message: str) -> Optional[str]:
     gross_income_terms = ["ingreso bruto", "ingresos brutos", "venta bruta", "ventas brutas", "total bruto", "gross income", "gross sales"]
     if any(term in text for term in ["diagnost", "conciliar", "cubo", "no aparece", "no se ve"]) and any(term in text for term in ["monitor", "carga", "importacion", "venta", "ventas"]):
         return "diagnostico_carga_ventas"
+    if any(term in text for term in ["faltante", "dias", "brecha"]) and (
+        any(month in text for month in _COPILOT_MONTHS)
+        or re.search(r"\b(20\d{2}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/20\d{2})\b", message)
+    ):
+        return "diagnostico_carga_ventas"
     if any(term in text for term in gross_income_terms):
         return "ingresos_brutos_local"
     if any(term in text for term in ["venta", "sales", "facturacion", "ingreso"]):
@@ -5285,12 +5298,22 @@ def _parse_copilot_email_request(message: str, intent_message: Optional[str] = N
         wants_html = True
         wants_xlsx = True
 
+    body_note = None
+    note_match = re.search(
+        r"(?:escribe|pon|incluye|agrega)\s+en\s+el\s+cuerpo(?:\s+del\s+(?:mail|correo|email))?\s+que\s+(.+)$",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if note_match:
+        body_note = _truncate_text(note_match.group(1).strip(" ."), 500)
+
     attachment_format = "pdf" if wants_pdf else "xlsx" if wants_xlsx else None
     return {
         "recipients": recipients,
         "report_type": _normalize_copilot_report_type(intent_message or message) or "locales",
         "include_html": True,
         "attachment_format": attachment_format,
+        "body_note": body_note,
     }
 
 
@@ -5587,6 +5610,13 @@ def _build_copilot_pdf(definition: Dict[str, Any]) -> bytes:
 
 
 def _build_copilot_report_html(definition: Dict[str, Any]) -> str:
+    body_note = str(definition.get("body_note") or "").strip()
+    note_html = (
+        "<div style=\"background:#ecfdf5;border:1px solid #bbf7d0;color:#065f46;"
+        "padding:12px 14px;border-radius:12px;margin-bottom:18px\">"
+        f"{html.escape(body_note)}</div>"
+        if body_note else ""
+    )
     summary_rows = "".join(
         f"<tr><td>{html.escape(str(label))}</td><td><strong>{html.escape(str(_report_value(value)))}</strong></td></tr>"
         for label, value in (definition.get("summary") or [])
@@ -5608,6 +5638,7 @@ def _build_copilot_report_html(definition: Dict[str, Any]) -> str:
         </div>
         <div style="padding:22px 24px">
           <p style="margin:0 0 16px;color:#64748b;font-size:13px">Generado: {html.escape(str(definition.get('generated_at') or datetime.utcnow().isoformat()))}</p>
+          {note_html}
           {f'<h2 style="font-size:15px">Resumen</h2><table style="width:100%;border-collapse:collapse;margin-bottom:20px">{summary_rows}</table>' if summary_rows else ''}
           <h2 style="font-size:15px">Detalle</h2>
           <div style="overflow-x:auto">
@@ -5689,6 +5720,8 @@ def _build_copilot_email_draft(email_request: Dict[str, Any], context: Dict[str,
         raise HTTPException(status_code=400, detail="Indica al menos un correo destinatario para enviar el reporte.")
 
     definition = _copilot_report_definition(email_request["report_type"], context)
+    if email_request.get("body_note"):
+        definition["body_note"] = email_request["body_note"]
     html_body = _build_copilot_report_html(definition)
     subject = f"{definition['title']} - MsMall"
     attachments = []
@@ -5710,7 +5743,14 @@ def _build_copilot_email_draft(email_request: Dict[str, Any], context: Dict[str,
         "recipients": recipients,
         "subject": subject,
         "html_body": html_body,
-        "text": f"{definition['title']}\n{definition.get('subtitle') or ''}",
+        "text": "\n".join(
+            item for item in [
+                str(email_request.get("body_note") or ""),
+                definition["title"],
+                definition.get("subtitle") or "",
+            ]
+            if item
+        ),
         "attachments": attachments,
         "report_type": email_request["report_type"],
         "row_count": len(definition.get("rows") or []),

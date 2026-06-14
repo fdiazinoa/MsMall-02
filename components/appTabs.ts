@@ -15,5 +15,6 @@ export type AppTab =
   | 'malls'
   | 'comparisons'
   | 'messaging'
+  | 'operations'
   | 'copilot'
   | 'security';

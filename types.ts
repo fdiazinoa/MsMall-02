@@ -319,6 +319,76 @@ export interface CopilotEmailSendResponse {
   attachment_count: number;
 }
 
+export type OperationalFindingSeverity = 'INFO' | 'WARNING' | 'HIGH' | 'CRITICAL';
+export type OperationalFindingStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED' | 'IGNORED';
+export type OperationalFindingSource = 'FTP' | 'SFTP' | 'WEBSERVICE' | 'WORKER' | 'SALES_AUDIT' | 'MISSING_DAYS';
+
+export interface OperationalFinding {
+  id: string;
+  mall_id: string;
+  local_id?: string | null;
+  local_name?: string | null;
+  type: string;
+  severity: OperationalFindingSeverity;
+  title: string;
+  description: string;
+  evidence: Record<string, any>;
+  root_cause?: string | null;
+  recommendation?: string | null;
+  confidence: number;
+  status: OperationalFindingStatus;
+  source: OperationalFindingSource;
+  detected_at: string;
+  resolved_at?: string | null;
+  assigned_to?: string | null;
+  notified_to?: string[];
+  metadata?: Record<string, any>;
+  fingerprint?: string;
+  updated_at?: string;
+}
+
+export interface OperationsAuditorRun {
+  id?: string;
+  mall_id: string;
+  status: string;
+  started_at?: string;
+  finished_at?: string;
+  duration_ms: number;
+  findings_created: number;
+  findings_updated: number;
+  errors?: Array<Record<string, any>>;
+  metadata?: Record<string, any>;
+  created_by?: string | null;
+}
+
+export interface OperationsFindingsResponse {
+  findings: OperationalFinding[];
+  summary: {
+    total_open: number;
+    critical: number;
+    high: number;
+    warning: number;
+    info: number;
+    affected_locals: number;
+    by_severity: Record<string, number>;
+    by_source: Record<string, number>;
+    last_run_at?: string | null;
+    last_run_status?: string | null;
+  };
+  last_run?: OperationsAuditorRun | null;
+}
+
+export interface OperationsAuditorRunResponse {
+  status: string;
+  mall_id: string;
+  findings_created: number;
+  findings_updated: number;
+  findings_detected: number;
+  duration_ms: number;
+  errors: Array<Record<string, any>>;
+  run?: OperationsAuditorRun;
+}
+
 export type SecurityTokenType = 'app' | 'exporter';
 export type SecurityTokenStatus = 'active' | 'disabled' | 'revoked';
 

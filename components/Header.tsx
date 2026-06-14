@@ -26,6 +26,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     { id: 'cube', label: 'Cubo de Ventas', visible: true },
     { id: 'comparisons', label: 'Comparativas BI', visible: true },
     { id: 'reports', label: 'Auditoría Ventas', visible: isAdmin || isTic || isAuditor },
+    { id: 'operations', label: 'Operations Center', visible: isAdmin || isTic || isAuditor },
     { id: 'monitor', label: 'Monitor de Cargas', visible: isAdmin || isTic },
     { id: 'stores', label: 'Mantenimiento', visible: isAdmin || isTic },
     { id: 'store-catalogs', label: 'Catálogos Locales', visible: isAdmin || isTic },

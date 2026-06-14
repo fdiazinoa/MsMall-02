@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, OperationsFindingsResponse, OperationsAuditorRunResponse, OperationalFinding } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -2431,6 +2431,64 @@ export const ApiService = {
         })
       },
       "No se pudo enviar el correo del Copilot"
+    );
+  },
+
+  async getOperationalFindings(
+    mallId: string,
+    token: string,
+    params: { status?: string; severity?: string; source?: string; local_id?: string; limit?: number } = {}
+  ): Promise<OperationsFindingsResponse> {
+    const search = new URLSearchParams({ mall_id: mallId });
+    if (params.status) search.set('status', params.status);
+    if (params.severity) search.set('severity', params.severity);
+    if (params.source) search.set('source', params.source);
+    if (params.local_id) search.set('local_id', params.local_id);
+    if (params.limit) search.set('limit', String(params.limit));
+    return fetchJsonWithBaseFallback<OperationsFindingsResponse>(
+      `/operations/findings?${search.toString()}`,
+      {
+        method: 'GET',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudieron cargar los hallazgos operativos"
+    );
+  },
+
+  async runOperationsAuditor(mallId: string, token: string, lookbackDays = 7): Promise<OperationsAuditorRunResponse> {
+    const search = new URLSearchParams({
+      mall_id: mallId,
+      lookback_days: String(lookbackDays)
+    });
+    return fetchJsonWithBaseFallback<OperationsAuditorRunResponse>(
+      `/operations/auditor/run?${search.toString()}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudo ejecutar Operations Auditor"
+    );
+  },
+
+  async acknowledgeOperationalFinding(mallId: string, findingId: string, token: string): Promise<OperationalFinding> {
+    return fetchJsonWithBaseFallback<OperationalFinding>(
+      `/operations/findings/${encodeURIComponent(findingId)}/acknowledge?mall_id=${encodeURIComponent(mallId)}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudo marcar el hallazgo como reconocido"
+    );
+  },
+
+  async resolveOperationalFinding(mallId: string, findingId: string, token: string): Promise<OperationalFinding> {
+    return fetchJsonWithBaseFallback<OperationalFinding>(
+      `/operations/findings/${encodeURIComponent(findingId)}/resolve?mall_id=${encodeURIComponent(mallId)}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudo resolver el hallazgo operativo"
     );
   },
 

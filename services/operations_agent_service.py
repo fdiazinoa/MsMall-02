@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -22,6 +23,7 @@ EVENT_PENDING = "PENDING"
 EVENT_PROCESSING = "PROCESSING"
 EVENT_PROCESSED = "PROCESSED"
 EVENT_FAILED = "FAILED"
+DEFAULT_DIGEST_MINUTES = 30
 
 
 def utcnow_iso() -> str:
@@ -33,6 +35,20 @@ def _safe_int(value: Any) -> int:
         return int(float(str(value or 0)))
     except Exception:
         return 0
+
+
+def _response_data(response: Any) -> List[Dict[str, Any]]:
+    data = getattr(response, "data", None)
+    return data if isinstance(data, list) else []
+
+
+def _read_int_env(name: str, default: int, minimum: int = 1, maximum: int = 1440) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(str(raw).strip()) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
 
 
 def _normalize_date(value: Any) -> Optional[str]:
@@ -78,6 +94,20 @@ def infer_event_type_from_load_log(payload: Dict[str, Any]) -> str:
     return EVENT_MONITOR_ENTRY_CREATED
 
 
+def should_publish_operations_event(payload: Dict[str, Any], event_type: str) -> bool:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    records = _safe_int(payload.get("records_processed") or metadata.get("records_processed"))
+    errors = _safe_int(payload.get("error_count") or metadata.get("error_count"))
+    reason = str(metadata.get("reason") or payload.get("reason") or "").strip().lower()
+    filename = str(payload.get("archivo") or metadata.get("archivo") or "").strip().upper()
+
+    if reason == "no_new_file" and records == 0 and errors == 0:
+        return False
+    if event_type == EVENT_IMPORT_COMPLETED and records == 0 and errors == 0 and filename in {"", "N/A"}:
+        return False
+    return True
+
+
 def publish_operations_event(
     supabase_client: Any,
     *,
@@ -91,6 +121,8 @@ def publish_operations_event(
 ) -> Optional[Dict[str, Any]]:
     if not supabase_client or not mall_id or not event_type:
         return None
+    if not should_publish_operations_event(payload or {}, event_type):
+        return None
     row = {
         "mall_id": mall_id,
         "local_id": local_id,
@@ -102,7 +134,7 @@ def publish_operations_event(
     }
     try:
         response = supabase_client.table("operations_events").insert(row).execute()
-        return (response.data or [row])[0]
+        return (_response_data(response) or [row])[0]
     except Exception as exc:
         if logger:
             logger.warning("Operations event publish skipped: %s", str(exc)[:220])
@@ -119,22 +151,26 @@ class OperationsAgentWorker:
     def process_pending_events(self, limit: int = 50) -> Dict[str, Any]:
         self._ensure_ready()
         started = time.time()
-        events = (
+        events_response = (
             self.supabase.table("operations_events")
             .select("*")
             .eq("processing_status", EVENT_PENDING)
             .order("created_at")
             .limit(max(1, min(limit, 200)))
             .execute()
-        ).data or []
+        )
+        events = _response_data(events_response)
 
         processed = 0
         failed = 0
+        processed_malls: Set[str] = set()
         results = []
         for event in events:
             try:
                 result = self.process_event(event)
                 processed += 1
+                if result.get("mall_id"):
+                    processed_malls.add(str(result["mall_id"]))
                 results.append(result)
             except Exception as exc:  # pragma: no cover - defensive worker guard
                 failed += 1
@@ -143,10 +179,17 @@ class OperationsAgentWorker:
                 self._mark_event_failed(event_id, str(exc))
                 results.append({"event_id": event_id, "status": EVENT_FAILED, "error": str(exc)[:220]})
 
+        digests = 0
+        for mall_id in processed_malls:
+            if self._should_refresh_digest(mall_id):
+                self._refresh_digest(mall_id)
+                digests += 1
+
         return {
             "status": "ok",
             "processed": processed,
             "failed": failed,
+            "digests": digests,
             "duration_ms": int((time.time() - started) * 1000),
             "results": results,
         }
@@ -220,10 +263,10 @@ class OperationsAgentWorker:
                 "processing_error": None,
             }).eq("id", event_id).execute()
 
-        self._refresh_digest(mall_id)
         return {
             "event_id": event_id,
             "event_type": event_type,
+            "mall_id": mall_id,
             "status": EVENT_PROCESSED,
             "findings": len(findings),
             "observations": len(observations),
@@ -322,6 +365,27 @@ class OperationsAgentWorker:
             fingerprint=f"AGENT:LOCAL_INACTIVE_BUT_PROCESSING:{local_id}",
         )]
 
+    def _should_refresh_digest(self, mall_id: str) -> bool:
+        interval_minutes = _read_int_env("OPERATIONS_DIGEST_MINUTES", DEFAULT_DIGEST_MINUTES, minimum=5, maximum=1440)
+        try:
+            latest = (
+                self.supabase.table("operations_agent_observations")
+                .select("created_at")
+                .eq("mall_id", mall_id)
+                .eq("observation_type", "OPERATIONAL_DIGEST")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = _response_data(latest)
+            if not rows:
+                return True
+            created_at = rows[0].get("created_at")
+            parsed = datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).replace(tzinfo=None)
+            return parsed <= datetime.utcnow() - timedelta(minutes=interval_minutes)
+        except Exception:
+            return True
+
     def _refresh_digest(self, mall_id: str) -> Optional[Dict[str, Any]]:
         intelligence = OperationsIntelligenceService(self.supabase, self.logger)
         digest = intelligence.build_operational_digest(mall_id)
@@ -342,18 +406,20 @@ class OperationsAgentWorker:
         if not local_id:
             return {}
         try:
-            return (
+            response = (
                 self.supabase.table("locales")
                 .select("*")
                 .eq("id", local_id)
                 .maybe_single()
                 .execute()
-            ).data or {}
+            )
+            data = getattr(response, "data", None)
+            return data if isinstance(data, dict) else {}
         except Exception:
             return {}
 
     def _has_sales_for_date(self, local_id: str, sale_date: str) -> bool:
-        rows = (
+        response = (
             self.supabase.table("ventas")
             .select("id,fecha")
             .eq("local_id", local_id)
@@ -361,7 +427,8 @@ class OperationsAgentWorker:
             .lte("fecha", sale_date)
             .limit(1)
             .execute()
-        ).data or []
+        )
+        rows = _response_data(response)
         return bool(rows)
 
     def _upsert_finding(self, finding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -372,8 +439,19 @@ class OperationsAgentWorker:
             payload,
             on_conflict="mall_id,fingerprint",
         ).execute()
-        rows = response.data or []
-        return rows[0] if rows else None
+        rows = _response_data(response)
+        if rows:
+            return rows[0]
+        fallback = (
+            self.supabase.table("operational_findings")
+            .select("*")
+            .eq("mall_id", payload["mall_id"])
+            .eq("fingerprint", payload["fingerprint"])
+            .maybe_single()
+            .execute()
+        )
+        data = getattr(fallback, "data", None)
+        return data if isinstance(data, dict) else payload
 
     def _create_observation(
         self,
@@ -401,7 +479,8 @@ class OperationsAgentWorker:
             "confidence": round(float(confidence), 2),
             "metadata": metadata or {},
         }
-        return (self.supabase.table("operations_agent_observations").insert(row).execute().data or [row])[0]
+        response = self.supabase.table("operations_agent_observations").insert(row).execute()
+        return (_response_data(response) or [row])[0]
 
     def _touch_pattern(
         self,
@@ -414,7 +493,7 @@ class OperationsAgentWorker:
         confidence: float,
         metadata: Dict[str, Any],
     ) -> Dict[str, Any]:
-        existing = (
+        existing_response = (
             self.supabase.table("operational_patterns")
             .select("*")
             .eq("mall_id", mall_id)
@@ -423,7 +502,9 @@ class OperationsAgentWorker:
             .eq("local_id", local_id)
             .maybe_single()
             .execute()
-        ).data
+        )
+        existing_data = getattr(existing_response, "data", None)
+        existing = existing_data if isinstance(existing_data, dict) else None
         if existing:
             row = {
                 "occurrences": _safe_int(existing.get("occurrences")) + 1,
@@ -431,7 +512,8 @@ class OperationsAgentWorker:
                 "confidence": max(float(existing.get("confidence") or 0), round(float(confidence), 2)),
                 "metadata": {**(existing.get("metadata") or {}), "last_event": metadata},
             }
-            return (self.supabase.table("operational_patterns").update(row).eq("id", existing["id"]).execute().data or [{**existing, **row}])[0]
+            response = self.supabase.table("operational_patterns").update(row).eq("id", existing["id"]).execute()
+            return (_response_data(response) or [{**existing, **row}])[0]
         row = {
             "mall_id": mall_id,
             "local_id": local_id,
@@ -445,7 +527,8 @@ class OperationsAgentWorker:
             "status": "ACTIVE",
             "metadata": {"first_event": metadata},
         }
-        return (self.supabase.table("operational_patterns").insert(row).execute().data or [row])[0]
+        response = self.supabase.table("operational_patterns").insert(row).execute()
+        return (_response_data(response) or [row])[0]
 
     def _mark_event_failed(self, event_id: Optional[str], error: str) -> None:
         if not event_id:
@@ -560,7 +643,7 @@ class OperationsIntelligenceService:
         }
 
     def latest_digest(self, mall_id: str) -> Optional[Dict[str, Any]]:
-        rows = (
+        response = (
             self.supabase.table("operations_agent_observations")
             .select("*")
             .eq("mall_id", mall_id)
@@ -568,7 +651,8 @@ class OperationsIntelligenceService:
             .order("created_at", desc=True)
             .limit(1)
             .execute()
-        ).data or []
+        )
+        rows = _response_data(response)
         if not rows:
             return None
         row = rows[0]
@@ -583,7 +667,7 @@ class OperationsIntelligenceService:
 
     def _load_findings(self, mall_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         try:
-            return (
+            response = (
                 self.supabase.table("operational_findings")
                 .select("*")
                 .eq("mall_id", mall_id)
@@ -592,9 +676,10 @@ class OperationsIntelligenceService:
                 .order("detected_at", desc=True)
                 .limit(limit)
                 .execute()
-            ).data or []
+            )
+            return _response_data(response)
         except Exception:
-            return (
+            response = (
                 self.supabase.table("operational_findings")
                 .select("*")
                 .eq("mall_id", mall_id)
@@ -602,7 +687,8 @@ class OperationsIntelligenceService:
                 .order("detected_at", desc=True)
                 .limit(limit)
                 .execute()
-            ).data or []
+            )
+            return _response_data(response)
 
     def _load_observations(self, mall_id: str, limit: int = 20, exclude_digest: bool = False) -> List[Dict[str, Any]]:
         query = (
@@ -612,13 +698,13 @@ class OperationsIntelligenceService:
             .order("created_at", desc=True)
             .limit(limit)
         )
-        rows = query.execute().data or []
+        rows = _response_data(query.execute())
         if exclude_digest:
             rows = [row for row in rows if row.get("observation_type") != "OPERATIONAL_DIGEST"]
         return rows
 
     def _load_patterns(self, mall_id: str, limit: int = 20) -> List[Dict[str, Any]]:
-        return (
+        response = (
             self.supabase.table("operational_patterns")
             .select("*")
             .eq("mall_id", mall_id)
@@ -627,7 +713,8 @@ class OperationsIntelligenceService:
             .order("last_seen", desc=True)
             .limit(limit)
             .execute()
-        ).data or []
+        )
+        return _response_data(response)
 
     def _summary(self, findings: List[Dict[str, Any]], observations: List[Dict[str, Any]], patterns: List[Dict[str, Any]]) -> Dict[str, Any]:
         by_severity: Dict[str, int] = {}

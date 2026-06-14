@@ -434,6 +434,50 @@ export interface OperationsIntelligenceResponse {
     high_findings?: number;
   } | null;
   changes_since_last_audit?: Record<string, any>;
+  operational_health?: {
+    monitored_locations?: number;
+    healthy_locations?: number;
+    attention_required?: number;
+    active_incidents?: number;
+    locations?: Array<{
+      local_id?: string | null;
+      local_name: string;
+      score: number;
+      status: string;
+      last_activity?: string | null;
+      missing_days?: number;
+      import_failures?: number;
+      action?: string;
+      priority_score?: number;
+    }>;
+  };
+  priority_locations?: Array<{
+    local_id?: string | null;
+    local_name: string;
+    reason: string;
+    action: string;
+    priority_score?: number;
+    severity?: string;
+  }>;
+  locations_without_sales?: {
+    count?: number;
+    items?: OperationalFinding[];
+  };
+  missing_days_summary?: {
+    count?: number;
+    days_missing?: number;
+    items?: OperationalFinding[];
+  };
+  import_failures_summary?: {
+    count?: number;
+    items?: OperationalFinding[];
+  };
+  recommended_actions?: Array<{
+    local_name: string;
+    problem: string;
+    action: string;
+    priority_score?: number;
+  }>;
 }
 
 export type SecurityTokenType = 'app' | 'exporter';

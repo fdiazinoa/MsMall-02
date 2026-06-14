@@ -610,6 +610,8 @@ class OperationsIntelligenceService:
         patterns = self._load_patterns(mall_id, limit=limit)
         digest = self.latest_digest(mall_id) or self.build_operational_digest(mall_id)
         summary = self._summary(findings, observations, patterns)
+        operational_health = self.getOperationalHealth(findings)
+        priority_locations = self.getPriorityLocations(findings)
         return {
             "health": self._health(summary),
             "summary": summary,
@@ -618,6 +620,12 @@ class OperationsIntelligenceService:
             "patterns": patterns,
             "operational_digest": digest,
             "changes_since_last_audit": self._changes_since_last_audit(findings, observations),
+            "operational_health": operational_health,
+            "priority_locations": priority_locations,
+            "locations_without_sales": self.getLocationsWithoutSales(findings),
+            "missing_days_summary": self.getMissingDaysSummary(findings),
+            "import_failures_summary": self.getImportFailuresSummary(findings),
+            "recommended_actions": self.getRecommendedActions(findings),
         }
 
     def build_operational_digest(self, mall_id: str) -> Dict[str, Any]:
@@ -626,11 +634,16 @@ class OperationsIntelligenceService:
         critical = [row for row in findings if row.get("severity") == "CRITICAL"]
         high = [row for row in findings if row.get("severity") == "HIGH"]
         top = sorted(findings, key=lambda row: int(row.get("priority_score") or 0), reverse=True)[:1]
-        top_title = top[0].get("title") if top else "Sin prioridad critica detectada."
+        locations_without_sales = self.getLocationsWithoutSales(findings)
+        missing_days = self.getMissingDaysSummary(findings)
+        import_failures = self.getImportFailuresSummary(findings)
+        priority_locations = self.getPriorityLocations(findings)
+        top_title = priority_locations[0].get("local_name") if priority_locations else "Sin prioridad critica detectada."
         summary_text = (
-            f"Analice {len(findings)} hallazgos abiertos. "
-            f"Cambios recientes: {len(observations)} observaciones operativas. "
-            f"Criticos: {len(critical)}. Altos: {len(high)}."
+            f"Hoy se detectaron {locations_without_sales.get('count', 0)} locales sin ventas, "
+            f"{import_failures.get('count', 0)} importaciones fallidas, "
+            f"{missing_days.get('days_missing', 0)} dias faltantes y "
+            f"{len(priority_locations)} locales con seguimiento requerido."
         )
         return {
             "generated_at": utcnow_iso(),
@@ -641,6 +654,84 @@ class OperationsIntelligenceService:
             "critical_findings": len(critical),
             "high_findings": len(high),
         }
+
+    def getOperationalHealth(self, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+        locals_by_id: Dict[str, Dict[str, Any]] = {}
+        for finding in findings:
+            local_id = str(finding.get("local_id") or finding.get("local_name") or "sin_local")
+            row = locals_by_id.setdefault(local_id, {
+                "local_id": finding.get("local_id"),
+                "local_name": finding.get("local_name") or "Local sin identificar",
+                "score": 100,
+                "status": "Saludable",
+                "missing_days": 0,
+                "import_failures": 0,
+                "last_activity": finding.get("detected_at"),
+                "action": finding.get("recommendation") or "Continuar monitoreo operativo.",
+                "priority_score": 0,
+            })
+            category = self._business_category(finding)
+            severity = str(finding.get("severity") or "INFO").upper()
+            penalty = {"CRITICAL": 36, "HIGH": 26, "WARNING": 16, "INFO": 8}.get(severity, 8)
+            if category == "missing_days":
+                row["missing_days"] += self._missing_days_count(finding)
+                penalty += min(24, row["missing_days"] * 4)
+            if category == "import_failure":
+                row["import_failures"] += 1
+                penalty += 10
+            if category in {"without_sales", "sales_not_visible"}:
+                penalty += 14
+            row["score"] = max(0, int(row["score"]) - penalty)
+            row["priority_score"] = max(int(row.get("priority_score") or 0), int(finding.get("priority_score") or 0))
+            row["action"] = finding.get("recommendation") or row["action"]
+            row["last_activity"] = finding.get("detected_at") or row["last_activity"]
+            if row["score"] < 50:
+                row["status"] = "Riesgo operativo"
+            elif row["score"] < 80:
+                row["status"] = "Atencion requerida"
+        locations = sorted(locals_by_id.values(), key=lambda item: (int(item.get("score") or 100), -int(item.get("priority_score") or 0)))
+        return {
+            "locations": locations,
+            "monitored_locations": len(locations),
+            "healthy_locations": len([row for row in locations if int(row.get("score") or 0) >= 80]),
+            "attention_required": len([row for row in locations if int(row.get("score") or 0) < 80]),
+            "active_incidents": len(findings),
+        }
+
+    def getPriorityLocations(self, findings: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+        rows = sorted(findings, key=lambda row: int(row.get("priority_score") or 0), reverse=True)
+        priorities = []
+        for row in rows[:limit]:
+            priorities.append({
+                "local_id": row.get("local_id"),
+                "local_name": row.get("local_name") or "Local sin identificar",
+                "reason": self._business_reason(row),
+                "action": row.get("recommendation") or "Revisar evidencia operativa.",
+                "priority_score": int(row.get("priority_score") or 0),
+                "severity": row.get("severity") or "INFO",
+            })
+        return priorities
+
+    def getLocationsWithoutSales(self, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+        rows = [row for row in findings if self._business_category(row) in {"without_sales", "sales_not_visible"}]
+        locals_seen = {str(row.get("local_id") or row.get("local_name") or "") for row in rows}
+        return {"count": len([item for item in locals_seen if item]), "items": rows}
+
+    def getMissingDaysSummary(self, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+        rows = [row for row in findings if self._business_category(row) == "missing_days"]
+        return {"count": len(rows), "days_missing": sum(self._missing_days_count(row) for row in rows), "items": rows}
+
+    def getImportFailuresSummary(self, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+        rows = [row for row in findings if self._business_category(row) == "import_failure"]
+        return {"count": len(rows), "items": rows}
+
+    def getRecommendedActions(self, findings: List[Dict[str, Any]], limit: int = 8) -> List[Dict[str, Any]]:
+        return [{
+            "local_name": row.get("local_name") or "Local sin identificar",
+            "problem": self._business_reason(row),
+            "action": row.get("recommendation") or "Revisar evidencia operativa.",
+            "priority_score": int(row.get("priority_score") or 0),
+        } for row in sorted(findings, key=lambda item: int(item.get("priority_score") or 0), reverse=True)[:limit]]
 
     def latest_digest(self, mall_id: str) -> Optional[Dict[str, Any]]:
         response = (
@@ -735,6 +826,46 @@ class OperationsIntelligenceService:
             "active_patterns": len(patterns),
             "by_severity": by_severity,
         }
+
+    def _business_category(self, finding: Dict[str, Any]) -> str:
+        text = " ".join([
+            str(finding.get("type") or ""),
+            str(finding.get("title") or ""),
+            str(finding.get("description") or ""),
+            str(finding.get("source") or ""),
+        ]).lower()
+        if "missing" in text or "faltante" in text or "dias" in text or "días" in text:
+            return "missing_days"
+        if "failed" in text or "fallo" in text or "error" in text or "timeout" in text or "invalid_file" in text:
+            return "import_failure"
+        if "sin ventas" in text or "without_sales" in text or "no report" in text:
+            return "without_sales"
+        if "ventas visibles" in text or "sales_missing" in text or "sales_not_visible" in text:
+            return "sales_not_visible"
+        return "follow_up"
+
+    def _business_reason(self, finding: Dict[str, Any]) -> str:
+        category = self._business_category(finding)
+        if category == "missing_days":
+            return "Tiene dias pendientes de informacion."
+        if category == "import_failure":
+            return "Presenta cargas con error o conexion fallida."
+        if category == "sales_not_visible":
+            return "La carga fue recibida pero las ventas no aparecen para la fecha procesada."
+        if category == "without_sales":
+            return "No reporta ventas dentro del periodo esperado."
+        return finding.get("description") or "Requiere seguimiento operativo."
+
+    def _missing_days_count(self, finding: Dict[str, Any]) -> int:
+        evidence = finding.get("evidence") if isinstance(finding.get("evidence"), dict) else {}
+        for key in ("missing_days", "dias_faltantes", "days_missing", "dias"):
+            value = evidence.get(key) or finding.get(key)
+            if isinstance(value, list):
+                return len(value)
+            parsed = _safe_int(value)
+            if parsed:
+                return parsed
+        return 1
 
     @staticmethod
     def _health(summary: Dict[str, Any]) -> str:

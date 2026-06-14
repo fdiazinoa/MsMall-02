@@ -390,6 +390,41 @@ export interface OperationsAuditorRunResponse {
   run?: OperationsAuditorRun;
 }
 
+export interface OperationsIntelligenceResponse {
+  health: 'VERDE' | 'AMARILLO' | 'ROJO' | string;
+  summary: Record<string, any>;
+  open_findings: OperationalFinding[];
+  recent_observations: Array<{
+    id?: string;
+    observation_type: string;
+    observation: string;
+    conclusion?: string | null;
+    recommendation?: string | null;
+    confidence?: number;
+    created_at: string;
+    local_id?: string | null;
+  }>;
+  patterns: Array<{
+    id?: string;
+    pattern_type: string;
+    pattern_name: string;
+    description?: string | null;
+    occurrences: number;
+    confidence?: number;
+    last_seen?: string;
+  }>;
+  operational_digest?: {
+    generated_at?: string;
+    summary_text?: string;
+    top_priority?: string;
+    recommended_action?: string;
+    new_findings?: number;
+    critical_findings?: number;
+    high_findings?: number;
+  } | null;
+  changes_since_last_audit?: Record<string, any>;
+}
+
 export type SecurityTokenType = 'app' | 'exporter';
 export type SecurityTokenStatus = 'active' | 'disabled' | 'revoked';
 

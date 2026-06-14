@@ -277,6 +277,7 @@ export interface CopilotChatMessage {
   content: string;
   attachments?: CopilotAttachment[];
   email_actions?: CopilotEmailAction[];
+  emailActions?: CopilotEmailAction[];
 }
 
 export interface CopilotAttachment {
@@ -299,6 +300,7 @@ export interface CopilotChatResponse {
   sources: string[];
   attachments?: CopilotAttachment[];
   email_actions?: CopilotEmailAction[];
+  emailActions?: CopilotEmailAction[];
 }
 
 export interface CopilotEmailAction {

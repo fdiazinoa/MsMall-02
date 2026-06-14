@@ -1096,6 +1096,9 @@ class StoreSchema(BaseModel):
     mts: str
     porciento_renta: str
     upsert_activo: bool = False
+    activo: bool = True
+    fecha_inactivacion: Optional[str] = None
+    motivo_inactivacion: Optional[str] = None
     mall_nombre: Optional[str] = "Mall Plaza"
     fecha_corte_importacion: Optional[str] = None
 
@@ -1103,8 +1106,12 @@ STORE_WRITE_FIELDS = {
     "mall_id", "codigo_interno", "nombre", "email", "rubro", "responsable",
     "contrato_no", "piso", "tipo_negocio", "mts", "porciento_renta",
     "upsert_activo", "renta_fija", "breakpoint_venta", "porcentaje_variable",
-    "fecha_corte_importacion",
+    "fecha_corte_importacion", "activo", "fecha_inactivacion", "motivo_inactivacion",
 }
+
+
+def _is_store_active(row: Dict[str, Any]) -> bool:
+    return row.get("activo") is not False
 
 
 def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1131,6 +1138,25 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
             data["fecha_corte_importacion"] = raw_cutoff
         else:
             data["fecha_corte_importacion"] = None
+    if "fecha_inactivacion" in data:
+        raw_inactivation = str(data.get("fecha_inactivacion") or "").strip()
+        if raw_inactivation:
+            try:
+                datetime.strptime(raw_inactivation, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="fecha_inactivacion debe tener formato YYYY-MM-DD")
+            data["fecha_inactivacion"] = raw_inactivation
+        else:
+            data["fecha_inactivacion"] = None
+    if data.get("activo") is False:
+        data["upsert_activo"] = False
+        data["tipo_ejecucion"] = "MANUAL"
+        data["processing_status"] = "IDLE"
+        if not data.get("fecha_inactivacion"):
+            data["fecha_inactivacion"] = datetime.utcnow().date().isoformat()
+    elif data.get("activo") is True:
+        data["fecha_inactivacion"] = None
+        data["motivo_inactivacion"] = None
     return data
 
 
@@ -4268,8 +4294,8 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
             return row
 
         # 1. Fetch Locales (Store Map) - Filtered by Mall
-        stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
-        stores = stores_res.data or []
+        stores_res = supabase.table("locales").select("id, nombre, activo").eq("mall_id", mall_id).execute()
+        stores = [row for row in (stores_res.data or []) if _is_store_active(row)]
         store_map = {str(s['id']): s['nombre'] for s in stores}
         allowed_local_ids = list(store_map.keys())
 
@@ -4691,9 +4717,10 @@ def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
     preferred_columns = (
         "id,nombre,codigo_interno,email,rubro,tipo_negocio,processing_status,"
         "consecutive_failures,upsert_activo,ultima_ejecucion,resultado_ultimo,"
-        "sftp_protocol,sftp_host,frecuencia_cron,hora_especifica"
+        "sftp_protocol,sftp_host,frecuencia_cron,hora_especifica,activo,"
+        "fecha_inactivacion,motivo_inactivacion"
     )
-    fallback_columns = "id,nombre,codigo_interno,rubro,tipo_negocio,mall_id"
+    fallback_columns = "id,nombre,codigo_interno,rubro,tipo_negocio,mall_id,activo"
     try:
         response = (
             supabase.table("locales")
@@ -4703,7 +4730,7 @@ def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
             .limit(80)
             .execute()
         )
-        return response.data or []
+        return [row for row in (response.data or []) if _is_store_active(row)]
     except Exception as exc:
         logger.warning("Copilot locales preferred query failed: %s", sanitize_sensitive_ops_error(exc))
         response = (
@@ -4714,7 +4741,7 @@ def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
             .limit(80)
             .execute()
         )
-        return response.data or []
+        return [row for row in (response.data or []) if _is_store_active(row)]
 
 
 def _load_copilot_missing_days(locales: List[Dict[str, Any]], lookback_days: int = 7) -> Dict[str, Any]:
@@ -4904,7 +4931,238 @@ def _load_copilot_sales_summary(locales: List[Dict[str, Any]], lookback_days: in
     }
 
 
-def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
+_COPILOT_MONTHS = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+
+
+def _last_day_of_month(year: int, month: int) -> date:
+    if month == 12:
+        return date(year, month, 31)
+    return date(year, month + 1, 1) - timedelta(days=1)
+
+
+def _parse_copilot_period(message: str) -> Dict[str, str]:
+    text = _normalize_store_catalog_key(message)
+    today = datetime.utcnow().date()
+
+    iso_dates = re.findall(r"\b(20\d{2}-\d{2}-\d{2})\b", message)
+    if len(iso_dates) >= 2:
+        return {"fecha_inicio": min(iso_dates[:2]), "fecha_fin": max(iso_dates[:2]), "origen": "fechas_explicitas"}
+    if len(iso_dates) == 1:
+        return {"fecha_inicio": iso_dates[0], "fecha_fin": iso_dates[0], "origen": "fecha_explicita"}
+
+    slash_dates = re.findall(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b", message)
+    if len(slash_dates) >= 2:
+        parsed = [
+            date(int(year), int(month), int(day)).isoformat()
+            for day, month, year in slash_dates[:2]
+        ]
+        return {"fecha_inicio": min(parsed), "fecha_fin": max(parsed), "origen": "fechas_explicitas"}
+    if len(slash_dates) == 1:
+        day, month, year = slash_dates[0]
+        parsed = date(int(year), int(month), int(day)).isoformat()
+        return {"fecha_inicio": parsed, "fecha_fin": parsed, "origen": "fecha_explicita"}
+
+    year_match = re.search(r"\b(20\d{2})\b", text)
+    year = int(year_match.group(1)) if year_match else today.year
+    mentioned_months = [
+        (month_name, month_number)
+        for month_name, month_number in _COPILOT_MONTHS.items()
+        if month_name in text
+    ]
+    if mentioned_months:
+        month_numbers = [month_number for _, month_number in mentioned_months]
+        start_month = min(month_numbers)
+        end_month = max(month_numbers)
+        start = date(year, start_month, 1)
+        end = _last_day_of_month(year, end_month)
+        origin = "mes_" + "_".join(name for name, _ in mentioned_months)
+        return {"fecha_inicio": start.isoformat(), "fecha_fin": end.isoformat(), "origen": origin}
+
+    start = today - timedelta(days=29)
+    return {"fecha_inicio": start.isoformat(), "fecha_fin": today.isoformat(), "origen": "ultimos_30_dias"}
+
+
+def _should_build_copilot_diagnostics(message: str) -> bool:
+    text = _normalize_store_catalog_key(message)
+    terms = [
+        "diagnost", "conciliar", "cubo", "monitor", "carga", "importacion",
+        "importar", "faltante", "brecha", "no aparece", "no se ve", "dias",
+    ]
+    return any(term in text for term in terms)
+
+
+def _find_copilot_target_locales(message: str, locales: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    text = _normalize_store_catalog_key(message)
+    matches = []
+    for local in locales:
+        name = _normalize_store_catalog_key(local.get("nombre"))
+        code = _normalize_store_catalog_key(local.get("codigo_interno"))
+        if (name and name in text) or (code and re.search(rf"\b{re.escape(code)}\b", text)):
+            matches.append(local)
+    if matches:
+        return matches[:4]
+
+    choices = {
+        str(local.get("nombre") or ""): local
+        for local in locales
+        if local.get("nombre")
+    }
+    if not choices:
+        return []
+    fuzzy = process.extract(text, list(choices.keys()), scorer=fuzz.partial_ratio, limit=4)
+    return [choices[name] for name, score in fuzzy if score >= 88]
+
+
+def _extract_file_date_from_name(filename: Any) -> Optional[str]:
+    text = str(filename or "")
+    matches = re.findall(r"(?<!\d)(\d{8})(?!\d)", text)
+    for raw in reversed(matches):
+        for fmt in ("%d%m%Y", "%Y%m%d"):
+            try:
+                return datetime.strptime(raw, fmt).date().isoformat()
+            except ValueError:
+                continue
+    return None
+
+
+def _aggregate_sales_by_local_date(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for row in rows:
+        local_id = str(row.get("local_id") or "")
+        sale_date = _normalize_missing_days_sale_date(row.get("fecha")) or str(row.get("fecha") or "")
+        if not local_id or not sale_date:
+            continue
+        day = grouped.setdefault(local_id, {}).setdefault(sale_date, {
+            "fecha": sale_date,
+            "registros": 0,
+            "total_bruto": 0.0,
+            "total_neto": 0.0,
+        })
+        day["registros"] += 1
+        day["total_bruto"] += _safe_float(row.get("total_bruto"))
+        day["total_neto"] += _safe_float(row.get("total_neto"))
+    return grouped
+
+
+def _load_copilot_sales_load_diagnostics(
+    mall_id: str,
+    locales: List[Dict[str, Any]],
+    message: str,
+) -> Dict[str, Any]:
+    period = _parse_copilot_period(message)
+    target_locales = _find_copilot_target_locales(message, locales)
+    if not _should_build_copilot_diagnostics(message) and not target_locales:
+        return {"status": "omitido", "motivo": "consulta_general"}
+
+    selected = target_locales or locales[:8]
+    local_ids = [str(row.get("id")) for row in selected if row.get("id")]
+    if not local_ids:
+        return {"status": "sin_locales", "periodo": period, "locales": []}
+
+    sales_rows: List[Dict[str, Any]] = []
+    try:
+        for page in range(6):
+            chunk = (
+                supabase.table("ventas")
+                .select("local_id,fecha,total_bruto,total_neto,factura_no,mall_id")
+                .in_("local_id", local_ids)
+                .gte("fecha", period["fecha_inicio"])
+                .lte("fecha", period["fecha_fin"])
+                .order("fecha")
+                .range(page * 1000, (page + 1) * 1000 - 1)
+                .execute()
+            ).data or []
+            sales_rows.extend(chunk)
+            if len(chunk) < 1000:
+                break
+    except Exception as exc:
+        logger.warning("Copilot sales/load diagnostic sales query failed: %s", sanitize_sensitive_ops_error(exc))
+        return {"status": "no_disponible", "periodo": period, "error": "No se pudieron consultar ventas para diagnostico."}
+
+    logs: List[Dict[str, Any]] = []
+    try:
+        logs = (
+            supabase.table("logs_carga")
+            .select("*")
+            .eq("mall_id", mall_id)
+            .in_("local_id", local_ids)
+            .order("fecha_hora", desc=True)
+            .limit(80)
+            .execute()
+        ).data or []
+    except Exception as exc:
+        logger.warning("Copilot sales/load diagnostic logs query failed: %s", sanitize_sensitive_ops_error(exc))
+
+    sales_by_local = _aggregate_sales_by_local_date(sales_rows)
+    expected_dates = [
+        (datetime.strptime(period["fecha_inicio"], "%Y-%m-%d").date() + timedelta(days=offset)).isoformat()
+        for offset in range(
+            (datetime.strptime(period["fecha_fin"], "%Y-%m-%d").date() - datetime.strptime(period["fecha_inicio"], "%Y-%m-%d").date()).days + 1
+        )
+    ]
+    logs_by_local: Dict[str, List[Dict[str, Any]]] = {}
+    for log in logs:
+        local_id = str(log.get("local_id") or "")
+        file_date = _extract_file_date_from_name(log.get("archivo"))
+        compact = _compact_copilot_log(log)
+        compact["fecha_detectada_archivo"] = file_date
+        compact["archivo_en_periodo_consultado"] = (
+            bool(file_date)
+            and period["fecha_inicio"] <= file_date <= period["fecha_fin"]
+        )
+        logs_by_local.setdefault(local_id, []).append(compact)
+
+    diagnostics = []
+    for local in selected:
+        local_id = str(local.get("id") or "")
+        days = sales_by_local.get(local_id, {})
+        missing = [item for item in expected_dates if item not in days]
+        recent_logs = logs_by_local.get(local_id, [])[:12]
+        diagnostics.append({
+            "local_id": local_id,
+            "local": local.get("nombre"),
+            "codigo": local.get("codigo_interno"),
+            "dias_con_ventas": len(days),
+            "registros_ventas": sum(int(day.get("registros") or 0) for day in days.values()),
+            "total_bruto": round(sum(float(day.get("total_bruto") or 0) for day in days.values()), 2),
+            "total_neto": round(sum(float(day.get("total_neto") or 0) for day in days.values()), 2),
+            "ventas_por_fecha": sorted(days.values(), key=lambda item: item["fecha"])[:45],
+            "dias_faltantes": missing[:90],
+            "logs_recientes": recent_logs,
+            "logs_con_fecha_archivo_fuera_periodo": [
+                log for log in recent_logs
+                if log.get("fecha_detectada_archivo") and not log.get("archivo_en_periodo_consultado")
+            ][:8],
+        })
+
+    return {
+        "status": "ok",
+        "periodo": period,
+        "locales_analizados": len(diagnostics),
+        "diagnosticos": diagnostics,
+        "guia_uso": [
+            "Usa ventas_por_fecha para responder que dias si estan en el cubo.",
+            "Usa dias_faltantes para responder que dias faltan en el periodo.",
+            "Usa logs_recientes y fecha_detectada_archivo para explicar cargas exitosas fuera del periodo consultado.",
+        ],
+    }
+
+
+def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any], message: str = "") -> Dict[str, Any]:
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado.")
     _ensure_operator_can_access_mall(operator_ctx, mall_id)
@@ -4976,6 +5234,7 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
     except Exception as exc:
         logger.warning("Copilot operations auditor query failed: %s", sanitize_sensitive_ops_error(exc))
         operations_auditor = {"health": "NO_DISPONIBLE", "open_findings": [], "summary": {"total_open": 0}}
+    sales_load_diagnostics = _load_copilot_sales_load_diagnostics(mall_id, locales, message)
 
     return {
         "generated_at_utc": datetime.utcnow().isoformat(),
@@ -4999,6 +5258,7 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
         "operations_auditor": operations_auditor,
         "dias_informacion": missing_days,
         "ventas_recientes": sales_summary,
+        "diagnostico_carga_ventas": sales_load_diagnostics,
     }
 
 
@@ -5016,6 +5276,13 @@ def _normalize_copilot_report_type(message: str) -> Optional[str]:
     if any(term in text for term in ["operations auditor", "operations center", "estado operativo", "hallazgo", "hallazgos", "algo raro", "alerta operativa", "auditor operativo"]):
         return "operations_auditor"
     gross_income_terms = ["ingreso bruto", "ingresos brutos", "venta bruta", "ventas brutas", "total bruto", "gross income", "gross sales"]
+    if any(term in text for term in ["diagnost", "conciliar", "cubo", "no aparece", "no se ve"]) and any(term in text for term in ["monitor", "carga", "importacion", "venta", "ventas"]):
+        return "diagnostico_carga_ventas"
+    if any(term in text for term in ["faltante", "dias", "brecha"]) and (
+        any(month in text for month in _COPILOT_MONTHS)
+        or re.search(r"\b(20\d{2}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/20\d{2})\b", message)
+    ):
+        return "diagnostico_carga_ventas"
     if any(term in text for term in gross_income_terms):
         return "ingresos_brutos_local"
     if any(term in text for term in ["venta", "sales", "facturacion", "ingreso"]):
@@ -5039,7 +5306,26 @@ def _parse_copilot_report_request(message: str) -> Optional[Dict[str, str]]:
     }
 
 
-def _parse_copilot_email_request(message: str) -> Optional[Dict[str, Any]]:
+def _latest_copilot_intent_message(message: str, history: List[CopilotChatMessage]) -> str:
+    text = _normalize_store_catalog_key(message)
+    followup_terms = ["envialo", "enviarlo", "mandalo", "mandarlo", "por mail", "por correo", "por email"]
+    is_followup = any(term in text for term in followup_terms)
+    if not is_followup:
+        return message
+
+    for item in reversed(history or []):
+        role = str(item.role or "").strip().lower()
+        content = str(item.content or "").strip()
+        if role != "user" or not content:
+            continue
+        normalized = _normalize_store_catalog_key(content)
+        if any(term in normalized for term in followup_terms):
+            continue
+        return content
+    return message
+
+
+def _parse_copilot_email_request(message: str, intent_message: Optional[str] = None) -> Optional[Dict[str, Any]]:
     text = _normalize_store_catalog_key(message)
     if not any(term in text for term in ["correo", "email", "mail", "enviar", "mandar", "envialo", "enviarlo", "enviame"]):
         return None
@@ -5052,12 +5338,27 @@ def _parse_copilot_email_request(message: str) -> Optional[Dict[str, Any]]:
         wants_html = True
         wants_xlsx = True
 
+    body_note = None
+    note_match = re.search(
+        r"(?:escribe|pon|incluye|agrega)\s+en\s+el\s+cuerpo(?:\s+del\s+(?:mail|correo|email))?\s+que\s+(.+)$",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if note_match:
+        raw_note = note_match.group(1).strip(" .")
+        normalized_note = _normalize_store_catalog_key(raw_note)
+        if "copilot" in normalized_note and "msmall" in normalized_note and ("eres" in normalized_note or "asistente" in normalized_note):
+            body_note = "Hola, reciban un cordial saludo. Soy el Copilot de MsMall y comparto este diagnostico operativo para apoyar la revision de la informacion solicitada."
+        else:
+            body_note = _truncate_text(raw_note, 500)
+
     attachment_format = "pdf" if wants_pdf else "xlsx" if wants_xlsx else None
     return {
         "recipients": recipients,
-        "report_type": _normalize_copilot_report_type(message) or "locales",
+        "report_type": _normalize_copilot_report_type(intent_message or message) or "locales",
         "include_html": True,
         "attachment_format": attachment_format,
+        "body_note": body_note,
     }
 
 
@@ -5211,6 +5512,52 @@ def _copilot_report_definition(report_type: str, context: Dict[str, Any]) -> Dic
             "generated_at": generated_at,
         }
 
+    if report_type == "diagnostico_carga_ventas":
+        diagnostic = context.get("diagnostico_carga_ventas") or {}
+        period = diagnostic.get("periodo") or {}
+        rows = []
+        for item in diagnostic.get("diagnosticos") or []:
+            ventas_dates = ", ".join(row.get("fecha") or "" for row in (item.get("ventas_por_fecha") or [])[:12])
+            missing_dates = ", ".join(item.get("dias_faltantes") or [])
+            out_of_period_files = ", ".join(
+                f"{log.get('archivo')} -> {log.get('fecha_detectada_archivo')}"
+                for log in (item.get("logs_con_fecha_archivo_fuera_periodo") or [])[:6]
+                if log.get("archivo")
+            )
+            rows.append([
+                item.get("local"),
+                item.get("codigo"),
+                item.get("dias_con_ventas") or 0,
+                item.get("registros_ventas") or 0,
+                _report_value(item.get("total_bruto") or 0),
+                _report_value(item.get("total_neto") or 0),
+                ventas_dates,
+                missing_dates,
+                out_of_period_files,
+            ])
+        return {
+            "title": "Diagnostico de carga vs ventas",
+            "subtitle": f"{mall_name} | {period.get('fecha_inicio', '')} al {period.get('fecha_fin', '')}",
+            "filename_base": "msmall_diagnostico_carga_ventas",
+            "sources": ["diagnostico_carga_ventas"],
+            "layout": "diagnostico_carga_ventas",
+            "diagnostics": diagnostic.get("diagnosticos") or [],
+            "period": period,
+            "headers": [
+                "Local", "Codigo", "Dias con ventas", "Registros ventas",
+                "Total Bruto", "Total Neto", "Fechas con ventas",
+                "Dias faltantes", "Archivos fuera del periodo",
+            ],
+            "rows": rows,
+            "summary": [
+                ["Estado", diagnostic.get("status") or ""],
+                ["Periodo inicio", period.get("fecha_inicio") or ""],
+                ["Periodo fin", period.get("fecha_fin") or ""],
+                ["Locales analizados", diagnostic.get("locales_analizados") or 0],
+            ],
+            "generated_at": generated_at,
+        }
+
     locales = (context.get("locales") or {}).get("muestra") or []
     return {
         "title": "Listado de locales",
@@ -5344,7 +5691,143 @@ def _build_copilot_pdf(definition: Dict[str, Any]) -> bytes:
     return output.getvalue()
 
 
+def _build_copilot_diagnostic_html(definition: Dict[str, Any], note_html: str) -> str:
+    def _fmt_money(value: Any) -> str:
+        try:
+            return f"${float(value or 0):,.2f}"
+        except Exception:
+            return "$0.00"
+
+    def _date_label(value: Any) -> str:
+        text = str(value or "")
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except Exception:
+            return text
+
+    def _chips(values: List[str], empty_text: str) -> str:
+        if not values:
+            return f'<span style="color:#64748b">{html.escape(empty_text)}</span>'
+        return "".join(
+            "<span style=\"display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;"
+            "border-radius:999px;padding:5px 9px;margin:3px;font-size:12px;color:#334155\">"
+            f"{html.escape(_date_label(value))}</span>"
+            for value in values
+        )
+
+    summary_map = {str(label): value for label, value in (definition.get("summary") or [])}
+    period = definition.get("period") or {}
+    diagnostics = definition.get("diagnostics") or []
+    local_cards = ""
+    for item in diagnostics:
+        sales_dates = [row.get("fecha") for row in (item.get("ventas_por_fecha") or []) if row.get("fecha")]
+        missing_dates = list(item.get("dias_faltantes") or [])
+        outside_logs = item.get("logs_con_fecha_archivo_fuera_periodo") or []
+        outside_rows = ""
+        for log in outside_logs[:8]:
+            outside_rows += (
+                "<tr>"
+                f"<td>{html.escape(str(log.get('archivo') or ''))}</td>"
+                f"<td>{html.escape(_date_label(log.get('fecha_detectada_archivo')))}</td>"
+                f"<td>{html.escape(str(log.get('records_processed') or 0))}</td>"
+                "</tr>"
+            )
+        if not outside_rows:
+            outside_rows = '<tr><td colspan="3" style="color:#64748b">Sin archivos fuera del periodo en los logs recientes.</td></tr>'
+
+        local_cards += f"""
+        <div style="border:1px solid #e2e8f0;border-radius:16px;margin-top:18px;overflow:hidden">
+          <div style="background:#f8fafc;padding:16px 18px;border-bottom:1px solid #e2e8f0">
+            <h2 style="margin:0;font-size:17px;color:#0f172a">{html.escape(str(item.get('local') or 'Local'))}</h2>
+            <p style="margin:4px 0 0;color:#64748b;font-size:12px">Codigo: {html.escape(str(item.get('codigo') or ''))}</p>
+          </div>
+          <div style="padding:16px 18px">
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+              <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:10px 12px;min-width:125px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Dias con ventas</div>
+                <strong style="font-size:18px;color:#1e3a8a">{html.escape(str(item.get('dias_con_ventas') or 0))}</strong>
+              </div>
+              <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:10px 12px;min-width:125px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Dias faltantes</div>
+                <strong style="font-size:18px;color:#991b1b">{len(missing_dates)}</strong>
+              </div>
+              <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:125px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Registros</div>
+                <strong style="font-size:18px;color:#0f172a">{html.escape(str(item.get('registros_ventas') or 0))}</strong>
+              </div>
+              <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:145px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Total neto</div>
+                <strong style="font-size:18px;color:#0f172a">{html.escape(_fmt_money(item.get('total_neto')))}</strong>
+              </div>
+            </div>
+
+            <h3 style="font-size:14px;margin:14px 0 8px;color:#0f172a">Fechas con ventas registradas</h3>
+            <div style="line-height:2">{_chips(sales_dates, 'Sin ventas registradas en el periodo.')}</div>
+
+            <h3 style="font-size:14px;margin:18px 0 8px;color:#0f172a">Dias faltantes</h3>
+            <div style="line-height:2">{_chips(missing_dates, 'Sin dias faltantes en el periodo.')}</div>
+
+            <h3 style="font-size:14px;margin:18px 0 8px;color:#0f172a">Archivos recientes fuera del periodo consultado</h3>
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr style="background:#f1f5f9"><th>Archivo</th><th>Fecha detectada</th><th>Registros</th></tr></thead>
+              <tbody>{outside_rows}</tbody>
+            </table>
+          </div>
+        </div>
+        """
+
+    if not local_cards:
+        local_cards = '<div style="padding:16px;border:1px solid #e2e8f0;border-radius:12px;color:#64748b">Sin datos disponibles para el diagnostico.</div>'
+
+    return f"""
+    <div style="font-family:Arial,sans-serif;color:#0f172a;background:#f8fafc;padding:24px">
+      <div style="max-width:920px;margin:auto;background:white;border:1px solid #e2e8f0;border-radius:18px;overflow:hidden">
+        <div style="background:#111827;color:white;padding:20px 24px">
+          <h1 style="margin:0;font-size:20px">{html.escape(str(definition.get('title') or 'Reporte MsMall'))}</h1>
+          <p style="margin:6px 0 0;color:#cbd5e1">{html.escape(str(definition.get('subtitle') or ''))}</p>
+        </div>
+        <div style="padding:22px 24px">
+          <p style="margin:0 0 16px;color:#64748b;font-size:13px">Generado: {html.escape(str(definition.get('generated_at') or datetime.utcnow().isoformat()))}</p>
+          {note_html}
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
+              <div style="font-size:11px;color:#475569;text-transform:uppercase">Periodo inicio</div>
+              <strong>{html.escape(_date_label(period.get('fecha_inicio') or summary_map.get('Periodo inicio')))}</strong>
+            </div>
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
+              <div style="font-size:11px;color:#475569;text-transform:uppercase">Periodo fin</div>
+              <strong>{html.escape(_date_label(period.get('fecha_fin') or summary_map.get('Periodo fin')))}</strong>
+            </div>
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
+              <div style="font-size:11px;color:#475569;text-transform:uppercase">Locales analizados</div>
+              <strong>{html.escape(str(summary_map.get('Locales analizados') or len(diagnostics)))}</strong>
+            </div>
+          </div>
+          {local_cards}
+          <p style="margin-top:20px;color:#94a3b8;font-size:12px">Enviado por Copilot MsMall. Fuente: {html.escape(', '.join(definition.get('sources') or []))}</p>
+        </div>
+      </div>
+    </div>
+    <style>
+      th, td {{ border-bottom:1px solid #e2e8f0; padding:9px 10px; text-align:left; vertical-align:top; }}
+      th {{ color:#475569; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
+    </style>
+    """
+
+
 def _build_copilot_report_html(definition: Dict[str, Any]) -> str:
+    body_note = str(definition.get("body_note") or "").strip()
+    if not body_note:
+        body_note = "Hola, reciban un cordial saludo. Soy el Copilot de MsMall y comparto este reporte operativo para apoyar la revision de la informacion solicitada."
+    note_html = (
+        "<div style=\"background:#ecfdf5;border:1px solid #bbf7d0;color:#065f46;"
+        "padding:12px 14px;border-radius:12px;margin-bottom:18px\">"
+        f"{html.escape(body_note)}</div>"
+        if body_note else ""
+    )
+    if definition.get("layout") == "diagnostico_carga_ventas":
+        return _build_copilot_diagnostic_html(definition, note_html)
+
     summary_rows = "".join(
         f"<tr><td>{html.escape(str(label))}</td><td><strong>{html.escape(str(_report_value(value)))}</strong></td></tr>"
         for label, value in (definition.get("summary") or [])
@@ -5366,6 +5849,7 @@ def _build_copilot_report_html(definition: Dict[str, Any]) -> str:
         </div>
         <div style="padding:22px 24px">
           <p style="margin:0 0 16px;color:#64748b;font-size:13px">Generado: {html.escape(str(definition.get('generated_at') or datetime.utcnow().isoformat()))}</p>
+          {note_html}
           {f'<h2 style="font-size:15px">Resumen</h2><table style="width:100%;border-collapse:collapse;margin-bottom:20px">{summary_rows}</table>' if summary_rows else ''}
           <h2 style="font-size:15px">Detalle</h2>
           <div style="overflow-x:auto">
@@ -5447,6 +5931,8 @@ def _build_copilot_email_draft(email_request: Dict[str, Any], context: Dict[str,
         raise HTTPException(status_code=400, detail="Indica al menos un correo destinatario para enviar el reporte.")
 
     definition = _copilot_report_definition(email_request["report_type"], context)
+    if email_request.get("body_note"):
+        definition["body_note"] = email_request["body_note"]
     html_body = _build_copilot_report_html(definition)
     subject = f"{definition['title']} - MsMall"
     attachments = []
@@ -5468,7 +5954,14 @@ def _build_copilot_email_draft(email_request: Dict[str, Any], context: Dict[str,
         "recipients": recipients,
         "subject": subject,
         "html_body": html_body,
-        "text": f"{definition['title']}\n{definition.get('subtitle') or ''}",
+        "text": "\n".join(
+            item for item in [
+                str(email_request.get("body_note") or ""),
+                definition["title"],
+                definition.get("subtitle") or "",
+            ]
+            if item
+        ),
         "attachments": attachments,
         "report_type": email_request["report_type"],
         "row_count": len(definition.get("rows") or []),
@@ -5670,9 +6163,11 @@ def _copilot_system_prompt() -> str:
     return (
         "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
         "Responde en español, de forma breve y accionable. Usa solamente el contexto JSON del sistema: "
-        "Operations Auditor, ventas recientes, monitor de carga, monitor de conexiones, locales y dias de informacion. "
+        "Operations Auditor, ventas recientes, monitor de carga, monitor de conexiones, locales, dias de informacion y diagnostico_carga_ventas. "
         "Cuando exista operations_auditor.open_findings, consultalo primero y explica el impacto operativo antes del detalle tecnico. "
         "Usa semaforo VERDE/AMARILLO/ROJO si el usuario pide estado general. "
+        "Cuando el usuario pregunte por diferencias entre cubo, monitor e importaciones, prioriza diagnostico_carga_ventas: "
+        "explica dias con ventas, dias faltantes, logs recientes y fechas detectadas en archivos. "
         "Si el contexto no contiene un dato solicitado, dilo claramente y sugiere donde revisarlo. "
         "No inventes cifras, locales, fechas ni estados. Cuando sea util, menciona la fuente del dato. "
         "Formato obligatorio: usa un titulo corto en negrita, luego lineas separadas con bullets. "
@@ -5869,8 +6364,9 @@ async def chat_with_copilot(
     if not settings.get("api_key_configured"):
         raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
 
-    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx)
-    email_request = _parse_copilot_email_request(message)
+    intent_message = _latest_copilot_intent_message(message, payload.history or [])
+    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx, intent_message)
+    email_request = _parse_copilot_email_request(message, intent_message)
     if email_request:
         try:
             email_draft = await asyncio.to_thread(_build_copilot_email_draft, email_request, context, mall_id, operator_ctx)
@@ -5940,7 +6436,7 @@ async def chat_with_copilot(
         "provider": settings["provider"],
         "model": settings["model"],
         "context_generated_at": context.get("generated_at_utc"),
-        "sources": ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion"],
+        "sources": ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion", "diagnostico_carga_ventas"],
         "attachments": [],
     }
 
@@ -6627,8 +7123,8 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
         return cached
 
     try:
-        stores_res = supabase.table("locales").select("id, nombre, rubro, tipo_negocio").eq("mall_id", mall_id).execute()
-        stores = stores_res.data or []
+        stores_res = supabase.table("locales").select("id, nombre, rubro, tipo_negocio, activo").eq("mall_id", mall_id).execute()
+        stores = [row for row in (stores_res.data or []) if _is_store_active(row)]
         store_map = {str(s['id']): s for s in stores if s.get('id')}
         allowed_local_ids = list(store_map.keys())
         empty_result = {

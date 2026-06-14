@@ -166,12 +166,18 @@ def insert_load_log_row(supabase_client: Any, payload: Dict[str, Any], logger: A
         try:
             supabase_client.table("logs_carga").insert(attempt_payload).execute()
             try:
-                from services.operations_agent_service import infer_event_type_from_load_log, publish_operations_event
+                from services.operations_agent_service import (
+                    infer_event_type_from_load_log,
+                    publish_operations_event,
+                    should_publish_operations_event,
+                )
 
                 metadata = attempt_payload.get("metadata") if isinstance(attempt_payload.get("metadata"), dict) else {}
                 mall_id = attempt_payload.get("mall_id") or metadata.get("mall_id")
                 local_id = attempt_payload.get("local_id") or metadata.get("local_id")
                 event_type = infer_event_type_from_load_log(attempt_payload)
+                if not should_publish_operations_event(attempt_payload, event_type):
+                    return
                 severity = "HIGH" if str(attempt_payload.get("estado") or "").lower() == "error" else "INFO"
                 publish_operations_event(
                     supabase_client,

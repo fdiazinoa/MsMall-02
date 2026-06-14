@@ -142,12 +142,24 @@ export const OperationsCenter: React.FC = () => {
     }
     setLoading(true);
     try {
-      const [response, intelligenceResponse] = await Promise.all([
-        ApiService.getOperationalFindings(currentMall.id, token, { status: 'OPEN', limit: 150 }),
-        ApiService.getOperationsIntelligence(currentMall.id, token),
-      ]);
-      setData(response);
-      setIntelligence(intelligenceResponse);
+      const response = await ApiService.getOperationsIntelligence(currentMall.id, token);
+      setIntelligence(response);
+      setData({
+        findings: response.open_findings || [],
+        summary: {
+          total_open: response.summary?.total_open || 0,
+          critical: response.summary?.critical || 0,
+          high: response.summary?.high || 0,
+          warning: response.summary?.warning || 0,
+          info: response.summary?.info || 0,
+          affected_locals: response.summary?.affected_locals || 0,
+          by_severity: response.summary?.by_severity || {},
+          by_source: {},
+          last_run_at: response.operational_digest?.generated_at || null,
+          last_run_status: response.health,
+        },
+        last_run: null,
+      });
     } catch (error: any) {
       setFlash({ kind: 'error', message: error?.message || 'No se pudieron cargar los hallazgos.' });
     } finally {
@@ -248,7 +260,7 @@ export const OperationsCenter: React.FC = () => {
         <StatCard label="Críticos" value={data?.summary.critical ?? 0} icon={ShieldAlert} className="bg-red-50 text-red-600" />
         <StatCard label="Altos" value={data?.summary.high ?? 0} icon={AlertTriangle} className="bg-orange-50 text-orange-600" />
         <StatCard label="Locales afectados" value={data?.summary.affected_locals ?? 0} icon={Store} className="bg-indigo-50 text-indigo-600" />
-        <StatCard label="Última corrida" value={<span className="text-sm">{formatDateTime(data?.summary.last_run_at)}</span>} icon={Clock} className="bg-emerald-50 text-emerald-600" />
+        <StatCard label="Último digest" value={<span className="text-sm">{formatDateTime(intelligence?.operational_digest?.generated_at)}</span>} icon={Clock} className="bg-emerald-50 text-emerald-600" />
       </section>
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -281,7 +293,7 @@ export const OperationsCenter: React.FC = () => {
               </div>
               <div>
                 <h3 className="font-black text-slate-900">Observaciones recientes</h3>
-                <p className="text-xs text-slate-500">Lo que el agente observó aunque no haya abierto una incidencia.</p>
+                <p className="text-xs text-slate-500">Actividad observada sin crear incidencias innecesarias.</p>
               </div>
             </div>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">

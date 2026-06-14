@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -22,6 +23,7 @@ EVENT_PENDING = "PENDING"
 EVENT_PROCESSING = "PROCESSING"
 EVENT_PROCESSED = "PROCESSED"
 EVENT_FAILED = "FAILED"
+DEFAULT_DIGEST_MINUTES = 30
 
 
 def utcnow_iso() -> str:
@@ -38,6 +40,15 @@ def _safe_int(value: Any) -> int:
 def _response_data(response: Any) -> List[Dict[str, Any]]:
     data = getattr(response, "data", None)
     return data if isinstance(data, list) else []
+
+
+def _read_int_env(name: str, default: int, minimum: int = 1, maximum: int = 1440) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(str(raw).strip()) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
 
 
 def _normalize_date(value: Any) -> Optional[str]:
@@ -83,6 +94,20 @@ def infer_event_type_from_load_log(payload: Dict[str, Any]) -> str:
     return EVENT_MONITOR_ENTRY_CREATED
 
 
+def should_publish_operations_event(payload: Dict[str, Any], event_type: str) -> bool:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    records = _safe_int(payload.get("records_processed") or metadata.get("records_processed"))
+    errors = _safe_int(payload.get("error_count") or metadata.get("error_count"))
+    reason = str(metadata.get("reason") or payload.get("reason") or "").strip().lower()
+    filename = str(payload.get("archivo") or metadata.get("archivo") or "").strip().upper()
+
+    if reason == "no_new_file" and records == 0 and errors == 0:
+        return False
+    if event_type == EVENT_IMPORT_COMPLETED and records == 0 and errors == 0 and filename in {"", "N/A"}:
+        return False
+    return True
+
+
 def publish_operations_event(
     supabase_client: Any,
     *,
@@ -95,6 +120,8 @@ def publish_operations_event(
     logger: Optional[logging.Logger] = None,
 ) -> Optional[Dict[str, Any]]:
     if not supabase_client or not mall_id or not event_type:
+        return None
+    if not should_publish_operations_event(payload or {}, event_type):
         return None
     row = {
         "mall_id": mall_id,
@@ -136,11 +163,14 @@ class OperationsAgentWorker:
 
         processed = 0
         failed = 0
+        processed_malls: Set[str] = set()
         results = []
         for event in events:
             try:
                 result = self.process_event(event)
                 processed += 1
+                if result.get("mall_id"):
+                    processed_malls.add(str(result["mall_id"]))
                 results.append(result)
             except Exception as exc:  # pragma: no cover - defensive worker guard
                 failed += 1
@@ -149,10 +179,17 @@ class OperationsAgentWorker:
                 self._mark_event_failed(event_id, str(exc))
                 results.append({"event_id": event_id, "status": EVENT_FAILED, "error": str(exc)[:220]})
 
+        digests = 0
+        for mall_id in processed_malls:
+            if self._should_refresh_digest(mall_id):
+                self._refresh_digest(mall_id)
+                digests += 1
+
         return {
             "status": "ok",
             "processed": processed,
             "failed": failed,
+            "digests": digests,
             "duration_ms": int((time.time() - started) * 1000),
             "results": results,
         }
@@ -226,10 +263,10 @@ class OperationsAgentWorker:
                 "processing_error": None,
             }).eq("id", event_id).execute()
 
-        self._refresh_digest(mall_id)
         return {
             "event_id": event_id,
             "event_type": event_type,
+            "mall_id": mall_id,
             "status": EVENT_PROCESSED,
             "findings": len(findings),
             "observations": len(observations),
@@ -327,6 +364,27 @@ class OperationsAgentWorker:
             priority_score=78,
             fingerprint=f"AGENT:LOCAL_INACTIVE_BUT_PROCESSING:{local_id}",
         )]
+
+    def _should_refresh_digest(self, mall_id: str) -> bool:
+        interval_minutes = _read_int_env("OPERATIONS_DIGEST_MINUTES", DEFAULT_DIGEST_MINUTES, minimum=5, maximum=1440)
+        try:
+            latest = (
+                self.supabase.table("operations_agent_observations")
+                .select("created_at")
+                .eq("mall_id", mall_id)
+                .eq("observation_type", "OPERATIONAL_DIGEST")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = _response_data(latest)
+            if not rows:
+                return True
+            created_at = rows[0].get("created_at")
+            parsed = datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).replace(tzinfo=None)
+            return parsed <= datetime.utcnow() - timedelta(minutes=interval_minutes)
+        except Exception:
+            return True
 
     def _refresh_digest(self, mall_id: str) -> Optional[Dict[str, Any]]:
         intelligence = OperationsIntelligenceService(self.supabase, self.logger)

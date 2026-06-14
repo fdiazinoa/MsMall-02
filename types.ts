@@ -392,7 +392,18 @@ export interface OperationsAuditorRunResponse {
 
 export interface OperationsIntelligenceResponse {
   health: 'VERDE' | 'AMARILLO' | 'ROJO' | string;
-  summary: Record<string, any>;
+  summary: {
+    total_open?: number;
+    critical?: number;
+    high?: number;
+    warning?: number;
+    info?: number;
+    affected_locals?: number;
+    observations_24h?: number;
+    active_patterns?: number;
+    by_severity?: Record<string, number>;
+    [key: string]: any;
+  };
   open_findings: OperationalFinding[];
   recent_observations: Array<{
     id?: string;

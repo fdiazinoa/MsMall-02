@@ -67,6 +67,14 @@ from services.connection_monitor_service import (
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import build_missing_days_email_html, missing_days_email_period
 from services.operations_auditor_service import OperationsAuditorService
+from services.operations_agent_service import (
+    EVENT_LOCAL_ACTIVATED,
+    EVENT_LOCAL_DEACTIVATED,
+    EVENT_LOCAL_UPDATED,
+    OperationsAgentWorker,
+    OperationsIntelligenceService,
+    publish_operations_event,
+)
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -142,6 +150,14 @@ def _analytics_service() -> AnalyticsService:
 
 def _operations_auditor_service() -> OperationsAuditorService:
     return OperationsAuditorService(supabase, logger)
+
+
+def _operations_agent_worker() -> OperationsAgentWorker:
+    return OperationsAgentWorker(supabase, logger)
+
+
+def _operations_intelligence_service() -> OperationsIntelligenceService:
+    return OperationsIntelligenceService(supabase, logger)
 
 
 async def _run_local_risk_analysis_async(local_id: Optional[str], trigger: str) -> Optional[Dict[str, Any]]:
@@ -2886,6 +2902,15 @@ async def create_store_backend(
         if not response.data:
             raise ValueError("No se recibió el local creado desde Supabase")
         row = response.data[0]
+        publish_operations_event(
+            supabase,
+            mall_id=mall_id,
+            local_id=row.get("id"),
+            event_type=EVENT_LOCAL_UPDATED,
+            source="LOCAL_MAINTENANCE",
+            payload={"action": "created", "local": row, "updated_by": operator_ctx.get("email") or operator_ctx.get("user_id")},
+            logger=logger,
+        )
         return row
     except Exception as e:
         logger.error("Error creando local mall=%s user=%s: %s", mall_id, operator_ctx.get("user_id"), e)
@@ -2900,7 +2925,7 @@ async def update_store_backend(
 ):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado")
-    existing = supabase.table("locales").select("id,mall_id").eq("id", local_id).maybe_single().execute().data
+    existing = supabase.table("locales").select("*").eq("id", local_id).maybe_single().execute().data
     if not existing:
         raise HTTPException(status_code=404, detail="Local no encontrado")
     mall_id = str(existing.get("mall_id") or "")
@@ -2919,6 +2944,25 @@ async def update_store_backend(
         if not response.data:
             raise ValueError("No se recibió el local actualizado desde Supabase")
         row = response.data[0]
+        event_type = EVENT_LOCAL_UPDATED
+        if "activo" in data and existing.get("activo") != data.get("activo"):
+            event_type = EVENT_LOCAL_ACTIVATED if data.get("activo") is not False else EVENT_LOCAL_DEACTIVATED
+        publish_operations_event(
+            supabase,
+            mall_id=mall_id,
+            local_id=local_id,
+            event_type=event_type,
+            source="LOCAL_MAINTENANCE",
+            payload={
+                "action": "updated",
+                "changed_fields": sorted(data.keys()),
+                "previous": existing,
+                "local": row,
+                "updated_by": operator_ctx.get("email") or operator_ctx.get("user_id"),
+            },
+            severity="WARNING" if event_type == EVENT_LOCAL_DEACTIVATED else "INFO",
+            logger=logger,
+        )
         return row
     except Exception as e:
         logger.error("Error actualizando local=%s user=%s: %s", local_id, operator_ctx.get("user_id"), e)
@@ -5230,7 +5274,7 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any], message: 
     missing_days = _load_copilot_missing_days(locales)
     sales_summary = _load_copilot_sales_summary(locales)
     try:
-        operations_auditor = _operations_auditor_service().build_copilot_summary(mall_id)
+        operations_auditor = _operations_intelligence_service().build_copilot_context(mall_id)
     except Exception as exc:
         logger.warning("Copilot operations auditor query failed: %s", sanitize_sensitive_ops_error(exc))
         operations_auditor = {"health": "NO_DISPONIBLE", "open_findings": [], "summary": {"total_open": 0}}
@@ -6099,6 +6143,33 @@ async def run_operations_auditor(
         raise HTTPException(status_code=500, detail="No se pudo ejecutar Operations Auditor.")
 
 
+@app.post("/api/v1/operations/agent/process")
+async def process_operations_agent_events(
+    limit: int = Query(50, ge=1, le=200),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    try:
+        return await asyncio.to_thread(_operations_agent_worker().process_pending_events, limit)
+    except Exception as exc:
+        logger.error("Error procesando eventos de Operations Agent: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudieron procesar los eventos operativos.")
+
+
+@app.get("/api/v1/operations/intelligence")
+async def get_operations_intelligence(
+    mall_id: str = Query(...),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    try:
+        return await asyncio.to_thread(_operations_intelligence_service().build_copilot_context, mall_id)
+    except Exception as exc:
+        logger.error("Error cargando inteligencia operativa: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudo cargar la inteligencia operativa.")
+
+
 @app.get("/api/v1/copilot/download/{download_id}")
 async def download_copilot_report(download_id: str):
     with _COPILOT_DOWNLOADS_LOCK:
@@ -6163,8 +6234,8 @@ def _copilot_system_prompt() -> str:
     return (
         "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
         "Responde en español, de forma breve y accionable. Usa solamente el contexto JSON del sistema: "
-        "Operations Auditor, ventas recientes, monitor de carga, monitor de conexiones, locales, dias de informacion y diagnostico_carga_ventas. "
-        "Cuando exista operations_auditor.open_findings, consultalo primero y explica el impacto operativo antes del detalle tecnico. "
+        "Operations Auditor, observations, patterns, operational_digest, ventas recientes, monitor de carga, monitor de conexiones, locales, dias de informacion y diagnostico_carga_ventas. "
+        "Cuando exista operations_auditor.open_findings, recent_observations, patterns u operational_digest, consultalos primero y explica el impacto operativo antes del detalle tecnico. "
         "Usa semaforo VERDE/AMARILLO/ROJO si el usuario pide estado general. "
         "Cuando el usuario pregunte por diferencias entre cubo, monitor e importaciones, prioriza diagnostico_carga_ventas: "
         "explica dias con ventas, dias faltantes, logs recientes y fechas detectadas en archivos. "

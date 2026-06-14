@@ -336,6 +336,7 @@ export interface OperationalFinding {
   root_cause?: string | null;
   recommendation?: string | null;
   confidence: number;
+  priority_score?: number;
   status: OperationalFindingStatus;
   source: OperationalFindingSource;
   detected_at: string;

@@ -509,11 +509,30 @@ class OperationsAuditorService:
             "root_cause": root_cause,
             "recommendation": recommendation,
             "confidence": round(float(confidence), 2),
+            "priority_score": self._priority_score(severity, evidence, confidence),
             "status": "OPEN",
             "source": source,
             "metadata": {},
             "fingerprint": fingerprint,
         }
+
+    def _priority_score(self, severity: str, evidence: Dict[str, Any], confidence: float) -> int:
+        base_by_severity = {
+            "INFO": 20,
+            "WARNING": 50,
+            "HIGH": 80,
+            "CRITICAL": 95,
+        }
+        score = base_by_severity.get(str(severity or "").upper(), 40)
+        missing_days = evidence.get("dias_faltantes")
+        if isinstance(missing_days, list):
+            score += min(len(missing_days) * 2, 12)
+        records = self._safe_int(evidence.get("records_processed"))
+        if records >= 100:
+            score += 5
+        if float(confidence or 0) >= 0.85:
+            score += 3
+        return max(0, min(score, 100))
 
     def _summary(self, rows: List[Dict[str, Any]], last_run: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         by_severity: Dict[str, int] = {}

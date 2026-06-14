@@ -5305,7 +5305,12 @@ def _parse_copilot_email_request(message: str, intent_message: Optional[str] = N
         flags=re.IGNORECASE,
     )
     if note_match:
-        body_note = _truncate_text(note_match.group(1).strip(" ."), 500)
+        raw_note = note_match.group(1).strip(" .")
+        normalized_note = _normalize_store_catalog_key(raw_note)
+        if "copilot" in normalized_note and "msmall" in normalized_note and ("eres" in normalized_note or "asistente" in normalized_note):
+            body_note = "Hola, reciban un cordial saludo. Soy el Copilot de MsMall y comparto este diagnostico operativo para apoyar la revision de la informacion solicitada."
+        else:
+            body_note = _truncate_text(raw_note, 500)
 
     attachment_format = "pdf" if wants_pdf else "xlsx" if wants_xlsx else None
     return {
@@ -5461,6 +5466,9 @@ def _copilot_report_definition(report_type: str, context: Dict[str, Any]) -> Dic
             "subtitle": f"{mall_name} | {period.get('fecha_inicio', '')} al {period.get('fecha_fin', '')}",
             "filename_base": "msmall_diagnostico_carga_ventas",
             "sources": ["diagnostico_carga_ventas"],
+            "layout": "diagnostico_carga_ventas",
+            "diagnostics": diagnostic.get("diagnosticos") or [],
+            "period": period,
             "headers": [
                 "Local", "Codigo", "Dias con ventas", "Registros ventas",
                 "Total Bruto", "Total Neto", "Fechas con ventas",
@@ -5609,14 +5617,143 @@ def _build_copilot_pdf(definition: Dict[str, Any]) -> bytes:
     return output.getvalue()
 
 
+def _build_copilot_diagnostic_html(definition: Dict[str, Any], note_html: str) -> str:
+    def _fmt_money(value: Any) -> str:
+        try:
+            return f"${float(value or 0):,.2f}"
+        except Exception:
+            return "$0.00"
+
+    def _date_label(value: Any) -> str:
+        text = str(value or "")
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except Exception:
+            return text
+
+    def _chips(values: List[str], empty_text: str) -> str:
+        if not values:
+            return f'<span style="color:#64748b">{html.escape(empty_text)}</span>'
+        return "".join(
+            "<span style=\"display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;"
+            "border-radius:999px;padding:5px 9px;margin:3px;font-size:12px;color:#334155\">"
+            f"{html.escape(_date_label(value))}</span>"
+            for value in values
+        )
+
+    summary_map = {str(label): value for label, value in (definition.get("summary") or [])}
+    period = definition.get("period") or {}
+    diagnostics = definition.get("diagnostics") or []
+    local_cards = ""
+    for item in diagnostics:
+        sales_dates = [row.get("fecha") for row in (item.get("ventas_por_fecha") or []) if row.get("fecha")]
+        missing_dates = list(item.get("dias_faltantes") or [])
+        outside_logs = item.get("logs_con_fecha_archivo_fuera_periodo") or []
+        outside_rows = ""
+        for log in outside_logs[:8]:
+            outside_rows += (
+                "<tr>"
+                f"<td>{html.escape(str(log.get('archivo') or ''))}</td>"
+                f"<td>{html.escape(_date_label(log.get('fecha_detectada_archivo')))}</td>"
+                f"<td>{html.escape(str(log.get('records_processed') or 0))}</td>"
+                "</tr>"
+            )
+        if not outside_rows:
+            outside_rows = '<tr><td colspan="3" style="color:#64748b">Sin archivos fuera del periodo en los logs recientes.</td></tr>'
+
+        local_cards += f"""
+        <div style="border:1px solid #e2e8f0;border-radius:16px;margin-top:18px;overflow:hidden">
+          <div style="background:#f8fafc;padding:16px 18px;border-bottom:1px solid #e2e8f0">
+            <h2 style="margin:0;font-size:17px;color:#0f172a">{html.escape(str(item.get('local') or 'Local'))}</h2>
+            <p style="margin:4px 0 0;color:#64748b;font-size:12px">Codigo: {html.escape(str(item.get('codigo') or ''))}</p>
+          </div>
+          <div style="padding:16px 18px">
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+              <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:10px 12px;min-width:125px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Dias con ventas</div>
+                <strong style="font-size:18px;color:#1e3a8a">{html.escape(str(item.get('dias_con_ventas') or 0))}</strong>
+              </div>
+              <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:10px 12px;min-width:125px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Dias faltantes</div>
+                <strong style="font-size:18px;color:#991b1b">{len(missing_dates)}</strong>
+              </div>
+              <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:125px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Registros</div>
+                <strong style="font-size:18px;color:#0f172a">{html.escape(str(item.get('registros_ventas') or 0))}</strong>
+              </div>
+              <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:145px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Total neto</div>
+                <strong style="font-size:18px;color:#0f172a">{html.escape(_fmt_money(item.get('total_neto')))}</strong>
+              </div>
+            </div>
+
+            <h3 style="font-size:14px;margin:14px 0 8px;color:#0f172a">Fechas con ventas registradas</h3>
+            <div style="line-height:2">{_chips(sales_dates, 'Sin ventas registradas en el periodo.')}</div>
+
+            <h3 style="font-size:14px;margin:18px 0 8px;color:#0f172a">Dias faltantes</h3>
+            <div style="line-height:2">{_chips(missing_dates, 'Sin dias faltantes en el periodo.')}</div>
+
+            <h3 style="font-size:14px;margin:18px 0 8px;color:#0f172a">Archivos recientes fuera del periodo consultado</h3>
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr style="background:#f1f5f9"><th>Archivo</th><th>Fecha detectada</th><th>Registros</th></tr></thead>
+              <tbody>{outside_rows}</tbody>
+            </table>
+          </div>
+        </div>
+        """
+
+    if not local_cards:
+        local_cards = '<div style="padding:16px;border:1px solid #e2e8f0;border-radius:12px;color:#64748b">Sin datos disponibles para el diagnostico.</div>'
+
+    return f"""
+    <div style="font-family:Arial,sans-serif;color:#0f172a;background:#f8fafc;padding:24px">
+      <div style="max-width:920px;margin:auto;background:white;border:1px solid #e2e8f0;border-radius:18px;overflow:hidden">
+        <div style="background:#111827;color:white;padding:20px 24px">
+          <h1 style="margin:0;font-size:20px">{html.escape(str(definition.get('title') or 'Reporte MsMall'))}</h1>
+          <p style="margin:6px 0 0;color:#cbd5e1">{html.escape(str(definition.get('subtitle') or ''))}</p>
+        </div>
+        <div style="padding:22px 24px">
+          <p style="margin:0 0 16px;color:#64748b;font-size:13px">Generado: {html.escape(str(definition.get('generated_at') or datetime.utcnow().isoformat()))}</p>
+          {note_html}
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
+              <div style="font-size:11px;color:#475569;text-transform:uppercase">Periodo inicio</div>
+              <strong>{html.escape(_date_label(period.get('fecha_inicio') or summary_map.get('Periodo inicio')))}</strong>
+            </div>
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
+              <div style="font-size:11px;color:#475569;text-transform:uppercase">Periodo fin</div>
+              <strong>{html.escape(_date_label(period.get('fecha_fin') or summary_map.get('Periodo fin')))}</strong>
+            </div>
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
+              <div style="font-size:11px;color:#475569;text-transform:uppercase">Locales analizados</div>
+              <strong>{html.escape(str(summary_map.get('Locales analizados') or len(diagnostics)))}</strong>
+            </div>
+          </div>
+          {local_cards}
+          <p style="margin-top:20px;color:#94a3b8;font-size:12px">Enviado por Copilot MsMall. Fuente: {html.escape(', '.join(definition.get('sources') or []))}</p>
+        </div>
+      </div>
+    </div>
+    <style>
+      th, td {{ border-bottom:1px solid #e2e8f0; padding:9px 10px; text-align:left; vertical-align:top; }}
+      th {{ color:#475569; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
+    </style>
+    """
+
+
 def _build_copilot_report_html(definition: Dict[str, Any]) -> str:
     body_note = str(definition.get("body_note") or "").strip()
+    if not body_note:
+        body_note = "Hola, reciban un cordial saludo. Soy el Copilot de MsMall y comparto este reporte operativo para apoyar la revision de la informacion solicitada."
     note_html = (
         "<div style=\"background:#ecfdf5;border:1px solid #bbf7d0;color:#065f46;"
         "padding:12px 14px;border-radius:12px;margin-bottom:18px\">"
         f"{html.escape(body_note)}</div>"
         if body_note else ""
     )
+    if definition.get("layout") == "diagnostico_carga_ventas":
+        return _build_copilot_diagnostic_html(definition, note_html)
+
     summary_rows = "".join(
         f"<tr><td>{html.escape(str(label))}</td><td><strong>{html.escape(str(_report_value(value)))}</strong></td></tr>"
         for label, value in (definition.get("summary") or [])

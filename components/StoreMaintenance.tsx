@@ -15,7 +15,7 @@ import {
 } from '../utils/storeCatalog';
 import {
   Store as StoreIcon, Plus, Search, Building2,
-  User, FileText, MapPin, Tag, Maximize2, Percent, X, Settings2, Layers3, Mail
+  User, FileText, MapPin, Tag, Maximize2, Percent, X, Settings2, Layers3, Mail, Power, RotateCcw
 } from 'lucide-react';
 import { SalesPurge } from './SalesPurge';
 
@@ -47,6 +47,9 @@ const emptyStore = (mallId?: string): Partial<Store> => ({
   porcentaje_variable: '',
   rubro: '',
   upsert_activo: false,
+  activo: true,
+  fecha_inactivacion: null,
+  motivo_inactivacion: null,
   fecha_corte_importacion: '',
 });
 
@@ -243,6 +246,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   const [savingStore, setSavingStore] = useState(false);
   const [savingFieldDefinition, setSavingFieldDefinition] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'active' | 'inactive' | 'all'>('active');
   const [newStore, setNewStore] = useState<Partial<Store>>(emptyStore());
   const [customFieldDefinitions, setCustomFieldDefinitions] = useState<LocalCustomFieldDefinition[]>([]);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, FieldValueState>>({});
@@ -280,8 +284,11 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
 
   const filteredStores = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
-    if (!query) return stores;
     return stores.filter((store) => {
+      const isActive = store.activo !== false;
+      if (statusFilter === 'active' && !isActive) return false;
+      if (statusFilter === 'inactive' && isActive) return false;
+      if (!query) return true;
       return [
         store.nombre,
         store.codigo_interno,
@@ -291,13 +298,13 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
         store.rubro,
       ].some((value) => String(value || '').toLowerCase().includes(query));
     });
-  }, [stores, searchTerm]);
+  }, [stores, searchTerm, statusFilter]);
 
   const loadStores = async () => {
     if (!currentMall?.id) return;
     setLoading(true);
     try {
-      const data = await ApiService.getStores(currentMall.id);
+      const data = await ApiService.getStores(currentMall.id, true);
       setStores(data);
     } catch (e) {
       console.error(e);
@@ -421,14 +428,40 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
     }
   };
 
-  const handleDelete = async (id: string, nombre: string) => {
-    if (!confirm(`¿Está seguro de que desea eliminar el local "${nombre}"?\nEsta acción no se puede deshacer.`)) return;
+  const handleDeactivate = async (store: Store) => {
+    const today = new Date().toISOString().split('T')[0];
+    const motivo = prompt(
+      `Motivo de inactivación para "${store.nombre}".\nEsto apagará automáticamente el Importador FTP del local.`,
+      store.motivo_inactivacion || 'Salida del mall'
+    );
+    if (motivo === null) return;
+    if (!confirm(`¿Inactivar "${store.nombre}" desde hoy (${today})?\nEl local no aparecerá en listados operativos ni estadísticas futuras y su importador FTP quedará apagado.`)) return;
     try {
-      await ApiService.deleteStore(id, authToken);
-      loadStores();
+      await ApiService.updateStore(store.id, {
+        activo: false,
+        fecha_inactivacion: today,
+        motivo_inactivacion: motivo.trim() || 'Salida del mall',
+        upsert_activo: false,
+      }, authToken);
+      await loadStores();
     } catch (e: any) {
       console.error(e);
-      alert("Error al eliminar: " + (e.message || e));
+      alert("Error al inactivar: " + (e.message || e));
+    }
+  };
+
+  const handleReactivateStore = async (store: Store) => {
+    if (!confirm(`¿Reactivar "${store.nombre}"?\nEl Importador FTP no se encenderá automáticamente; podrás activarlo manualmente si aplica.`)) return;
+    try {
+      await ApiService.updateStore(store.id, {
+        activo: true,
+        fecha_inactivacion: null,
+        motivo_inactivacion: null,
+      }, authToken);
+      await loadStores();
+    } catch (e: any) {
+      console.error(e);
+      alert("Error al reactivar: " + (e.message || e));
     }
   };
 
@@ -681,12 +714,12 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                 <div className="pt-2">
                   <label className="flex items-center gap-3 cursor-pointer group">
                     <div className="relative">
-                      <input type="checkbox" checked={!!newStore.upsert_activo} onChange={(e) => setNewStore({ ...newStore, upsert_activo: e.target.checked })} className="sr-only peer" />
+                      <input type="checkbox" checked={!!newStore.upsert_activo} disabled={newStore.activo === false} onChange={(e) => setNewStore({ ...newStore, upsert_activo: e.target.checked })} className="sr-only peer" />
                       <div className="w-10 h-5 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600" />
                     </div>
                     <span className="text-sm font-medium text-slate-700 group-hover:text-indigo-600 transition-colors">Activar Sobrescritura (Upsert)</span>
                   </label>
-                  <p className="text-[10px] text-slate-400 mt-1 ml-13">Permite corregir facturas del mismo día sobrescribiendo datos existentes.</p>
+                  <p className="text-[10px] text-slate-400 mt-1 ml-13">{newStore.activo === false ? 'Local inactivo: el importador permanece apagado.' : 'Permite corregir facturas del mismo día sobrescribiendo datos existentes.'}</p>
                 </div>
               </div>
             </div>
@@ -939,8 +972,19 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
               className="bg-transparent border-none outline-none text-sm w-full"
             />
           </div>
-          <div className="text-xs text-slate-400 font-medium">
-            Mostrando {filteredStores.length} de {stores.length} locales registrados
+          <div className="flex items-center gap-3">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as 'active' | 'inactive' | 'all')}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="active">Activos</option>
+              <option value="inactive">Inactivos</option>
+              <option value="all">Todos</option>
+            </select>
+            <div className="text-xs text-slate-400 font-medium">
+              Mostrando {filteredStores.length} de {stores.length} locales registrados
+            </div>
           </div>
         </div>
         <div className="overflow-x-auto">
@@ -977,6 +1021,11 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         <div>
                           <div className="font-bold text-slate-800 text-sm leading-none mb-1 flex items-center gap-2">
                             {store.nombre}
+                            {store.activo === false && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[9px] uppercase font-extrabold tracking-wider border border-slate-200">
+                                Inactivo
+                              </span>
+                            )}
                             {store.processing_status === 'SUSPENDED_AUTH_ERROR' && (
                               <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-600 text-[9px] uppercase font-extrabold tracking-wider border border-red-200">
                                 Suspendido
@@ -1044,7 +1093,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {store.processing_status === 'SUSPENDED_AUTH_ERROR' ? (
+                        {store.activo !== false && store.processing_status === 'SUSPENDED_AUTH_ERROR' ? (
                           <button
                             onClick={async () => {
                               if (confirm('¿Reactivar este local? Se restablecerá el contador de fallos.')) {
@@ -1063,9 +1112,15 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                             <button onClick={() => handleEdit(store)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all" title="Editar">
                               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
                             </button>
-                            <button onClick={() => handleDelete(store.id, store.nombre)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all" title="Eliminar">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /><line x1="10" x2="10" y1="11" y2="17" /><line x1="14" x2="14" y1="11" y2="17" /></svg>
-                            </button>
+                            {store.activo === false ? (
+                              <button onClick={() => handleReactivateStore(store)} className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all" title="Reactivar local">
+                                <RotateCcw size={16} />
+                              </button>
+                            ) : (
+                              <button onClick={() => handleDeactivate(store)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all" title="Inactivar local">
+                                <Power size={16} />
+                              </button>
+                            )}
                           </>
                         )}
                       </div>

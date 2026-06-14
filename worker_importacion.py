@@ -1649,6 +1649,10 @@ async def process_local_safe(local, semaphore, host_semaphore, due_at: Optional[
     consecutive_failures = local.get('consecutive_failures', 0)
     status = local.get('processing_status')
 
+    if local.get('activo') is False:
+         logger.info(f"⏸️ [Skipped] {local_name} is inactive.")
+         return
+
     if status == 'SUSPENDED_AUTH_ERROR':
          logger.warning(f"⛔ [Skipped] {local_name} is SUSPENDED due to auth errors.")
          return
@@ -1774,7 +1778,10 @@ async def run_worker_async():
             .eq("processing_status", "IDLE")\
             .execute()
 
-        locales = [loc for loc in (response.data or []) if loc.get("mall_id")]
+        locales = [
+            loc for loc in (response.data or [])
+            if loc.get("mall_id") and loc.get("activo") is not False
+        ]
         now = _now_local()
         scheduled_locals = []
 

@@ -1091,6 +1091,9 @@ class StoreSchema(BaseModel):
     mts: str
     porciento_renta: str
     upsert_activo: bool = False
+    activo: bool = True
+    fecha_inactivacion: Optional[str] = None
+    motivo_inactivacion: Optional[str] = None
     mall_nombre: Optional[str] = "Mall Plaza"
     fecha_corte_importacion: Optional[str] = None
 
@@ -1098,8 +1101,12 @@ STORE_WRITE_FIELDS = {
     "mall_id", "codigo_interno", "nombre", "email", "rubro", "responsable",
     "contrato_no", "piso", "tipo_negocio", "mts", "porciento_renta",
     "upsert_activo", "renta_fija", "breakpoint_venta", "porcentaje_variable",
-    "fecha_corte_importacion",
+    "fecha_corte_importacion", "activo", "fecha_inactivacion", "motivo_inactivacion",
 }
+
+
+def _is_store_active(row: Dict[str, Any]) -> bool:
+    return row.get("activo") is not False
 
 
 def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1126,6 +1133,25 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
             data["fecha_corte_importacion"] = raw_cutoff
         else:
             data["fecha_corte_importacion"] = None
+    if "fecha_inactivacion" in data:
+        raw_inactivation = str(data.get("fecha_inactivacion") or "").strip()
+        if raw_inactivation:
+            try:
+                datetime.strptime(raw_inactivation, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="fecha_inactivacion debe tener formato YYYY-MM-DD")
+            data["fecha_inactivacion"] = raw_inactivation
+        else:
+            data["fecha_inactivacion"] = None
+    if data.get("activo") is False:
+        data["upsert_activo"] = False
+        data["tipo_ejecucion"] = "MANUAL"
+        data["processing_status"] = "IDLE"
+        if not data.get("fecha_inactivacion"):
+            data["fecha_inactivacion"] = datetime.utcnow().date().isoformat()
+    elif data.get("activo") is True:
+        data["fecha_inactivacion"] = None
+        data["motivo_inactivacion"] = None
     return data
 
 
@@ -4263,8 +4289,8 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
             return row
 
         # 1. Fetch Locales (Store Map) - Filtered by Mall
-        stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
-        stores = stores_res.data or []
+        stores_res = supabase.table("locales").select("id, nombre, activo").eq("mall_id", mall_id).execute()
+        stores = [row for row in (stores_res.data or []) if _is_store_active(row)]
         store_map = {str(s['id']): s['nombre'] for s in stores}
         allowed_local_ids = list(store_map.keys())
 
@@ -4686,9 +4712,10 @@ def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
     preferred_columns = (
         "id,nombre,codigo_interno,email,rubro,tipo_negocio,processing_status,"
         "consecutive_failures,upsert_activo,ultima_ejecucion,resultado_ultimo,"
-        "sftp_protocol,sftp_host,frecuencia_cron,hora_especifica"
+        "sftp_protocol,sftp_host,frecuencia_cron,hora_especifica,activo,"
+        "fecha_inactivacion,motivo_inactivacion"
     )
-    fallback_columns = "id,nombre,codigo_interno,rubro,tipo_negocio,mall_id"
+    fallback_columns = "id,nombre,codigo_interno,rubro,tipo_negocio,mall_id,activo"
     try:
         response = (
             supabase.table("locales")
@@ -4698,7 +4725,7 @@ def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
             .limit(80)
             .execute()
         )
-        return response.data or []
+        return [row for row in (response.data or []) if _is_store_active(row)]
     except Exception as exc:
         logger.warning("Copilot locales preferred query failed: %s", sanitize_sensitive_ops_error(exc))
         response = (
@@ -4709,7 +4736,7 @@ def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
             .limit(80)
             .execute()
         )
-        return response.data or []
+        return [row for row in (response.data or []) if _is_store_active(row)]
 
 
 def _load_copilot_missing_days(locales: List[Dict[str, Any]], lookback_days: int = 7) -> Dict[str, Any]:
@@ -6481,8 +6508,8 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
         return cached
 
     try:
-        stores_res = supabase.table("locales").select("id, nombre, rubro, tipo_negocio").eq("mall_id", mall_id).execute()
-        stores = stores_res.data or []
+        stores_res = supabase.table("locales").select("id, nombre, rubro, tipo_negocio, activo").eq("mall_id", mall_id).execute()
+        stores = [row for row in (stores_res.data or []) if _is_store_active(row)]
         store_map = {str(s['id']): s for s in stores if s.get('id')}
         allowed_local_ids = list(store_map.keys())
         empty_result = {

@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, OperationsFindingsResponse, OperationsAuditorRunResponse, OperationalFinding } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, OperationsFindingsResponse, OperationsAuditorRunResponse, OperationalFinding, OperationsIntelligenceResponse } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -2452,6 +2452,17 @@ export const ApiService = {
         headers: withAuthHeaders(token, { 'Accept': 'application/json' })
       },
       "No se pudieron cargar los hallazgos operativos"
+    );
+  },
+
+  async getOperationsIntelligence(mallId: string, token: string): Promise<OperationsIntelligenceResponse> {
+    return fetchJsonWithBaseFallback<OperationsIntelligenceResponse>(
+      `/operations/intelligence?mall_id=${encodeURIComponent(mallId)}`,
+      {
+        method: 'GET',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
+      },
+      "No se pudo cargar la inteligencia operativa"
     );
   },
 

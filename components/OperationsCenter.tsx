@@ -264,14 +264,14 @@ export const OperationsCenter: React.FC = () => {
       </section>
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-1">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900 text-white">
               <Sparkles size={20} />
             </div>
             <div>
               <h3 className="font-black text-slate-900">Operational Digest</h3>
-              <p className="text-xs text-slate-500">Resumen cacheado del agente</p>
+              <p className="text-xs text-slate-500">{formatDateTime(intelligence?.operational_digest?.generated_at)}</p>
             </div>
           </div>
           <p className="mt-4 text-sm leading-6 text-slate-700">
@@ -314,7 +314,9 @@ export const OperationsCenter: React.FC = () => {
               </div>
             ))}
             {(!intelligence?.recent_observations || intelligence.recent_observations.length === 0) && (
-              <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">Aún no hay observaciones recientes.</p>
+              <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">
+                Aún no hay observaciones recientes del agente.
+              </p>
             )}
           </div>
         </div>

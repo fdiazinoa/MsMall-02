@@ -19,6 +19,7 @@ import pandas as pd
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from services.load_log_service import build_load_log_payload, insert_load_log_row
+from services.operations_agent_service import OperationsAgentWorker
 
 try:
     from services.connection_monitor_service import ConnectionMonitorService
@@ -85,6 +86,17 @@ MAX_CONCURRENT_WORKERS = _read_int_env("MAX_CONCURRENT_WORKERS", 3, minimum=1)
 MAX_CONCURRENT_PER_HOST = _read_int_env("MAX_CONCURRENT_PER_HOST", 1, minimum=1)
 HOURLY_STAGGER_MINUTES = _read_int_env("HOURLY_STAGGER_MINUTES", 15, minimum=0, maximum=55)
 MAX_FILES_PER_BATCH = _read_int_env("MAX_FILES_PER_BATCH", 20, minimum=1)
+OPERATIONS_AGENT_MAX_EVENTS = _read_int_env("OPERATIONS_AGENT_MAX_EVENTS", 50, minimum=1, maximum=200)
+
+
+def _read_bool_env(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+ENABLE_OPERATIONS_AGENT = _read_bool_env("ENABLE_OPERATIONS_AGENT", True)
 
 
 def _worker_timezone() -> ZoneInfo:
@@ -1759,6 +1771,28 @@ async def cleanup_zombies():
     except Exception as e:
         logger.error(f"Error cleaning zombies: {e}")
 
+async def run_operations_agent_if_due():
+    if not ENABLE_OPERATIONS_AGENT:
+        return
+    if not supabase:
+        return
+    try:
+        result = await asyncio.to_thread(
+            OperationsAgentWorker(supabase, logger).process_pending_events,
+            OPERATIONS_AGENT_MAX_EVENTS,
+        )
+        processed = int(result.get("processed") or 0)
+        failed = int(result.get("failed") or 0)
+        if processed or failed:
+            logger.info(
+                "Operations Agent procesado: %s eventos, %s fallidos.",
+                processed,
+                failed,
+            )
+    except Exception as exc:
+        logger.warning("Operations Agent skipped/failed: %s", sanitize_error_text(exc))
+
+
 async def run_worker_async():
     logger.info("🚀 Iniciando Worker de Importación (Async/Concurrent v2)...")
     if not supabase:
@@ -1798,6 +1832,7 @@ async def run_worker_async():
 
         if not scheduled_locals:
             logger.info("😴 No active tasks for this scheduling window.")
+            await run_operations_agent_if_due()
             await run_missing_days_email_scheduler_if_due()
             await run_connection_monitor_nightly_if_due()
             await update_cron_success()
@@ -1830,6 +1865,7 @@ async def run_worker_async():
         await asyncio.gather(*tasks)
 
         logger.info("🏁 Cycle finished.")
+        await run_operations_agent_if_due()
         await run_missing_days_email_scheduler_if_due()
         await run_connection_monitor_nightly_if_due()
         await update_cron_success()

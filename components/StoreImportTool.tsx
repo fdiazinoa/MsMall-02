@@ -92,7 +92,8 @@ const buildTemplate = (): string => {
 };
 
 export const StoreImportTool: React.FC = () => {
-  const { currentMall, isAdmin, isTic } = useAuth();
+  const { currentMall, session, isAdmin, isTic } = useAuth();
+  const authToken = session?.access_token || '';
   const canManageStores = isAdmin || isTic;
 
   const [file, setFile] = useState<File | null>(null);
@@ -215,7 +216,7 @@ export const StoreImportTool: React.FC = () => {
     const nombre = mapping.nombre ? String(row[mapping.nombre] || '').trim() : '';
     if (!codigoInterno || !nombre || !currentMall?.id) return null;
 
-    return {
+    const payload: Partial<Store> = {
       mall_id: currentMall.id,
       codigo_interno: codigoInterno,
       nombre,
@@ -229,6 +230,41 @@ export const StoreImportTool: React.FC = () => {
       rubro: mapping.rubro ? String(row[mapping.rubro] || '').trim() : '',
       upsert_activo: mapping.upsert_activo ? parseBoolean(String(row[mapping.upsert_activo] || '')) : false,
     };
+
+    if (!payload.tipo_negocio) delete (payload as any).tipo_negocio;
+    if (!payload.rubro) delete (payload as any).rubro;
+    return payload;
+  };
+
+  const normalizeCatalogValue = (value: string): string => String(value || '').trim().replace(/\s+/g, ' ');
+
+  const ensureCatalogValues = async () => {
+    if (!currentMall?.id) return;
+    const fields: Array<'tipo_negocio' | 'rubro'> = ['tipo_negocio', 'rubro'];
+    const catalogResult = await ApiService.getStoreCatalogOptions(currentMall.id);
+    const existing = new Set(
+      (catalogResult.options || []).map((option) => `${option.field_name}:${normalizeHeader(option.value)}`)
+    );
+
+    for (const field of fields) {
+      const mappedHeader = mapping[field];
+      if (!mappedHeader) continue;
+      const values = Array.from(new Set(
+        rawRows
+          .map((row) => normalizeCatalogValue(row[mappedHeader] || ''))
+          .filter(Boolean)
+      ));
+      for (const value of values) {
+        const key = `${field}:${normalizeHeader(value)}`;
+        if (existing.has(key)) continue;
+        await ApiService.createStoreCatalogOption({
+          mall_id: currentMall.id,
+          field_name: field,
+          value,
+        });
+        existing.add(key);
+      }
+    }
   };
 
   const handleImport = async () => {
@@ -238,6 +274,10 @@ export const StoreImportTool: React.FC = () => {
     }
     if (!canManageStores) {
       setStatus({ type: 'error', message: 'Solo IT o ADMIN pueden importar locales.' });
+      return;
+    }
+    if (!authToken) {
+      setStatus({ type: 'error', message: 'La sesión no tiene token válido. Vuelva a iniciar sesión e intente nuevamente.' });
       return;
     }
     if (rawRows.length === 0) {
@@ -253,6 +293,7 @@ export const StoreImportTool: React.FC = () => {
     setImportResult(null);
 
     try {
+      await ensureCatalogValues();
       const existingStores = await ApiService.getStores(currentMall.id);
       const existingByCode = new Map(
         existingStores
@@ -278,10 +319,10 @@ export const StoreImportTool: React.FC = () => {
 
         try {
           if (existing?.id) {
-            await ApiService.updateStore(existing.id, { ...payload, id: existing.id });
+            await ApiService.updateStore(existing.id, { ...payload, id: existing.id }, authToken);
             updated += 1;
           } else {
-            await ApiService.createStore(payload);
+            await ApiService.createStore(payload, authToken);
             created += 1;
           }
         } catch (error: any) {

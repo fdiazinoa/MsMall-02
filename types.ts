@@ -301,6 +301,12 @@ export interface CopilotChatResponse {
   attachments?: CopilotAttachment[];
   email_actions?: CopilotEmailAction[];
   emailActions?: CopilotEmailAction[];
+  clarification?: {
+    required: boolean;
+    intent?: string;
+    missing_fields?: string[];
+    options?: string[];
+  };
 }
 
 export interface CopilotEmailAction {

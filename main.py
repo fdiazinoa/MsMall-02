@@ -5350,6 +5350,197 @@ def _parse_copilot_report_request(message: str) -> Optional[Dict[str, str]]:
     }
 
 
+def _has_copilot_report_type(message: str) -> bool:
+    text = _normalize_store_catalog_key(message)
+    terms = [
+        "venta", "ventas", "ingreso", "ingresos", "bruto", "brutos",
+        "dia faltante", "dias faltantes", "faltante", "faltantes",
+        "importacion", "importaciones", "carga", "cargas", "fallida", "fallidas",
+        "salud", "operativo", "operativa", "operations", "hallazgo", "hallazgos",
+        "local", "locales", "tienda", "tiendas",
+    ]
+    return any(term in text for term in terms)
+
+
+def _has_copilot_period(message: str) -> bool:
+    text = _normalize_store_catalog_key(message)
+    if re.search(r"\b20\d{2}-\d{2}-\d{2}\b", message):
+        return True
+    if re.search(r"\b\d{1,2}/\d{1,2}/20\d{2}\b", message):
+        return True
+    period_terms = [
+        "hoy", "ayer", "manana", "mañana", "semana", "mes", "ano", "año",
+        "reciente", "recientes", "ultimo", "ultimos", "ultima", "ultimas",
+        "actual", "periodo", "rango",
+    ]
+    if any(term in text for term in period_terms):
+        return True
+    return any(month_name in text for month_name in _COPILOT_MONTHS)
+
+
+def _has_copilot_local_reference(message: str) -> bool:
+    text = _normalize_store_catalog_key(message)
+    if any(term in text for term in ["local", "tienda", "todos", "todas", "mall"]):
+        return True
+    weak_terms = [
+        "skecher", "skechers", "sportline", "aldo", "waikiki", "victoria",
+        "santo domingo", "calvin", "taco", "zara", "nike", "adidas",
+    ]
+    return any(term in text for term in weak_terms)
+
+
+def _build_copilot_clarification_answer(title: str, bullets: List[str], options: List[str]) -> str:
+    option_lines = [f"- {index}. {option}" for index, option in enumerate(options, start=1)]
+    return "\n".join([
+        f"**{title}**",
+        *[f"- {item}" for item in bullets],
+        *option_lines,
+    ])
+
+
+def _copilot_clarification_response(
+    settings: Dict[str, Any],
+    *,
+    title: str,
+    bullets: List[str],
+    options: List[str],
+    intent: str,
+    missing_fields: List[str],
+) -> Dict[str, Any]:
+    return {
+        "answer": _build_copilot_clarification_answer(title, bullets, options),
+        "provider": settings["provider"],
+        "model": settings["model"],
+        "context_generated_at": None,
+        "sources": [],
+        "attachments": [],
+        "email_actions": [],
+        "clarification": {
+            "required": True,
+            "intent": intent,
+            "missing_fields": missing_fields,
+            "options": options,
+        },
+    }
+
+
+def _analyze_copilot_clarification_need(
+    message: str,
+    intent_message: str,
+    history: List[CopilotChatMessage],
+) -> Optional[Dict[str, Any]]:
+    text = _normalize_store_catalog_key(message)
+    intent_text = _normalize_store_catalog_key(intent_message)
+    email_terms = ["correo", "email", "mail", "enviar", "mandar", "envialo", "enviarlo", "enviame", "mándalo", "mandalo"]
+    report_terms = ["reporte", "listado", "exporta", "exportar", "genera", "generar", "excel", "xlsx", "pdf", "descarga", "archivo"]
+    followup_terms = ["eso", "esto", "lo anterior", "el anterior", "envialo", "enviarlo", "mandalo", "mandarlo"]
+    wants_email = any(term in text for term in email_terms)
+    wants_report = bool(_normalize_copilot_report_format(message)) or any(term in text for term in report_terms)
+    has_history = any(str(item.content or "").strip() for item in history or [])
+
+    if any(term in text for term in followup_terms) and intent_message == message and not has_history:
+        return {
+            "intent": "referencia_anterior",
+            "missing_fields": ["referencia"],
+            "title": "Necesito saber a qué te refieres",
+            "bullets": ["No tengo una solicitud anterior clara para reutilizar."],
+            "options": [
+                "Ventas por local",
+                "Días faltantes",
+                "Estado operativo",
+                "Importaciones fallidas",
+            ],
+        }
+
+    if wants_email:
+        recipients = _normalize_email_list(re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", message), strict=False)
+        if not recipients:
+            return {
+                "intent": "enviar_email",
+                "missing_fields": ["destinatarios"],
+                "title": "Falta el destinatario",
+                "bullets": ["Puedo preparar el reporte en HTML y adjunto si aplica.", "Indícame a qué correo debo enviarlo."],
+                "options": [
+                    "Enviar a operaciones@empresa.com",
+                    "Enviar a varios correos separados por coma",
+                    "Solo preparar el reporte sin enviarlo",
+                ],
+            }
+        if not _has_copilot_report_type(intent_message):
+            return {
+                "intent": "enviar_email",
+                "missing_fields": ["tipo_reporte"],
+                "title": "Necesito confirmar qué reporte enviar",
+                "bullets": ["Tengo los destinatarios, pero falta el contenido del correo."],
+                "options": [
+                    "Resumen operativo",
+                    "Ventas por local",
+                    "Días faltantes",
+                    "Importaciones fallidas",
+                ],
+            }
+
+    if wants_report and not _has_copilot_report_type(intent_message):
+        return {
+            "intent": "generar_reporte",
+            "missing_fields": ["tipo_reporte"],
+            "title": "Necesito confirmar el tipo de reporte",
+            "bullets": ["Para no generar el archivo equivocado, dime qué información quieres."],
+            "options": [
+                "Ventas por local",
+                "Ingresos brutos por local",
+                "Días faltantes",
+                "Salud operativa",
+            ],
+        }
+
+    report_type = _normalize_copilot_report_type(intent_message)
+    needs_period = report_type in {"ventas", "ingresos_brutos_local", "dias_faltantes"}
+    if (wants_report or wants_email) and needs_period and not _has_copilot_period(intent_message):
+        return {
+            "intent": "periodo_reporte",
+            "missing_fields": ["periodo"],
+            "title": "Necesito confirmar el período",
+            "bullets": ["El reporte solicitado depende de fechas y no quiero asumir un rango incorrecto."],
+            "options": [
+                "Hoy",
+                "Este mes",
+                "Mes anterior",
+                "Rango específico: 01/06/2026 al 30/06/2026",
+            ],
+        }
+
+    diagnostic_terms = ["por que", "porque", "no aparece", "no se ve", "diagnostico", "diagnóstico", "cubo", "monitor"]
+    if any(term in intent_text for term in diagnostic_terms) and not _has_copilot_local_reference(intent_message):
+        return {
+            "intent": "diagnostico_local",
+            "missing_fields": ["local"],
+            "title": "Necesito saber qué local revisar",
+            "bullets": ["El diagnóstico compara ventas, monitor y archivos por local."],
+            "options": [
+                "Revisar Skechers",
+                "Revisar Sportline",
+                "Revisar todos los locales con problemas",
+            ],
+        }
+
+    if len(text.split()) <= 3 and not any(term in text for term in ["hoy", "estado", "salud"]):
+        return {
+            "intent": "comando_ambiguo",
+            "missing_fields": ["intencion"],
+            "title": "Necesito un poco más de detalle",
+            "bullets": ["Tu comando es muy corto y podría referirse a varias acciones."],
+            "options": [
+                "Qué debo revisar hoy",
+                "Días faltantes por local",
+                "Ventas por local",
+                "Importaciones fallidas",
+            ],
+        }
+
+    return None
+
+
 def _latest_copilot_intent_message(message: str, history: List[CopilotChatMessage]) -> str:
     text = _normalize_store_catalog_key(message)
     followup_terms = ["envialo", "enviarlo", "mandalo", "mandarlo", "por mail", "por correo", "por email"]
@@ -6436,6 +6627,17 @@ async def chat_with_copilot(
         raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
 
     intent_message = _latest_copilot_intent_message(message, payload.history or [])
+    clarification = _analyze_copilot_clarification_need(message, intent_message, payload.history or [])
+    if clarification:
+        return _copilot_clarification_response(
+            settings,
+            title=clarification["title"],
+            bullets=clarification["bullets"],
+            options=clarification["options"],
+            intent=clarification["intent"],
+            missing_fields=clarification["missing_fields"],
+        )
+
     context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx, intent_message)
     email_request = _parse_copilot_email_request(message, intent_message)
     if email_request:

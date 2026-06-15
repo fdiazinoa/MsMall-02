@@ -5543,7 +5543,12 @@ def _analyze_copilot_clarification_need(
 
 def _latest_copilot_intent_message(message: str, history: List[CopilotChatMessage]) -> str:
     text = _normalize_store_catalog_key(message)
-    followup_terms = ["envialo", "enviarlo", "mandalo", "mandarlo", "por mail", "por correo", "por email"]
+    followup_terms = [
+        "envialo", "enviarlo", "mandalo", "mandarlo", "por mail", "por correo", "por email",
+        "eso", "esto", "lo anterior", "el anterior", "mismo", "misma", "igual", "tambien", "también",
+        "ahora", "solo", "solamente", "agregale", "agrégale", "incluye", "quitale", "quítale",
+        "en pdf", "en excel", "xlsx", "html", "con junio", "con mayo", "mes anterior", "este mes",
+    ]
     is_followup = any(term in text for term in followup_terms)
     if not is_followup:
         return message
@@ -5554,10 +5559,38 @@ def _latest_copilot_intent_message(message: str, history: List[CopilotChatMessag
         if role != "user" or not content:
             continue
         normalized = _normalize_store_catalog_key(content)
-        if any(term in normalized for term in followup_terms):
+        if any(term in normalized for term in ["envialo", "enviarlo", "mandalo", "mandarlo", "por mail", "por correo", "por email"]):
             continue
         return content
     return message
+
+
+def _resolve_copilot_conversation_intent(message: str, history: List[CopilotChatMessage]) -> str:
+    base_message = _latest_copilot_intent_message(message, history)
+    if base_message == message:
+        return message
+
+    text = _normalize_store_catalog_key(message)
+    modifier_terms = [
+        "eso", "esto", "lo anterior", "el anterior", "mismo", "misma", "igual", "tambien", "también",
+        "ahora", "solo", "solamente", "agregale", "agrégale", "incluye", "quitale", "quítale",
+        "pdf", "excel", "xlsx", "html", "mayo", "junio", "julio", "agosto", "septiembre",
+        "octubre", "noviembre", "diciembre", "enero", "febrero", "marzo", "abril",
+        "hoy", "ayer", "este mes", "mes anterior", "rango", "local", "skecher", "skechers", "sportline",
+    ]
+    should_compose = any(term in text for term in modifier_terms)
+    if not should_compose:
+        return base_message
+
+    clean_message = re.sub(
+        r"\b(eso|esto|lo anterior|el anterior|mismo|misma|igual)\b",
+        "",
+        message,
+        flags=re.IGNORECASE,
+    ).strip(" .,")
+    if not clean_message:
+        return base_message
+    return f"{base_message}. Ajuste solicitado: {clean_message}"
 
 
 def _parse_copilot_email_request(message: str, intent_message: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -6626,7 +6659,7 @@ async def chat_with_copilot(
     if not settings.get("api_key_configured"):
         raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
 
-    intent_message = _latest_copilot_intent_message(message, payload.history or [])
+    intent_message = _resolve_copilot_conversation_intent(message, payload.history or [])
     clarification = _analyze_copilot_clarification_need(message, intent_message, payload.history or [])
     if clarification:
         return _copilot_clarification_response(
@@ -6679,7 +6712,7 @@ async def chat_with_copilot(
             "email_actions": [email_draft],
         }
 
-    report_request = _parse_copilot_report_request(message)
+    report_request = _parse_copilot_report_request(intent_message)
     if report_request:
         attachment = await asyncio.to_thread(_generate_copilot_report_attachment, report_request, context)
         return {

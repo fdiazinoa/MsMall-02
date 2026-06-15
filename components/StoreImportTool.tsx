@@ -215,6 +215,9 @@ export const StoreImportTool: React.FC = () => {
     const codigoInterno = mapping.codigo_interno ? String(row[mapping.codigo_interno] || '').trim() : '';
     const nombre = mapping.nombre ? String(row[mapping.nombre] || '').trim() : '';
     if (!codigoInterno || !nombre || !currentMall?.id) return null;
+    const mtsValue = mapping.mts ? parseOptionalNumber(String(row[mapping.mts] || '')) : null;
+    const porcientoRentaValue = mapping.porciento_renta ? parseOptionalNumber(String(row[mapping.porciento_renta] || '')) : null;
+    const breakpointVentaValue = mapping.breakpoint_venta ? parseOptionalNumber(String(row[mapping.breakpoint_venta] || '')) : null;
 
     const payload: Partial<Store> = {
       mall_id: currentMall.id,
@@ -224,13 +227,13 @@ export const StoreImportTool: React.FC = () => {
       contrato_no: mapping.contrato_no ? String(row[mapping.contrato_no] || '').trim() : '',
       piso: mapping.piso ? String(row[mapping.piso] || '').trim() : '',
       tipo_negocio: mapping.tipo_negocio ? String(row[mapping.tipo_negocio] || '').trim() : '',
-      mts: mapping.mts ? String(row[mapping.mts] || '').trim() : '',
-      porciento_renta: mapping.porciento_renta ? parseOptionalNumber(String(row[mapping.porciento_renta] || '')) ?? '' : '',
-      breakpoint_venta: mapping.breakpoint_venta ? parseOptionalNumber(String(row[mapping.breakpoint_venta] || '')) ?? '' : '',
       rubro: mapping.rubro ? String(row[mapping.rubro] || '').trim() : '',
       upsert_activo: mapping.upsert_activo ? parseBoolean(String(row[mapping.upsert_activo] || '')) : false,
     };
 
+    if (mtsValue !== null) (payload as any).mts = mtsValue;
+    if (porcientoRentaValue !== null) payload.porciento_renta = porcientoRentaValue;
+    if (breakpointVentaValue !== null) payload.breakpoint_venta = breakpointVentaValue;
     if (!payload.tipo_negocio) delete (payload as any).tipo_negocio;
     if (!payload.rubro) delete (payload as any).rubro;
     return payload;
@@ -294,7 +297,7 @@ export const StoreImportTool: React.FC = () => {
 
     try {
       await ensureCatalogValues();
-      const existingStores = await ApiService.getStores(currentMall.id);
+      const existingStores = await ApiService.getStores(currentMall.id, true);
       const existingByCode = new Map(
         existingStores
           .filter((store) => String(store.codigo_interno || '').trim() !== '')
@@ -327,7 +330,12 @@ export const StoreImportTool: React.FC = () => {
           }
         } catch (error: any) {
           failed += 1;
-          errors.push(`Fila ${index + 1} (${payload.codigo_interno}): ${error?.message || 'error importando local'}`);
+          const rawMessage = String(error?.message || 'error importando local');
+          const friendlyMessage = rawMessage.toLowerCase().includes('codigo_interno')
+            && (rawMessage.toLowerCase().includes('duplicate') || rawMessage.toLowerCase().includes('duplic') || rawMessage.includes('23505'))
+            ? 'codigo_interno ya existe globalmente. Aplicar 20260615_locales_codigo_interno_per_mall.sql para permitir códigos por mall.'
+            : rawMessage;
+          errors.push(`Fila ${index + 1} (${payload.codigo_interno}): ${friendlyMessage}`);
         }
       }
 

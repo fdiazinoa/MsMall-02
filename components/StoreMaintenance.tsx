@@ -397,6 +397,8 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
     const storeToSave = {
       ...newStore,
       mall_id: currentMall.id,
+      mts: parseOptionalNumber(newStore.mts),
+      porciento_renta: parseOptionalNumber(newStore.porciento_renta),
       renta_fija: parseOptionalNumber(newStore.renta_fija),
       breakpoint_venta: parseOptionalNumber(newStore.breakpoint_venta),
       porcentaje_variable: parseOptionalNumber(newStore.porcentaje_variable),

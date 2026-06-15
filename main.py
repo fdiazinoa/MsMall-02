@@ -1144,6 +1144,17 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
         data["codigo_interno"] = str(data.get("codigo_interno") or "").strip()
     if data.get("email") == "":
         data["email"] = None
+    for numeric_field in ("mts", "porciento_renta", "renta_fija", "breakpoint_venta", "porcentaje_variable"):
+        if numeric_field not in data:
+            continue
+        raw_value = data.get(numeric_field)
+        if raw_value in (None, ""):
+            data[numeric_field] = None
+            continue
+        try:
+            data[numeric_field] = float(str(raw_value).strip().replace(",", "."))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{numeric_field} debe ser numerico")
     if "fecha_corte_importacion" in data:
         raw_cutoff = str(data.get("fecha_corte_importacion") or "").strip()
         if raw_cutoff:

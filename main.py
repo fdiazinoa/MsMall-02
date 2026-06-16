@@ -1753,6 +1753,9 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 line_no = i + line_offset
                 record = {}
                 normalized_row = _normalize_csv_row_keys(row) if isinstance(row, dict) else {}
+                non_empty_values = [str(value or "").strip() for value in normalized_row.values() if str(value or "").strip()]
+                if non_empty_values and all(re.fullmatch(r"[-_=]+", value) for value in non_empty_values):
+                    continue
                 lowered_row = {k.lower(): v for k, v in normalized_row.items()}
                 # 1. Apply Mapping
                 for sys_field, header in effective_mapping.items():
@@ -1836,14 +1839,15 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 elif explicit_format == 'YYYY/MM/DD':
                     date_formats = ['%Y/%m/%d']
                 elif explicit_format == 'YYYY-MM-DD':
-                    date_formats = ['%Y-%m-%d', '%Y/%m/%d']
+                    date_formats = ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f', '%Y/%m/%d']
                 elif explicit_format == 'timestamp':
                     date_formats = [
                         '%Y-%m-%dT%H:%M:%S.%fZ',
                         '%Y-%m-%dT%H:%M:%S.%f',
                         '%Y-%m-%dT%H:%M:%SZ',
                         '%Y-%m-%dT%H:%M:%S',
-                        '%Y-%m-%d %H:%M:%S'
+                        '%Y-%m-%d %H:%M:%S',
+                        '%Y-%m-%d %H:%M:%S.%f'
                     ]
                 else:  # 'auto' - try all formats
                     date_formats = [
@@ -1852,6 +1856,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         '%Y-%m-%dT%H:%M:%SZ',     # ISO 8601 with Z (2026-02-01T14:30:00Z)
                         '%Y-%m-%dT%H:%M:%S',      # ISO 8601 with time (2026-02-01T14:30:00)
                         '%Y-%m-%d %H:%M:%S',      # SQL datetime (2026-02-01 14:30:00)
+                        '%Y-%m-%d %H:%M:%S.%f',   # SQL datetime with milliseconds (2026-02-01 14:30:00.000)
                         '%Y-%m-%d',               # ISO 8601 date only (2026-02-01)
                         '%d/%m/%Y',               # DD/MM/YYYY (Dominican/Spanish format)
                         '%d%m%Y',                 # DDmmYYYY (05012026)

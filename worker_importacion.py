@@ -288,6 +288,8 @@ def normalize_date(date_str):
     for fmt in [
         '%d/%m/%Y',
         '%Y-%m-%d',
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%d %H:%M:%S.%f',
         '%m/%d/%Y',
         '%d-%m-%Y',
         '%Y/%m/%d',
@@ -927,6 +929,9 @@ def process_file_logic(config, filename, content):
         for i, row in enumerate(raw_records, start=2):
             try:
                 normalized_row = _normalize_csv_row_keys(row)
+                non_empty_values = [str(value or "").strip() for value in normalized_row.values() if str(value or "").strip()]
+                if non_empty_values and all(re.fullmatch(r"[-_=]+", value) for value in non_empty_values):
+                    continue
                 lowered_row = {k.lower(): v for k, v in normalized_row.items()}
 
                 def pick_value(sys_field, mapped_header, fallback_header=""):

@@ -422,6 +422,9 @@ const normalizeCsvSaleTime = (raw: any): string | null => {
   let hourOnly = text.match(/^(\d{1,2})$/);
   if (hourOnly) {
     const hh = Number(hourOnly[1]);
+    if (hh === 24) {
+      return '00:00:00';
+    }
     if (hh >= 0 && hh <= 23) {
       return `${pad2(hh)}:00:00`;
     }

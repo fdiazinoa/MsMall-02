@@ -2017,7 +2017,9 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 if time_col in new_r and new_r[time_col]:
                     val = str(new_r[time_col]).strip().strip("'\"")
                     if val.isdigit():
-                        if int(val) < 24:
+                        if int(val) == 24:
+                            new_r[time_col] = "00:00:00"
+                        elif int(val) < 24:
                             new_r[time_col] = f"{int(val):02d}:00:00"
                         elif len(val) in [5, 6]:
                             # HHMMSS -> HH:MM:SS

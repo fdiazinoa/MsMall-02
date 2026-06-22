@@ -65,7 +65,11 @@ from services.connection_monitor_service import (
     RetryPolicyBlocked,
 )
 from services.load_log_service import build_load_log_payload, insert_load_log_row
-from services.missing_days_email_service import build_missing_days_email_html, missing_days_email_period
+from services.missing_days_email_service import (
+    build_missing_days_email_html,
+    missing_days_email_period,
+    run_missing_days_email_scheduler,
+)
 from services.operations_auditor_service import OperationsAuditorService
 from services.operations_agent_service import (
     EVENT_LOCAL_ACTIVATED,
@@ -98,6 +102,16 @@ def _parse_bool_env(name: str, default: bool = False) -> bool:
 
 def _is_api_scheduler_enabled() -> bool:
     return _parse_bool_env("ENABLE_API_SCHEDULER", default=False)
+
+def _is_email_scheduler_enabled() -> bool:
+    return _parse_bool_env("ENABLE_EMAIL_SCHEDULER", default=True)
+
+def _email_scheduler_poll_seconds() -> int:
+    try:
+        poll_seconds = int(os.getenv("EMAIL_SCHEDULER_POLL_SECONDS", "60"))
+    except (TypeError, ValueError):
+        poll_seconds = 60
+    return max(30, min(poll_seconds, 3600))
 _CORS_LOCK_V1_ORIGINS = ["https://msmall.vercel.app"]
 
 if SUPABASE_URL and SUPABASE_KEY:
@@ -327,6 +341,7 @@ app.include_router(comparisons.router)
 app.include_router(admin_tools.router)
 app.include_router(create_token_auth_router())
 _api_scheduler_task = None
+_email_scheduler_task = None
 
 async def scheduler_loop():
     await asyncio.sleep(min(10, WORKER_POLL_SECONDS))
@@ -340,9 +355,30 @@ async def scheduler_loop():
         logger.info("[Scheduler] Durmiendo %s segundos...", WORKER_POLL_SECONDS)
         await asyncio.sleep(WORKER_POLL_SECONDS)
 
+async def email_scheduler_loop():
+    poll_seconds = _email_scheduler_poll_seconds()
+    await asyncio.sleep(min(15, poll_seconds))
+    while True:
+        try:
+            if not supabase:
+                logger.warning("[EmailScheduler] Supabase client unavailable; skipping scheduled messaging")
+            else:
+                result = await asyncio.to_thread(
+                    run_missing_days_email_scheduler,
+                    supabase,
+                    logger,
+                )
+                if result.get("executed"):
+                    logger.info("[EmailScheduler] Scheduled missing-days email executed: %s", result.get("runs"))
+                elif result.get("reason") not in {"no_due_schedules", "no_enabled_settings"}:
+                    logger.info("[EmailScheduler] Scheduled messaging skipped: %s", result)
+        except Exception as e:
+            logger.error("[EmailScheduler] Scheduled messaging failed: %s", e)
+        await asyncio.sleep(poll_seconds)
+
 @app.on_event("startup")
 async def startup_event():
-    global _api_scheduler_task
+    global _api_scheduler_task, _email_scheduler_task
     logger.info("MSMALL API Starting up... routes loaded.")
     api_scheduler_enabled = _is_api_scheduler_enabled()
     logger.info("API scheduler enabled: %s", str(api_scheduler_enabled).lower())
@@ -350,6 +386,10 @@ async def startup_event():
         _api_scheduler_task = asyncio.create_task(scheduler_loop())
     else:
         logger.info("API embedded scheduler disabled; worker is the scheduler authority.")
+    email_scheduler_enabled = _is_email_scheduler_enabled()
+    logger.info("API email scheduler enabled: %s", str(email_scheduler_enabled).lower())
+    if email_scheduler_enabled and _email_scheduler_task is None:
+        _email_scheduler_task = asyncio.create_task(email_scheduler_loop())
 
 app.add_middleware(
     CORSMiddleware,

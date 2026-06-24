@@ -413,6 +413,10 @@ def _normalize_text_for_csv(content: str) -> str:
         text = text.replace(sep, "\n")
     if "\n" not in text and text.count("\\n") >= 1:
         text = text.replace("\\n", "\n")
+    first_line = next((line for line in text.split("\n") if line.strip()), "")
+    first_line_lower = first_line.lower()
+    if "\t\t" in first_line and any(token in first_line_lower for token in ("fecha", "hora", "total", "bruto", "neto")):
+        text = re.sub(r"\t{2,}", "\t", text)
     return text
 
 

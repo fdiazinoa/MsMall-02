@@ -77,7 +77,7 @@ export interface RoleConfig {
   permisos: string[];
 }
 
-export type ImportProtocol = 'FTP' | 'SFTP' | 'LOCAL';
+export type ImportProtocol = 'FTP' | 'SFTP' | 'LOCAL' | 'WEBSERVICE' | 'API';
 export type FileType = 'CSV' | 'TXT' | 'JSON' | 'XML';
 export type ImportFrequency = 'cada_hora' | 'cada_2_horas' | 'hora_especifica' | 'manual' | 'daily_batch';
 export type PostProcessAction = 'ninguna' | 'eliminar' | 'renombrar' | 'NINGUNA' | 'RENOMBRAR_PROCESADO' | 'ELIMINAR';

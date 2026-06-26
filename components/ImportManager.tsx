@@ -1935,11 +1935,16 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           const nextProtocol = e.target.value as ImportProtocol;
                           if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
                           if (nextProtocol !== 'LOCAL') setBrowserFilesSelection(null);
-                          setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : 21 });
+                          setEditingConfig({
+                            ...editingConfig,
+                            protocolo: nextProtocol,
+                            puerto: nextProtocol === 'SFTP' ? 22 : nextProtocol === 'WEBSERVICE' || nextProtocol === 'API' ? 443 : 21
+                          });
                         }}
                       >
                         <option value="SFTP">SFTP (SSH File Transfer)</option>
                         <option value="FTP">FTP (Estándar)</option>
+                        <option value="WEBSERVICE">Webservice API</option>
                         <option value="LOCAL">Directorio local (servidor)</option>
                       </select>
                     </div>

@@ -1225,6 +1225,7 @@ def process_webservice_import(config: Dict[str, Any]) -> Dict[str, Any]:
         "webservice_url",
         "api_url",
         "endpoint_url",
+        "host",
         "sftp_host",
     )
     token = _webservice_config_value(
@@ -1234,6 +1235,7 @@ def process_webservice_import(config: Dict[str, Any]) -> Dict[str, Any]:
         "webservice_token",
         "api_token",
         "auth_token",
+        "password",
         "sftp_pass",
     )
     page_param = str(_webservice_config_value(config, constants, "_webservice_page_param", "page_param") or "page")
@@ -1315,6 +1317,7 @@ def process_webservice_import(config: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "ok": True,
             "message": message,
+            "records_processed": 0,
             "processed_files": 0,
             "failed_files": 0,
             "total_pending": 0,
@@ -1357,7 +1360,9 @@ def process_webservice_import(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "ok": bool(insert_confirmed),
+        "status": "partial" if estado == "parcial" else ("success" if insert_confirmed else "error"),
         "message": mensaje,
+        "records_processed": count,
         "processed_files": 1 if insert_confirmed else 0,
         "failed_files": 0 if insert_confirmed else 1,
         "total_pending": len(all_records),

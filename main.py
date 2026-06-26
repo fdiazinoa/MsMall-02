@@ -29,7 +29,14 @@ from ftplib import FTP
 import stat
 import urllib.error
 import urllib.request
-from worker_importacion import WORKER_POLL_SECONDS, run_worker_async
+from worker_importacion import (
+    WORKER_POLL_SECONDS,
+    _append_query_param as append_webservice_query_param,
+    _extract_webservice_records as extract_webservice_records,
+    _fetch_webservice_json as fetch_webservice_json,
+    process_webservice_import,
+    run_worker_async,
+)
 from analytics_service import AnalyticsService
 from routers import recipes, comparisons, admin_tools
 from routers.token_auth import (
@@ -696,6 +703,9 @@ def _normalize_import_config_payload(config_data: Dict[str, Any]) -> Dict[str, A
     if not normalized.get("tipo_archivo"):
         normalized["tipo_archivo"] = normalized.get("file_type", "CSV")
     return normalized
+
+def _is_webservice_protocol(value: Any) -> bool:
+    return str(value or "").strip().upper() in {"WEBSERVICE", "API"}
 
 def _parse_bool_value(value: Any) -> Optional[bool]:
     if value is None:
@@ -2463,6 +2473,16 @@ def _test_remote_connection_sync(req: RemoteRequest):
     logger.info(f"Probando conexión remota sync a {req.host}:{req.puerto} ({req.protocolo})")
     start_time = time.time()
     try:
+        if _is_webservice_protocol(req.protocolo):
+            url = append_webservice_query_param(req.host, "page", 1)
+            payload = fetch_webservice_json(url, (req.password or "").strip() or None, 30)
+            records = extract_webservice_records(payload)
+            duration = time.time() - start_time
+            logger.info("Webservice probado en %.2fs registros=%s", duration, len(records))
+            return {
+                "status": "success",
+                "message": f"Webservice respondió correctamente ({duration:.2f}s). Registros detectados: {len(records)}"
+            }
         if req.protocolo == "SFTP":
             ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
             sftp.close()
@@ -3599,6 +3619,12 @@ async def analyze_remote_mapping(
             is_json = req.tipo_archivo == "JSON" or req.ruta.lower().endswith('.json')
             read_size = -1 if is_json else 32768 # Read all for JSON, 32KB for CSV (increased from 8KB)
 
+            if _is_webservice_protocol(req.protocolo):
+                url = append_webservice_query_param(req.host, "page", 1)
+                payload = fetch_webservice_json(url, (req.password or "").strip() or None, analysis_timeout_seconds)
+                records = extract_webservice_records(payload)
+                return json.dumps(records, ensure_ascii=False)
+
             if req.protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
                 try:
@@ -3917,6 +3943,12 @@ def _list_remote_files(config: Dict[str, Any]):
     ruta = config.get("ruta_remota") or config.get("sftp_path", ".")
     tipo_archivo = config.get("tipo_archivo") or config.get("file_type", "CSV")
     logger.info(f"[DEBUG_AUTH] User: '{usuario}', PassLen: {len(password) if password else 0}, Host: '{host}', Port: {puerto}, Path: '{ruta}'")
+    if _is_webservice_protocol(protocolo):
+        return [{
+            "nombre": "WEBSERVICE_API",
+            "fecha": datetime.utcnow().isoformat(),
+            "tamano": 0,
+        }]
     
     # Allow all supported extensions to be listed, to prevent confusion if config doesn't match file
     # ext = ".csv" if tipo_archivo == "CSV" else ".txt" if tipo_archivo == "TXT" else ".json"
@@ -4108,6 +4140,19 @@ async def _execute_manual_endpoint_impl(
         ruta_remota = config_data.get("ruta_remota") or config_data.get("sftp_path", ".")
         protocolo = config_data.get("protocolo") or config_data.get("sftp_protocol", "SFTP")
         source_filename = req.filename
+
+        if _is_webservice_protocol(protocolo):
+            result = await asyncio.to_thread(process_webservice_import, config_data)
+            records_processed = int(result.get("records_processed") or 0)
+            status_value = str(result.get("status") or ("success" if result.get("ok") else "error"))
+            return _cache_and_return({
+                "status": status_value,
+                "message": result.get("message") or "Webservice ejecutado.",
+                "records_processed": records_processed,
+                "batch_id": batch_id,
+                "errors": result.get("details") or [],
+                "renaming_error": None,
+            })
 
         def _build_prefixed_name(filename: str, prefix: str) -> str:
             base_name = posixpath.basename((filename or "").strip())

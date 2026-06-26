@@ -814,6 +814,49 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     }
   };
 
+  const handleAnalyzeWebserviceFields = async () => {
+    if (!isWebserviceProtocol(editingConfig.protocolo)) return;
+    if (!editingConfig.host) {
+      alert("Completa el endpoint del Webservice antes de leer campos.");
+      return;
+    }
+
+    setFetchingHeaders(true);
+    try {
+      const analysis = await ApiService.analyzeRemoteMapping(
+        { ...editingConfig, tipo_archivo: 'JSON' },
+        tempPassword || editingConfig.password,
+        undefined,
+        authToken
+      );
+      const headers = analysis.csv_headers || analysis.headers || [];
+      const suggested = analysis.suggested_mapping || {};
+      const suggestedMapping = Object.entries(suggested).reduce((acc, [field, value]: [string, any]) => {
+        const header = value?.csv_header || value;
+        if (header) acc[field] = String(header);
+        return acc;
+      }, {} as Record<string, string>);
+
+      setRemoteHeaders(headers);
+      setEditingConfig(prev => ({
+        ...prev,
+        mapping: { ...(prev.mapping || {}), ...suggestedMapping }
+      }));
+      setSelectedFilePreview({
+        filename: 'WEBSERVICE_API',
+        lines: Object.entries(analysis.sample_row || {}).map(([key, value]) => `${key}: ${String(value ?? '')}`),
+        analysisType: 'JSON',
+        detectedDelimiter: null,
+        detectedHasHeader: true
+      });
+      alert(`Campos detectados: ${headers.length}`);
+    } catch (error: any) {
+      alert(`No se pudieron leer los campos del Webservice: ${error.message || error}`);
+    } finally {
+      setFetchingHeaders(false);
+    }
+  };
+
   const applySavedConnection = (connectionId: string) => {
     setSelectedConnectionId(connectionId);
     if (!connectionId) return;
@@ -2292,6 +2335,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
                   <button
                     onClick={() => {
+                      if (isWebserviceProtocol(editingConfig.protocolo)) {
+                        handleAnalyzeWebserviceFields();
+                        return;
+                      }
                       console.log("Button 'Seleccionar Archivo Ejemplo' clicked");
                       handleOpenExplorer(editingConfig.ruta_remota);
                     }}
@@ -2299,7 +2346,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                     disabled={fetchingHeaders}
                   >
                     {fetchingHeaders ? <RefreshCw className="animate-spin" size={16} /> : <FileSearch size={16} />}
-                    {fetchingHeaders ? 'Leyendo...' : 'Seleccionar Archivo'}
+                    {fetchingHeaders ? 'Leyendo...' : isWebserviceProtocol(editingConfig.protocolo) ? 'Leer campos Webservice' : 'Seleccionar Archivo'}
                   </button>
 
                   <button

@@ -48,6 +48,14 @@ const decimalSeparatorKey = '_decimal_separator';
 const movingWindowModeKey = '_moving_window_mode';
 const removeSpecialCharsKey = '_remove_special_chars';
 const specialCharsToRemoveKey = '_special_chars_to_remove';
+const webserviceDataPathKey = '_webservice_data_path';
+const webservicePageParamKey = '_webservice_page_param';
+const webserviceStartPageKey = '_webservice_start_page';
+const webserviceMaxPagesKey = '_webservice_max_pages';
+const webserviceTimeoutKey = '_webservice_timeout_seconds';
+
+const isWebserviceProtocol = (protocol?: ImportProtocol | string) =>
+  ['WEBSERVICE', 'API'].includes(String(protocol || '').toUpperCase());
 
 const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
   const mode = config.constants?.[fieldModeKey(fieldKey)];
@@ -1156,13 +1164,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     if (!config) return;
     const targetFile = (manualFiles || []).find((file) => file.nombre === filename);
     const isLargeRemoteFile = Number(targetFile?.tamano || 0) >= 15 * 1024 * 1024;
+    const isWebservice = isWebserviceProtocol(config.protocolo);
     const analysisTimeoutMs = (isLargeRemoteFile || filename.toLowerCase().endsWith('.json')) ? 420000 : 180000;
     const mappingReady = hasRequiredMapping(config);
 
     setExecutingFile(filename);
     setShowProgressModal(true);
     setProgressStep('downloading');
-    setProgressMessage(`Conectando al servidor y descargando ${filename}...`);
+    setProgressMessage(isWebservice ? 'Conectando al Webservice...' : `Conectando al servidor y descargando ${filename}...`);
     setProgressRecords(0);
 
     try {
@@ -1175,12 +1184,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
             ? 'Analizando estructura del archivo grande. La primera carga puede tardar varios minutos...'
             : 'Analizando estructura del archivo...'
         );
-        const analysis = await ApiService.analyzeSingleFile(
-          config,
-          filename,
-          authToken,
-          { timeoutMs: analysisTimeoutMs }
-        );
+        const analysis = isWebservice
+          ? await ApiService.analyzeRemoteMapping(config, config.password, undefined, authToken)
+          : await ApiService.analyzeSingleFile(
+            config,
+            filename,
+            authToken,
+            { timeoutMs: analysisTimeoutMs }
+          );
 
         if (!hasDataRowsInAnalysis(analysis)) {
           const previewLines = Array.isArray(analysis?.raw_preview_lines)
@@ -1229,7 +1240,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       console.log("Mapeo completo, procesando directamente");
       setProgressStep('inserting');
       setProgressMessage(
-        isLargeRemoteFile
+        isWebservice
+          ? 'Consultando Webservice e insertando ventas en la base de datos...'
+          : isLargeRemoteFile
           ? 'Procesando archivo grande e insertando registros. Esto puede tardar varios minutos...'
           : 'Procesando e insertando registros en la base de datos...'
       );
@@ -1886,7 +1899,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                     />
                   </div>
 
-                  {editingConfig.protocolo !== 'LOCAL' && (
+                  {editingConfig.protocolo !== 'LOCAL' && !isWebserviceProtocol(editingConfig.protocolo) && (
                     <div className="p-3 rounded-xl border border-indigo-100 bg-indigo-50/50 space-y-2">
                       <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest">
                         Conexiones Guardadas (FTP/SFTP)
@@ -1935,10 +1948,20 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           const nextProtocol = e.target.value as ImportProtocol;
                           if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
                           if (nextProtocol !== 'LOCAL') setBrowserFilesSelection(null);
+                          const nextConstants = { ...(editingConfig.constants || {}) };
+                          if (isWebserviceProtocol(nextProtocol)) {
+                            nextConstants[webservicePageParamKey] = nextConstants[webservicePageParamKey] || 'page';
+                            nextConstants[webserviceStartPageKey] = nextConstants[webserviceStartPageKey] || '1';
+                            nextConstants[webserviceMaxPagesKey] = nextConstants[webserviceMaxPagesKey] || '50';
+                            nextConstants[webserviceTimeoutKey] = nextConstants[webserviceTimeoutKey] || '45';
+                          }
                           setEditingConfig({
                             ...editingConfig,
                             protocolo: nextProtocol,
-                            puerto: nextProtocol === 'SFTP' ? 22 : nextProtocol === 'WEBSERVICE' || nextProtocol === 'API' ? 443 : 21
+                            puerto: nextProtocol === 'SFTP' ? 22 : isWebserviceProtocol(nextProtocol) ? 443 : 21,
+                            tipo_archivo: isWebserviceProtocol(nextProtocol) ? 'JSON' : editingConfig.tipo_archivo,
+                            accion_post_procesado: isWebserviceProtocol(nextProtocol) ? 'NINGUNA' : editingConfig.accion_post_procesado,
+                            constants: nextConstants
                           });
                         }}
                       >
@@ -1967,12 +1990,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   </div>
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Host del Servidor</label>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                        {isWebserviceProtocol(editingConfig.protocolo) ? 'Endpoint Webservice' : 'Host del Servidor'}
+                      </label>
                       <div className="relative">
                         <Globe size={18} className="absolute left-3.5 top-3 text-slate-300" />
                         <input
                           type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                          placeholder="sftp.tu-tienda.com"
+                          placeholder={isWebserviceProtocol(editingConfig.protocolo) ? 'https://apisuba.kation.com.do/api/external/v1/invoices' : 'sftp.tu-tienda.com'}
                           value={editingConfig.host}
                           onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
                         />
@@ -2040,22 +2065,26 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 <div className="space-y-5">
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Credenciales de Acceso</label>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                        {isWebserviceProtocol(editingConfig.protocolo) ? 'Autenticación Bearer' : 'Credenciales de Acceso'}
+                      </label>
                       <div className="space-y-3">
-                        <div className="relative">
-                          <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
-                          <input
-                            type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder="Nombre de usuario"
-                            value={editingConfig.usuario}
-                            onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
-                          />
-                        </div>
+                        {!isWebserviceProtocol(editingConfig.protocolo) && (
+                          <div className="relative">
+                            <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
+                            <input
+                              type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
+                              placeholder="Nombre de usuario"
+                              value={editingConfig.usuario}
+                              onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
+                            />
+                          </div>
+                        )}
                         <div className="relative">
                           <Key size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="password" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder="Contraseña o Frase de paso SSH"
+                            placeholder={isWebserviceProtocol(editingConfig.protocolo) ? 'Token Bearer' : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}
                           />
@@ -2063,6 +2092,68 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       </div>
                     </div>
                   )}
+                  {isWebserviceProtocol(editingConfig.protocolo) && (
+                    <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Parámetros Webservice</p>
+                        <p className="text-xs text-cyan-700 mt-1">Configura paginación y dónde está la lista de ventas dentro del JSON.</p>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                          Ruta JSON de datos
+                          <input
+                            type="text"
+                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                            placeholder="Ej: data, results, invoices"
+                            value={editingConfig.constants?.[webserviceDataPathKey] || ''}
+                            onChange={e => setEditingConfig({
+                              ...editingConfig,
+                              constants: { ...editingConfig.constants, [webserviceDataPathKey]: e.target.value }
+                            })}
+                          />
+                        </label>
+                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                          Parámetro de página
+                          <input
+                            type="text"
+                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                            value={editingConfig.constants?.[webservicePageParamKey] || 'page'}
+                            onChange={e => setEditingConfig({
+                              ...editingConfig,
+                              constants: { ...editingConfig.constants, [webservicePageParamKey]: e.target.value || 'page' }
+                            })}
+                          />
+                        </label>
+                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                          Página inicial
+                          <input
+                            type="number"
+                            min={1}
+                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                            value={editingConfig.constants?.[webserviceStartPageKey] || '1'}
+                            onChange={e => setEditingConfig({
+                              ...editingConfig,
+                              constants: { ...editingConfig.constants, [webserviceStartPageKey]: e.target.value || '1' }
+                            })}
+                          />
+                        </label>
+                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                          Máximo de páginas
+                          <input
+                            type="number"
+                            min={1}
+                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                            value={editingConfig.constants?.[webserviceMaxPagesKey] || '50'}
+                            onChange={e => setEditingConfig({
+                              ...editingConfig,
+                              constants: { ...editingConfig.constants, [webserviceMaxPagesKey]: e.target.value || '50' }
+                            })}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  )}
+                  {!isWebserviceProtocol(editingConfig.protocolo) && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
                       {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio (Servidor)' : 'Ruta Remota de Archivos'}
@@ -2114,8 +2205,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       </div>
                     )}
                   </div>
+                  )}
 
                   <div>
+                    {!isWebserviceProtocol(editingConfig.protocolo) && (
+                    <>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Acción Post-Procesado</label>
                     <div className="space-y-2">
                       {[
@@ -2151,6 +2245,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         </div>
                       ))}
                     </div>
+                    </>
+                    )}
                   </div>
 
                   {editingConfig.protocolo !== 'LOCAL' && (
@@ -2162,7 +2258,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         className="w-full py-2.5 border-2 border-indigo-50 text-indigo-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors disabled:opacity-50 shadow-sm"
                       >
                         {testingConnection ? <RefreshCw className="animate-spin" size={18} /> : <Play size={16} fill="currentColor" />}
-                        {testingConnection ? 'Verificando red...' : 'Probar Conexión'}
+                        {testingConnection ? 'Verificando red...' : isWebserviceProtocol(editingConfig.protocolo) ? 'Probar Webservice' : 'Probar Conexión'}
                       </button>
 
                       {editingConfig.frecuencia === 'manual' && editingConfig.id && (
@@ -2172,7 +2268,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-600 transition-all shadow-lg active:scale-95 group"
                         >
                           <Database size={18} className="text-indigo-400 group-hover:text-white transition-colors" />
-                          Listar y Procesar Archivos
+                          {isWebserviceProtocol(editingConfig.protocolo) ? 'Ejecutar Webservice ahora' : 'Listar y Procesar Archivos'}
                         </button>
                       )}
                     </div>

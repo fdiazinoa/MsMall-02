@@ -981,7 +981,7 @@ export const ApiService = {
         body: JSON.stringify({
           protocolo: config.protocolo,
           host: config.host?.trim(),
-          puerto: Number(config.puerto) || (config.protocolo === 'SFTP' ? 22 : 21),
+          puerto: Number(config.puerto) || (config.protocolo === 'SFTP' ? 22 : ['WEBSERVICE', 'API'].includes(String(config.protocolo || '').toUpperCase()) ? 443 : 21),
           usuario: config.usuario?.trim(),
           password: password,
           ruta: config.ruta_remota || '.'

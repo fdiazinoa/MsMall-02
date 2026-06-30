@@ -2712,7 +2712,7 @@ export const ApiService = {
   },
 
   async createSecurityToken(
-    payload: { token_type: 'app' | 'exporter'; mall_id: string; local_id?: string; scopes: string[]; expires_in?: number; service_account_id?: string },
+    payload: { token_type: 'app' | 'exporter'; mall_id: string; local_id?: string; scopes: string[]; expires_in?: number | null; service_account_id?: string },
     token: string
   ): Promise<SecurityTokenPairReveal> {
     return fetchJsonWithBaseFallback<SecurityTokenPairReveal>(

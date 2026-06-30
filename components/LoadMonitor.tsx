@@ -254,7 +254,7 @@ export const LoadMonitor: React.FC = () => {
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-2xl font-bold text-slate-800">Monitor de Cargas (TIC)</h2>
-          <p className="text-slate-500">Auditoría en tiempo real de la ingesta de datos.</p>
+          <p className="text-slate-500">Auditoría en tiempo real de la ingesta de datos. Por defecto muestra hasta los últimos 5 días.</p>
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -276,7 +276,7 @@ export const LoadMonitor: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard title="Cargas Exitosas" count={stats.exito} icon={CheckCircle2} color="text-green-600" bgColor="bg-green-50" />
         <StatCard title="Cargas con Errores" count={stats.parcial + stats.error} icon={AlertCircle} color="text-amber-600" bgColor="bg-amber-50" />
-        <StatCard title="Total Archivos" count={stats.total} icon={FileText} color="text-indigo-600" bgColor="bg-indigo-50" />
+        <StatCard title="Cargas últimos 5 días" count={stats.total} icon={FileText} color="text-indigo-600" bgColor="bg-indigo-50" />
         <StatCard title="Ultima Actualizacion" count={new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} icon={Clock} color="text-slate-600" bgColor="bg-slate-50" />
       </div>
 

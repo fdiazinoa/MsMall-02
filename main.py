@@ -2677,7 +2677,7 @@ async def get_load_logs_secure(
     local_id: Optional[str] = Query(None, alias="local_id"),
     start_date: Optional[str] = Query(None, alias="start_date"),
     end_date: Optional[str] = Query(None, alias="end_date"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(1000, ge=1, le=2000),
     operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
 ):
     try:

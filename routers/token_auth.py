@@ -38,6 +38,7 @@ TOKEN_TYPE_EXPORTER = "exporter"
 ACTIVE = "active"
 DISABLED = "disabled"
 REVOKED = "revoked"
+NON_EXPIRING_ACCESS_EXPIRES_AT = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 
 
 def utcnow() -> datetime:
@@ -692,7 +693,7 @@ class TokenService:
         access_ttl = self.config.access_ttl(token_type)
         if access_ttl_seconds is not None and int(access_ttl_seconds) > 0:
             access_ttl = timedelta(seconds=int(access_ttl_seconds))
-        access_exp = None if access_never_expires else now + access_ttl
+        access_exp = NON_EXPIRING_ACCESS_EXPIRES_AT if access_never_expires else now + access_ttl
         refresh_exp = now + self.config.refresh_ttl(token_type)
         refresh_plain = secrets.token_urlsafe(48)
         token_row = self.store.create_api_token({
@@ -701,7 +702,7 @@ class TokenService:
             "token_type": token_type,
             "scopes": scopes,
             "jti": str(uuid.uuid4()),
-            "access_expires_at": access_exp.isoformat() if access_exp else None,
+            "access_expires_at": access_exp.isoformat(),
             "refresh_token_hash": _hash_token(refresh_plain),
             "refresh_expires_at": refresh_exp.isoformat(),
             "status": ACTIVE,
@@ -717,7 +718,12 @@ class TokenService:
             "revoke_reason": None,
         })
         access_token = self._issue_jwt(
-            token_id=token_row["id"], mall_id=mall_id, local_id=local_id, token_type=token_type, scopes=scopes, access_exp=access_exp
+            token_id=token_row["id"],
+            mall_id=mall_id,
+            local_id=local_id,
+            token_type=token_type,
+            scopes=scopes,
+            access_exp=None if access_never_expires else access_exp,
         )
         self._audit(event_type="issued", token=token_row, request=request)
         return {

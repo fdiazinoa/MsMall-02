@@ -84,6 +84,17 @@ const formatIso = (value?: string | null) => {
   }
 };
 
+const isNonExpiringAccessDate = (value?: string | null) => {
+  if (!value) return true;
+  const ts = new Date(value).getTime();
+  if (!Number.isFinite(ts)) return false;
+  return new Date(ts).getUTCFullYear() >= 9999;
+};
+
+const formatAccessExpiration = (value?: string | null) => (
+  isNonExpiringAccessDate(value) ? 'No expira' : formatIso(value)
+);
+
 const truncateMiddle = (value?: string | null, left = 8, right = 6) => {
   if (!value) return '—';
   if (value.length <= left + right + 3) return value;
@@ -115,7 +126,7 @@ const badgeClasses = (status?: string) => {
 };
 
 const isTokenExpired = (token: SecurityApiToken) => {
-  if (!token.access_expires_at) return false;
+  if (isNonExpiringAccessDate(token.access_expires_at)) return false;
   const ts = new Date(token.access_expires_at).getTime();
   return Number.isFinite(ts) && ts < Date.now();
 };
@@ -1155,7 +1166,7 @@ export const SecurityTokenAdmin: React.FC = () => {
                                 </div>
                               </td>
                               <td className="px-4 py-3 text-xs text-slate-600">
-                                <div>{formatIso(row.access_expires_at || '')}</div>
+                                <div>{formatAccessExpiration(row.access_expires_at || '')}</div>
                                 {row.__expired && row.status === 'active' && (
                                   <div className="text-rose-600 font-medium">Expirado</div>
                                 )}

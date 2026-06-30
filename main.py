@@ -52,6 +52,7 @@ from routers.token_auth import (
     build_default_service as build_token_auth_service,
     create_router as create_token_auth_router,
     require_token_auth,
+    request_explicit_never_expires as token_auth_request_explicit_never_expires,
     sanitize_exporter_webservice_config_row as sanitize_token_exporter_webservice_config_row,
     sanitize_service_account_row as sanitize_token_service_account_row,
     sanitize_token_row as sanitize_token_auth_row,
@@ -7301,6 +7302,7 @@ async def security_create_token(
         service_account_id=payload.service_account_id,
         request=request,
         access_ttl_seconds=payload.expires_in,
+        access_never_expires=token_auth_request_explicit_never_expires(payload),
     )
 
 

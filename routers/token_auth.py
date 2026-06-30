@@ -98,6 +98,13 @@ def _parse_scopes(scopes: Any) -> List[str]:
     return []
 
 
+def request_explicit_never_expires(payload: BaseModel) -> bool:
+    fields_set = getattr(payload, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(payload, "__fields_set__", set())
+    return "expires_in" in fields_set and getattr(payload, "expires_in", None) is None
+
+
 def _now_ts() -> int:
     return int(time.time())
 
@@ -612,7 +619,7 @@ class TokenService:
         except Exception as exc:
             logger.warning("webservice load log failed: %s", exc)
 
-    def _issue_jwt(self, *, token_id: str, mall_id: str, local_id: Optional[str], token_type: str, scopes: List[str], access_exp: datetime) -> str:
+    def _issue_jwt(self, *, token_id: str, mall_id: str, local_id: Optional[str], token_type: str, scopes: List[str], access_exp: Optional[datetime]) -> str:
         now_ts = _now_ts()
         payload = {
             "sub": token_id,
@@ -622,8 +629,9 @@ class TokenService:
             "scope": scopes,
             "jti": str(uuid.uuid4()),
             "iat": now_ts,
-            "exp": int(access_exp.timestamp()),
         }
+        if access_exp is not None:
+            payload["exp"] = int(access_exp.timestamp())
         return jwt.encode(payload, _jwt_secret(), algorithm=_jwt_alg())
 
     def _audit(self, *, event_type: str, token: Optional[Dict[str, Any]], request: Optional[Request], metadata: Optional[Dict[str, Any]] = None):
@@ -673,6 +681,7 @@ class TokenService:
         service_account_id: Optional[str],
         request: Optional[Request],
         access_ttl_seconds: Optional[int] = None,
+        access_never_expires: bool = False,
     ) -> Dict[str, Any]:
         if token_type == TOKEN_TYPE_EXPORTER and not local_id:
             raise HTTPException(status_code=400, detail="Exporter token requiere local_id")
@@ -683,7 +692,7 @@ class TokenService:
         access_ttl = self.config.access_ttl(token_type)
         if access_ttl_seconds is not None and int(access_ttl_seconds) > 0:
             access_ttl = timedelta(seconds=int(access_ttl_seconds))
-        access_exp = now + access_ttl
+        access_exp = None if access_never_expires else now + access_ttl
         refresh_exp = now + self.config.refresh_ttl(token_type)
         refresh_plain = secrets.token_urlsafe(48)
         token_row = self.store.create_api_token({
@@ -692,7 +701,7 @@ class TokenService:
             "token_type": token_type,
             "scopes": scopes,
             "jti": str(uuid.uuid4()),
-            "access_expires_at": access_exp.isoformat(),
+            "access_expires_at": access_exp.isoformat() if access_exp else None,
             "refresh_token_hash": _hash_token(refresh_plain),
             "refresh_expires_at": refresh_exp.isoformat(),
             "status": ACTIVE,
@@ -715,7 +724,7 @@ class TokenService:
             "access_token": access_token,
             "refresh_token": refresh_plain,
             "token_type": "bearer",
-            "expires_in": int(access_ttl.total_seconds()),
+            "expires_in": None if access_never_expires else int(access_ttl.total_seconds()),
             "refresh_expires_in": int(self.config.refresh_ttl(token_type).total_seconds()),
             "token_id": token_row["id"],
             "jti": token_row["jti"],
@@ -1505,6 +1514,7 @@ def create_router() -> APIRouter:
             service_account_id=payload.service_account_id,
             request=request,
             access_ttl_seconds=payload.expires_in,
+            access_never_expires=request_explicit_never_expires(payload),
         )
 
     @router.post("/service-accounts")

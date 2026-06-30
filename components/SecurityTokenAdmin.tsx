@@ -53,15 +53,23 @@ interface ServiceAccountCreateForm {
 }
 
 const SCOPE_OPTIONS = ['app:read', 'app:write', 'export:write', 'mapping:read', 'tokens:manage'] as const;
+const NEVER_EXPIRES_VALUE = 'never';
+
 const TOKEN_PRESETS: Record<'app' | 'exporter', Array<{ label: string; seconds: number }>> = {
   app: [
     { label: '30 minutos', seconds: 30 * 60 },
     { label: '1 hora', seconds: 60 * 60 },
+    { label: '30 días', seconds: 30 * 24 * 60 * 60 },
+    { label: '60 días', seconds: 60 * 24 * 60 * 60 },
+    { label: '90 días', seconds: 90 * 24 * 60 * 60 },
   ],
   exporter: [
     { label: '12 horas', seconds: 12 * 60 * 60 },
     { label: '24 horas', seconds: 24 * 60 * 60 },
     { label: '7 días', seconds: 7 * 24 * 60 * 60 },
+    { label: '30 días', seconds: 30 * 24 * 60 * 60 },
+    { label: '60 días', seconds: 60 * 24 * 60 * 60 },
+    { label: '90 días', seconds: 90 * 24 * 60 * 60 },
   ],
 };
 
@@ -628,7 +636,10 @@ export const SecurityTokenAdmin: React.FC = () => {
     }
   };
 
-  const resolveTokenExpiresIn = (): number | undefined => {
+  const resolveTokenExpiresIn = (): number | null | undefined => {
+    if (tokenForm.expires_in === NEVER_EXPIRES_VALUE) {
+      return null;
+    }
     const fromPreset = Number(tokenForm.expires_in);
     if (tokenForm.expires_in === 'custom') {
       const custom = Number(tokenForm.custom_expires_in);
@@ -1468,6 +1479,7 @@ export const SecurityTokenAdmin: React.FC = () => {
                       {preset.label}
                     </option>
                   ))}
+                  <option value={NEVER_EXPIRES_VALUE}>No expira</option>
                   <option value="custom">Custom (segundos)</option>
                 </select>
                 {tokenForm.expires_in === 'custom' && (

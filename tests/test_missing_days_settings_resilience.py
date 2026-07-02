@@ -35,6 +35,24 @@ def test_missing_days_settings_load_ignores_invalid_cc_values():
     )
 
     assert '_normalize_email_list(row.get("cc_emails") or [], strict=False)' in sanitize_segment
+    assert '"subject_template": _normalize_email_template(' in sanitize_segment
+    assert '"body_template": _normalize_email_template(' in sanitize_segment
+
+
+def test_missing_days_settings_persists_email_templates():
+    repo = Path(__file__).resolve().parents[1]
+    main_py = (repo / "main.py").read_text(encoding="utf-8")
+
+    save_segment = _segment(
+        main_py,
+        '@app.put("/api/v1/admin/messaging/missing-days/settings")',
+        '@app.post("/api/v1/admin/messaging/missing-days/send-now")',
+    )
+
+    assert "subject_template: Optional[str] = None" in main_py
+    assert "body_template: Optional[str] = None" in main_py
+    assert '"subject_template": _normalize_email_template(' in save_segment
+    assert '"body_template": _normalize_email_template(' in save_segment
 
 
 def test_resend_sender_config_is_editable_and_persisted():

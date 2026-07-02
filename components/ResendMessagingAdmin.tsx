@@ -5,6 +5,10 @@ import { useAuth } from '../context/AuthProvider';
 import { MissingDaysEmailSettings, ResendMessagingStatus, ResendSenderConfigPayload } from '../types';
 
 const DEFAULT_TEST_MESSAGE = 'Mensaje de prueba desde MSMALL usando Resend.';
+const DEFAULT_SUBJECT_TEMPLATE = 'Auditoria de dias faltantes: {local_name} ({missing_count} dias)';
+const DEFAULT_BODY_TEMPLATE = `Hola {local_name},
+
+Detectamos {missing_count} dias sin ventas registradas para el periodo {fecha_inicio} al {fecha_fin}. Favor revisar la carga de informacion en MSMALL.`;
 const WEEKDAY_OPTIONS = [
   { id: 0, label: 'Lun' },
   { id: 1, label: 'Mar' },
@@ -24,6 +28,8 @@ const defaultSchedule = (mallId = ''): MissingDaysEmailSettings => ({
   lookback_days: 7,
   send_only_with_gaps: true,
   cc_emails: [],
+  subject_template: DEFAULT_SUBJECT_TEMPLATE,
+  body_template: DEFAULT_BODY_TEMPLATE,
 });
 
 export const ResendMessagingAdmin: React.FC = () => {
@@ -87,7 +93,12 @@ export const ResendMessagingAdmin: React.FC = () => {
         ? ApiService.getMissingDaysEmailSettings(mallId, token)
           .then((scheduleData) => {
             if (!cancelled && scheduleData.mall_id === mallId) {
-              setSchedule(scheduleData);
+              setSchedule({
+                ...defaultSchedule(mallId),
+                ...scheduleData,
+                subject_template: scheduleData.subject_template || DEFAULT_SUBJECT_TEMPLATE,
+                body_template: scheduleData.body_template || DEFAULT_BODY_TEMPLATE,
+              });
               setCcEmails((scheduleData.cc_emails || []).join('\n'));
             }
           })
@@ -136,6 +147,8 @@ export const ResendMessagingAdmin: React.FC = () => {
       mall_id: currentMall?.id || schedule.mall_id,
       cc_emails: parsedCcEmails,
       lookback_days: Number(schedule.lookback_days) || 7,
+      subject_template: (schedule.subject_template || DEFAULT_SUBJECT_TEMPLATE).trim(),
+      body_template: (schedule.body_template || DEFAULT_BODY_TEMPLATE).trim(),
     };
   };
 
@@ -215,7 +228,12 @@ export const ResendMessagingAdmin: React.FC = () => {
         buildSchedulePayload(),
         token
       );
-      setSchedule(saved);
+      setSchedule({
+        ...defaultSchedule(currentMall.id),
+        ...saved,
+        subject_template: saved.subject_template || DEFAULT_SUBJECT_TEMPLATE,
+        body_template: saved.body_template || DEFAULT_BODY_TEMPLATE,
+      });
       setCcEmails((saved.cc_emails || []).join('\n'));
       setScheduleError(null);
       setFlash({ kind: 'success', message: 'Programación de auditoría guardada.' });
@@ -244,7 +262,12 @@ export const ResendMessagingAdmin: React.FC = () => {
     setFlash(null);
     try {
       const saved = await ApiService.saveMissingDaysEmailSettings(buildSchedulePayload(), token);
-      setSchedule(saved);
+      setSchedule({
+        ...defaultSchedule(currentMall.id),
+        ...saved,
+        subject_template: saved.subject_template || DEFAULT_SUBJECT_TEMPLATE,
+        body_template: saved.body_template || DEFAULT_BODY_TEMPLATE,
+      });
       setCcEmails((saved.cc_emails || []).join('\n'));
       setScheduleError(null);
 
@@ -514,6 +537,36 @@ export const ResendMessagingAdmin: React.FC = () => {
               onChange={(e) => setCcEmails(e.target.value)}
               className="min-h-20 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
               placeholder="correo1@empresa.com&#10;correo2@empresa.com"
+            />
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-4">
+          <div>
+            <h4 className="font-bold text-slate-800">Plantilla del correo</h4>
+            <p className="text-xs text-slate-500">
+              Variables disponibles: {'{mall_name}'}, {'{local_name}'}, {'{fecha_inicio}'}, {'{fecha_fin}'}, {'{missing_count}'}, {'{report_url}'}.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Asunto automático</label>
+            <input
+              type="text"
+              value={schedule.subject_template || DEFAULT_SUBJECT_TEMPLATE}
+              onChange={(e) => setSchedule((prev) => ({ ...prev, subject_template: e.target.value }))}
+              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              maxLength={160}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Cuerpo automático</label>
+            <textarea
+              value={schedule.body_template || DEFAULT_BODY_TEMPLATE}
+              onChange={(e) => setSchedule((prev) => ({ ...prev, body_template: e.target.value }))}
+              className="min-h-32 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              maxLength={2000}
             />
           </div>
         </div>

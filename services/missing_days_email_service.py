@@ -24,6 +24,12 @@ RESEND_SENDER_NAME_KEY = "RESEND_FROM_NAME"
 MISSING_DAYS_NOTIFICATION_TYPE = "missing_days_audit"
 MISSING_DAYS_SCHEDULER_TZ_ENV = "MISSING_DAYS_EMAIL_TIMEZONE"
 DEFAULT_MISSING_DAYS_SCHEDULER_TZ = "America/Santo_Domingo"
+DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE = "Auditoria de dias faltantes: {local_name} ({missing_count} dias)"
+DEFAULT_MISSING_DAYS_BODY_TEMPLATE = (
+    "Hola {local_name},\n\n"
+    "Detectamos {missing_count} dias sin ventas registradas para el periodo {fecha_inicio} al {fecha_fin}. "
+    "Favor revisar la carga de informacion en MSMALL."
+)
 
 
 def _status_color(missing_count: int) -> Dict[str, str]:
@@ -52,6 +58,7 @@ def build_missing_days_email_html(
     fecha_fin: str,
     missing_details: List[Dict[str, Any]],
     report_url: Optional[str] = None,
+    body_message: Optional[str] = None,
 ) -> str:
     """Builds the HTML body used for missing-sales-days alerts."""
     missing_count = len(missing_details)
@@ -61,6 +68,18 @@ def build_missing_days_email_html(
     safe_start = escape(fecha_inicio)
     safe_end = escape(fecha_fin)
     safe_report_url = escape(report_url or "")
+    intro_lines = [
+        escape(line.strip())
+        for line in str(body_message or "").splitlines()
+        if line.strip()
+    ]
+    intro_html = ""
+    if intro_lines:
+        intro_html = (
+            '<div style="margin-top:12px;font-size:14px;line-height:1.55;color:#475569;">'
+            + "<br>".join(intro_lines)
+            + "</div>"
+        )
 
     cards = []
     for item in missing_details:
@@ -117,6 +136,7 @@ def build_missing_days_email_html(
                 <div style="margin-top:8px;font-size:14px;color:#166534;">
                   {safe_local} no tiene dias faltantes entre {safe_start} y {safe_end}.
                 </div>
+                {intro_html}
               </div>
             </div>
           </body>
@@ -152,6 +172,7 @@ def build_missing_days_email_html(
                     <div style="margin-top:6px;font-size:14px;line-height:1.45;color:#9a3412;">
                       Se detectaron dias sin transacciones registradas en el periodo seleccionado.
                     </div>
+                    {intro_html}
                   </td>
                   <td style="text-align:right;vertical-align:top;">
                     <span style="display:inline-block;border:1px solid {palette['border']};border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800;color:{palette['text']};background:#ffffff;">
@@ -181,6 +202,33 @@ def build_missing_days_email_html(
       </body>
     </html>
     """
+
+
+def render_missing_days_template(template: Any, context: Dict[str, Any], default: str) -> str:
+    value = str(template or "").strip() or default
+    rendered = value
+    for key, raw in context.items():
+        rendered = rendered.replace("{" + key + "}", str(raw if raw is not None else ""))
+    return rendered.strip()
+
+
+def missing_days_template_context(
+    *,
+    mall_name: str,
+    local_name: str,
+    fecha_inicio: str,
+    fecha_fin: str,
+    missing_count: int,
+    report_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    return {
+        "mall_name": mall_name or "MSMALL",
+        "local_name": local_name or "Local",
+        "fecha_inicio": fecha_inicio,
+        "fecha_fin": fecha_fin,
+        "missing_count": missing_count,
+        "report_url": report_url or "",
+    }
 
 
 def _normalize_missing_days_sale_date(raw_value: Any) -> Optional[str]:
@@ -502,6 +550,13 @@ def _system_health_upsert(supabase_client: Any, key: str, value: str) -> None:
     }).execute()
 
 
+def _is_email_settings_table_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "email_notification_settings" in text and (
+        "does not exist" in text or "schema cache" in text or "pgrst205" in text
+    )
+
+
 def send_missing_days_emails_for_mall(
     supabase_client: Any,
     settings: Dict[str, Any],
@@ -534,6 +589,8 @@ def send_missing_days_emails_for_mall(
     cc_emails = [str(email or "").strip().lower() for email in (settings.get("cc_emails") or []) if email]
     send_only_with_gaps = settings.get("send_only_with_gaps") is not False
     sender = load_resend_sender_config(supabase_client)
+    subject_template = settings.get("subject_template") or DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE
+    body_template = settings.get("body_template") or DEFAULT_MISSING_DAYS_BODY_TEMPLATE
 
     for store in stores:
         local_id = str(store.get("id") or "")
@@ -571,23 +628,37 @@ def send_missing_days_emails_for_mall(
             })
             continue
 
+        report_url = missing_days_report_url(mall_id, local_id, fecha_inicio, fecha_fin)
+        template_context = missing_days_template_context(
+            mall_name=mall_name,
+            local_name=local_name,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            missing_count=missing_count,
+            report_url=report_url,
+        )
+        subject = render_missing_days_template(
+            subject_template,
+            template_context,
+            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+        )[:140] or render_missing_days_template(
+            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+            template_context,
+            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+        )
+        text_body = render_missing_days_template(
+            body_template,
+            template_context,
+            DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+        )
         html_body = build_missing_days_email_html(
             mall_name=mall_name,
             local_name=local_name,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             missing_details=missing_details,
-            report_url=missing_days_report_url(mall_id, local_id, fecha_inicio, fecha_fin),
-        )
-        subject = (
-            f"Auditoria de dias faltantes: {local_name} ({missing_count} dias)"
-            if missing_count > 0
-            else f"Auditoria de dias faltantes: {local_name} sin brechas"
-        )
-        text_body = (
-            f"Auditoria de dias faltantes para {local_name}. "
-            f"Periodo {fecha_inicio} al {fecha_fin}. "
-            f"Dias faltantes: {missing_count}."
+            report_url=report_url,
+            body_message=text_body,
         )
 
         try:
@@ -648,13 +719,20 @@ def run_missing_days_email_scheduler(
     if not os.getenv(RESEND_API_KEY_ENV):
         return {"executed": False, "reason": "resend_not_configured", "runs": []}
 
-    rows = (
-        supabase_client.table("email_notification_settings")
-        .select("*")
-        .eq("notification_type", MISSING_DAYS_NOTIFICATION_TYPE)
-        .eq("enabled", True)
-        .execute()
-    ).data or []
+    try:
+        rows = (
+            supabase_client.table("email_notification_settings")
+            .select("*")
+            .eq("notification_type", MISSING_DAYS_NOTIFICATION_TYPE)
+            .eq("enabled", True)
+            .execute()
+        ).data or []
+    except Exception as exc:
+        if _is_email_settings_table_error(exc):
+            if logger:
+                logger.warning("Missing-days email settings table unavailable: %s", exc)
+            return {"executed": False, "reason": "settings_table_unavailable", "runs": []}
+        raise
 
     runs: List[Dict[str, Any]] = []
     for settings in rows:

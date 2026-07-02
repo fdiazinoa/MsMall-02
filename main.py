@@ -74,9 +74,12 @@ from services.connection_monitor_service import (
 )
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import (
+    DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+    DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
     build_missing_days_email_html,
     missing_days_email_period,
     run_missing_days_email_scheduler,
+    send_missing_days_emails_for_mall,
 )
 from services.operations_auditor_service import OperationsAuditorService
 from services.operations_agent_service import (
@@ -1368,6 +1371,8 @@ class MissingDaysEmailSettingsRequest(BaseModel):
     lookback_days: int = 7
     send_only_with_gaps: bool = True
     cc_emails: List[str] = []
+    subject_template: Optional[str] = None
+    body_template: Optional[str] = None
 
 class MissingDaysSendNowRequest(BaseModel):
     mall_id: str
@@ -6986,6 +6991,8 @@ def _default_missing_days_email_settings(mall_id: str) -> Dict[str, Any]:
         "lookback_days": 7,
         "send_only_with_gaps": True,
         "cc_emails": [],
+        "subject_template": DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+        "body_template": DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
         "created_at": None,
         "updated_at": None,
     }
@@ -7031,6 +7038,13 @@ def _normalize_send_time(value: str) -> str:
     return f"{hour:02d}:{minute:02d}:00"
 
 
+def _normalize_email_template(value: Optional[str], default: str, *, max_length: int) -> str:
+    template = str(value or "").strip() or default
+    if len(template) > max_length:
+        raise HTTPException(status_code=400, detail=f"La plantilla no puede exceder {max_length} caracteres.")
+    return template
+
+
 def _sanitize_missing_days_email_settings_row(row: Optional[Dict[str, Any]], mall_id: str) -> Dict[str, Any]:
     if not row:
         return _default_missing_days_email_settings(mall_id)
@@ -7050,6 +7064,16 @@ def _sanitize_missing_days_email_settings_row(row: Optional[Dict[str, Any]], mal
         "lookback_days": lookback_days,
         "send_only_with_gaps": row.get("send_only_with_gaps") is not False,
         "cc_emails": _normalize_email_list(row.get("cc_emails") or [], strict=False),
+        "subject_template": _normalize_email_template(
+            row.get("subject_template"),
+            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+            max_length=160,
+        ),
+        "body_template": _normalize_email_template(
+            row.get("body_template"),
+            DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+            max_length=2000,
+        ),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     })
@@ -7318,6 +7342,16 @@ async def save_missing_days_email_settings(
         "lookback_days": lookback_days,
         "send_only_with_gaps": bool(payload.send_only_with_gaps),
         "cc_emails": _normalize_email_list(payload.cc_emails),
+        "subject_template": _normalize_email_template(
+            payload.subject_template,
+            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+            max_length=160,
+        ),
+        "body_template": _normalize_email_template(
+            payload.body_template,
+            DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+            max_length=2000,
+        ),
         "updated_by": admin_ctx.get("user_id"),
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -7381,129 +7415,18 @@ async def send_missing_days_email_now(
             )
             settings = _default_missing_days_email_settings(mall_id)
 
-    fecha_inicio, fecha_fin = missing_days_email_period(settings.get("lookback_days"))
-
-    try:
-        mall_res = supabase.table("malls").select("nombre").eq("id", mall_id).maybe_single().execute()
-        mall_name = (mall_res.data or {}).get("nombre") or "MSMALL"
-    except Exception:
-        mall_name = "MSMALL"
-
-    stores = (
-        supabase.table("locales")
-        .select("id, nombre, email")
-        .eq("mall_id", mall_id)
-        .order("nombre")
-        .execute()
-    ).data or []
-
-    results: List[Dict[str, Any]] = []
-    cc_emails = settings.get("cc_emails") or []
-    send_only_with_gaps = settings.get("send_only_with_gaps") is not False
-
-    for store in stores:
-        local_id = str(store.get("id") or "")
-        local_name = store.get("nombre") or local_id
-        local_email = str(store.get("email") or "").strip().lower()
-
-        if not local_email:
-            results.append({
-                "local_id": local_id,
-                "local_nombre": local_name,
-                "email": None,
-                "status": "skipped",
-                "missing_days": 0,
-                "reason": "Local sin email de notificaciones.",
-            })
-            continue
-
-        missing_details = _load_missing_days_details_for_local(
-            local_id=local_id,
-            local_name=local_name,
-            mall_id=mall_id,
-            fecha_inicio=fecha_inicio,
-            fecha_fin=fecha_fin,
-        )
-        missing_count = len(missing_details)
-        if missing_count == 0 and send_only_with_gaps:
-            results.append({
-                "local_id": local_id,
-                "local_nombre": local_name,
-                "email": local_email,
-                "status": "skipped",
-                "missing_days": 0,
-                "reason": "Sin dias faltantes en el periodo.",
-            })
-            continue
-
-        html_body = build_missing_days_email_html(
-            mall_name=mall_name,
-            local_name=local_name,
-            fecha_inicio=fecha_inicio,
-            fecha_fin=fecha_fin,
-            missing_details=missing_details,
-            report_url=_missing_days_report_url(mall_id, local_id, fecha_inicio, fecha_fin),
-        )
-        subject = (
-            f"Auditoria de dias faltantes: {local_name} ({missing_count} dias)"
-            if missing_count > 0
-            else f"Auditoria de dias faltantes: {local_name} sin brechas"
-        )
-        text_body = (
-            f"Auditoria de dias faltantes para {local_name}. "
-            f"Periodo {fecha_inicio} al {fecha_fin}. "
-            f"Dias faltantes: {missing_count}."
-        )
-        try:
-            resend_result = await asyncio.to_thread(
-                _send_resend_email,
-                local_email,
-                subject,
-                text_body,
-                html_body,
-                cc_emails,
-            )
-            results.append({
-                "local_id": local_id,
-                "local_nombre": local_name,
-                "email": local_email,
-                "status": "sent",
-                "missing_days": missing_count,
-                "resend_id": resend_result.get("id"),
-            })
-        except HTTPException as exc:
-            results.append({
-                "local_id": local_id,
-                "local_nombre": local_name,
-                "email": local_email,
-                "status": "failed",
-                "missing_days": missing_count,
-                "reason": str(exc.detail),
-            })
-        except Exception as exc:
-            results.append({
-                "local_id": local_id,
-                "local_nombre": local_name,
-                "email": local_email,
-                "status": "failed",
-                "missing_days": missing_count,
-                "reason": str(exc) or "Error enviando email.",
-            })
-
-    sent = len([row for row in results if row["status"] == "sent"])
-    skipped = len([row for row in results if row["status"] == "skipped"])
-    failed = len([row for row in results if row["status"] == "failed"])
+    result = await asyncio.to_thread(
+        send_missing_days_emails_for_mall,
+        supabase,
+        settings,
+        logger=logger,
+    )
     return {
-        "status": "success" if failed == 0 else "partial",
-        "mall_id": mall_id,
-        "fecha_inicio": fecha_inicio,
-        "fecha_fin": fecha_fin,
-        "requested": len(stores),
-        "sent": sent,
-        "skipped": skipped,
-        "failed": failed,
-        "results": results,
-        "message": f"Envio inmediato completado: {sent} enviados, {skipped} omitidos, {failed} fallidos.",
+        **result,
+        "message": (
+            f"Envio inmediato completado: {result['sent']} enviados, "
+            f"{result['skipped']} omitidos, {result['failed']} fallidos."
+        ),
     }
 
 

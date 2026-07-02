@@ -228,6 +228,8 @@ export interface MissingDaysEmailSettings {
   lookback_days: number;
   send_only_with_gaps: boolean;
   cc_emails: string[];
+  subject_template: string;
+  body_template: string;
   created_at?: string;
   updated_at?: string;
 }

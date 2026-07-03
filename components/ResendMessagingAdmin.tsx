@@ -32,6 +32,22 @@ const defaultSchedule = (mallId = ''): MissingDaysEmailSettings => ({
   body_template: DEFAULT_BODY_TEMPLATE,
 });
 
+const normalizeSchedule = (
+  mallId: string,
+  saved?: Partial<MissingDaysEmailSettings> | null,
+  fallback?: Partial<MissingDaysEmailSettings>
+): MissingDaysEmailSettings => ({
+  ...defaultSchedule(mallId),
+  ...(fallback || {}),
+  ...(saved || {}),
+  mall_id: saved?.mall_id || fallback?.mall_id || mallId,
+  weekdays: saved?.weekdays || fallback?.weekdays || [],
+  send_time: saved?.send_time || fallback?.send_time || '08:00',
+  subject_template: saved?.subject_template || fallback?.subject_template || DEFAULT_SUBJECT_TEMPLATE,
+  body_template: saved?.body_template || fallback?.body_template || DEFAULT_BODY_TEMPLATE,
+  cc_emails: saved?.cc_emails || fallback?.cc_emails || [],
+});
+
 export const ResendMessagingAdmin: React.FC = () => {
   const { session, isAdmin, user, currentMall } = useAuth();
   const token = session?.access_token || '';
@@ -93,12 +109,7 @@ export const ResendMessagingAdmin: React.FC = () => {
         ? ApiService.getMissingDaysEmailSettings(mallId, token)
           .then((scheduleData) => {
             if (!cancelled && scheduleData.mall_id === mallId) {
-              setSchedule({
-                ...defaultSchedule(mallId),
-                ...scheduleData,
-                subject_template: scheduleData.subject_template || DEFAULT_SUBJECT_TEMPLATE,
-                body_template: scheduleData.body_template || DEFAULT_BODY_TEMPLATE,
-              });
+              setSchedule(normalizeSchedule(mallId, scheduleData));
               setCcEmails((scheduleData.cc_emails || []).join('\n'));
             }
           })
@@ -224,17 +235,11 @@ export const ResendMessagingAdmin: React.FC = () => {
     setSavingSchedule(true);
     setFlash(null);
     try {
-      const saved = await ApiService.saveMissingDaysEmailSettings(
-        buildSchedulePayload(),
-        token
-      );
-      setSchedule({
-        ...defaultSchedule(currentMall.id),
-        ...saved,
-        subject_template: saved.subject_template || DEFAULT_SUBJECT_TEMPLATE,
-        body_template: saved.body_template || DEFAULT_BODY_TEMPLATE,
-      });
-      setCcEmails((saved.cc_emails || []).join('\n'));
+      const payload = buildSchedulePayload();
+      const saved = await ApiService.saveMissingDaysEmailSettings(payload, token);
+      const normalized = normalizeSchedule(currentMall.id, saved, payload);
+      setSchedule(normalized);
+      setCcEmails((normalized.cc_emails || []).join('\n'));
       setScheduleError(null);
       setFlash({ kind: 'success', message: 'Programación de auditoría guardada.' });
     } catch (e: any) {
@@ -261,14 +266,11 @@ export const ResendMessagingAdmin: React.FC = () => {
     setSendingNow(true);
     setFlash(null);
     try {
-      const saved = await ApiService.saveMissingDaysEmailSettings(buildSchedulePayload(), token);
-      setSchedule({
-        ...defaultSchedule(currentMall.id),
-        ...saved,
-        subject_template: saved.subject_template || DEFAULT_SUBJECT_TEMPLATE,
-        body_template: saved.body_template || DEFAULT_BODY_TEMPLATE,
-      });
-      setCcEmails((saved.cc_emails || []).join('\n'));
+      const payload = buildSchedulePayload();
+      const saved = await ApiService.saveMissingDaysEmailSettings(payload, token);
+      const normalized = normalizeSchedule(currentMall.id, saved, payload);
+      setSchedule(normalized);
+      setCcEmails((normalized.cc_emails || []).join('\n'));
       setScheduleError(null);
 
       const result = await ApiService.sendMissingDaysEmailNow(currentMall.id, token);

@@ -7087,6 +7087,18 @@ def _is_missing_email_settings_table_error(exc: Exception) -> bool:
     )
 
 
+def _load_missing_days_email_settings_row(mall_id: str) -> Dict[str, Any]:
+    res = (
+        supabase.table("email_notification_settings")
+        .select("*")
+        .eq("mall_id", mall_id)
+        .eq("notification_type", "missing_days_audit")
+        .maybe_single()
+        .execute()
+    )
+    return _sanitize_missing_days_email_settings_row(res.data, mall_id)
+
+
 def _normalize_missing_days_sale_date(raw_value: Any) -> Optional[str]:
     if raw_value is None:
         return None
@@ -7288,15 +7300,7 @@ async def get_missing_days_email_settings(
         raise HTTPException(status_code=500, detail="Supabase no configurado.")
     _ensure_operator_can_access_mall(admin_ctx, mall_id)
     try:
-        res = (
-            supabase.table("email_notification_settings")
-            .select("*")
-            .eq("mall_id", mall_id)
-            .eq("notification_type", "missing_days_audit")
-            .maybe_single()
-            .execute()
-        )
-        return _sanitize_missing_days_email_settings_row(res.data, mall_id)
+        return _load_missing_days_email_settings_row(mall_id)
     except Exception as exc:
         if _is_missing_email_settings_table_error(exc):
             logger.warning(
@@ -7362,8 +7366,10 @@ async def save_missing_days_email_settings(
             .upsert(row, on_conflict="mall_id,notification_type")
             .execute()
         )
-        saved = (res.data or [row])[0]
-        return _sanitize_missing_days_email_settings_row(saved, mall_id)
+        saved = (res.data or [None])[0]
+        if not saved:
+            logger.info("Supabase upsert de programacion no devolvio fila; recargando mall %s", mall_id)
+        return _load_missing_days_email_settings_row(mall_id)
     except Exception as exc:
         if _is_missing_email_settings_table_error(exc):
             raise HTTPException(

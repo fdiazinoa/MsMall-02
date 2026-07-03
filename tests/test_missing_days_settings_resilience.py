@@ -55,6 +55,24 @@ def test_missing_days_settings_persists_email_templates():
     assert '"body_template": _normalize_email_template(' in save_segment
 
 
+def test_missing_days_settings_save_reloads_persisted_row():
+    repo = Path(__file__).resolve().parents[1]
+    main_py = (repo / "main.py").read_text(encoding="utf-8")
+    resend_admin = (repo / "components" / "ResendMessagingAdmin.tsx").read_text(encoding="utf-8")
+
+    save_segment = _segment(
+        main_py,
+        '@app.put("/api/v1/admin/messaging/missing-days/settings")',
+        '@app.post("/api/v1/admin/messaging/missing-days/send-now")',
+    )
+
+    assert "def _load_missing_days_email_settings_row(mall_id: str)" in main_py
+    assert "return _load_missing_days_email_settings_row(mall_id)" in save_segment
+    assert "normalizeSchedule(currentMall.id, saved, payload)" in resend_admin
+    assert "weekdays: saved?.weekdays || fallback?.weekdays || []" in resend_admin
+    assert "send_time: saved?.send_time || fallback?.send_time || '08:00'" in resend_admin
+
+
 def test_resend_sender_config_is_editable_and_persisted():
     repo = Path(__file__).resolve().parents[1]
     main_py = (repo / "main.py").read_text(encoding="utf-8")

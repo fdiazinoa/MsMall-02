@@ -73,6 +73,25 @@ def test_missing_days_settings_save_reloads_persisted_row():
     assert "send_time: saved?.send_time || fallback?.send_time || '08:00'" in resend_admin
 
 
+def test_missing_days_settings_save_falls_back_without_template_columns():
+    repo = Path(__file__).resolve().parents[1]
+    main_py = (repo / "main.py").read_text(encoding="utf-8")
+
+    save_segment = _segment(
+        main_py,
+        '@app.put("/api/v1/admin/messaging/missing-days/settings")',
+        '@app.post("/api/v1/admin/messaging/missing-days/send-now")',
+    )
+
+    assert "def _is_missing_email_template_columns_error(exc: Exception)" in main_py
+    assert "row_with_templates = {**row, **template_fields}" in save_segment
+    assert '_is_missing_email_template_columns_error(exc)' in save_segment
+    assert 'upsert(\n                    row,' in save_segment
+    row_segment = _segment(save_segment, "row = {", "template_fields = {")
+    assert '"subject_template"' not in row_segment
+    assert '"body_template"' not in row_segment
+
+
 def test_resend_sender_config_is_editable_and_persisted():
     repo = Path(__file__).resolve().parents[1]
     main_py = (repo / "main.py").read_text(encoding="utf-8")

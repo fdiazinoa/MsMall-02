@@ -535,7 +535,12 @@ def missing_days_email_period(lookback_days: Any, now: Optional[datetime] = None
 
 
 def _system_health_key(mall_id: str, suffix: str) -> str:
-    return f"MISSING_DAYS_EMAIL_{suffix}:{mall_id}"
+    normalized_suffix = str(suffix or "").strip().upper()
+    if normalized_suffix == "LAST_SLOT":
+        return f"MDE_SLOT:{mall_id}"
+    if normalized_suffix == "LAST_STATUS":
+        return f"MDE_STATUS:{mall_id}"
+    return f"MDE_{normalized_suffix[:8]}:{mall_id}"
 
 
 def _system_health_get(supabase_client: Any, key: str) -> Optional[str]:

@@ -198,4 +198,4 @@ def test_missing_days_scheduler_sends_when_slot_is_due(monkeypatch):
     assert result["runs"][0]["sent"] == 1
     assert sent[0]["to"] == "local@example.com"
     assert "Local Demo" in sent[0]["subject"]
-    assert any(payload["key"] == "MISSING_DAYS_EMAIL_LAST_SLOT:mall-1" for _table, payload in db.upserts)
+    assert any(payload["key"] == "MDE_SLOT:mall-1" for _table, payload in db.upserts)

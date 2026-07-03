@@ -248,6 +248,12 @@ def _normalize_missing_days_sale_date(raw_value: Any) -> Optional[str]:
         return None
 
 
+def _response_data(response: Any, default: Any = None) -> Any:
+    if response is None:
+        return default
+    return getattr(response, "data", default)
+
+
 def load_missing_days_details_for_local(
     supabase_client: Any,
     *,
@@ -269,7 +275,7 @@ def load_missing_days_details_for_local(
     page_size = 2000
     page = 0
     while True:
-        chunk = (
+        chunk = _response_data(
             supabase_client.table("ventas")
             .select("id, fecha")
             .eq("local_id", local_id)
@@ -277,8 +283,9 @@ def load_missing_days_details_for_local(
             .lte("fecha", fecha_fin)
             .order("id")
             .range(page * page_size, (page + 1) * page_size - 1)
-            .execute()
-        ).data or []
+            .execute(),
+            [],
+        ) or []
         if not chunk:
             break
         rows.extend(chunk)
@@ -308,7 +315,7 @@ def load_missing_days_details_for_local(
     except Exception:
         logs_resp = type("Tmp", (), {"data": []})()
 
-    logs = logs_resp.data or []
+    logs = _response_data(logs_resp, []) or []
     if not logs and local_name:
         legacy_q = (
             supabase_client.table("logs_carga")
@@ -320,7 +327,7 @@ def load_missing_days_details_for_local(
         )
         if mall_id:
             legacy_q = legacy_q.eq("mall_id", mall_id)
-        logs = legacy_q.execute().data or []
+        logs = _response_data(legacy_q.execute(), []) or []
 
     logs_by_date: Dict[str, List[Dict[str, Any]]] = {}
     for row in logs:
@@ -532,13 +539,14 @@ def _system_health_key(mall_id: str, suffix: str) -> str:
 
 
 def _system_health_get(supabase_client: Any, key: str) -> Optional[str]:
-    row = (
+    row = _response_data(
         supabase_client.table("system_health")
         .select("value")
         .eq("key", key)
         .maybe_single()
-        .execute()
-    ).data or {}
+        .execute(),
+        {},
+    ) or {}
     return row.get("value")
 
 
@@ -573,17 +581,18 @@ def send_missing_days_emails_for_mall(
 
     try:
         mall_res = supabase_client.table("malls").select("nombre").eq("id", mall_id).maybe_single().execute()
-        mall_name = (mall_res.data or {}).get("nombre") or "MSMALL"
+        mall_name = (_response_data(mall_res, {}) or {}).get("nombre") or "MSMALL"
     except Exception:
         mall_name = "MSMALL"
 
-    stores = (
+    stores = _response_data(
         supabase_client.table("locales")
         .select("id, nombre, email")
         .eq("mall_id", mall_id)
         .order("nombre")
-        .execute()
-    ).data or []
+        .execute(),
+        [],
+    ) or []
 
     results: List[Dict[str, Any]] = []
     cc_emails = [str(email or "").strip().lower() for email in (settings.get("cc_emails") or []) if email]
@@ -720,13 +729,14 @@ def run_missing_days_email_scheduler(
         return {"executed": False, "reason": "resend_not_configured", "runs": []}
 
     try:
-        rows = (
+        rows = _response_data(
             supabase_client.table("email_notification_settings")
             .select("*")
             .eq("notification_type", MISSING_DAYS_NOTIFICATION_TYPE)
             .eq("enabled", True)
-            .execute()
-        ).data or []
+            .execute(),
+            [],
+        ) or []
     except Exception as exc:
         if _is_email_settings_table_error(exc):
             if logger:

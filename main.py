@@ -377,7 +377,7 @@ async def email_scheduler_loop():
                 result = await asyncio.to_thread(
                     run_missing_days_email_scheduler,
                     supabase,
-                    logger,
+                    logger=logger,
                 )
                 if result.get("executed"):
                     logger.info("[EmailScheduler] Scheduled missing-days email executed: %s", result.get("runs"))

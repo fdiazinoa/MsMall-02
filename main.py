@@ -7087,6 +7087,15 @@ def _is_missing_email_settings_table_error(exc: Exception) -> bool:
     )
 
 
+def _is_missing_email_template_columns_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "email_notification_settings" in text and (
+        "subject_template" in text or "body_template" in text
+    ) and (
+        "schema cache" in text or "could not find" in text or "pgrst204" in text
+    )
+
+
 def _load_missing_days_email_settings_row(mall_id: str) -> Dict[str, Any]:
     res = (
         supabase.table("email_notification_settings")
@@ -7346,6 +7355,10 @@ async def save_missing_days_email_settings(
         "lookback_days": lookback_days,
         "send_only_with_gaps": bool(payload.send_only_with_gaps),
         "cc_emails": _normalize_email_list(payload.cc_emails),
+        "updated_by": admin_ctx.get("user_id"),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    template_fields = {
         "subject_template": _normalize_email_template(
             payload.subject_template,
             DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
@@ -7356,14 +7369,13 @@ async def save_missing_days_email_settings(
             DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
             max_length=2000,
         ),
-        "updated_by": admin_ctx.get("user_id"),
-        "updated_at": datetime.utcnow().isoformat(),
     }
+    row_with_templates = {**row, **template_fields}
 
     try:
         res = (
             supabase.table("email_notification_settings")
-            .upsert(row, on_conflict="mall_id,notification_type")
+            .upsert(row_with_templates, on_conflict="mall_id,notification_type")
             .execute()
         )
         saved = (res.data or [None])[0]
@@ -7371,6 +7383,29 @@ async def save_missing_days_email_settings(
             logger.info("Supabase upsert de programacion no devolvio fila; recargando mall %s", mall_id)
         return _load_missing_days_email_settings_row(mall_id)
     except Exception as exc:
+        if _is_missing_email_template_columns_error(exc):
+            logger.warning(
+                "Columnas de plantilla de email no disponibles; guardando solo programacion para mall %s: %s",
+                mall_id,
+                exc,
+            )
+            try:
+                supabase.table("email_notification_settings").upsert(
+                    row,
+                    on_conflict="mall_id,notification_type",
+                ).execute()
+                saved = _load_missing_days_email_settings_row(mall_id)
+                saved["subject_template"] = template_fields["subject_template"]
+                saved["body_template"] = template_fields["body_template"]
+                return saved
+            except Exception as fallback_exc:
+                if _is_missing_email_settings_table_error(fallback_exc):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="La base de datos no está actualizada: ejecute el script 20260511_email_notification_settings.sql.",
+                    )
+                logger.error("Error guardando programacion sin plantillas: %s", fallback_exc)
+                raise HTTPException(status_code=500, detail="No se pudo guardar la programacion de envio.")
         if _is_missing_email_settings_table_error(exc):
             raise HTTPException(
                 status_code=503,

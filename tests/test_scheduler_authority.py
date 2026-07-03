@@ -35,7 +35,7 @@ def _load_worker(monkeypatch, **env):
 
 
 def test_api_startup_does_not_start_scheduler_when_flag_disabled(monkeypatch):
-    main = _load_main(monkeypatch, ENABLE_API_SCHEDULER="false")
+    main = _load_main(monkeypatch, ENABLE_API_SCHEDULER="false", ENABLE_EMAIL_SCHEDULER="false")
     created = []
 
     def _fake_create_task(coro):
@@ -50,7 +50,7 @@ def test_api_startup_does_not_start_scheduler_when_flag_disabled(monkeypatch):
 
 
 def test_api_startup_starts_scheduler_when_flag_enabled(monkeypatch):
-    main = _load_main(monkeypatch, ENABLE_API_SCHEDULER="true")
+    main = _load_main(monkeypatch, ENABLE_API_SCHEDULER="true", ENABLE_EMAIL_SCHEDULER="false")
     created = []
 
     def _fake_create_task(coro):
@@ -63,6 +63,37 @@ def test_api_startup_starts_scheduler_when_flag_enabled(monkeypatch):
 
     assert len(created) == 1
     assert created[0].cr_code.co_name == "scheduler_loop"
+
+
+def test_api_email_scheduler_calls_missing_days_scheduler_with_logger_keyword(monkeypatch):
+    main = _load_main(monkeypatch, EMAIL_SCHEDULER_POLL_SECONDS="30")
+    calls = []
+    sleeps = []
+
+    async def _fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) > 1:
+            raise asyncio.CancelledError()
+
+    async def _fake_to_thread(fn, *args, **kwargs):
+        calls.append((fn, args, kwargs))
+        return {"executed": False, "reason": "no_due_schedules", "runs": []}
+
+    sentinel_supabase = object()
+    monkeypatch.setattr(main, "supabase", sentinel_supabase)
+    monkeypatch.setattr(main.asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(main.asyncio, "to_thread", _fake_to_thread)
+
+    try:
+        asyncio.run(main.email_scheduler_loop())
+    except asyncio.CancelledError:
+        pass
+
+    assert calls
+    fn, args, kwargs = calls[0]
+    assert fn is main.run_missing_days_email_scheduler
+    assert args == (sentinel_supabase,)
+    assert kwargs == {"logger": main.logger}
 
 
 def test_worker_run_updates_heartbeat_on_smoke_cycle(monkeypatch):

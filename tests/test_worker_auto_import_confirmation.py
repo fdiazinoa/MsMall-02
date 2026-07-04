@@ -269,6 +269,101 @@ def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
     ]
 
 
+def test_worker_process_file_logic_parses_no_header_col_mapping(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    inserted_rows = []
+    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
+
+    content = "\n".join([
+        "A;2026-07-03;12:00;foo;bar;100.00;18.00;82.00",
+        "B;2026-07-03;12:01;foo;bar;50.00;9.00;41.00",
+    ])
+    config = {
+        "nombre": "LA DOLCERIE",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "file_type": "TXT",
+        "mapping_config": {
+            "fecha_venta": "col_2",
+            "hora_transaccion": "col_3",
+            "total_bruto": "col_6",
+            "total_impuestos": "col_7",
+            "total_neto": "col_8",
+        },
+        "constants_config": {
+            "_has_header": "false",
+            "_data_start_row": "1",
+            "_date_format": "YYYY-MM-DD",
+            "local_codigo": "54",
+            "_factura_numero_mode": "generated_sequence",
+        },
+    }
+
+    count, errors, stats = worker.process_file_logic(config, "Ventas20260703.txt", content)
+
+    assert count == 2
+    assert errors == []
+    assert stats["duplicate_skipped"] == 0
+    assert inserted_rows[0]["fecha"] == "2026-07-03"
+    assert inserted_rows[0]["factura_no"] == "54202607030001"
+    assert inserted_rows[0]["total_bruto"] == 100.0
+    assert inserted_rows[1]["factura_no"] == "54202607030002"
+
+
+def test_worker_process_file_logic_skips_existing_duplicates_for_regular_import(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    fake_db.tables["ventas"] = [
+        {
+            "local_id": "local-1",
+            "fecha": "2026-06-10",
+            "factura_no": "993",
+            "total_bruto": 35627.12,
+        },
+        {
+            "local_id": "local-1",
+            "fecha": "2026-06-10",
+            "factura_no": "994",
+            "total_bruto": 11186.44,
+        },
+    ]
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = "\n".join([
+        "ID_TRANSACCION,NUMSERIE,FECHA,HORA,TOTALART,TOTALTRANSVENTA,TASA,TOTALBRUTO,TOTALIMPUESTOS,TOTALNETO",
+        "993,333,10/06/2026,14,3.00,2,1.00,35627.12,6412.88,42040.00",
+        "994,333,10/06/2026,15,1.00,1,1.00,11186.44,2013.56,13200.00",
+    ])
+    config = {
+        "nombre": "CASTANER",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "file_type": "TXT",
+        "mapping_config": {
+            "factura_numero": "ID_TRANSACCION",
+            "fecha_venta": "FECHA",
+            "total_bruto": "TOTALBRUTO",
+            "total_impuestos": "TOTALIMPUESTOS",
+            "total_neto": "TOTALNETO",
+        },
+        "constants_config": {
+            "_date_format": "DD/MM/YYYY",
+            "local_codigo": "19",
+        },
+    }
+
+    count, errors, stats = worker.process_file_logic(config, "Ventas Castaner 10062026.txt", content)
+    estado, mensaje, confirmed = worker._resolve_worker_processing_outcome(count, errors, stats)
+
+    assert count == 0
+    assert errors == []
+    assert stats["duplicate_skipped"] == 2
+    assert len(fake_db.tables["ventas"]) == 2
+    assert estado == "exito"
+    assert confirmed is True
+    assert "2 registros ya existentes omitidos" in mensaje
+
+
 def test_worker_process_file_logic_rejects_closed_import_period(monkeypatch):
     worker = _load_worker(monkeypatch)
     inserted_rows = []

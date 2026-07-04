@@ -431,6 +431,96 @@ def _detect_delimiter(content: str) -> str:
     return max([",", ";", "\t", "|"], key=lambda delimiter: first.count(delimiter))
 
 
+def _parse_worker_bool_option(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "si", "sí", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _extract_worker_parsing_options(config: Dict[str, Any]) -> Tuple[Optional[bool], Optional[int]]:
+    constants = config.get("constants_config") or config.get("constants") or {}
+    has_header = _parse_worker_bool_option(config.get("has_header"))
+    if has_header is None:
+        has_header = _parse_worker_bool_option(constants.get("_has_header"))
+
+    data_start_row = config.get("data_start_row")
+    if data_start_row in (None, ""):
+        data_start_row = constants.get("_data_start_row")
+    try:
+        parsed_row = int(data_start_row) if data_start_row not in (None, "") else None
+        if parsed_row is not None and parsed_row < 1:
+            parsed_row = 1
+    except Exception:
+        parsed_row = None
+
+    return has_header, parsed_row
+
+
+def _parse_worker_delimited_records(
+    content: str,
+    forced_has_header: Optional[bool],
+    forced_data_start_row: Optional[int],
+) -> Tuple[List[Dict[str, Any]], int]:
+    normalized_content = _normalize_text_for_csv(content)
+    delimiter = _detect_delimiter(normalized_content)
+    has_header = True if forced_has_header is None else forced_has_header
+    raw_records: List[Dict[str, Any]] = []
+
+    if has_header:
+        reader = csv.DictReader(
+            io.StringIO(normalized_content),
+            delimiter=delimiter,
+            skipinitialspace=True,
+        )
+        rows = [_normalize_csv_row_keys(r) for r in reader]
+        line_offset = 2
+        if forced_data_start_row and forced_data_start_row > 2:
+            skip_count = forced_data_start_row - 2
+            if skip_count < len(rows):
+                rows = rows[skip_count:]
+                line_offset = forced_data_start_row
+            else:
+                logger.warning(
+                    "Worker: data_start_row=%s fuera de rango. Usando línea 2.",
+                    forced_data_start_row,
+                )
+        return rows, line_offset
+
+    reader = csv.reader(
+        io.StringIO(normalized_content),
+        delimiter=delimiter,
+        skipinitialspace=True,
+    )
+    matrix_rows = [r for r in reader if any(str(c or "").strip() for c in r)]
+    line_offset = 1
+    if forced_data_start_row and forced_data_start_row > 1:
+        skip_count = forced_data_start_row - 1
+        if skip_count < len(matrix_rows):
+            matrix_rows = matrix_rows[skip_count:]
+            line_offset = forced_data_start_row
+        else:
+            logger.warning(
+                "Worker: data_start_row=%s fuera de rango para archivo sin encabezado. Usando línea 1.",
+                forced_data_start_row,
+            )
+
+    if matrix_rows:
+        max_cols = max(len(r) for r in matrix_rows)
+        headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]
+        for row in matrix_rows:
+            padded = list(row) + [""] * (max_cols - len(row))
+            raw_records.append(dict(zip(headers, padded)))
+
+    return raw_records, line_offset
+
+
 def _decode_worker_text(raw_bytes: bytes, is_json: bool = False) -> str:
     if raw_bytes is None:
         return ""
@@ -692,14 +782,19 @@ def _format_moving_window_message(count: int, stats: Dict[str, Any], errors: lis
 
 def _resolve_worker_processing_outcome(count: int, errors: list, stats: Optional[Dict[str, Any]] = None) -> Tuple[str, str, bool]:
     stats = stats or {}
-    moving_window_processed = bool(stats.get("moving_window_mode")) and int(stats.get("duplicate_skipped") or 0) > 0
-    if isinstance(count, int) and (count > 0 or moving_window_processed):
+    duplicate_skipped = int(stats.get("duplicate_skipped") or 0)
+    idempotent_processed = duplicate_skipped > 0
+    if isinstance(count, int) and (count > 0 or idempotent_processed):
         estado = "parcial" if errors else "exito"
-        mensaje = (
-            _format_moving_window_message(count, stats, errors)
-            if stats.get("moving_window_mode")
-            else f"Worker: Inserción confirmada de {count} registros."
-        )
+        if stats.get("moving_window_mode"):
+            mensaje = _format_moving_window_message(count, stats, errors)
+        elif duplicate_skipped:
+            mensaje = (
+                f"Worker: Archivo procesado. Inserción confirmada de {count} registros. "
+                f"{duplicate_skipped} registros ya existentes omitidos."
+            )
+        else:
+            mensaje = f"Worker: Inserción confirmada de {count} registros."
         if errors:
             if not stats.get("moving_window_mode"):
                 mensaje += f" Se encontraron {len(errors)} errores parciales."
@@ -823,7 +918,7 @@ def _normalize_worker_import_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-def _filter_existing_moving_window_rows(
+def _filter_existing_worker_sale_rows(
     rows: List[Dict[str, Any]],
     line_numbers: List[int],
     local_id: str,
@@ -831,34 +926,39 @@ def _filter_existing_moving_window_rows(
     if not rows or not supabase:
         return rows, line_numbers, 0
 
-    factura_values = [
+    factura_values = list(dict.fromkeys(
         str(row.get("factura_no") or "").strip()
         for row in rows
-        if row.get("factura_no")
-    ]
-    factura_values = [value for value in factura_values if value]
+        if str(row.get("factura_no") or "").strip()
+    ))
     if not factura_values:
         return rows, line_numbers, 0
 
+    def sale_key(row: Dict[str, Any]) -> Optional[str]:
+        fecha = str(row.get("fecha") or "").strip()
+        factura = str(row.get("factura_no") or "").strip()
+        if not fecha or not factura:
+            return None
+        return f"{fecha}|{factura}"
+
     existing: set[str] = set()
-    unique_facturas = list(dict.fromkeys(factura_values))
     chunk_size = 500
-    for start in range(0, len(unique_facturas), chunk_size):
-        chunk = unique_facturas[start:start + chunk_size]
+    for start in range(0, len(factura_values), chunk_size):
+        chunk = factura_values[start:start + chunk_size]
         try:
             response = (
                 supabase.table("ventas")
-                .select("factura_no")
+                .select("fecha,factura_no")
                 .eq("local_id", local_id)
                 .in_("factura_no", chunk)
                 .execute()
             )
             for item in response.data or []:
-                factura = str(item.get("factura_no") or "").strip()
-                if factura:
-                    existing.add(factura)
+                key = sale_key(item)
+                if key:
+                    existing.add(key)
         except Exception as exc:
-            logger.warning("No se pudo consultar duplicados de ventana móvil para %s: %s", local_id, exc)
+            logger.warning("No se pudo consultar ventas existentes para %s: %s", local_id, exc)
             return rows, line_numbers, 0
 
     filtered_rows: List[Dict[str, Any]] = []
@@ -866,16 +966,24 @@ def _filter_existing_moving_window_rows(
     seen_in_file: set[str] = set()
     skipped = 0
     for row, line_no in zip(rows, line_numbers):
-        factura = str(row.get("factura_no") or "").strip()
-        if factura and (factura in existing or factura in seen_in_file):
+        key = sale_key(row)
+        if key and (key in existing or key in seen_in_file):
             skipped += 1
             continue
-        if factura:
-            seen_in_file.add(factura)
+        if key:
+            seen_in_file.add(key)
         filtered_rows.append(row)
         filtered_lines.append(line_no)
 
     return filtered_rows, filtered_lines, skipped
+
+
+def _filter_existing_moving_window_rows(
+    rows: List[Dict[str, Any]],
+    line_numbers: List[int],
+    local_id: str,
+) -> Tuple[List[Dict[str, Any]], List[int], int]:
+    return _filter_existing_worker_sale_rows(rows, line_numbers, local_id)
 
 def process_file_logic(config, filename, content):
     """
@@ -895,6 +1003,9 @@ def process_file_logic(config, filename, content):
     try:
         file_type = config.get("file_type", "CSV").upper()
         raw_records = []
+        line_offset = 2
+        constants = config.get('constants_config') or config.get('constants') or {}
+        forced_has_header, forced_data_start_row = _extract_worker_parsing_options(config)
         
         # 1. Parse Content
         if file_type == "JSON":
@@ -916,14 +1027,11 @@ def process_file_logic(config, filename, content):
             except Exception as e:
                 return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}], stats
         else:
-            # Default to CSV/TXT
-            normalized_content = _normalize_text_for_csv(content)
-            reader = csv.DictReader(
-                io.StringIO(normalized_content),
-                delimiter=_detect_delimiter(normalized_content),
-                skipinitialspace=True
+            raw_records, line_offset = _parse_worker_delimited_records(
+                content,
+                forced_has_header,
+                forced_data_start_row,
             )
-            raw_records = [_normalize_csv_row_keys(r) for r in reader]
             
         if not raw_records:
             return 0, [{"linea": 0, "error": "Archivo vacío o sin datos válidos"}], stats
@@ -939,7 +1047,16 @@ def process_file_logic(config, filename, content):
             
         # Get mapping
         mapping = config.get('mapping_config') or {}
-        constants = config.get('constants_config') or config.get('constants') or {}
+        if forced_has_header is False:
+            default_no_header_map = {
+                "factura_numero": "col_1",
+                "local_codigo": "col_2",
+                "fecha_venta": "col_3",
+                "total_bruto": "col_8",
+                "total_impuestos": "col_9",
+                "total_neto": "col_10",
+            }
+            mapping = {**default_no_header_map, **mapping}
         decimal_separator = constants.get("_decimal_separator", ".")
         moving_window_mode = _moving_window_enabled(constants)
         chars_to_remove = (
@@ -953,6 +1070,7 @@ def process_file_logic(config, filename, content):
             config.get('codigo_interno')
             or config.get('local_codigo')
             or config.get('codigo')
+            or constants.get('local_codigo')
             or config.get('nombre')
             or local_id
         )
@@ -960,8 +1078,9 @@ def process_file_logic(config, filename, content):
         valid_rows = []
         valid_line_numbers = []
 
-        for i, row in enumerate(raw_records, start=2):
+        for i, row in enumerate(raw_records, start=line_offset):
             try:
+                sequence_number = (i - line_offset) + 1
                 normalized_row = _normalize_csv_row_keys(row)
                 non_empty_values = [str(value or "").strip() for value in normalized_row.values() if str(value or "").strip()]
                 if non_empty_values and all(re.fullmatch(r"[-_=]+", value) for value in non_empty_values):
@@ -1030,7 +1149,7 @@ def process_file_logic(config, filename, content):
                 def resolve_transform_value(part: str) -> str:
                     clean_part = str(part or "").strip()
                     if clean_part in ("numero_registro", "linea", "_line_number"):
-                        return f"{i - 1:04d}"
+                        return f"{sequence_number:04d}"
                     if clean_part == "local_codigo":
                         return str(configured_local_code or "")
                     if clean_part == "fecha_venta" and fecha_venta:
@@ -1043,7 +1162,7 @@ def process_file_logic(config, filename, content):
 
                 transform_mode = constants.get("_factura_numero_mode")
                 if transform_mode == "generated_sequence":
-                    factura_no = _format_generated_invoice(configured_local_code, fecha_venta, i - 1)
+                    factura_no = _format_generated_invoice(configured_local_code, fecha_venta, sequence_number)
                 elif transform_mode == "concat":
                     transform_fields = _split_transform_fields(constants.get("_factura_numero_concat_fields"))
                     separator = str(constants.get("_factura_numero_concat_separator", "-"))
@@ -1105,8 +1224,8 @@ def process_file_logic(config, filename, content):
                 detalles.append({"linea": i, "error": str(e)})
                 logger.error(f"Error en línea {i}: {e}")
 
-        if moving_window_mode and valid_rows:
-            valid_rows, valid_line_numbers, duplicate_skipped = _filter_existing_moving_window_rows(
+        if valid_rows:
+            valid_rows, valid_line_numbers, duplicate_skipped = _filter_existing_worker_sale_rows(
                 valid_rows,
                 valid_line_numbers,
                 local_id,
@@ -1114,7 +1233,7 @@ def process_file_logic(config, filename, content):
             stats["duplicate_skipped"] = duplicate_skipped
             if duplicate_skipped:
                 logger.info(
-                    "%s: ventana móvil omitió %s registros existentes en %s",
+                    "%s: worker omitió %s registros existentes en %s",
                     config.get("nombre"),
                     duplicate_skipped,
                     filename,

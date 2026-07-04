@@ -582,6 +582,31 @@ def _build_marked_filename(filename: str, prefix: str, extra_prefixes: Sequence[
 
     return f"{prefix}{base_name}"
 
+
+def _build_unique_marked_filename(
+    filename: str,
+    prefix: str,
+    existing_names: Sequence[str] = (),
+    extra_prefixes: Sequence[str] = (),
+) -> str:
+    marked_name = _build_marked_filename(filename, prefix, extra_prefixes)
+    existing = {posixpath.basename(str(name or "")) for name in existing_names}
+    if marked_name not in existing:
+        return marked_name
+
+    stem, ext = posixpath.splitext(marked_name)
+    timestamp = datetime.now(_worker_timezone()).strftime("%Y%m%d%H%M%S")
+    candidate = f"{stem}_{timestamp}{ext}"
+    if candidate not in existing:
+        return candidate
+
+    for index in range(2, 100):
+        candidate = f"{stem}_{timestamp}_{index}{ext}"
+        if candidate not in existing:
+            return candidate
+    return f"{stem}_{timestamp}_{uuid.uuid4().hex[:8]}{ext}"
+
+
 def _parse_worker_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -1828,7 +1853,11 @@ def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix="", st
         logger.info(f"Renombrando archivo remoto a: {new_name}")
         sftp.rename(full_path, new_name)
     elif action == "RENOMBRAR_BACKUP":
-        new_filename = _build_marked_filename(filename, prefix, strip_prefixes)
+        try:
+            existing_names = [item.filename for item in sftp.listdir_attr(path)]
+        except Exception:
+            existing_names = []
+        new_filename = _build_unique_marked_filename(filename, prefix, existing_names, strip_prefixes)
         new_full_path = f"{path}/{new_filename}"
         logger.info(f"Renombrando (Backup) archivo remoto a: {new_full_path}")
         sftp.rename(full_path, new_full_path)
@@ -1842,7 +1871,11 @@ def handle_post_process_ftp(ftp, filename, action, suffix, prefix="", strip_pref
         logger.info(f"Renombrando archivo remoto FTP a: {new_name}")
         ftp.rename(filename, new_name)
     elif action == "RENOMBRAR_BACKUP":
-        new_name = _build_marked_filename(filename, prefix, strip_prefixes)
+        try:
+            existing_names = [posixpath.basename(str(name or "")) for name in (ftp.nlst() or [])]
+        except Exception:
+            existing_names = []
+        new_name = _build_unique_marked_filename(filename, prefix, existing_names, strip_prefixes)
         logger.info(f"Renombrando (Backup) archivo remoto FTP a: {new_name}")
         ftp.rename(filename, new_name)
 
@@ -2000,16 +2033,6 @@ async def process_local_safe(local, semaphore, host_semaphore, due_at: Optional[
                 else:
                     error_text = result.get("message") or "Falló la corrida automática."
                     logger.error(f"❌ [Error] Processing {local_name}: {error_text}")
-                    insert_load_log(
-                        local_name, "SYSTEM", "error", f"Async processing failed: {error_text}",
-                        detalles=result.get("details"),
-                        mall_id=local.get("mall_id"),
-                        local_id=local.get("id"),
-                        canal=local.get("sftp_protocol"),
-                        records_processed=0,
-                        error_count=max(1, len(result.get("details") or [])),
-                        metadata={"source": "worker_async_wrapper", "result": result},
-                    )
                     new_failures = consecutive_failures + 1
                     await asyncio.to_thread(
                          lambda: supabase.table("locales").update({"consecutive_failures": new_failures}).eq("id", local['id']).execute()

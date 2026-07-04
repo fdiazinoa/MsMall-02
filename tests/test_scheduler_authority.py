@@ -377,3 +377,61 @@ def test_worker_empty_ftp_slot_does_not_update_last_execution(monkeypatch):
     assert status_calls[0] == ("local-1", "BUSY", True)
     assert status_calls[-1] == ("local-1", "IDLE", False)
     assert failure_resets == [{"consecutive_failures": 0}]
+
+
+def test_worker_failed_file_result_does_not_create_duplicate_system_log(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    status_calls = []
+    load_logs = []
+    updates = []
+
+    async def _fake_mark_local_status(local_id, status, *, update_last_execution=True):
+        status_calls.append((local_id, status, update_last_execution))
+
+    def _fake_process_local_files(_local):
+        return {
+            "ok": False,
+            "message": "Lote completado: 0/1 archivos procesados.",
+            "total_pending": 1,
+            "processed_files": 0,
+            "failed_files": 1,
+            "details": [{"linea": 2, "error": "Datos incompletos"}],
+        }
+
+    class _UpdateQuery:
+        def update(self, payload):
+            updates.append(payload)
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[])
+
+    class _FakeSupabase:
+        def table(self, name):
+            assert name == "locales"
+            return _UpdateQuery()
+
+    monkeypatch.setattr(worker, "mark_local_status", _fake_mark_local_status)
+    monkeypatch.setattr(worker, "process_local_files", _fake_process_local_files)
+    monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: load_logs.append((args, kwargs)))
+    monkeypatch.setattr(worker, "supabase", _FakeSupabase())
+
+    asyncio.run(worker.process_local_safe(
+        {
+            "id": "local-1",
+            "nombre": "Local Demo",
+            "mall_id": "mall-1",
+            "processing_status": "IDLE",
+            "consecutive_failures": 0,
+            "sftp_protocol": "SFTP",
+        },
+        asyncio.Semaphore(1),
+        asyncio.Semaphore(1),
+    ))
+
+    assert load_logs == []
+    assert updates == [{"consecutive_failures": 1}]
+    assert status_calls[-1] == ("local-1", "IDLE", True)

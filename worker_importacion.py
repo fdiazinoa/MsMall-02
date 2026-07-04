@@ -1848,7 +1848,7 @@ def handle_post_process_ftp(ftp, filename, action, suffix, prefix="", strip_pref
 
 # --- ASYNC LOGIC ---
 
-async def mark_local_status(local_id: str, status: str):
+async def mark_local_status(local_id: str, status: str, *, update_last_execution: bool = True):
     """Updates the processing status of a local."""
     try:
         payload = {
@@ -1856,7 +1856,7 @@ async def mark_local_status(local_id: str, status: str):
         }
         if status == 'BUSY':
             payload["processing_started_at"] = datetime.now(_worker_timezone()).isoformat()
-        elif status == 'IDLE':
+        elif status == 'IDLE' and update_last_execution:
             payload["ultima_ejecucion"] = datetime.now(_worker_timezone()).isoformat()
             
         await asyncio.to_thread(
@@ -1976,6 +1976,7 @@ async def process_local_safe(local, semaphore, host_semaphore, due_at: Optional[
 
     async with semaphore:
         async with host_semaphore:
+            should_update_last_execution = True
             logger.info(
                 "🔒 [Lock] Locking %s (Status: BUSY, host=%s, due_at=%s)",
                 local_name,
@@ -1989,6 +1990,7 @@ async def process_local_safe(local, semaphore, host_semaphore, due_at: Optional[
                 result = await asyncio.to_thread(process_local_files, local)
                 if not isinstance(result, dict):
                     result = {"ok": False, "message": "Resultado inválido del worker."}
+                should_update_last_execution = result.get("total_pending") != 0
 
                 if result.get("ok"):
                     logger.info(f"✅ [Done] Finished {local_name}: {result.get('message', 'ok')}")
@@ -2032,7 +2034,11 @@ async def process_local_safe(local, semaphore, host_semaphore, due_at: Optional[
 
             finally:
                 logger.info(f"🔓 [Release] Unlocking {local_name} (Status: IDLE)")
-                await mark_local_status(local['id'], 'IDLE')
+                await mark_local_status(
+                    local['id'],
+                    'IDLE',
+                    update_last_execution=should_update_last_execution,
+                )
 
 async def cleanup_zombies():
     """Reset locales that have been stuck in BUSY for more than 2 hours."""

@@ -295,3 +295,85 @@ def test_worker_now_local_defaults_to_santo_domingo(monkeypatch):
     worker = _load_worker(monkeypatch)
 
     assert worker._now_local().tzinfo == ZoneInfo("America/Santo_Domingo")
+
+
+def test_mark_local_status_can_release_without_closing_schedule_slot(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    updates = []
+
+    class _UpdateQuery:
+        def update(self, payload):
+            updates.append(payload)
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[])
+
+    class _FakeSupabase:
+        def table(self, name):
+            assert name == "locales"
+            return _UpdateQuery()
+
+    monkeypatch.setattr(worker, "supabase", _FakeSupabase())
+
+    asyncio.run(worker.mark_local_status("local-1", "IDLE", update_last_execution=False))
+
+    assert updates == [{"processing_status": "IDLE"}]
+
+
+def test_worker_empty_ftp_slot_does_not_update_last_execution(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    status_calls = []
+    failure_resets = []
+
+    async def _fake_mark_local_status(local_id, status, *, update_last_execution=True):
+        status_calls.append((local_id, status, update_last_execution))
+
+    def _fake_process_local_files(_local):
+        return {
+            "ok": True,
+            "message": "Archivo nuevo no encontrado",
+            "total_pending": 0,
+            "processed_files": 0,
+            "failed_files": 0,
+            "details": [],
+        }
+
+    class _UpdateQuery:
+        def update(self, payload):
+            failure_resets.append(payload)
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[])
+
+    class _FakeSupabase:
+        def table(self, name):
+            assert name == "locales"
+            return _UpdateQuery()
+
+    monkeypatch.setattr(worker, "mark_local_status", _fake_mark_local_status)
+    monkeypatch.setattr(worker, "process_local_files", _fake_process_local_files)
+    monkeypatch.setattr(worker, "supabase", _FakeSupabase())
+
+    asyncio.run(worker.process_local_safe(
+        {
+            "id": "local-1",
+            "nombre": "Local Demo",
+            "mall_id": "mall-1",
+            "processing_status": "IDLE",
+            "consecutive_failures": 0,
+        },
+        asyncio.Semaphore(1),
+        asyncio.Semaphore(1),
+    ))
+
+    assert status_calls[0] == ("local-1", "BUSY", True)
+    assert status_calls[-1] == ("local-1", "IDLE", False)
+    assert failure_resets == [{"consecutive_failures": 0}]

@@ -69,6 +69,26 @@ class _FakeSSH:
         return None
 
 
+class _FakeFTP:
+    def __init__(self, files):
+        self.files = dict(files)
+        self.renames = []
+
+    def nlst(self):
+        return list(self.files.keys())
+
+    def retrbinary(self, command, callback):
+        filename = command.split(" ", 1)[1]
+        callback(self.files[filename])
+
+    def rename(self, old_name, new_name):
+        self.renames.append((old_name, new_name))
+        self.files[new_name] = self.files.pop(old_name)
+
+    def quit(self):
+        return None
+
+
 class _FakeWorkerTable:
     def __init__(self, supabase, table_name):
         self.supabase = supabase
@@ -494,6 +514,72 @@ def test_worker_marks_success_with_pr_prefix_after_confirmed_insert(monkeypatch)
     assert triggered == ["worker_auto_import"]
 
 
+def test_worker_uses_unique_pr_name_when_sftp_backup_already_exists(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_sftp = _FakeSFTP({
+        "ventas_20260301.json": b'{"rows":[{"ok":true}]}',
+        "PR_ventas_20260301.json": b"previous",
+    })
+
+    monkeypatch.setattr(worker, "connect_with_retries", lambda connector, attempts=3, base_delay=2: connector())
+    monkeypatch.setattr(worker, "get_sftp_client", lambda *args, **kwargs: (_FakeSSH(), fake_sftp))
+    monkeypatch.setattr(worker, "process_file_logic", lambda config, filename, content: (12, []))
+    monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker, "run_local_risk_analysis_if_possible", lambda *args, **kwargs: None)
+
+    worker.process_local_files({
+        "nombre": "Cafe Santo Domingo",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "sftp_protocol": "SFTP",
+        "sftp_host": "example.com",
+        "sftp_port": 22,
+        "sftp_user": "demo",
+        "sftp_pass": "secret",
+        "sftp_path": ".",
+        "file_type": "JSON",
+        "accion_post_procesado": "RENOMBRAR_BACKUP",
+    })
+
+    assert fake_sftp.renames[0][0] == "ventas_20260301.json"
+    assert fake_sftp.renames[0][1].startswith("PR_ventas_20260301_")
+    assert fake_sftp.renames[0][1].endswith(".json")
+    assert "PR_ventas_20260301.json" in fake_sftp.files
+
+
+def test_worker_uses_unique_pr_name_when_ftp_backup_already_exists(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_ftp = _FakeFTP({
+        "ventas_20260301.json": b'{"rows":[{"ok":true}]}',
+        "PR_ventas_20260301.json": b"previous",
+    })
+
+    monkeypatch.setattr(worker, "connect_with_retries", lambda connector, attempts=3, base_delay=2: connector())
+    monkeypatch.setattr(worker, "get_ftp_client", lambda *args, **kwargs: fake_ftp)
+    monkeypatch.setattr(worker, "process_file_logic", lambda config, filename, content: (12, []))
+    monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker, "run_local_risk_analysis_if_possible", lambda *args, **kwargs: None)
+
+    worker.process_local_files({
+        "nombre": "Cafe Santo Domingo",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "sftp_protocol": "FTP",
+        "sftp_host": "example.com",
+        "sftp_port": 21,
+        "sftp_user": "demo",
+        "sftp_pass": "secret",
+        "sftp_path": ".",
+        "file_type": "JSON",
+        "accion_post_procesado": "RENOMBRAR_BACKUP",
+    })
+
+    assert fake_ftp.renames[0][0] == "ventas_20260301.json"
+    assert fake_ftp.renames[0][1].startswith("PR_ventas_20260301_")
+    assert fake_ftp.renames[0][1].endswith(".json")
+    assert "PR_ventas_20260301.json" in fake_ftp.files
+
+
 def test_worker_builds_no_new_file_message_from_last_import_log(monkeypatch):
     worker = _load_worker(monkeypatch)
     monkeypatch.setattr(worker, "supabase", _FakeLogSupabase([
@@ -632,7 +718,7 @@ def test_worker_processes_nested_json_using_dot_mapping(monkeypatch):
     assert inserted_rows[0]["total_neto"] == 100.0
 
 
-def test_worker_returns_failure_details_and_system_log_includes_them(monkeypatch):
+def test_worker_failed_result_does_not_duplicate_file_error_log(monkeypatch):
     worker = _load_worker(monkeypatch)
     inserted_rows = []
     logs = []
@@ -647,6 +733,9 @@ def test_worker_returns_failure_details_and_system_log_includes_them(monkeypatch
         lambda local: {
             "ok": False,
             "message": "Lote completado: 0/1 archivos procesados. Worker: No se confirmó inserción en BD. Se encontraron 2 errores.",
+            "total_pending": 1,
+            "processed_files": 0,
+            "failed_files": 1,
             "details": [
                 {"linea": 2, "error": "Datos incompletos"},
                 {"linea": 3, "error": "Datos incompletos"},
@@ -670,11 +759,4 @@ def test_worker_returns_failure_details_and_system_log_includes_them(monkeypatch
         )
     )
 
-    assert logs, "Se esperaba un log de error SYSTEM"
-    args, kwargs = logs[0]
-    assert args[1] == "SYSTEM"
-    assert "Async processing failed: Lote completado: 0/1 archivos procesados." in args[3]
-    assert kwargs["detalles"] == [
-        {"linea": 2, "error": "Datos incompletos"},
-        {"linea": 3, "error": "Datos incompletos"},
-    ]
+    assert logs == []

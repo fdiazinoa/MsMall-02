@@ -2011,6 +2011,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         <option value="SFTP">SFTP (SSH File Transfer)</option>
                         <option value="FTP">FTP (Estándar)</option>
                         <option value="WEBSERVICE">Webservice API</option>
+                        <option value="API">API REST</option>
                         <option value="LOCAL">Directorio local (servidor)</option>
                       </select>
                     </div>
@@ -2034,13 +2035,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
                       <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                        {isWebserviceProtocol(editingConfig.protocolo) ? 'Endpoint Webservice' : 'Host del Servidor'}
+                        {editingConfig.protocolo === 'API' ? 'URL Base API' : isWebserviceProtocol(editingConfig.protocolo) ? 'Endpoint Webservice' : 'Host del Servidor'}
                       </label>
                       <div className="relative">
                         <Globe size={18} className="absolute left-3.5 top-3 text-slate-300" />
                         <input
                           type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                          placeholder={isWebserviceProtocol(editingConfig.protocolo) ? 'https://apisuba.kation.com.do/api/external/v1/invoices' : 'sftp.tu-tienda.com'}
+                          placeholder={editingConfig.protocolo === 'API' ? 'https://alcagora.ddns.net' : isWebserviceProtocol(editingConfig.protocolo) ? 'https://apisuba.kation.com.do/api/external/v1/invoices' : 'sftp.tu-tienda.com'}
                           value={editingConfig.host}
                           onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
                         />
@@ -2109,15 +2110,15 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
                       <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                        {isWebserviceProtocol(editingConfig.protocolo) ? 'Autenticación Bearer' : 'Credenciales de Acceso'}
+                        {editingConfig.protocolo === 'API' ? 'Autenticación Client Credentials' : isWebserviceProtocol(editingConfig.protocolo) ? 'Autenticación Bearer' : 'Credenciales de Acceso'}
                       </label>
                       <div className="space-y-3">
-                        {!isWebserviceProtocol(editingConfig.protocolo) && (
+                        {(!isWebserviceProtocol(editingConfig.protocolo) || editingConfig.protocolo === 'API') && (
                           <div className="relative">
                             <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
                             <input
                               type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                              placeholder="Nombre de usuario"
+                              placeholder={editingConfig.protocolo === 'API' ? 'Client ID' : 'Nombre de usuario'}
                               value={editingConfig.usuario}
                               onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
                             />
@@ -2127,12 +2128,24 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           <Key size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="password" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder={isWebserviceProtocol(editingConfig.protocolo) ? 'Token Bearer' : 'Contraseña o Frase de paso SSH'}
+                            placeholder={editingConfig.protocolo === 'API' ? 'Client Secret' : isWebserviceProtocol(editingConfig.protocolo) ? 'Token Bearer' : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}
                           />
                         </div>
                       </div>
+                    </div>
+                  )}
+                  {editingConfig.protocolo === 'API' && (
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">ID TPV</label>
+                      <input
+                        type="text"
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none"
+                        placeholder="AFB"
+                        value={editingConfig.ruta_remota}
+                        onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
+                      />
                     </div>
                   )}
                   {isWebserviceProtocol(editingConfig.protocolo) && (

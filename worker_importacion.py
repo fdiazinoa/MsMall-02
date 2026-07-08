@@ -1355,9 +1355,303 @@ def _fetch_webservice_json(url: str, token: Optional[str], timeout_seconds: int)
         return json.loads(text or "{}")
 
 
+def _api_base_url(config: Dict[str, Any]) -> str:
+    host = str(
+        _webservice_config_value(
+            config,
+            _webservice_constants(config),
+            "host",
+            "sftp_host",
+            "api_url",
+            "endpoint_url",
+        )
+        or ""
+    ).strip()
+    if not host:
+        raise ValueError("URL base API requerida")
+    if not re.match(r"^https?://", host, flags=re.IGNORECASE):
+        host = f"https://{host}"
+    return host.rstrip("/")
+
+
+def _is_studio_g_config(config: Dict[str, Any], constants: Optional[Dict[str, Any]] = None) -> bool:
+    constants = constants or _webservice_constants(config)
+    provider = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "provider",
+            "_provider",
+            "api_provider",
+            "_api_provider",
+            "webservice_provider",
+        )
+        or ""
+    ).strip().lower()
+    host = str(config.get("sftp_host") or config.get("host") or "").strip().lower()
+    return provider in {"studio_g", "studiog", "sales_tap", "salestap"} or "alcagora.ddns.net" in host
+
+
+def _api_json_request(
+    method: str,
+    url: str,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    body: Optional[Dict[str, Any]] = None,
+    timeout: int = WEBSERVICE_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    payload = None
+    request_headers = {"Accept": "application/json", **(headers or {})}
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=payload, headers=request_headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            text = _decode_worker_text(raw, is_json=True)
+            parsed = json.loads(text or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = _decode_worker_text(exc.read(), is_json=True)
+        raise RuntimeError(f"API HTTP {exc.code}: {detail or exc.reason}") from exc
+
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Respuesta API inesperada: se esperaba objeto JSON")
+    return parsed
+
+
+def _studio_g_authorize(config: Dict[str, Any], constants: Dict[str, Any]) -> str:
+    client_id = str(
+        _webservice_config_value(config, constants, "client_id", "_client_id", "usuario", "sftp_user")
+        or ""
+    ).strip()
+    client_secret = str(
+        _webservice_config_value(config, constants, "client_secret", "_client_secret", "password", "sftp_pass")
+        or ""
+    ).strip()
+    if not client_id or not client_secret:
+        raise ValueError("Client ID y Client Secret requeridos para Studio G")
+
+    data = _api_json_request(
+        "POST",
+        f"{_api_base_url(config)}/authorization",
+        body={"client_id": client_id, "client_secret": client_secret},
+        timeout=max(5, _webservice_int_value(config, constants, WEBSERVICE_TIMEOUT_SECONDS, "_webservice_timeout_seconds", "timeout_seconds")),
+    )
+    token = str(data.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Studio G no devolvio access_token")
+    return token
+
+
+def _parse_api_date(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return normalize_date(text)
+
+
+def _parse_api_time(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.time().replace(microsecond=0).isoformat()
+    except ValueError:
+        pass
+
+    match = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b", text)
+    if not match:
+        return None
+    parts = match.group(1).split(":")
+    if len(parts) == 2:
+        return f"{int(parts[0]):02d}:{parts[1]}:00"
+    return f"{int(parts[0]):02d}:{parts[1]}:{parts[2]}"
+
+
+def _clean_api_number(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    return _parse_mapped_decimal(value, ".")
+
+
+def _studio_g_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
+    constants = _webservice_constants(config)
+    fecha_inicio = _webservice_config_value(
+        config,
+        constants,
+        "studio_g_fecha_inicio",
+        "_studio_g_fecha_inicio",
+        "fecha_inicio",
+        "FechaInicio",
+    )
+    fecha_fin = _webservice_config_value(
+        config,
+        constants,
+        "studio_g_fecha_fin",
+        "_studio_g_fecha_fin",
+        "fecha_fin",
+        "FechaFin",
+    )
+    today = _now_local().date().isoformat()
+    start = normalize_date(fecha_inicio) if fecha_inicio else today
+    end = normalize_date(fecha_fin) if fecha_fin else start
+    if not start or not end:
+        raise ValueError("Rango de fechas Studio G invalido")
+    return start, end
+
+
+def _map_studio_g_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str) -> Optional[Dict[str, Any]]:
+    fecha = _parse_api_date(row.get("Fecha"))
+    if not fecha:
+        return None
+
+    transaction_id = row.get("IDTransaccion")
+    ncf = str(row.get("NCF") or "").strip()
+    factura_no = ncf or (f"STUDIOG-{id_tpv}-{transaction_id}" if transaction_id not in (None, "") else "")
+    if not factura_no:
+        return None
+
+    payload = {
+        "local_id": config.get("id"),
+        "mall_id": config.get("mall_id"),
+        "fecha": fecha,
+        "factura_no": factura_no,
+        "comprobante": ncf or None,
+        "hora_transaccion": _parse_api_time(row.get("Hora") or row.get("Fecha")),
+        "total_bruto": _clean_api_number(row.get("TotalBruto")),
+        "total_impuestos": _clean_api_number(row.get("TotalImpuestos")),
+        "total_neto": _clean_api_number(row.get("TotalNeto")),
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def fetch_studio_g_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+    config = _normalize_worker_import_config(config)
+    constants = _webservice_constants(config)
+    id_tpv = str(
+        _webservice_config_value(config, constants, "idTpv", "id_tpv", "_studio_g_id_tpv", "ruta_remota", "sftp_path")
+        or ""
+    ).strip()
+    if not id_tpv or id_tpv == ".":
+        raise ValueError("idTpv requerido en Ruta Remota para Studio G")
+
+    fecha_inicio, fecha_fin = _studio_g_date_range(config)
+    token = _studio_g_authorize(config, constants)
+    timeout_seconds = max(5, _webservice_int_value(config, constants, WEBSERVICE_TIMEOUT_SECONDS, "_webservice_timeout_seconds", "timeout_seconds"))
+    query = urllib.parse.urlencode({
+        "idTpv": id_tpv,
+        "FechaInicio": fecha_inicio,
+        "FechaFin": fecha_fin,
+    })
+    data = _api_json_request(
+        "GET",
+        f"{_api_base_url(config)}/ventas?{query}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=timeout_seconds,
+    )
+    ventas = data.get("ventas") or []
+    if not isinstance(ventas, list):
+        raise RuntimeError("Respuesta Studio G invalida: ventas no es una lista")
+
+    rows = [
+        mapped
+        for sale in ventas
+        if isinstance(sale, dict)
+        for mapped in [_map_studio_g_sale(config, sale, id_tpv)]
+        if mapped
+    ]
+    return rows, f"Studio G {id_tpv} {fecha_inicio}..{fecha_fin}"
+
+
+def _insert_studio_g_sales(config: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[int, int]:
+    if not rows:
+        return 0, 0
+    if not supabase:
+        raise ValueError("Supabase no configurado")
+
+    line_numbers = list(range(1, len(rows) + 1))
+    filtered_rows, _, skipped = _filter_existing_worker_sale_rows(
+        rows,
+        line_numbers,
+        str(config.get("id") or ""),
+    )
+    if filtered_rows:
+        supabase.table("ventas").insert(filtered_rows).execute()
+    return len(filtered_rows), skipped
+
+
+def process_studio_g_api(config: Dict[str, Any]) -> Dict[str, Any]:
+    config = _normalize_worker_import_config(config)
+    local_name = config.get("nombre") or "Studio G"
+    batch_id = str(uuid.uuid4())
+    try:
+        rows, source_name = fetch_studio_g_sales(config)
+        inserted, skipped = _insert_studio_g_sales(config, rows)
+        message = f"API Studio G: {inserted} ventas importadas"
+        if skipped:
+            message += f", {skipped} duplicadas omitidas"
+        if not rows:
+            message = "API Studio G: 0 ventas encontradas para el rango"
+        insert_load_log(
+            local_name,
+            source_name,
+            "exito",
+            message,
+            batch_id,
+            mall_id=config.get("mall_id"),
+            local_id=config.get("id"),
+            canal="API",
+            records_processed=inserted,
+            error_count=0,
+            metadata={"source": "worker_studio_g_api", "records_received": len(rows), "duplicate_skipped": skipped},
+        )
+        if inserted > 0:
+            run_local_risk_analysis_if_possible(config, trigger="worker_studio_g_api")
+        return {
+            "ok": True,
+            "status": "success",
+            "message": message,
+            "records_processed": inserted,
+            "processed_files": 1 if rows else 0,
+            "failed_files": 0,
+            "total_pending": len(rows),
+            "batch_size": 1 if rows else 0,
+            "details": [],
+        }
+    except Exception as exc:
+        message = f"Fallo API Studio G: {sanitize_error_text(exc)}"
+        insert_load_log(
+            local_name,
+            "Studio G API",
+            "error",
+            message,
+            batch_id,
+            mall_id=config.get("mall_id"),
+            local_id=config.get("id"),
+            canal="API",
+            records_processed=0,
+            error_count=1,
+            metadata={"source": "worker_studio_g_api", "exception": sanitize_error_text(exc)},
+        )
+        return {"ok": False, "status": "error", "message": message, "records_processed": 0, "details": [{"linea": 0, "error": message}]}
+
+
 def process_webservice_import(config: Dict[str, Any]) -> Dict[str, Any]:
     config = _normalize_worker_import_config(config)
     constants = _webservice_constants(config)
+    if str(config.get("sftp_protocol") or config.get("protocolo") or "").strip().upper() == "API" and _is_studio_g_config(config, constants):
+        return process_studio_g_api(config)
+
     protocol = "WEBSERVICE"
     local_name = config.get("nombre") or "Local"
     batch_id = str(uuid.uuid4())

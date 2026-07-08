@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthProvider';
-import { ApiService } from '../api';
+import { ApiService, LocalCustomFieldDefinition } from '../api';
 import {
     Calendar, Filter, TrendingUp, DollarSign,
     ArrowRight, Loader2, Download, Archive, FileSpreadsheet
@@ -14,6 +14,19 @@ const normalizeBase = (value: string): string => {
     const trimmed = (value || '').trim();
     if (!trimmed) return '';
     return trimmed.replace(/\/+$/, '').replace(/\/api\/v1$/i, '').replace(/\/api$/i, '');
+};
+
+const getFieldOptionsForFilter = (
+    definition: LocalCustomFieldDefinition,
+    definitions: LocalCustomFieldDefinition[],
+    filterValues: Record<string, string>
+) => {
+    if (definition.widget_type !== 'drilldown' || !definition.parent_field_id) {
+        return (definition.options || []).filter((option) => option.active !== false);
+    }
+    const parentValue = filterValues[definition.parent_field_id];
+    if (!parentValue) return [];
+    return (definition.options || []).filter((option) => option.active !== false && option.parent_option_id === parentValue);
 };
 
 export const SalesCube: React.FC = () => {
@@ -34,6 +47,9 @@ export const SalesCube: React.FC = () => {
     const [metric, setMetric] = useState<'total_neto' | 'total_bruto' | 'transacciones'>('total_neto');
     const [stores, setStores] = useState<any[]>([]);
     const [selectedLocal, setSelectedLocal] = useState<string>('');
+    const [customDefinitions, setCustomDefinitions] = useState<LocalCustomFieldDefinition[]>([]);
+    const [selectedCustomDimension, setSelectedCustomDimension] = useState<string>('');
+    const [customFilters, setCustomFilters] = useState<Record<string, string>>({});
 
     const [error, setError] = useState<string | null>(null);
 
@@ -59,18 +75,52 @@ export const SalesCube: React.FC = () => {
         loadStores();
     }, [currentMall?.id]);
 
+    useEffect(() => {
+        const loadCustomDefinitions = async () => {
+            if (!currentMall?.id || !session?.access_token) {
+                setCustomDefinitions([]);
+                setSelectedCustomDimension('');
+                setCustomFilters({});
+                return;
+            }
+            try {
+                const fields = await ApiService.getLocalCustomFieldDefinitions(currentMall.id, session.access_token, false);
+                setCustomDefinitions((fields || []).filter((field) => field.active));
+                setSelectedCustomDimension((prev) => (fields || []).some((field) => field.key === prev && field.active) ? prev : '');
+                setCustomFilters((prev) => {
+                    const next: Record<string, string> = {};
+                    for (const [key, value] of Object.entries(prev)) {
+                        if ((fields || []).some((field) => field.key === key && field.active)) {
+                            next[key] = value;
+                        }
+                    }
+                    return next;
+                });
+            } catch (e) {
+                console.error("Error loading custom fields for SalesCube:", e);
+                setCustomDefinitions([]);
+            }
+        };
+        loadCustomDefinitions();
+    }, [currentMall?.id, session?.access_token]);
+
     const generateCube = async () => {
         if (!currentMall?.id || !session?.access_token) return;
         setLoading(true);
         setError(null);
         try {
+            const normalizedFilters = Object.fromEntries(
+                Object.entries(customFilters).filter(([, value]) => String(value || '').trim() !== '')
+            );
             const data = await ApiService.getSalesCube({
                 fecha_inicio: dates.startDate,
                 fecha_fin: dates.endDate,
                 agrupacion: grouping,
                 metrica: metric,
                 local_id: selectedLocal || null,
-                mallId: currentMall.id
+                mallId: currentMall.id,
+                custom_dimension_key: selectedCustomDimension || null,
+                custom_filters: Object.keys(normalizedFilters).length > 0 ? normalizedFilters : null,
             }, session.access_token);
             setCubeData(data);
         } catch (err: any) {
@@ -93,6 +143,15 @@ export const SalesCube: React.FC = () => {
             });
             if (selectedLocal) {
                 params.append('local_id', selectedLocal);
+            }
+            if (selectedCustomDimension) {
+                params.append('custom_dimension_key', selectedCustomDimension);
+            }
+            const normalizedFilters = Object.fromEntries(
+                Object.entries(customFilters).filter(([, value]) => String(value || '').trim() !== '')
+            );
+            if (Object.keys(normalizedFilters).length > 0) {
+                params.append('custom_filters', JSON.stringify(normalizedFilters));
             }
 
             const token = session?.access_token;
@@ -227,8 +286,8 @@ export const SalesCube: React.FC = () => {
                         onChange={(e) => setMetric(e.target.value as any)}
                         className="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full p-2.5 outline-none"
                     >
-                        <option value="total_neto">Venta Bruta (Base)</option>
-                        <option value="total_bruto">Venta Neta (Total)</option>
+                        <option value="total_bruto">Total Bruto (Base)</option>
+                        <option value="total_neto">Total Neto (Total)</option>
                         <option value="transacciones">Transacciones</option>
                     </select>
                 </div>
@@ -248,6 +307,71 @@ export const SalesCube: React.FC = () => {
                         ))}
                     </select>
                 </div>
+
+                <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-2 uppercase">Dimensión libre</label>
+                    <select
+                        value={selectedCustomDimension}
+                        onChange={(e) => setSelectedCustomDimension(e.target.value)}
+                        className="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full p-2.5 outline-none min-w-[220px]"
+                    >
+                        <option value="">Locales (vista actual)</option>
+                        {customDefinitions.map((definition) => (
+                            <option key={definition.id} value={definition.key}>
+                                {definition.label}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+
+                {customDefinitions.map((definition) => {
+                    const options = getFieldOptionsForFilter(definition, customDefinitions, customFilters);
+                    return (
+                        <div key={definition.id}>
+                            <label className="block text-xs font-bold text-slate-400 mb-2 uppercase">{definition.label}</label>
+                            {definition.data_type === 'text' && (
+                                <input
+                                    type="text"
+                                    value={customFilters[definition.key] || ''}
+                                    onChange={(e) => setCustomFilters((prev) => ({ ...prev, [definition.key]: e.target.value }))}
+                                    className="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full p-2.5 outline-none min-w-[220px]"
+                                    placeholder="Filtrar valor exacto"
+                                />
+                            )}
+                            {definition.data_type === 'number' && (
+                                <input
+                                    type="number"
+                                    value={customFilters[definition.key] || ''}
+                                    onChange={(e) => setCustomFilters((prev) => ({ ...prev, [definition.key]: e.target.value }))}
+                                    className="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full p-2.5 outline-none min-w-[180px]"
+                                    placeholder="Valor exacto"
+                                />
+                            )}
+                            {definition.data_type === 'date' && (
+                                <input
+                                    type="date"
+                                    value={customFilters[definition.key] || ''}
+                                    onChange={(e) => setCustomFilters((prev) => ({ ...prev, [definition.key]: e.target.value }))}
+                                    className="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full p-2.5 outline-none min-w-[180px]"
+                                />
+                            )}
+                            {definition.data_type === 'select' && (
+                                <select
+                                    value={customFilters[definition.key] || ''}
+                                    onChange={(e) => setCustomFilters((prev) => ({ ...prev, [definition.key]: e.target.value }))}
+                                    className="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-xl focus:ring-indigo-500 focus:border-indigo-500 block w-full p-2.5 outline-none min-w-[220px]"
+                                >
+                                    <option value="">Todos</option>
+                                    {options.map((option) => (
+                                        <option key={option.id} value={option.value}>
+                                            {option.label}
+                                        </option>
+                                    ))}
+                                </select>
+                            )}
+                        </div>
+                    );
+                })}
 
                 <div className="ml-auto flex gap-2">
                     <button
@@ -306,14 +430,14 @@ export const SalesCube: React.FC = () => {
                                             key={idx}
                                             className={`p-4 text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200 whitespace-nowrap ${idx === 0 ? 'sticky left-0 bg-slate-50 z-30 border-r' : 'text-right'}`}
                                         >
-                                            {col === 'local_nombre' ? 'Local' : col.replace('TOTAL_FILA', 'Total')}
+                                            {idx === 0 ? (cubeData.row_label || 'Local') : col.replace('TOTAL_FILA', 'Total')}
                                         </th>
                                     ))}
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-50">
                                 {cubeData.data.map((row: any, rIdx: number) => (
-                                    <tr key={rIdx} className="hover:bg-indigo-50/30 transition-colors">
+                                    <tr key={rIdx} className={`transition-colors ${row.row_type === 'group' ? 'bg-slate-50/80 hover:bg-slate-100/80' : 'hover:bg-indigo-50/30'}`}>
                                         {cubeData.columns.map((col: string, cIdx: number) => {
                                             const val = row[col];
                                             const isZero = val === 0 || !val;
@@ -324,12 +448,12 @@ export const SalesCube: React.FC = () => {
                                                 <td
                                                     key={cIdx}
                                                     className={`p-4 text-sm whitespace-nowrap border-b border-slate-50
-                                                        ${isSticky ? 'sticky left-0 bg-white font-bold text-slate-700 z-10 border-r border-slate-100' : 'text-right'}
+                                                        ${isSticky ? `sticky left-0 ${row.row_type === 'group' ? 'bg-slate-50' : 'bg-white'} font-bold text-slate-700 z-10 border-r border-slate-100` : 'text-right'}
                                                         ${isTotal ? 'bg-slate-50 font-bold text-indigo-700' : ''}
                                                     `}
                                                 >
                                                     {isSticky ? val : (
-                                                        <span className={isZero ? 'text-slate-300 font-light' : 'text-slate-600 font-medium'}>
+                                                        <span className={isZero ? 'text-slate-300 font-light' : row.row_type === 'group' ? 'text-slate-800 font-bold' : 'text-slate-600 font-medium'}>
                                                             {isZero ? '-' : formatValue(val)}
                                                         </span>
                                                     )}

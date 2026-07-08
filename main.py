@@ -1,16 +1,22 @@
 
 # Backend: FastAPI API para MSMALL Audit
+import asyncio
+import base64
 import csv
+import html
 import io
 import logging
 import time
 import threading
 import re
+import secrets
+import unicodedata
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Set
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, status, Body
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, Request, status, Body
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -23,9 +29,69 @@ import urllib.error
 import urllib.request
 from ftplib import FTP
 import stat
-from worker_importacion import run_worker_async
-from analytics import generate_sales_cube
+import urllib.error
+import urllib.request
+from worker_importacion import (
+    WORKER_POLL_SECONDS,
+    _append_query_param as append_webservice_query_param,
+    _extract_webservice_records as extract_webservice_records,
+    _fetch_webservice_json as fetch_webservice_json,
+    process_webservice_import,
+    run_worker_async,
+)
+from analytics_service import AnalyticsService
 from routers import recipes, comparisons, admin_tools
+from routers.token_auth import (
+    AuthContext as TokenAuthContext,
+    TOKEN_TYPE_EXPORTER,
+    ACTIVE as TOKEN_ACTIVE,
+    DISABLED as TOKEN_DISABLED,
+    REVOKED as TOKEN_REVOKED,
+    CreateServiceAccountRequest as TokenCreateServiceAccountRequest,
+    CreateTokenRequest as TokenCreateTokenRequest,
+    PatchServiceAccountStatusRequest as TokenPatchServiceAccountStatusRequest,
+    PatchTokenStatusRequest as TokenPatchTokenStatusRequest,
+    RevokeMallRequest as TokenRevokeMallRequest,
+    RevokeLocalRequest as TokenRevokeLocalRequest,
+    RevokeRequest as TokenRevokeRequest,
+    RevokeServiceAccountTokensRequest as TokenRevokeServiceAccountTokensRequest,
+    UpsertExporterWebserviceConfigRequest as TokenUpsertExporterWebserviceConfigRequest,
+    _hash_token as token_auth_hash_token,
+    _parse_scopes as token_auth_parse_scopes,
+    build_default_service as build_token_auth_service,
+    create_router as create_token_auth_router,
+    require_token_auth,
+    request_explicit_never_expires as token_auth_request_explicit_never_expires,
+    sanitize_exporter_webservice_config_row as sanitize_token_exporter_webservice_config_row,
+    sanitize_service_account_row as sanitize_token_service_account_row,
+    sanitize_token_row as sanitize_token_auth_row,
+    utcnow as token_auth_utcnow,
+    validate_exporter_payload_mapping,
+)
+from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
+from services.local_custom_fields_service import LocalCustomFieldsService
+from services.connection_monitor_service import (
+    ConnectionMonitorService,
+    RetryPolicyBlocked,
+)
+from services.load_log_service import build_load_log_payload, insert_load_log_row
+from services.missing_days_email_service import (
+    DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+    DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+    build_missing_days_email_html,
+    missing_days_email_period,
+    run_missing_days_email_scheduler,
+    send_missing_days_emails_for_mall,
+)
+from services.operations_auditor_service import OperationsAuditorService
+from services.operations_agent_service import (
+    EVENT_LOCAL_ACTIVATED,
+    EVENT_LOCAL_DEACTIVATED,
+    EVENT_LOCAL_UPDATED,
+    OperationsAgentWorker,
+    OperationsIntelligenceService,
+    publish_operations_event,
+)
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
@@ -41,6 +107,24 @@ supabase: Optional[Client] = None
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("msmall-api")
 
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+def _is_api_scheduler_enabled() -> bool:
+    return _parse_bool_env("ENABLE_API_SCHEDULER", default=False)
+
+def _is_email_scheduler_enabled() -> bool:
+    return _parse_bool_env("ENABLE_EMAIL_SCHEDULER", default=True)
+
+def _email_scheduler_poll_seconds() -> int:
+    try:
+        poll_seconds = int(os.getenv("EMAIL_SCHEDULER_POLL_SECONDS", "60"))
+    except (TypeError, ValueError):
+        poll_seconds = 60
+    return max(30, min(poll_seconds, 3600))
 _CORS_LOCK_V1_ORIGINS = ["https://msmall.vercel.app"]
 
 if SUPABASE_URL and SUPABASE_KEY:
@@ -56,8 +140,63 @@ SYSTEM_ADMIN_EMAILS = {
     for e in (os.getenv("SYSTEM_ADMIN_EMAILS", "fdiaz@mercasend.net")).split(",")
     if e and e.strip()
 }
+RESEND_API_KEY_ENV = "RESEND_API_KEY"
+RESEND_DOMAIN = "mercasend.net"
+RESEND_FROM_EMAIL = "notificaciones@mercasend.net"
+RESEND_FROM_NAME = "MercaSend Notificaciones"
+RESEND_USER_AGENT = "MSMALL-API/1.0 (mercasend.net)"
+RESEND_SENDER_EMAIL_KEY = "RESEND_FROM_EMAIL"
+RESEND_SENDER_NAME_KEY = "RESEND_FROM_NAME"
+COPILOT_ENABLED_KEY = "COPILOT_ENABLED"
+COPILOT_PROVIDER_KEY = "COPILOT_PROVIDER"
+COPILOT_OPENAI_API_KEY_KEY = "COPILOT_OPENAI_API_KEY"
+COPILOT_GEMINI_API_KEY_KEY = "COPILOT_GEMINI_API_KEY"
+COPILOT_OPENAI_MODEL_KEY = "COPILOT_OPENAI_MODEL"
+COPILOT_GEMINI_MODEL_KEY = "COPILOT_GEMINI_MODEL"
+COPILOT_DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "gemini": "gemini-1.5-flash",
+}
 ADMIN_ROLES = {"admin", "superadmin", "super_admin", "administrador"}
 IT_ROLES = {"it", "tic"}
+
+def _sensitive_ops_service() -> SensitiveOpsService:
+    return SensitiveOpsService(supabase, logger)
+
+
+def _local_custom_fields_service() -> LocalCustomFieldsService:
+    return LocalCustomFieldsService(supabase, logger)
+
+def _connection_monitor_service() -> ConnectionMonitorService:
+    return ConnectionMonitorService(supabase, logger)
+
+
+def _analytics_service() -> AnalyticsService:
+    return AnalyticsService(supabase_client=supabase, logger=logger)
+
+
+def _operations_auditor_service() -> OperationsAuditorService:
+    return OperationsAuditorService(supabase, logger)
+
+
+def _operations_agent_worker() -> OperationsAgentWorker:
+    return OperationsAgentWorker(supabase, logger)
+
+
+def _operations_intelligence_service() -> OperationsIntelligenceService:
+    return OperationsIntelligenceService(supabase, logger)
+
+
+async def _run_local_risk_analysis_async(local_id: Optional[str], trigger: str) -> Optional[Dict[str, Any]]:
+    if not supabase or not local_id:
+        return None
+    try:
+        return await asyncio.to_thread(
+            lambda: _analytics_service().run_and_persist_local_analysis(local_id, trigger=trigger)
+        )
+    except Exception as exc:
+        logger.error("Error ejecutando analisis IA para local %s: %s", local_id, exc)
+        return None
 
 
 # --- LIGHTWEIGHT IN-MEMORY CACHE (TTL) ---
@@ -66,6 +205,11 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_MISS = object()
 _INFLIGHT_MANUAL_EXEC: set = set()
 _INFLIGHT_MANUAL_EXEC_LOCK = threading.Lock()
+_COPILOT_DOWNLOADS: Dict[str, Dict[str, Any]] = {}
+_COPILOT_DOWNLOADS_LOCK = threading.Lock()
+_COPILOT_DOWNLOAD_TTL_SECONDS = 15 * 60
+_COPILOT_EMAIL_DRAFTS: Dict[str, Dict[str, Any]] = {}
+_COPILOT_EMAIL_DRAFTS_LOCK = threading.Lock()
 
 def _env_int(name: str, default: int, min_value: int = 1, max_value: int = 3600) -> int:
     raw = os.getenv(name)
@@ -208,9 +352,12 @@ async def diagnose_file_endpoint(file: UploadFile = File(...)):
 app.include_router(recipes.router)
 app.include_router(comparisons.router)
 app.include_router(admin_tools.router)
+app.include_router(create_token_auth_router())
+_api_scheduler_task = None
+_email_scheduler_task = None
 
 async def scheduler_loop():
-    await asyncio.sleep(10) # Initial delay
+    await asyncio.sleep(min(10, WORKER_POLL_SECONDS))
     while True:
         logger.info("[Scheduler] Iniciando ciclo de importación automática...")
         try:
@@ -218,13 +365,44 @@ async def scheduler_loop():
             await run_worker_async()
         except Exception as e:
             logger.error(f"[Scheduler] Error en ciclo: {e}")
-        logger.info("[Scheduler] Durmiendo 1 hora...")
-        await asyncio.sleep(3600)
+        logger.info("[Scheduler] Durmiendo %s segundos...", WORKER_POLL_SECONDS)
+        await asyncio.sleep(WORKER_POLL_SECONDS)
+
+async def email_scheduler_loop():
+    poll_seconds = _email_scheduler_poll_seconds()
+    await asyncio.sleep(min(15, poll_seconds))
+    while True:
+        try:
+            if not supabase:
+                logger.warning("[EmailScheduler] Supabase client unavailable; skipping scheduled messaging")
+            else:
+                result = await asyncio.to_thread(
+                    run_missing_days_email_scheduler,
+                    supabase,
+                    logger=logger,
+                )
+                if result.get("executed"):
+                    logger.info("[EmailScheduler] Scheduled missing-days email executed: %s", result.get("runs"))
+                elif result.get("reason") not in {"no_due_schedules", "no_enabled_settings"}:
+                    logger.info("[EmailScheduler] Scheduled messaging skipped: %s", result)
+        except Exception as e:
+            logger.error("[EmailScheduler] Scheduled messaging failed: %s", e)
+        await asyncio.sleep(poll_seconds)
 
 @app.on_event("startup")
 async def startup_event():
+    global _api_scheduler_task, _email_scheduler_task
     logger.info("MSMALL API Starting up... routes loaded.")
-    asyncio.create_task(scheduler_loop())
+    api_scheduler_enabled = _is_api_scheduler_enabled()
+    logger.info("API scheduler enabled: %s", str(api_scheduler_enabled).lower())
+    if api_scheduler_enabled:
+        _api_scheduler_task = asyncio.create_task(scheduler_loop())
+    else:
+        logger.info("API embedded scheduler disabled; worker is the scheduler authority.")
+    email_scheduler_enabled = _is_email_scheduler_enabled()
+    logger.info("API email scheduler enabled: %s", str(email_scheduler_enabled).lower())
+    if email_scheduler_enabled and _email_scheduler_task is None:
+        _email_scheduler_task = asyncio.create_task(email_scheduler_loop())
 
 app.add_middleware(
     CORSMiddleware,
@@ -426,6 +604,12 @@ async def require_it_or_admin_access(user_id: str = Depends(get_current_user_id)
         raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere rol IT o ADMIN.")
     return access_ctx
 
+async def require_audit_read_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    access_ctx = await _get_access_context(user_id)
+    if access_ctx["role"] not in {"admin", "it", "auditor"}:
+        raise HTTPException(status_code=403, detail="Permisos insuficientes para consultar logs.")
+    return access_ctx
+
 def _get_user_mall_ids(user_id: str) -> List[str]:
     if not user_id or not supabase:
         return []
@@ -472,6 +656,32 @@ def _load_local_config_with_access(local_id: str, operator_ctx: Dict[str, Any]) 
     _ensure_operator_can_access_mall(operator_ctx, local_cfg.get("mall_id"))
     return local_cfg
 
+def _load_local_config_for_exporter(local_id: str, exporter_ctx: TokenAuthContext) -> Dict[str, Any]:
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    try:
+        res = (
+            supabase.table("locales")
+            .select("*")
+            .eq("id", local_id)
+            .maybe_single()
+            .execute()
+        )
+        local_cfg = res.data
+    except Exception as e:
+        logger.error(f"Error consultando local {local_id} para exporter: {e}")
+        raise HTTPException(status_code=500, detail="Error consultando configuración del local")
+
+    if not local_cfg:
+        raise HTTPException(status_code=404, detail="Configuración no encontrada")
+
+    validate_exporter_payload_mapping(
+        str(local_cfg.get("mall_id") or ""),
+        str(local_cfg.get("id") or local_id),
+        exporter_ctx,
+    )
+    return local_cfg
+
 def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config: Optional[Any]) -> Dict[str, Any]:
     if not runtime_config:
         return base_config
@@ -499,6 +709,9 @@ def _normalize_import_config_payload(config_data: Dict[str, Any]) -> Dict[str, A
     if not normalized.get("tipo_archivo"):
         normalized["tipo_archivo"] = normalized.get("file_type", "CSV")
     return normalized
+
+def _is_webservice_protocol(value: Any) -> bool:
+    return str(value or "").strip().upper() in {"WEBSERVICE", "API"}
 
 def _parse_bool_value(value: Any) -> Optional[bool]:
     if value is None:
@@ -672,6 +885,10 @@ def _normalize_text_for_csv(content: str) -> str:
     # Handle escaped newlines in a single-line payload (e.g., "\\n" literal separators).
     if "\n" not in text and text.count("\\n") >= 1:
         text = text.replace("\\n", "\n")
+    first_line = next((line for line in text.split("\n") if line.strip()), "")
+    first_line_lower = first_line.lower()
+    if "\t\t" in first_line and any(token in first_line_lower for token in ("fecha", "hora", "total", "bruto", "neto")):
+        text = re.sub(r"\t{2,}", "\t", text)
     return text
 
 def _decode_remote_text(raw_bytes: bytes, is_json: bool = False) -> str:
@@ -945,6 +1162,7 @@ class StoreSchema(BaseModel):
     mall_id: str
     codigo_interno: str
     nombre: str
+    email: Optional[str] = None
     rubro: Optional[str] = None
     created_at: str
     responsable: str
@@ -954,7 +1172,232 @@ class StoreSchema(BaseModel):
     mts: str
     porciento_renta: str
     upsert_activo: bool = False
+    activo: bool = True
+    fecha_inactivacion: Optional[str] = None
+    motivo_inactivacion: Optional[str] = None
     mall_nombre: Optional[str] = "Mall Plaza"
+    fecha_corte_importacion: Optional[str] = None
+
+STORE_WRITE_FIELDS = {
+    "mall_id", "codigo_interno", "nombre", "email", "rubro", "responsable",
+    "contrato_no", "piso", "tipo_negocio", "mts", "porciento_renta",
+    "upsert_activo", "renta_fija", "breakpoint_venta", "porcentaje_variable",
+    "fecha_corte_importacion", "activo", "fecha_inactivacion", "motivo_inactivacion",
+}
+
+
+def _is_store_active(row: Dict[str, Any]) -> bool:
+    return row.get("activo") is not False
+
+
+def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: Optional[str] = None) -> Dict[str, Any]:
+    data = {
+        key: value
+        for key, value in (payload or {}).items()
+        if key in STORE_WRITE_FIELDS
+    }
+    if existing_mall_id:
+        data["mall_id"] = existing_mall_id
+    if "nombre" in data:
+        data["nombre"] = str(data.get("nombre") or "").strip()
+    if "codigo_interno" in data:
+        data["codigo_interno"] = str(data.get("codigo_interno") or "").strip()
+    if data.get("email") == "":
+        data["email"] = None
+    for numeric_field in ("mts", "porciento_renta", "renta_fija", "breakpoint_venta", "porcentaje_variable"):
+        if numeric_field not in data:
+            continue
+        raw_value = data.get(numeric_field)
+        if raw_value in (None, ""):
+            data[numeric_field] = None
+            continue
+        try:
+            data[numeric_field] = float(str(raw_value).strip().replace(",", "."))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{numeric_field} debe ser numerico")
+    if "fecha_corte_importacion" in data:
+        raw_cutoff = str(data.get("fecha_corte_importacion") or "").strip()
+        if raw_cutoff:
+            try:
+                datetime.strptime(raw_cutoff, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="fecha_corte_importacion debe tener formato YYYY-MM-DD")
+            data["fecha_corte_importacion"] = raw_cutoff
+        else:
+            data["fecha_corte_importacion"] = None
+    if "fecha_inactivacion" in data:
+        raw_inactivation = str(data.get("fecha_inactivacion") or "").strip()
+        if raw_inactivation:
+            try:
+                datetime.strptime(raw_inactivation, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="fecha_inactivacion debe tener formato YYYY-MM-DD")
+            data["fecha_inactivacion"] = raw_inactivation
+        else:
+            data["fecha_inactivacion"] = None
+    if data.get("activo") is False:
+        data["upsert_activo"] = False
+        data["tipo_ejecucion"] = "MANUAL"
+        data["processing_status"] = "IDLE"
+        if not data.get("fecha_inactivacion"):
+            data["fecha_inactivacion"] = datetime.utcnow().date().isoformat()
+    elif data.get("activo") is True:
+        data["fecha_inactivacion"] = None
+        data["motivo_inactivacion"] = None
+    return data
+
+
+def _normalize_store_catalog_key(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip()).lower()
+    return "".join(
+        char for char in unicodedata.normalize("NFD", text)
+        if unicodedata.category(char) != "Mn"
+    )
+
+
+def _validate_store_catalog_values(mall_id: str, data: Dict[str, Any]) -> None:
+    fields = [field for field in ("tipo_negocio", "rubro") if field in data]
+    if not fields:
+        return
+
+    requested = {
+        field: _normalize_store_catalog_key(data.get(field))
+        for field in fields
+    }
+    missing_value = next((field for field, key in requested.items() if not key), None)
+    if missing_value:
+        raise HTTPException(status_code=400, detail=f"{missing_value} debe seleccionarse desde Catálogos Locales")
+
+    try:
+        response = (
+            supabase.table("store_field_options")
+            .select("field_name,value")
+            .eq("mall_id", mall_id)
+            .in_("field_name", fields)
+            .execute()
+        )
+    except Exception as exc:
+        logger.error("Error validando catalogos de locales mall=%s: %s", mall_id, exc)
+        raise HTTPException(status_code=400, detail="Catálogos Locales no está disponible para validar el local")
+
+    allowed: Dict[str, Set[str]] = {field: set() for field in fields}
+    for row in response.data or []:
+        field_name = str(row.get("field_name") or "")
+        if field_name in allowed:
+            allowed[field_name].add(_normalize_store_catalog_key(row.get("value")))
+
+    invalid = [
+        field for field, key in requested.items()
+        if key not in allowed.get(field, set())
+    ]
+    if invalid:
+        labels = {
+            "tipo_negocio": "Tipo de Negocio",
+            "rubro": "Rubro General",
+        }
+        raise HTTPException(
+            status_code=400,
+            detail=f"{labels[invalid[0]]} debe existir en Catálogos Locales antes de guardar el local",
+        )
+
+
+class CustomFieldOptionPayload(BaseModel):
+    id: Optional[str] = None
+    field_definition_id: Optional[str] = None
+    label: str
+    value: str
+    sort_order: int = 0
+    active: bool = True
+    parent_option_id: Optional[str] = None
+
+
+class CustomFieldDefinitionCreateRequest(BaseModel):
+    mall_id: str
+    key: str
+    label: str
+    data_type: str
+    widget_type: str
+    required: bool = False
+    active: bool = True
+    sort_order: int = 0
+    parent_field_id: Optional[str] = None
+    options: List[CustomFieldOptionPayload] = []
+
+
+class CustomFieldDefinitionUpdateRequest(BaseModel):
+    key: Optional[str] = None
+    label: Optional[str] = None
+    data_type: Optional[str] = None
+    widget_type: Optional[str] = None
+    required: Optional[bool] = None
+    active: Optional[bool] = None
+    sort_order: Optional[int] = None
+    parent_field_id: Optional[str] = None
+    options: Optional[List[CustomFieldOptionPayload]] = None
+
+
+class LocalCustomFieldValuePayload(BaseModel):
+    field_definition_id: str
+    value_text: Optional[str] = None
+    value_number: Optional[float] = None
+    value_date: Optional[str] = None
+    selected_option_id: Optional[str] = None
+
+
+class LocalCustomFieldValueUpsertRequest(BaseModel):
+    values: List[LocalCustomFieldValuePayload]
+
+class ResendTestMessageRequest(BaseModel):
+    to: str
+    subject: Optional[str] = None
+    message: Optional[str] = None
+
+class ResendSenderUpdateRequest(BaseModel):
+    from_email: str
+    from_name: str
+
+class MissingDaysEmailPreviewRequest(BaseModel):
+    mall_name: str
+    local_name: str
+    fecha_inicio: str
+    fecha_fin: str
+    missing_details: List[Dict[str, Any]]
+    report_url: Optional[str] = None
+
+class MissingDaysEmailSettingsRequest(BaseModel):
+    mall_id: str
+    notification_type: str = "missing_days_audit"
+    enabled: bool = False
+    weekdays: List[int] = []
+    send_time: str = "08:00"
+    lookback_days: int = 7
+    send_only_with_gaps: bool = True
+    cc_emails: List[str] = []
+    subject_template: Optional[str] = None
+    body_template: Optional[str] = None
+
+class MissingDaysSendNowRequest(BaseModel):
+    mall_id: str
+
+class CopilotSettingsRequest(BaseModel):
+    enabled: bool = False
+    provider: str = "openai"
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    clear_api_key: bool = False
+
+class CopilotChatMessage(BaseModel):
+    role: str
+    content: str
+
+class CopilotChatRequest(BaseModel):
+    mall_id: str
+    message: str
+    history: List[CopilotChatMessage] = []
+
+class CopilotEmailSendRequest(BaseModel):
+    mall_id: str
+    draft_id: str
 
 class RemoteRequest(BaseModel):
     protocolo: str = "SFTP"
@@ -966,6 +1409,74 @@ class RemoteRequest(BaseModel):
     tipo_archivo: str = "CSV"
     has_header: Optional[bool] = None
     data_start_row: Optional[int] = None
+
+class RemoteConnectionCreateRequest(BaseModel):
+    mall_id: str
+    nombre: str
+    protocolo: str = "SFTP"
+    host: str
+    puerto: int = 22
+    usuario: str
+    password: str
+    ruta_base: Optional[str] = None
+
+class RemoteConnectionUpdateRequest(BaseModel):
+    nombre: Optional[str] = None
+    protocolo: Optional[str] = None
+    host: Optional[str] = None
+    puerto: Optional[int] = None
+    usuario: Optional[str] = None
+    password: Optional[str] = None
+    ruta_base: Optional[str] = None
+
+class RemoteConnectionResponse(BaseModel):
+    id: str
+    mall_id: str
+    nombre: str
+    protocolo: str
+    host: str
+    puerto: int
+    usuario: str
+    password: str = ""
+    password_masked: Optional[str] = ""
+    has_password: bool = False
+    ruta_base: Optional[str] = None
+    created_at: Optional[str] = None
+
+class ConnectionRunSchema(BaseModel):
+    id: str
+    mall_id: str
+    local_id: Optional[str] = None
+    connection_id: Optional[str] = None
+    run_type: str
+    status: str
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    started_at: str
+    finished_at: str
+    duration_ms: int = 0
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+class ConnectionStatusResponse(BaseModel):
+    mall_id: str
+    summary: Dict[str, int]
+    recent_runs: List[Dict[str, Any]]
+    connections: List[Dict[str, Any]]
+
+class ConnectionFailuresResponse(BaseModel):
+    mall_id: str
+    date: str
+    count: int
+    failures: List[Dict[str, Any]]
+
+class ConnectionRetryResponse(BaseModel):
+    status: str
+    connection_id: str
+    mall_id: Optional[str] = None
+    run: Dict[str, Any]
+    retry_attempt: Optional[Dict[str, Any]] = None
+    policy: Dict[str, Any]
 
 class ImportConfigSchema(BaseModel):
     id: Optional[str] = None
@@ -1030,7 +1541,12 @@ def insert_load_log(
     batch_id: Optional[str] = None,
     detalles: Optional[List[Dict]] = None,
     mall_id: Optional[str] = None,
-    local_id: Optional[str] = None
+    local_id: Optional[str] = None,
+    mall_nombre: Optional[str] = None,
+    canal: Optional[str] = None,
+    records_processed: Optional[int] = None,
+    error_count: Optional[int] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
     """Inserts a log into Supabase 'logs_carga' table."""
     if not supabase:
@@ -1038,34 +1554,97 @@ def insert_load_log(
         return
     
     try:
-        log_data = {
-            "fecha_hora": datetime.now().isoformat(),
-            "local_nombre": local_nombre,
-            "archivo": archivo,
-            "estado": estado,
-            "mensaje": mensaje,
-            "batch_id": batch_id,
-            "detalles": detalles or []
-        }
-        if mall_id:
-            log_data["mall_id"] = mall_id
-        if local_id:
-            log_data["local_id"] = local_id
+        log_data = build_load_log_payload(
+            local_nombre=local_nombre,
+            archivo=archivo,
+            estado=estado,
+            mensaje=mensaje,
+            batch_id=batch_id,
+            detalles=detalles,
+            mall_id=mall_id,
+            mall_nombre=mall_nombre,
+            local_id=local_id,
+            canal=canal,
+            records_processed=records_processed,
+            error_count=error_count,
+            metadata=metadata,
+        )
         logger.info(f"Intentando guardar log en Supabase: {local_nombre} - {archivo} - {estado}")
-        try:
-            res = supabase.table("logs_carga").insert(log_data).execute()
-        except Exception as insert_err:
-            # Backward compatibility while DB migration is not applied yet.
-            err_txt = str(insert_err).lower()
-            if ("mall_id" in err_txt or "local_id" in err_txt) and ("column" in err_txt or "schema" in err_txt):
-                legacy_payload = {k: v for k, v in log_data.items() if k not in {"mall_id", "local_id"}}
-                res = supabase.table("logs_carga").insert(legacy_payload).execute()
-            else:
-                raise
-        logger.info(f"Log guardado exitosamente. Respuesta: {res}")
+        insert_load_log_row(supabase, log_data, logger=logger)
+        logger.info("Log guardado exitosamente.")
     except Exception as e:
         logger.error(f"Error CRÍTICO insertando log en Supabase: {e}")
         logger.error(f"Data intentada: {log_data}")
+
+def _split_transform_fields(raw_fields: Any) -> List[str]:
+    if isinstance(raw_fields, list):
+        return [str(field).strip() for field in raw_fields if str(field or "").strip()]
+    return [part.strip() for part in str(raw_fields or "").split(",") if part.strip()]
+
+
+def _clean_generated_invoice_piece(value: Any) -> str:
+    text = str(value or "").strip().strip("'\"")
+    text = re.sub(r"\s+", "", text)
+    text = text.replace("/", "").replace("\\", "").replace("-", "")
+    return text
+
+
+def _format_generated_invoice(local_code: Any, sale_date: Any, sequence: int) -> str:
+    local_part = _clean_generated_invoice_piece(local_code)
+    date_part = _clean_generated_invoice_piece(str(sale_date or "").replace("-", ""))
+    return f"{local_part}{date_part}{sequence:04d}"
+
+
+def _parse_mapped_decimal(value: Any, decimal_separator: Any = ".") -> float:
+    if value is None:
+        return 0.0
+
+    text = str(value).strip().strip("'\"")
+    if not text:
+        return 0.0
+
+    text = re.sub(r"\s+", "", text)
+    text = text.replace("$", "").replace("RD", "").replace("rd", "")
+    if decimal_separator == ",":
+        text = text.replace(".", "")
+        if text.count(",") > 1:
+            sign = "-" if text.startswith("-") else ""
+            unsigned = text[1:] if sign else text
+            parts = unsigned.split(",")
+            if len(parts) >= 3 and all(len(part) == 3 for part in parts[-2:]):
+                digits = "".join(parts)
+                if len(digits) > 6:
+                    text = f"{sign}{digits[:-6]}.{digits[-6:]}"
+                else:
+                    text = f"{sign}0.{digits.zfill(6)}"
+            else:
+                text = "".join(parts[:-1]) + "." + parts[-1]
+                if sign and not text.startswith("-"):
+                    text = f"-{text}"
+        else:
+            text = text.replace(",", ".")
+    else:
+        text = text.replace(",", "")
+
+    try:
+        return float(text)
+    except Exception:
+        return 0.0
+
+
+def _parse_import_cutoff_date(raw: Any) -> Optional[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _is_import_date_closed(sale_date: str, cutoff_date: Optional[str]) -> bool:
+    return bool(sale_date and cutoff_date and sale_date <= cutoff_date)
+
 
 def process_file_content(content: str, filename: str, config: Dict[str, Any], batch_id: str, mall_id: str = None):
     """
@@ -1074,6 +1653,8 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
     """
     mapping = config.get("mapping", {})
     constants = config.get("constants", {})
+    decimal_separator = constants.get("_decimal_separator", ".")
+    import_cutoff_date = _parse_import_cutoff_date(config.get("fecha_corte_importacion"))
     tipo_archivo = config.get("tipo_archivo", "CSV").upper()
     local_nombre = config.get("nombre", "Desconocido")
     effective_mall_id = mall_id or config.get("mall_id")
@@ -1221,7 +1802,8 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         for field in req_sys_fields:
             has_mapping = field in effective_mapping and effective_mapping[field]
             has_constant = field in constants and constants[field]
-            if not (has_mapping or has_constant):
+            has_transform = constants.get(f"_{field}_mode") in ("generated_sequence", "concat")
+            if not (has_mapping or has_constant or has_transform):
                 missing_mapping.append(field)
         
         if missing_mapping:
@@ -1233,6 +1815,9 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 line_no = i + line_offset
                 record = {}
                 normalized_row = _normalize_csv_row_keys(row) if isinstance(row, dict) else {}
+                non_empty_values = [str(value or "").strip() for value in normalized_row.values() if str(value or "").strip()]
+                if non_empty_values and all(re.fullmatch(r"[-_=]+", value) for value in non_empty_values):
+                    continue
                 lowered_row = {k.lower(): v for k, v in normalized_row.items()}
                 # 1. Apply Mapping
                 for sys_field, header in effective_mapping.items():
@@ -1279,6 +1864,16 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                      errors.append({"linea": line_no, "error": "Falta fecha_venta"})
                      continue
 
+                local_code = str(record.get('local_codigo') or "").strip().strip("'\"")
+                if not local_code:
+                    errors.append({
+                        "linea": line_no,
+                        "error": "Falta local_codigo. No se puede cargar una venta sin un código de local válido."
+                    })
+                    continue
+                record['local_codigo'] = local_code
+                record['_source_line'] = line_no
+
                 # Normalize Date with format-specific or comprehensive support
                 raw_date = str(record['fecha_venta']).strip().strip("'\"")
                 parsed_date = None
@@ -1306,14 +1901,15 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 elif explicit_format == 'YYYY/MM/DD':
                     date_formats = ['%Y/%m/%d']
                 elif explicit_format == 'YYYY-MM-DD':
-                    date_formats = ['%Y-%m-%d', '%Y/%m/%d']
+                    date_formats = ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f', '%Y/%m/%d']
                 elif explicit_format == 'timestamp':
                     date_formats = [
                         '%Y-%m-%dT%H:%M:%S.%fZ',
                         '%Y-%m-%dT%H:%M:%S.%f',
                         '%Y-%m-%dT%H:%M:%SZ',
                         '%Y-%m-%dT%H:%M:%S',
-                        '%Y-%m-%d %H:%M:%S'
+                        '%Y-%m-%d %H:%M:%S',
+                        '%Y-%m-%d %H:%M:%S.%f'
                     ]
                 else:  # 'auto' - try all formats
                     date_formats = [
@@ -1322,6 +1918,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         '%Y-%m-%dT%H:%M:%SZ',     # ISO 8601 with Z (2026-02-01T14:30:00Z)
                         '%Y-%m-%dT%H:%M:%S',      # ISO 8601 with time (2026-02-01T14:30:00)
                         '%Y-%m-%d %H:%M:%S',      # SQL datetime (2026-02-01 14:30:00)
+                        '%Y-%m-%d %H:%M:%S.%f',   # SQL datetime with milliseconds (2026-02-01 14:30:00.000)
                         '%Y-%m-%d',               # ISO 8601 date only (2026-02-01)
                         '%d/%m/%Y',               # DD/MM/YYYY (Dominican/Spanish format)
                         '%d%m%Y',                 # DDmmYYYY (05012026)
@@ -1353,15 +1950,55 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 else:
                     errors.append({"linea": line_no, "error": f"Formato de fecha inválido: {raw_date}"})
                     continue
+
+                if _is_import_date_closed(record["fecha_venta"], import_cutoff_date):
+                    errors.append({
+                        "linea": line_no,
+                        "error": f"Fecha {record['fecha_venta']} pertenece a un periodo cerrado (cierre hasta {import_cutoff_date})."
+                    })
+                    continue
+
+                def resolve_transform_value(part: str) -> str:
+                    clean_part = str(part or "").strip()
+                    if clean_part in ("numero_registro", "linea", "_line_number"):
+                        return f"{i + 1:04d}"
+                    if clean_part == "fecha_venta" and record.get("fecha_venta"):
+                        return str(record.get("fecha_venta")).replace("-", "")
+                    if clean_part in record:
+                        return _clean_cell_value(record.get(clean_part))
+
+                    header_key = _clean_csv_header_name(clean_part)
+                    if header_key in normalized_row:
+                        return _clean_cell_value(normalized_row[header_key])
+                    if header_key.lower() in lowered_row:
+                        return _clean_cell_value(lowered_row[header_key.lower()])
+                    return ""
+
+                for sys_field in list(req_sys_fields) + ["total_impuestos", "total_neto", "comprobante", "hora_transaccion"]:
+                    transform_mode = constants.get(f"_{sys_field}_mode")
+                    if transform_mode == "generated_sequence" and sys_field == "factura_numero":
+                        record["factura_numero"] = _format_generated_invoice(
+                            record.get("local_codigo"),
+                            record.get("fecha_venta"),
+                            i + 1
+                        )
+                    elif transform_mode == "concat":
+                        transform_fields = _split_transform_fields(constants.get(f"_{sys_field}_concat_fields"))
+                        separator = str(constants.get(f"_{sys_field}_concat_separator", "-"))
+                        values = [
+                            _clean_generated_invoice_piece(resolve_transform_value(part))
+                            for part in transform_fields
+                        ]
+                        values = [value for value in values if value]
+                        if values:
+                            record[sys_field] = separator.join(values)
                 
                 # Ensure numeric types
                 for num_field in ['total_bruto', 'total_impuestos', 'total_neto']:
-                    val = record.get(num_field, 0.0)
-                    if val is None: val = 0.0
-                    try:
-                        record[num_field] = float(str(val).replace(',', '').strip().strip("'\""))
-                    except:
-                        record[num_field] = 0.0
+                    record[num_field] = _parse_mapped_decimal(
+                        record.get(num_field, 0.0),
+                        decimal_separator
+                    )
                 
                 # Validation: Reject if Total/Net is 0 but Tax > 0
                 if record['total_bruto'] == 0:
@@ -1426,6 +2063,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         # 2. Transform Keys
         for r in records_to_insert:
             new_r = r.copy()
+            source_line = int(new_r.pop('_source_line', 0) or 0)
             
             # Map System Fields -> DB Columns
             if 'factura_numero' in new_r:
@@ -1441,7 +2079,9 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 if time_col in new_r and new_r[time_col]:
                     val = str(new_r[time_col]).strip().strip("'\"")
                     if val.isdigit():
-                        if int(val) < 24:
+                        if int(val) == 24:
+                            new_r[time_col] = "00:00:00"
+                        elif int(val) < 24:
                             new_r[time_col] = f"{int(val):02d}:00:00"
                         elif len(val) in [5, 6]:
                             # HHMMSS -> HH:MM:SS
@@ -1503,14 +2143,14 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         f"Código local '{l_code}' no encontrado"
                         f"{f' en el mall {effective_mall_id}' if effective_mall_id else ''}."
                     )
-                    errors.append({"linea": 0, "error": msg})
+                    errors.append({"linea": source_line, "error": msg})
                     logger.warning(msg)
                     continue
             else:
-                # If no local_codigo provided, use context mall_id
-                if effective_mall_id:
-                    new_r['mall_id'] = effective_mall_id
-                    logger.info(f"Using context mall_id: {effective_mall_id} (no local_codigo provided)") 
+                msg = "Falta local_codigo. No se puede cargar una venta sin un código de local válido."
+                errors.append({"linea": source_line, "error": msg})
+                logger.warning(msg)
+                continue
             
             final_records.append(new_r)
         
@@ -1668,7 +2308,11 @@ async def ingesta_ventas(
             mensaje,
             batch_id,
             errors,
-            mall_id=mall_id
+            mall_id=mall_id,
+            canal="API",
+            records_processed=count,
+            error_count=len(errors or []),
+            metadata={"source": "direct_ingest_api"},
         )
         
         return {
@@ -1683,23 +2327,66 @@ async def ingesta_ventas(
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- EXPLORACIÓN DE DIRECTORIOS LOCALES ---
+def _default_local_explorer_root() -> str:
+    import os
+    import sys
+
+    # Optional override for local installs / containers.
+    env_root = str(os.getenv("LOCAL_EXPLORER_ROOT") or "").strip()
+    if env_root and os.path.isdir(env_root):
+        return os.path.abspath(env_root)
+
+    if os.name == "nt":
+        system_drive = str(os.getenv("SystemDrive") or "C:").rstrip("\\/")
+        candidate = f"{system_drive}\\"
+        return candidate if os.path.isdir(candidate) else "C:\\"
+
+    if sys.platform == "darwin" and os.path.isdir("/Users"):
+        return "/Users"
+
+    for candidate in ["/home", os.path.expanduser("~"), "/"]:
+        if candidate and os.path.isdir(candidate):
+            return os.path.abspath(candidate)
+    return "/"
+
+
+def _resolve_local_explorer_path(requested_path: Optional[str]) -> str:
+    import os
+
+    raw = str(requested_path or "").strip()
+    if not raw:
+        return _default_local_explorer_root()
+
+    normalized = os.path.abspath(raw)
+    cwd_path = os.path.abspath(os.getcwd())
+    # Keep "/" navigable (clicking ".." from /Users or /home should reach filesystem root).
+    default_markers = {".", "./", "/app", cwd_path}
+
+    # When the UI opens the browser for the first time it often sends '.' which becomes /app
+    # in containerized environments. Prefer a user-friendly root for LOCAL browsing.
+    if raw in default_markers or normalized in default_markers:
+        return _default_local_explorer_root()
+
+    if os.path.exists(normalized):
+        return normalized
+
+    # If requested path doesn't exist, fall back to a sensible root instead of /app.
+    return _default_local_explorer_root()
+
+
 @app.get("/api/v1/explorar-directorio")
 async def explorar_directorio(
-    path: str = Query("/", alias="ruta"),
+    path: Optional[str] = Query(None, alias="ruta"),
     operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
 ):
     """
     Endpoint para listar directorios locales. 
     Permite al usuario navegar por carpetas para configurar la importación.
     """
-    import os
     try:
-        # Normalizar ruta para el OS actual
-        target_path = os.path.abspath(path)
-        
-        if not os.path.exists(target_path):
-            # Si no existe, intentar con el home del usuario o raíz
-            target_path = os.path.expanduser("~")
+        import os
+        # Resolver ruta inicial amigable según OS (evita caer en /app por defecto).
+        target_path = _resolve_local_explorer_path(path)
             
         items = []
         # Añadir opción para subir de nivel
@@ -1726,7 +2413,6 @@ async def explorar_directorio(
         raise HTTPException(status_code=500, detail=f"Error remoto: {str(e)}")
 
 # --- UTILIDADES DE CONEXIÓN REMOTA ---
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 executor = ThreadPoolExecutor(max_workers=20) # Aumentado de 5 a 20 para evitar agotamiento
@@ -1822,6 +2508,21 @@ def _test_remote_connection_sync(req: RemoteRequest):
     logger.info(f"Probando conexión remota sync a {req.host}:{req.puerto} ({req.protocolo})")
     start_time = time.time()
     try:
+        if str(req.protocolo or "").strip().upper() == "API":
+            _test_api_authorization(req.host, req.usuario, req.password)
+            duration = time.time() - start_time
+            logger.info("API probada en %.2fs", duration)
+            return {"status": "success", "message": f"API autenticada correctamente ({duration:.2f}s)"}
+        if _is_webservice_protocol(req.protocolo):
+            url = append_webservice_query_param(req.host, "page", 1)
+            payload = fetch_webservice_json(url, (req.password or "").strip() or None, 30)
+            records = extract_webservice_records(payload)
+            duration = time.time() - start_time
+            logger.info("Webservice probado en %.2fs registros=%s", duration, len(records))
+            return {
+                "status": "success",
+                "message": f"Webservice respondió correctamente ({duration:.2f}s). Registros detectados: {len(records)}"
+            }
         if req.protocolo == "SFTP":
             ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
             sftp.close()
@@ -1829,8 +2530,6 @@ def _test_remote_connection_sync(req: RemoteRequest):
         elif req.protocolo == "FTP":
             ftp = get_ftp_client(req.host, req.puerto, req.usuario, req.password)
             ftp.quit()
-        elif req.protocolo == "API":
-            _test_api_authorization(req.host, req.usuario, req.password)
         else:
             raise ValueError(f"Protocolo no soportado: {req.protocolo}")
         duration = time.time() - start_time
@@ -1937,6 +2636,136 @@ async def list_remote_files(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/v1/remote-connections", response_model=List[RemoteConnectionResponse])
+async def get_remote_connections(
+    mall_id: str = Query(..., alias="mall_id"),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return _sensitive_ops_service().list_remote_connections(
+            mall_id=mall_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing remote connections: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron cargar las conexiones remotas.")
+
+@app.post("/api/v1/remote-connections", response_model=RemoteConnectionResponse)
+async def create_remote_connection(
+    payload: RemoteConnectionCreateRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return _sensitive_ops_service().create_remote_connection(
+            payload=payload.dict(),
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error creating remote connection: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo guardar la conexión remota.")
+
+@app.patch("/api/v1/remote-connections/{connection_id}", response_model=RemoteConnectionResponse)
+async def update_remote_connection(
+    connection_id: str,
+    payload: RemoteConnectionUpdateRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return _sensitive_ops_service().update_remote_connection(
+            connection_id=connection_id,
+            payload=payload.dict(exclude_unset=True),
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conexión remota no encontrada.")
+    except Exception as e:
+        logger.error(f"Error updating remote connection {connection_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo actualizar la conexión remota.")
+
+@app.delete("/api/v1/remote-connections/{connection_id}", status_code=status.HTTP_200_OK)
+async def delete_remote_connection(
+    connection_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        _sensitive_ops_service().delete_remote_connection(
+            connection_id=connection_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+        return {"status": "success", "message": "Conexión remota eliminada correctamente."}
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conexión remota no encontrada.")
+    except Exception as e:
+        logger.error(f"Error deleting remote connection {connection_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo eliminar la conexión remota.")
+
+@app.get("/api/v1/load-logs", status_code=status.HTTP_200_OK)
+async def get_load_logs_secure(
+    mall_id: Optional[str] = Query(None, alias="mall_id"),
+    local_id: Optional[str] = Query(None, alias="local_id"),
+    start_date: Optional[str] = Query(None, alias="start_date"),
+    end_date: Optional[str] = Query(None, alias="end_date"),
+    limit: int = Query(1000, ge=1, le=2000),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    try:
+        effective_mall_id = mall_id
+        if not effective_mall_id:
+            user_malls = _get_user_mall_ids(operator_ctx.get("user_id"))
+            if len(user_malls) == 1:
+                effective_mall_id = user_malls[0]
+            elif len(user_malls) > 1:
+                raise HTTPException(status_code=400, detail="Ambiguous context. Please select a mall (mall_id).")
+            raise HTTPException(status_code=403, detail="No mall assigned to user.")
+        return _sensitive_ops_service().list_load_logs(
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+            mall_id=effective_mall_id,
+            local_id=local_id,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing load logs: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron cargar los logs de carga.")
+
+def _clear_load_logs_via_service(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    return _sensitive_ops_service().clear_load_logs(
+        mall_id=mall_id,
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+    )
+
+@app.delete("/api/v1/load-logs", status_code=status.HTTP_200_OK)
+async def clear_load_logs_secure(
+    mall_id: str = Query(..., alias="mall_id"),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return _clear_load_logs_via_service(mall_id, operator_ctx)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error clearing load logs for mall {mall_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo limpiar el historial de cargas.")
+
 @app.delete("/api/v1/audit/logs", status_code=status.HTTP_200_OK)
 async def clear_load_logs(
     mall_id: str = Query(..., alias="mall_id"),
@@ -1945,81 +2774,131 @@ async def clear_load_logs(
     """
     Clears load audit logs only for the selected mall.
     """
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Supabase not configured")
-
     try:
-        # Non-admin users must be explicitly assigned to the target mall.
-        if operator_ctx.get("role") != "admin":
-            membership = supabase.table("usuarios_malls") \
-                .select("mall_id") \
-                .eq("usuario_id", operator_ctx.get("user_id")) \
-                .eq("mall_id", mall_id) \
-                .limit(1) \
-                .execute()
-            if not membership.data:
-                raise HTTPException(
-                    status_code=403,
-                    detail="No tienes permisos para limpiar historial en este mall."
-                )
-
-        stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
-        stores = stores_res.data or []
-        store_ids = [s.get("id") for s in stores if s.get("id")]
-        store_names = [s.get("nombre") for s in stores if s.get("nombre")]
-
-        if not store_ids and not store_names:
-            return {
-                "status": "success",
-                "message": "No hay locales asociados al mall seleccionado.",
-                "deleted_count": 0
-            }
-
-        deleted_count = 0
-        try:
-            # Primary path: tenant-aware logs.
-            delete_by_mall = supabase.table("logs_carga").delete().eq("mall_id", mall_id).execute()
-            deleted_count += len(delete_by_mall.data or [])
-
-            # Legacy fallback rows (before migration): mall_id null + local_id/local_nombre lookup.
-            if store_ids:
-                delete_legacy_by_local = (
-                    supabase.table("logs_carga")
-                    .delete()
-                    .is_("mall_id", "null")
-                    .in_("local_id", store_ids)
-                    .execute()
-                )
-                deleted_count += len(delete_legacy_by_local.data or [])
-
-            if store_names:
-                delete_legacy_by_name = (
-                    supabase.table("logs_carga")
-                    .delete()
-                    .is_("mall_id", "null")
-                    .is_("local_id", "null")
-                    .in_("local_nombre", store_names)
-                    .execute()
-                )
-                deleted_count += len(delete_legacy_by_name.data or [])
-        except Exception:
-            # Backward compatibility while mall_id/local_id columns are not migrated yet.
-            if store_names:
-                legacy_delete = supabase.table("logs_carga").delete().in_("local_nombre", store_names).execute()
-                deleted_count += len(legacy_delete.data or [])
-
-        logger.info(f"Cleared load logs for mall {mall_id}. Deleted: {deleted_count}")
-        return {
-            "status": "success",
-            "message": "Historial de auditoría limpiado correctamente.",
-            "deleted_count": deleted_count
-        }
-
+        return _clear_load_logs_via_service(mall_id, operator_ctx)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error clearing logs for mall {mall_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error clearing logs for mall {mall_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo limpiar el historial de auditoría.")
+
+@app.post("/api/v1/locales/{local_id}/reactivate-processing", status_code=status.HTTP_200_OK)
+async def reactivate_local_processing(
+    local_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return _sensitive_ops_service().reactivate_local_processing(
+            local_id=local_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Local no encontrado.")
+    except Exception as e:
+        logger.error(f"Error reactivating local {local_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo reactivar el local.")
+
+@app.get("/api/v1/connections/status", response_model=ConnectionStatusResponse)
+async def get_connections_status(
+    mall_id: str = Query(..., alias="mall_id"),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access)
+):
+    try:
+        return _connection_monitor_service().get_status_summary(
+            mall_id=mall_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting connection status for mall {mall_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo obtener el estado de conexiones.")
+
+@app.get("/api/v1/connections/failures", response_model=ConnectionFailuresResponse)
+async def get_connections_failures(
+    mall_id: str = Query(..., alias="mall_id"),
+    date_str: str = Query(..., alias="date"),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access)
+):
+    try:
+        return _connection_monitor_service().get_failures_by_date(
+            mall_id=mall_id,
+            run_date=date_str,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting connection failures mall={mall_id} date={date_str}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron cargar las fallas de conexiones.")
+
+@app.post("/api/v1/connections/retry-failed", status_code=status.HTTP_200_OK)
+async def retry_failed_connections_batch(
+    mall_id: str = Query(..., alias="mall_id"),
+    date_str: str = Query(..., alias="date"),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return await asyncio.to_thread(
+            _connection_monitor_service().execute_batch_retry_failed,
+            mall_id=mall_id,
+            run_date=date_str,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RetryPolicyBlocked as e:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": e.message,
+                "reason": e.code,
+                "retry_after_seconds": e.retry_after_seconds,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error batch retry failed connections mall={mall_id} date={date_str}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudieron ejecutar los reintentos en lote.")
+
+@app.post("/api/v1/connections/{connection_id}/retry", response_model=ConnectionRetryResponse)
+async def retry_connection_manual(
+    connection_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    try:
+        return await asyncio.to_thread(
+            _connection_monitor_service().execute_manual_retry,
+            connection_id=connection_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conexión remota no encontrada.")
+    except RetryPolicyBlocked as e:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": e.message,
+                "reason": e.code,
+                "retry_after_seconds": e.retry_after_seconds,
+                "attempt_no": e.attempt_no,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error manual retry connection {connection_id}: {sanitize_sensitive_ops_error(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo ejecutar el reintento de conexión.")
 
 def _read_remote_headers_sync(req: RemoteRequest):
     content = ""
@@ -2114,6 +2993,7 @@ async def get_stores():
           "mall_id": "c23e99b6-8feb-4be8-8842-86c263bc5cad",
           "codigo_interno": "l002",
           "nombre": "Adidas",
+          "email": "notificaciones@adidas.example",
           "rubro": "Deporte",
           "created_at": "2026-01-27T15:33:02",
           "responsable": "Jose Perez",
@@ -2125,20 +3005,217 @@ async def get_stores():
         }
     ]
 
+
+@app.post("/api/v1/locales", status_code=status.HTTP_201_CREATED)
+async def create_store_backend(
+    payload: Dict[str, Any] = Body(...),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    data = _sanitize_store_write_payload(payload)
+    mall_id = str(data.get("mall_id") or "").strip()
+    if not mall_id:
+        raise HTTPException(status_code=400, detail="mall_id requerido")
+    if not data.get("nombre") or not data.get("codigo_interno"):
+        raise HTTPException(status_code=400, detail="nombre y codigo_interno son requeridos")
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    _validate_store_catalog_values(mall_id, data)
+    try:
+        response = supabase.table("locales").insert(data).execute()
+        if not response.data:
+            raise ValueError("No se recibió el local creado desde Supabase")
+        row = response.data[0]
+        publish_operations_event(
+            supabase,
+            mall_id=mall_id,
+            local_id=row.get("id"),
+            event_type=EVENT_LOCAL_UPDATED,
+            source="LOCAL_MAINTENANCE",
+            payload={"action": "created", "local": row, "updated_by": operator_ctx.get("email") or operator_ctx.get("user_id")},
+            logger=logger,
+        )
+        return row
+    except Exception as e:
+        logger.error("Error creando local mall=%s user=%s: %s", mall_id, operator_ctx.get("user_id"), e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/v1/locales/{local_id}")
+async def update_store_backend(
+    local_id: str,
+    payload: Dict[str, Any] = Body(...),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    existing = supabase.table("locales").select("*").eq("id", local_id).maybe_single().execute().data
+    if not existing:
+        raise HTTPException(status_code=404, detail="Local no encontrado")
+    mall_id = str(existing.get("mall_id") or "")
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    data = _sanitize_store_write_payload(payload, existing_mall_id=mall_id)
+    data.pop("mall_id", None)
+    if "nombre" in data and not data.get("nombre"):
+        raise HTTPException(status_code=400, detail="nombre es requerido")
+    if "codigo_interno" in data and not data.get("codigo_interno"):
+        raise HTTPException(status_code=400, detail="codigo_interno es requerido")
+    if not data:
+        raise HTTPException(status_code=400, detail="No hay campos válidos para actualizar")
+    _validate_store_catalog_values(mall_id, data)
+    try:
+        response = supabase.table("locales").update(data).eq("id", local_id).execute()
+        if not response.data:
+            raise ValueError("No se recibió el local actualizado desde Supabase")
+        row = response.data[0]
+        event_type = EVENT_LOCAL_UPDATED
+        if "activo" in data and existing.get("activo") != data.get("activo"):
+            event_type = EVENT_LOCAL_ACTIVATED if data.get("activo") is not False else EVENT_LOCAL_DEACTIVATED
+        publish_operations_event(
+            supabase,
+            mall_id=mall_id,
+            local_id=local_id,
+            event_type=event_type,
+            source="LOCAL_MAINTENANCE",
+            payload={
+                "action": "updated",
+                "changed_fields": sorted(data.keys()),
+                "previous": existing,
+                "local": row,
+                "updated_by": operator_ctx.get("email") or operator_ctx.get("user_id"),
+            },
+            severity="WARNING" if event_type == EVENT_LOCAL_DEACTIVATED else "INFO",
+            logger=logger,
+        )
+        return row
+    except Exception as e:
+        logger.error("Error actualizando local=%s user=%s: %s", local_id, operator_ctx.get("user_id"), e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v1/locales/{local_id}", status_code=status.HTTP_200_OK)
+async def delete_store_backend(
+    local_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    existing = supabase.table("locales").select("id,mall_id").eq("id", local_id).maybe_single().execute().data
+    if not existing:
+        raise HTTPException(status_code=404, detail="Local no encontrado")
+    _ensure_operator_can_access_mall(operator_ctx, str(existing.get("mall_id") or ""))
+    try:
+        supabase.table("locales").delete().eq("id", local_id).execute()
+        return {"status": "success"}
+    except Exception as e:
+        logger.error("Error eliminando local=%s user=%s: %s", local_id, operator_ctx.get("user_id"), e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/locales/custom-fields")
+async def list_local_custom_fields(
+    mall_id: str = Query(...),
+    include_inactive: bool = Query(True),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    return _local_custom_fields_service().list_definitions(mall_id, include_inactive=include_inactive)
+
+
+@app.post("/api/v1/locales/custom-fields")
+async def create_local_custom_field(
+    request: CustomFieldDefinitionCreateRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    return _local_custom_fields_service().create_definition(
+        request.dict(),
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+    )
+
+
+@app.patch("/api/v1/locales/custom-fields/{field_id}")
+async def update_local_custom_field(
+    field_id: str,
+    request: CustomFieldDefinitionUpdateRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    return _local_custom_fields_service().update_definition(
+        field_id,
+        request.dict(exclude_unset=True),
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+    )
+
+
+@app.get("/api/v1/locales/{local_id}/custom-fields")
+async def get_local_custom_fields(
+    local_id: str,
+    include_inactive: bool = Query(False),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    return _local_custom_fields_service().get_local_fields(
+        local_id,
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        include_inactive=include_inactive,
+    )
+
+
+@app.put("/api/v1/locales/{local_id}/custom-fields")
+async def upsert_local_custom_fields(
+    local_id: str,
+    request: LocalCustomFieldValueUpsertRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    return _local_custom_fields_service().upsert_local_values(
+        local_id,
+        [value.dict(exclude_unset=True) for value in request.values],
+        operator_ctx=operator_ctx,
+        ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+    )
+
 # --- AI & INSIGHTS ENDPOINTS ---
 @app.get("/api/v1/insights/alerts")
 async def get_intelligent_alerts(local_id: Optional[str] = None):
-    """Fetch recent intelligent alerts (real check)."""
-    if not supabase: return []
+    """Fetch a real antifraud snapshot for a store."""
+    if not supabase or not local_id:
+        return {
+            "status": "no_data",
+            "source": "none",
+            "alerts": [],
+            "summary": {
+                "risk_state": "NO_DATA",
+                "risk_label": "Sin Datos",
+                "description": "Selecciona un local con ventas para evaluar el semaforo.",
+                "last_evaluated_at": None,
+                "has_recent_run": False,
+                "risk_score": 0,
+                "alerts_count": 0,
+                "analysis_window_days": 30,
+            },
+        }
     try:
-        # Search in 'alertas_inteligentes' table if exists
-        query = supabase.table("alertas_inteligentes").select("*").order("created_at", desc=True)
-        if local_id:
-            query = query.eq("local_id", local_id)
-        res = query.limit(5).execute()
-        return res.data if res.data else []
-    except:
-        return []
+        return await asyncio.to_thread(
+            lambda: _analytics_service().get_alert_snapshot(local_id, allow_live_refresh=True)
+        )
+    except Exception as exc:
+        logger.error("Error obteniendo snapshot IA para local %s: %s", local_id, exc)
+        return {
+            "status": "error",
+            "source": "none",
+            "alerts": [],
+            "summary": {
+                "risk_state": "NO_DATA",
+                "risk_label": "Sin Datos",
+                "description": "No se pudo evaluar el semaforo en este momento.",
+                "last_evaluated_at": None,
+                "has_recent_run": False,
+                "risk_score": 0,
+                "alerts_count": 0,
+                "analysis_window_days": 30,
+            },
+        }
 
 @app.get("/api/v1/insights/benchmarking/{local_id}")
 async def get_benchmarking(local_id: str):
@@ -2365,6 +3442,8 @@ class CubeRequest(BaseModel):
     agrupacion: str = "DIA" # DIA, SEMANA, MES
     metrica: str = "total_neto" # total_neto, total_bruto, transacciones
     local_id: Optional[str] = None
+    custom_dimension_key: Optional[str] = None
+    custom_filters: Optional[Dict[str, Any]] = None
 
 # --- INTELLIGENT AUTO-MAPPING ---
 SYSTEM_FIELDS_SYNONYMS = {
@@ -2377,6 +3456,14 @@ SYSTEM_FIELDS_SYNONYMS = {
     "comprobante": ["ticket", "vourcher", "comprobante", "recibo", "doc_type", "ncf", "fiscalData.ncf"],
     "hora_transaccion": ["time", "hora", "trans_hour", "momento"]
 }
+
+
+def _remote_analysis_timeout_seconds(filename: Optional[str], tipo_archivo: Optional[str] = None) -> float:
+    normalized_type = str(tipo_archivo or "").strip().upper()
+    normalized_name = str(filename or "").strip().lower()
+    if normalized_type == "JSON" or normalized_name.endswith(".json"):
+        return 420.0
+    return 180.0
 
 
 
@@ -2567,11 +3654,18 @@ async def analyze_remote_mapping(
     try:
         content = ""
         loop = asyncio.get_event_loop()
+        analysis_timeout_seconds = _remote_analysis_timeout_seconds(req.ruta, req.tipo_archivo)
         
         def _read_remote_sample():
             # Determine if we should read all (JSON) or sample (CSV)
             is_json = req.tipo_archivo == "JSON" or req.ruta.lower().endswith('.json')
             read_size = -1 if is_json else 32768 # Read all for JSON, 32KB for CSV (increased from 8KB)
+
+            if _is_webservice_protocol(req.protocolo):
+                url = append_webservice_query_param(req.host, "page", 1)
+                payload = fetch_webservice_json(url, (req.password or "").strip() or None, analysis_timeout_seconds)
+                records = extract_webservice_records(payload)
+                return json.dumps(records, ensure_ascii=False)
 
             if req.protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
@@ -2606,10 +3700,9 @@ async def analyze_remote_mapping(
             return ""
 
         # Usar wait_for para evitar hangs si el archivo es gigante o la red falla
-        # Increased timeout for big JSON files
         content = await asyncio.wait_for(
             loop.run_in_executor(executor, _read_remote_sample),
-            timeout=120.0 
+            timeout=analysis_timeout_seconds
         )
         if not content:
             return {"headers": [], "suggested_mapping": {}, "sample_row": {}}
@@ -2623,7 +3716,10 @@ async def analyze_remote_mapping(
         )
         
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Timeout analizando archivo remoto (el archivo podría ser demasiado grande o la conexión lenta)")
+        raise HTTPException(
+            status_code=504,
+            detail="Timeout analizando archivo remoto (el archivo podria ser grande y la primera carga puede tardar varios minutos)",
+        )
     except Exception as e:
         logger.error(f"Error analyzing remote mapping: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2889,6 +3985,12 @@ def _list_remote_files(config: Dict[str, Any]):
     ruta = config.get("ruta_remota") or config.get("sftp_path", ".")
     tipo_archivo = config.get("tipo_archivo") or config.get("file_type", "CSV")
     logger.info(f"[DEBUG_AUTH] User: '{usuario}', PassLen: {len(password) if password else 0}, Host: '{host}', Port: {puerto}, Path: '{ruta}'")
+    if _is_webservice_protocol(protocolo):
+        return [{
+            "nombre": "WEBSERVICE_API",
+            "fecha": datetime.utcnow().isoformat(),
+            "tamano": 0,
+        }]
     
     # Allow all supported extensions to be listed, to prevent confusion if config doesn't match file
     # ext = ".csv" if tipo_archivo == "CSV" else ".txt" if tipo_archivo == "TXT" else ".json"
@@ -3023,10 +4125,10 @@ async def list_files_endpoint(
         logger.error(f"Error listing files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/remote/execute-manual")
-async def execute_manual_endpoint(
+async def _execute_manual_endpoint_impl(
     req: ExecuteManualRequest,
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+    operator_ctx: Optional[Dict[str, Any]] = None,
+    exporter_ctx: Optional[TokenAuthContext] = None
 ):
     logger.info(f"Ejecutando manual para {req.config_id} - Archivo: {req.filename}")
     batch_id = str(uuid4())
@@ -3056,7 +4158,12 @@ async def execute_manual_endpoint(
             return payload
 
         # Source of truth: config del local desde DB + overrides permitidos del request.
-        config_data = _load_local_config_with_access(req.config_id, operator_ctx)
+        if exporter_ctx:
+            config_data = _load_local_config_for_exporter(req.config_id, exporter_ctx)
+        else:
+            if not operator_ctx:
+                raise HTTPException(status_code=401, detail="Se requiere autenticación para ejecutar importación manual")
+            config_data = _load_local_config_with_access(req.config_id, operator_ctx)
         config_data = _apply_runtime_import_overrides(config_data, req.config)
         config_data = _normalize_import_config_payload(config_data)
 
@@ -3075,6 +4182,19 @@ async def execute_manual_endpoint(
         ruta_remota = config_data.get("ruta_remota") or config_data.get("sftp_path", ".")
         protocolo = config_data.get("protocolo") or config_data.get("sftp_protocol", "SFTP")
         source_filename = req.filename
+
+        if _is_webservice_protocol(protocolo):
+            result = await asyncio.to_thread(process_webservice_import, config_data)
+            records_processed = int(result.get("records_processed") or 0)
+            status_value = str(result.get("status") or ("success" if result.get("ok") else "error"))
+            return _cache_and_return({
+                "status": status_value,
+                "message": result.get("message") or "Webservice ejecutado.",
+                "records_processed": records_processed,
+                "batch_id": batch_id,
+                "errors": result.get("details") or [],
+                "renaming_error": None,
+            })
 
         def _build_prefixed_name(filename: str, prefix: str) -> str:
             base_name = posixpath.basename((filename or "").strip())
@@ -3198,7 +4318,11 @@ async def execute_manual_endpoint(
                 f"Error de conexión: {error_msg}",
                 batch_id,
                 mall_id=config_data.get("mall_id"),
-                local_id=config_data.get("id")
+                local_id=config_data.get("id"),
+                canal=protocolo,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "manual_remote_import", "connection_error": error_msg},
             )
             raise HTTPException(status_code=500, detail=f"Error de conexión remota ({protocolo}): {error_msg}")
 
@@ -3213,7 +4337,11 @@ async def execute_manual_endpoint(
                 batch_id,
                 detalles_errores,
                 mall_id=config_data.get("mall_id"),
-                local_id=config_data.get("id")
+                local_id=config_data.get("id"),
+                canal=protocolo,
+                records_processed=0,
+                error_count=len(detalles_errores),
+                metadata={"source": "manual_remote_import", "empty_payload": True},
             )
             renaming_error = None
             try:
@@ -3257,10 +4385,19 @@ async def execute_manual_endpoint(
             batch_id,
             detalles_errores,
             mall_id=config_data.get("mall_id"),
-            local_id=config_data.get("id")
+            local_id=config_data.get("id"),
+            canal=protocolo,
+            records_processed=registros_exito,
+            error_count=len(detalles_errores or []),
+            metadata={"source": "manual_remote_import"},
         )
 
-
+        risk_snapshot = None
+        if registros_exito > 0:
+            risk_snapshot = await _run_local_risk_analysis_async(
+                config_data.get("id"),
+                trigger="manual_remote_import",
+            )
 
         # 5. Renombrar resultado: PR_ (éxito con registros) o ERR_ (fallo/no-data)
         logger.info(f"Evaluando renombrado: registros_exito={registros_exito} (Tipo: {type(registros_exito)})")
@@ -3280,7 +4417,8 @@ async def execute_manual_endpoint(
             "records_processed": registros_exito,
             "batch_id": batch_id,
             "errors": detalles_errores,
-            "renaming_error": renaming_error
+            "renaming_error": renaming_error,
+            "risk_summary": (risk_snapshot or {}).get("summary"),
         })
     except Exception as e:
         if isinstance(e, HTTPException):
@@ -3296,7 +4434,11 @@ async def execute_manual_endpoint(
                 str(e),
                 batch_id,
                 mall_id=config_data.get("mall_id") if 'config_data' in locals() else None,
-                local_id=config_data.get("id") if 'config_data' in locals() else None
+                local_id=config_data.get("id") if 'config_data' in locals() else None,
+                canal=protocolo if 'protocolo' in locals() else None,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "manual_remote_import", "exception": str(e)},
             )
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -3305,15 +4447,48 @@ async def execute_manual_endpoint(
                 _INFLIGHT_MANUAL_EXEC.discard(request_id)
 
 
+@app.post("/api/v1/remote/execute-manual")
+async def execute_manual_endpoint(
+    req: ExecuteManualRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+):
+    return await _execute_manual_endpoint_impl(req=req, operator_ctx=operator_ctx)
+
+
+@app.post("/api/v1/remote/execute-manual/exporter")
+async def execute_manual_exporter_endpoint(
+    req: ExecuteManualRequest,
+    exporter_ctx: TokenAuthContext = Depends(
+        require_token_auth("export:write", token_types={TOKEN_TYPE_EXPORTER})
+    )
+):
+    return await _execute_manual_endpoint_impl(req=req, exporter_ctx=exporter_ctx)
+
+
 @app.post("/api/v1/analytics/cubo")
 async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_current_mall)):
     """
     Endpoint para generar el Cubo de Ventas (Matriz) usando datos reales de Supabase (Service Role).
     """
     try:
+        custom_fields_service = _local_custom_fields_service()
+
+        def _normalize_cube_totals_row(row: Dict[str, Any]) -> Dict[str, Any]:
+            bruto = float(row.get("total_bruto") or 0)
+            impuestos = float(row.get("total_impuestos") or 0) if row.get("total_impuestos") is not None else 0.0
+            neto = float(row.get("total_neto") or 0)
+
+            eps = 0.05
+            as_is_delta = abs(neto - (bruto + impuestos))
+            swapped_delta = abs(bruto - (neto + impuestos))
+            if swapped_delta + eps < as_is_delta:
+                row["total_bruto"] = neto
+                row["total_neto"] = bruto
+            return row
+
         # 1. Fetch Locales (Store Map) - Filtered by Mall
-        stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
-        stores = stores_res.data or []
+        stores_res = supabase.table("locales").select("id, nombre, activo").eq("mall_id", mall_id).execute()
+        stores = [row for row in (stores_res.data or []) if _is_store_active(row)]
         store_map = {str(s['id']): s['nombre'] for s in stores}
         allowed_local_ids = list(store_map.keys())
 
@@ -3322,6 +4497,14 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
                 # Prevent cross-tenant access and return deterministic empty matrix.
                 return {"columns": ["local_nombre", "TOTAL_FILA"], "data": [], "grand_totals": {}}
             allowed_local_ids = [str(request.local_id)]
+
+        snapshot = custom_fields_service.build_snapshot(mall_id, allowed_local_ids, include_inactive=False)
+        if request.custom_filters:
+            allowed_local_ids = custom_fields_service.filter_local_ids_by_custom_filters(
+                allowed_local_ids,
+                snapshot,
+                request.custom_filters,
+            )
 
         if not allowed_local_ids:
             return {"columns": ["local_nombre", "TOTAL_FILA"], "data": [], "grand_totals": {}}
@@ -3337,7 +4520,7 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         while True:
             sales_res = (
                 supabase.table("ventas")
-                .select("local_id, fecha, total_bruto, total_neto, id")
+                .select("*")
                 .in_("local_id", allowed_local_ids)
                 .gte("fecha", request.fecha_inicio)
                 .lte("fecha", request.fecha_fin)
@@ -3348,7 +4531,7 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
             chunk = sales_res.data or []
             if not chunk:
                 break
-            sales_data.extend(chunk)
+            sales_data.extend(_normalize_cube_totals_row(dict(row)) for row in chunk)
             if len(chunk) < page_size:
                 break
             page += 1
@@ -3376,14 +4559,15 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         # Check if 'cantidad_transacciones' exists in DB? Previous view didn't show it.
         # Let's count rows as transactions.
         
-        # 6. Generate Cube using existing logic
-        # Assuming generate_sales_cube handles the DataFrame aggregation
-        result = generate_sales_cube(
+        # 6. Generate Cube using existing logic or custom hierarchical grouping.
+        result = custom_fields_service.build_cube_response(
             df,
-            request.agrupacion,
-            request.metrica,
+            grouping=request.agrupacion,
+            metric=request.metrica,
             start_date=request.fecha_inicio,
-            end_date=request.fecha_fin
+            end_date=request.fecha_fin,
+            snapshot=snapshot,
+            custom_dimension_key=request.custom_dimension_key,
         )
         return result
         
@@ -3416,6 +4600,10 @@ async def analyze_remote_file(
         ruta_remota = config_data.get("ruta_remota") or config_data.get("sftp_path", ".")
         protocolo = config_data.get("protocolo") or config_data.get("sftp_protocol", "SFTP")
         analysis_filename = req.filename
+        analysis_timeout_seconds = _remote_analysis_timeout_seconds(
+            req.filename,
+            config_data.get("tipo_archivo"),
+        )
         
         loop = asyncio.get_event_loop()
         
@@ -3463,7 +4651,7 @@ async def analyze_remote_file(
 
         content = await asyncio.wait_for(
             loop.run_in_executor(executor, _read_file_sample),
-            timeout=120.0
+            timeout=analysis_timeout_seconds
         )
         
         if not content:
@@ -3483,7 +4671,10 @@ async def analyze_remote_file(
         return analysis
         
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Timeout analizando archivo")
+        raise HTTPException(
+            status_code=504,
+            detail="Timeout analizando archivo remoto (el archivo podria ser grande y la primera carga puede tardar varios minutos)",
+        )
     except Exception as e:
         logger.error(f"Error analyzing remote file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3583,6 +4774,2739 @@ async def unmark_file(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _get_system_health_value(key: str) -> Optional[str]:
+    if not supabase:
+        return None
+    try:
+        rows = (
+            supabase.table("system_health")
+            .select("value")
+            .eq("key", key)
+            .order("last_update", desc=True)
+            .limit(1)
+            .execute()
+        ).data or []
+        row = rows[0] if rows else {}
+        value = row.get("value")
+        return str(value).strip() if value is not None else None
+    except Exception as exc:
+        logger.warning("No se pudo leer system_health[%s]: %s", key, exc)
+        return None
+
+
+def _upsert_system_health_value_sync(key: str, value: str) -> None:
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    timestamp = datetime.utcnow().isoformat()
+    supabase.table("system_health").delete().eq("key", key).execute()
+    supabase.table("system_health").insert({
+        "key": key,
+        "value": value,
+        "last_update": timestamp,
+    }).execute()
+
+
+def _normalize_copilot_provider(value: Optional[str]) -> str:
+    provider = str(value or "openai").strip().lower()
+    if provider in {"chatgpt", "gpt", "open_ai"}:
+        provider = "openai"
+    if provider not in {"openai", "gemini"}:
+        raise HTTPException(status_code=400, detail="Proveedor de Copilot invalido.")
+    return provider
+
+
+def _copilot_api_key_name(provider: str) -> str:
+    return COPILOT_GEMINI_API_KEY_KEY if provider == "gemini" else COPILOT_OPENAI_API_KEY_KEY
+
+
+def _copilot_model_key(provider: str) -> str:
+    return COPILOT_GEMINI_MODEL_KEY if provider == "gemini" else COPILOT_OPENAI_MODEL_KEY
+
+
+def _mask_secret(value: Optional[str]) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= 4:
+        return "****"
+    return f"****{raw[-4:]}"
+
+
+def _copilot_enabled_from_value(value: Optional[str]) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _copilot_config_status() -> Dict[str, Any]:
+    provider = _normalize_copilot_provider(_get_system_health_value(COPILOT_PROVIDER_KEY) or "openai")
+    model = (
+        _get_system_health_value(_copilot_model_key(provider))
+        or COPILOT_DEFAULT_MODELS[provider]
+    )
+    api_key = _get_system_health_value(_copilot_api_key_name(provider)) or ""
+    enabled = _copilot_enabled_from_value(_get_system_health_value(COPILOT_ENABLED_KEY))
+    return {
+        "enabled": enabled,
+        "provider": provider,
+        "model": model,
+        "api_key_configured": bool(api_key),
+        "api_key_masked": _mask_secret(api_key),
+        "available": enabled and bool(api_key),
+    }
+
+
+def _save_copilot_settings(payload: CopilotSettingsRequest) -> Dict[str, Any]:
+    provider = _normalize_copilot_provider(payload.provider)
+    model = str(payload.model or "").strip() or COPILOT_DEFAULT_MODELS[provider]
+    api_key = None if payload.api_key is None else str(payload.api_key).strip()
+
+    _upsert_system_health_value_sync(COPILOT_ENABLED_KEY, "true" if payload.enabled else "false")
+    _upsert_system_health_value_sync(COPILOT_PROVIDER_KEY, provider)
+    _upsert_system_health_value_sync(_copilot_model_key(provider), model)
+
+    if payload.clear_api_key:
+        _upsert_system_health_value_sync(_copilot_api_key_name(provider), "")
+    elif api_key:
+        _upsert_system_health_value_sync(_copilot_api_key_name(provider), api_key)
+
+    return _copilot_config_status()
+
+
+def _truncate_text(value: Any, limit: int = 260) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit - 3]}..."
+
+
+def _safe_date_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _compact_copilot_log(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "fecha_hora": _safe_date_text(row.get("fecha_hora")),
+        "local": row.get("local_nombre"),
+        "estado": row.get("estado"),
+        "archivo": row.get("archivo"),
+        "mensaje": _truncate_text(row.get("mensaje"), 220),
+        "records_processed": row.get("records_processed"),
+        "error_count": row.get("error_count"),
+        "canal": row.get("canal"),
+    }
+
+
+def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
+    preferred_columns = (
+        "id,nombre,codigo_interno,email,rubro,tipo_negocio,processing_status,"
+        "consecutive_failures,upsert_activo,ultima_ejecucion,resultado_ultimo,"
+        "sftp_protocol,sftp_host,frecuencia_cron,hora_especifica,activo,"
+        "fecha_inactivacion,motivo_inactivacion"
+    )
+    fallback_columns = "id,nombre,codigo_interno,rubro,tipo_negocio,mall_id,activo"
+    try:
+        response = (
+            supabase.table("locales")
+            .select(preferred_columns)
+            .eq("mall_id", mall_id)
+            .order("nombre")
+            .limit(80)
+            .execute()
+        )
+        return [row for row in (response.data or []) if _is_store_active(row)]
+    except Exception as exc:
+        logger.warning("Copilot locales preferred query failed: %s", sanitize_sensitive_ops_error(exc))
+        response = (
+            supabase.table("locales")
+            .select(fallback_columns)
+            .eq("mall_id", mall_id)
+            .order("nombre")
+            .limit(80)
+            .execute()
+        )
+        return [row for row in (response.data or []) if _is_store_active(row)]
+
+
+def _load_copilot_missing_days(locales: List[Dict[str, Any]], lookback_days: int = 7) -> Dict[str, Any]:
+    local_ids = [str(row.get("id")) for row in locales if row.get("id")]
+    end_date = datetime.utcnow().date()
+    start_date = end_date - timedelta(days=max(1, lookback_days) - 1)
+    expected_dates = {
+        (start_date + timedelta(days=offset)).isoformat()
+        for offset in range((end_date - start_date).days + 1)
+    }
+
+    if not local_ids:
+        return {
+            "lookback_days": lookback_days,
+            "fecha_inicio": start_date.isoformat(),
+            "fecha_fin": end_date.isoformat(),
+            "status": "sin_locales",
+            "locales_con_brechas": 0,
+            "locales_completos": 0,
+            "top_brechas": [],
+        }
+
+    dates_by_local: Dict[str, Set[str]] = {local_id: set() for local_id in local_ids}
+    page_size = 5000
+    max_pages = 4
+    try:
+        for page in range(max_pages):
+            chunk = (
+                supabase.table("ventas")
+                .select("local_id,fecha")
+                .in_("local_id", local_ids)
+                .gte("fecha", start_date.isoformat())
+                .lte("fecha", end_date.isoformat())
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            ).data or []
+            for row in chunk:
+                local_id = str(row.get("local_id") or "")
+                normalized = _normalize_missing_days_sale_date(row.get("fecha"))
+                if local_id and normalized:
+                    dates_by_local.setdefault(local_id, set()).add(normalized)
+            if len(chunk) < page_size:
+                break
+    except Exception as exc:
+        logger.warning("Copilot missing days query failed: %s", sanitize_sensitive_ops_error(exc))
+        return {
+            "lookback_days": lookback_days,
+            "fecha_inicio": start_date.isoformat(),
+            "fecha_fin": end_date.isoformat(),
+            "status": "no_disponible",
+            "error": "No se pudo consultar ventas para dias de informacion.",
+        }
+
+    rows = []
+    for local in locales:
+        local_id = str(local.get("id") or "")
+        actual = dates_by_local.get(local_id, set())
+        missing = sorted(expected_dates - actual)
+        rows.append({
+            "local_id": local_id,
+            "local": local.get("nombre"),
+            "dias_con_informacion": len(actual & expected_dates),
+            "dias_faltantes": len(missing),
+            "fechas_faltantes": missing[:10],
+        })
+
+    with_gaps = [row for row in rows if row["dias_faltantes"] > 0]
+    return {
+        "lookback_days": lookback_days,
+        "fecha_inicio": start_date.isoformat(),
+        "fecha_fin": end_date.isoformat(),
+        "status": "ok",
+        "locales_con_brechas": len(with_gaps),
+        "locales_completos": len(rows) - len(with_gaps),
+        "dias_esperados_por_local": len(expected_dates),
+        "top_brechas": sorted(with_gaps, key=lambda item: item["dias_faltantes"], reverse=True)[:15],
+    }
+
+
+def _load_copilot_sales_summary(locales: List[Dict[str, Any]], lookback_days: int = 30) -> Dict[str, Any]:
+    local_ids = [str(row.get("id")) for row in locales if row.get("id")]
+    end_date = datetime.utcnow().date()
+    start_date = end_date - timedelta(days=max(1, lookback_days) - 1)
+
+    if not local_ids:
+        return {
+            "lookback_days": lookback_days,
+            "fecha_inicio": start_date.isoformat(),
+            "fecha_fin": end_date.isoformat(),
+            "status": "sin_locales",
+            "ventas_totales_bruto": 0,
+            "ventas_totales_neto": 0,
+            "transacciones": 0,
+            "ticket_promedio": 0,
+            "top_locales": [],
+            "ventas_por_dia": [],
+        }
+
+    store_map = {str(row.get("id")): row for row in locales if row.get("id")}
+    sales: List[Dict[str, Any]] = []
+    page_size = 5000
+    max_pages = 8
+
+    try:
+        for page in range(max_pages):
+            chunk = (
+                supabase.table("ventas")
+                .select("local_id,fecha,total_bruto,total_neto")
+                .in_("local_id", local_ids)
+                .gte("fecha", start_date.isoformat())
+                .lte("fecha", end_date.isoformat())
+                .order("fecha")
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            ).data or []
+            sales.extend(chunk)
+            if len(chunk) < page_size:
+                break
+    except Exception as exc:
+        logger.warning("Copilot sales query failed: %s", sanitize_sensitive_ops_error(exc))
+        return {
+            "lookback_days": lookback_days,
+            "fecha_inicio": start_date.isoformat(),
+            "fecha_fin": end_date.isoformat(),
+            "status": "no_disponible",
+            "error": "No se pudo consultar ventas recientes.",
+        }
+
+    total_bruto = 0.0
+    total_neto = 0.0
+    by_store: Dict[str, Dict[str, Any]] = {}
+    by_day: Dict[str, float] = {}
+    by_business_type: Dict[str, float] = {}
+    by_rubro: Dict[str, float] = {}
+
+    for sale in sales:
+        local_id = str(sale.get("local_id") or "")
+        store = store_map.get(local_id) or {}
+        store_name = store.get("nombre") or "Local sin nombre"
+        business_type = str(store.get("tipo_negocio") or "Sin tipo de negocio").strip()
+        rubro = str(store.get("rubro") or "Sin rubro").strip()
+        sale_date = _normalize_missing_days_sale_date(sale.get("fecha")) or str(sale.get("fecha") or "")
+        bruto = _safe_float(sale.get("total_bruto"))
+        neto = _safe_float(sale.get("total_neto"))
+
+        total_bruto += bruto
+        total_neto += neto
+        by_day[sale_date] = by_day.get(sale_date, 0.0) + bruto
+        by_business_type[business_type] = by_business_type.get(business_type, 0.0) + bruto
+        by_rubro[rubro] = by_rubro.get(rubro, 0.0) + bruto
+
+        store_totals = by_store.setdefault(store_name, {
+            "local": store_name,
+            "total_bruto": 0.0,
+            "total_neto": 0.0,
+            "transacciones": 0,
+        })
+        store_totals["total_bruto"] += bruto
+        store_totals["total_neto"] += neto
+        store_totals["transacciones"] += 1
+
+    transactions = len(sales)
+    stores_ranked = sorted(by_store.values(), key=lambda item: item["total_bruto"], reverse=True)
+    return {
+        "lookback_days": lookback_days,
+        "fecha_inicio": start_date.isoformat(),
+        "fecha_fin": end_date.isoformat(),
+        "status": "ok",
+        "ventas_totales_bruto": total_bruto,
+        "ventas_totales_neto": total_neto,
+        "transacciones": transactions,
+        "ticket_promedio": (total_bruto / transactions) if transactions else 0,
+        "top_locales": stores_ranked[:10],
+        "locales": stores_ranked[:80],
+        "ventas_por_dia": [
+            {"fecha": sale_date, "total_bruto": total}
+            for sale_date, total in sorted(by_day.items())[-30:]
+        ],
+        "ventas_por_tipo_negocio": [
+            {"tipo_negocio": label, "total_bruto": total}
+            for label, total in sorted(by_business_type.items(), key=lambda item: item[1], reverse=True)[:10]
+        ],
+        "ventas_por_rubro": [
+            {"rubro": label, "total_bruto": total}
+            for label, total in sorted(by_rubro.items(), key=lambda item: item[1], reverse=True)[:10]
+        ],
+    }
+
+
+_COPILOT_MONTHS = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+
+
+def _last_day_of_month(year: int, month: int) -> date:
+    if month == 12:
+        return date(year, month, 31)
+    return date(year, month + 1, 1) - timedelta(days=1)
+
+
+def _parse_copilot_period(message: str) -> Dict[str, str]:
+    text = _normalize_store_catalog_key(message)
+    today = datetime.utcnow().date()
+
+    iso_dates = re.findall(r"\b(20\d{2}-\d{2}-\d{2})\b", message)
+    if len(iso_dates) >= 2:
+        return {"fecha_inicio": min(iso_dates[:2]), "fecha_fin": max(iso_dates[:2]), "origen": "fechas_explicitas"}
+    if len(iso_dates) == 1:
+        return {"fecha_inicio": iso_dates[0], "fecha_fin": iso_dates[0], "origen": "fecha_explicita"}
+
+    slash_dates = re.findall(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b", message)
+    if len(slash_dates) >= 2:
+        parsed = [
+            date(int(year), int(month), int(day)).isoformat()
+            for day, month, year in slash_dates[:2]
+        ]
+        return {"fecha_inicio": min(parsed), "fecha_fin": max(parsed), "origen": "fechas_explicitas"}
+    if len(slash_dates) == 1:
+        day, month, year = slash_dates[0]
+        parsed = date(int(year), int(month), int(day)).isoformat()
+        return {"fecha_inicio": parsed, "fecha_fin": parsed, "origen": "fecha_explicita"}
+
+    year_match = re.search(r"\b(20\d{2})\b", text)
+    year = int(year_match.group(1)) if year_match else today.year
+    mentioned_months = [
+        (month_name, month_number)
+        for month_name, month_number in _COPILOT_MONTHS.items()
+        if month_name in text
+    ]
+    if mentioned_months:
+        month_numbers = [month_number for _, month_number in mentioned_months]
+        start_month = min(month_numbers)
+        end_month = max(month_numbers)
+        start = date(year, start_month, 1)
+        end = _last_day_of_month(year, end_month)
+        origin = "mes_" + "_".join(name for name, _ in mentioned_months)
+        return {"fecha_inicio": start.isoformat(), "fecha_fin": end.isoformat(), "origen": origin}
+
+    start = today - timedelta(days=29)
+    return {"fecha_inicio": start.isoformat(), "fecha_fin": today.isoformat(), "origen": "ultimos_30_dias"}
+
+
+def _should_build_copilot_diagnostics(message: str) -> bool:
+    text = _normalize_store_catalog_key(message)
+    terms = [
+        "diagnost", "conciliar", "cubo", "monitor", "carga", "importacion",
+        "importar", "faltante", "brecha", "no aparece", "no se ve", "dias",
+    ]
+    return any(term in text for term in terms)
+
+
+def _find_copilot_target_locales(message: str, locales: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    text = _normalize_store_catalog_key(message)
+    matches = []
+    for local in locales:
+        name = _normalize_store_catalog_key(local.get("nombre"))
+        code = _normalize_store_catalog_key(local.get("codigo_interno"))
+        if (name and name in text) or (code and re.search(rf"\b{re.escape(code)}\b", text)):
+            matches.append(local)
+    if matches:
+        return matches[:4]
+
+    choices = {
+        str(local.get("nombre") or ""): local
+        for local in locales
+        if local.get("nombre")
+    }
+    if not choices:
+        return []
+    fuzzy = process.extract(text, list(choices.keys()), scorer=fuzz.partial_ratio, limit=4)
+    return [choices[name] for name, score in fuzzy if score >= 88]
+
+
+def _extract_file_date_from_name(filename: Any) -> Optional[str]:
+    text = str(filename or "")
+    matches = re.findall(r"(?<!\d)(\d{8})(?!\d)", text)
+    for raw in reversed(matches):
+        for fmt in ("%d%m%Y", "%Y%m%d"):
+            try:
+                return datetime.strptime(raw, fmt).date().isoformat()
+            except ValueError:
+                continue
+    return None
+
+
+def _aggregate_sales_by_local_date(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for row in rows:
+        local_id = str(row.get("local_id") or "")
+        sale_date = _normalize_missing_days_sale_date(row.get("fecha")) or str(row.get("fecha") or "")
+        if not local_id or not sale_date:
+            continue
+        day = grouped.setdefault(local_id, {}).setdefault(sale_date, {
+            "fecha": sale_date,
+            "registros": 0,
+            "total_bruto": 0.0,
+            "total_neto": 0.0,
+        })
+        day["registros"] += 1
+        day["total_bruto"] += _safe_float(row.get("total_bruto"))
+        day["total_neto"] += _safe_float(row.get("total_neto"))
+    return grouped
+
+
+def _load_copilot_sales_load_diagnostics(
+    mall_id: str,
+    locales: List[Dict[str, Any]],
+    message: str,
+) -> Dict[str, Any]:
+    period = _parse_copilot_period(message)
+    target_locales = _find_copilot_target_locales(message, locales)
+    if not _should_build_copilot_diagnostics(message) and not target_locales:
+        return {"status": "omitido", "motivo": "consulta_general"}
+
+    selected = target_locales or locales[:8]
+    local_ids = [str(row.get("id")) for row in selected if row.get("id")]
+    if not local_ids:
+        return {"status": "sin_locales", "periodo": period, "locales": []}
+
+    sales_rows: List[Dict[str, Any]] = []
+    try:
+        for page in range(6):
+            chunk = (
+                supabase.table("ventas")
+                .select("local_id,fecha,total_bruto,total_neto,factura_no,mall_id")
+                .in_("local_id", local_ids)
+                .gte("fecha", period["fecha_inicio"])
+                .lte("fecha", period["fecha_fin"])
+                .order("fecha")
+                .range(page * 1000, (page + 1) * 1000 - 1)
+                .execute()
+            ).data or []
+            sales_rows.extend(chunk)
+            if len(chunk) < 1000:
+                break
+    except Exception as exc:
+        logger.warning("Copilot sales/load diagnostic sales query failed: %s", sanitize_sensitive_ops_error(exc))
+        return {"status": "no_disponible", "periodo": period, "error": "No se pudieron consultar ventas para diagnostico."}
+
+    logs: List[Dict[str, Any]] = []
+    try:
+        logs = (
+            supabase.table("logs_carga")
+            .select("*")
+            .eq("mall_id", mall_id)
+            .in_("local_id", local_ids)
+            .order("fecha_hora", desc=True)
+            .limit(80)
+            .execute()
+        ).data or []
+    except Exception as exc:
+        logger.warning("Copilot sales/load diagnostic logs query failed: %s", sanitize_sensitive_ops_error(exc))
+
+    sales_by_local = _aggregate_sales_by_local_date(sales_rows)
+    expected_dates = [
+        (datetime.strptime(period["fecha_inicio"], "%Y-%m-%d").date() + timedelta(days=offset)).isoformat()
+        for offset in range(
+            (datetime.strptime(period["fecha_fin"], "%Y-%m-%d").date() - datetime.strptime(period["fecha_inicio"], "%Y-%m-%d").date()).days + 1
+        )
+    ]
+    logs_by_local: Dict[str, List[Dict[str, Any]]] = {}
+    for log in logs:
+        local_id = str(log.get("local_id") or "")
+        file_date = _extract_file_date_from_name(log.get("archivo"))
+        compact = _compact_copilot_log(log)
+        compact["fecha_detectada_archivo"] = file_date
+        compact["archivo_en_periodo_consultado"] = (
+            bool(file_date)
+            and period["fecha_inicio"] <= file_date <= period["fecha_fin"]
+        )
+        logs_by_local.setdefault(local_id, []).append(compact)
+
+    diagnostics = []
+    for local in selected:
+        local_id = str(local.get("id") or "")
+        days = sales_by_local.get(local_id, {})
+        missing = [item for item in expected_dates if item not in days]
+        recent_logs = logs_by_local.get(local_id, [])[:12]
+        diagnostics.append({
+            "local_id": local_id,
+            "local": local.get("nombre"),
+            "codigo": local.get("codigo_interno"),
+            "dias_con_ventas": len(days),
+            "registros_ventas": sum(int(day.get("registros") or 0) for day in days.values()),
+            "total_bruto": round(sum(float(day.get("total_bruto") or 0) for day in days.values()), 2),
+            "total_neto": round(sum(float(day.get("total_neto") or 0) for day in days.values()), 2),
+            "ventas_por_fecha": sorted(days.values(), key=lambda item: item["fecha"])[:45],
+            "dias_faltantes": missing[:90],
+            "logs_recientes": recent_logs,
+            "logs_con_fecha_archivo_fuera_periodo": [
+                log for log in recent_logs
+                if log.get("fecha_detectada_archivo") and not log.get("archivo_en_periodo_consultado")
+            ][:8],
+        })
+
+    return {
+        "status": "ok",
+        "periodo": period,
+        "locales_analizados": len(diagnostics),
+        "diagnosticos": diagnostics,
+        "guia_uso": [
+            "Usa ventas_por_fecha para responder que dias si estan en el cubo.",
+            "Usa dias_faltantes para responder que dias faltan en el periodo.",
+            "Usa logs_recientes y fecha_detectada_archivo para explicar cargas exitosas fuera del periodo consultado.",
+        ],
+    }
+
+
+def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any], message: str = "") -> Dict[str, Any]:
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+
+    try:
+        mall_row = (
+            supabase.table("malls")
+            .select("id,nombre")
+            .eq("id", mall_id)
+            .maybe_single()
+            .execute()
+        ).data or {}
+    except Exception:
+        mall_row = {"id": mall_id, "nombre": "Mall seleccionado"}
+
+    locales = _load_copilot_locales(mall_id)
+    compact_locales = [
+        {
+            "id": row.get("id"),
+            "codigo": row.get("codigo_interno"),
+            "nombre": row.get("nombre"),
+            "email": row.get("email"),
+            "rubro": row.get("rubro"),
+            "tipo_negocio": row.get("tipo_negocio"),
+            "processing_status": row.get("processing_status"),
+            "consecutive_failures": row.get("consecutive_failures"),
+            "upsert_activo": row.get("upsert_activo"),
+            "ultima_ejecucion": _safe_date_text(row.get("ultima_ejecucion")),
+            "resultado_ultimo": row.get("resultado_ultimo"),
+            "protocolo": row.get("sftp_protocol"),
+            "frecuencia": row.get("frecuencia_cron"),
+            "hora_especifica": row.get("hora_especifica"),
+        }
+        for row in locales[:60]
+    ]
+
+    try:
+        logs = (
+            supabase.table("logs_carga")
+            .select("*")
+            .eq("mall_id", mall_id)
+            .order("fecha_hora", desc=True)
+            .limit(40)
+            .execute()
+        ).data or []
+    except Exception as exc:
+        logger.warning("Copilot load logs query failed: %s", sanitize_sensitive_ops_error(exc))
+        logs = []
+
+    status_counts: Dict[str, int] = {}
+    for log in logs:
+        status_key = str(log.get("estado") or "desconocido").strip().lower() or "desconocido"
+        status_counts[status_key] = status_counts.get(status_key, 0) + 1
+
+    try:
+        connection_monitor = _connection_monitor_service().get_status_summary(
+            mall_id=mall_id,
+            operator_ctx=operator_ctx,
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+        )
+    except Exception as exc:
+        logger.warning("Copilot connection monitor query failed: %s", sanitize_sensitive_ops_error(exc))
+        connection_monitor = {"status": "no_disponible"}
+
+    missing_days = _load_copilot_missing_days(locales)
+    sales_summary = _load_copilot_sales_summary(locales)
+    try:
+        operations_auditor = _operations_intelligence_service().build_copilot_context(mall_id)
+    except Exception as exc:
+        logger.warning("Copilot operations auditor query failed: %s", sanitize_sensitive_ops_error(exc))
+        operations_auditor = {"health": "NO_DISPONIBLE", "open_findings": [], "summary": {"total_open": 0}}
+    sales_load_diagnostics = _load_copilot_sales_load_diagnostics(mall_id, locales, message)
+
+    return {
+        "generated_at_utc": datetime.utcnow().isoformat(),
+        "mall": {
+            "id": mall_id,
+            "nombre": mall_row.get("nombre") or "Mall seleccionado",
+        },
+        "locales": {
+            "total": len(locales),
+            "con_importacion_activa": sum(1 for row in locales if row.get("upsert_activo") or row.get("sftp_host")),
+            "en_proceso": sum(1 for row in locales if row.get("processing_status") == "BUSY"),
+            "con_fallas_consecutivas": sum(1 for row in locales if int(row.get("consecutive_failures") or 0) > 0),
+            "muestra": compact_locales,
+        },
+        "monitor_carga": {
+            "total_logs_recientes": len(logs),
+            "conteo_por_estado": status_counts,
+            "logs_recientes": [_compact_copilot_log(row) for row in logs[:15]],
+        },
+        "monitor_conexiones": connection_monitor,
+        "operations_auditor": operations_auditor,
+        "dias_informacion": missing_days,
+        "ventas_recientes": sales_summary,
+        "diagnostico_carga_ventas": sales_load_diagnostics,
+    }
+
+
+def _normalize_copilot_report_format(message: str) -> Optional[str]:
+    text = _normalize_store_catalog_key(message)
+    if re.search(r"\b(pdf)\b", text):
+        return "pdf"
+    if re.search(r"\b(excel|xlsx|xls|hoja de calculo)\b", text):
+        return "xlsx"
+    return None
+
+
+def _normalize_copilot_report_type(message: str) -> Optional[str]:
+    text = _normalize_store_catalog_key(message)
+    if any(term in text for term in ["operations auditor", "operations center", "estado operativo", "hallazgo", "hallazgos", "algo raro", "alerta operativa", "auditor operativo"]):
+        return "operations_auditor"
+    gross_income_terms = ["ingreso bruto", "ingresos brutos", "venta bruta", "ventas brutas", "total bruto", "gross income", "gross sales"]
+    if any(term in text for term in ["diagnost", "conciliar", "cubo", "no aparece", "no se ve"]) and any(term in text for term in ["monitor", "carga", "importacion", "venta", "ventas"]):
+        return "diagnostico_carga_ventas"
+    if any(term in text for term in ["faltante", "dias", "brecha"]) and (
+        any(month in text for month in _COPILOT_MONTHS)
+        or re.search(r"\b(20\d{2}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/20\d{2})\b", message)
+    ):
+        return "diagnostico_carga_ventas"
+    if any(term in text for term in gross_income_terms):
+        return "ingresos_brutos_local"
+    if any(term in text for term in ["venta", "sales", "facturacion", "ingreso"]):
+        return "ventas"
+    if any(term in text for term in ["faltante", "dias", "brecha", "informacion"]):
+        return "dias_faltantes"
+    if any(term in text for term in ["monitor", "carga", "log", "importacion", "error"]):
+        return "monitor_carga"
+    if any(term in text for term in ["local", "tienda", "listado", "establecimiento"]):
+        return "locales"
+    return "locales"
+
+
+def _parse_copilot_report_request(message: str) -> Optional[Dict[str, str]]:
+    report_format = _normalize_copilot_report_format(message)
+    if not report_format:
+        return None
+    return {
+        "format": report_format,
+        "type": _normalize_copilot_report_type(message) or "locales",
+    }
+
+
+def _has_copilot_report_type(message: str) -> bool:
+    text = _normalize_store_catalog_key(message)
+    terms = [
+        "venta", "ventas", "ingreso", "ingresos", "bruto", "brutos",
+        "dia faltante", "dias faltantes", "faltante", "faltantes",
+        "importacion", "importaciones", "carga", "cargas", "fallida", "fallidas",
+        "salud", "operativo", "operativa", "operations", "hallazgo", "hallazgos",
+        "local", "locales", "tienda", "tiendas",
+    ]
+    return any(term in text for term in terms)
+
+
+def _has_copilot_period(message: str) -> bool:
+    text = _normalize_store_catalog_key(message)
+    if re.search(r"\b20\d{2}-\d{2}-\d{2}\b", message):
+        return True
+    if re.search(r"\b\d{1,2}/\d{1,2}/20\d{2}\b", message):
+        return True
+    period_terms = [
+        "hoy", "ayer", "manana", "mañana", "semana", "mes", "ano", "año",
+        "reciente", "recientes", "ultimo", "ultimos", "ultima", "ultimas",
+        "actual", "periodo", "rango",
+    ]
+    if any(term in text for term in period_terms):
+        return True
+    return any(month_name in text for month_name in _COPILOT_MONTHS)
+
+
+def _has_copilot_local_reference(message: str) -> bool:
+    text = _normalize_store_catalog_key(message)
+    if any(term in text for term in ["local", "tienda", "todos", "todas", "mall"]):
+        return True
+    weak_terms = [
+        "skecher", "skechers", "sportline", "aldo", "waikiki", "victoria",
+        "santo domingo", "calvin", "taco", "zara", "nike", "adidas",
+    ]
+    return any(term in text for term in weak_terms)
+
+
+def _build_copilot_clarification_answer(title: str, bullets: List[str], options: List[str]) -> str:
+    option_lines = [f"- {index}. {option}" for index, option in enumerate(options, start=1)]
+    return "\n".join([
+        f"**{title}**",
+        *[f"- {item}" for item in bullets],
+        *option_lines,
+    ])
+
+
+def _copilot_clarification_response(
+    settings: Dict[str, Any],
+    *,
+    title: str,
+    bullets: List[str],
+    options: List[str],
+    intent: str,
+    missing_fields: List[str],
+) -> Dict[str, Any]:
+    return {
+        "answer": _build_copilot_clarification_answer(title, bullets, options),
+        "provider": settings["provider"],
+        "model": settings["model"],
+        "context_generated_at": None,
+        "sources": [],
+        "attachments": [],
+        "email_actions": [],
+        "clarification": {
+            "required": True,
+            "intent": intent,
+            "missing_fields": missing_fields,
+            "options": options,
+        },
+    }
+
+
+def _analyze_copilot_clarification_need(
+    message: str,
+    intent_message: str,
+    history: List[CopilotChatMessage],
+) -> Optional[Dict[str, Any]]:
+    text = _normalize_store_catalog_key(message)
+    intent_text = _normalize_store_catalog_key(intent_message)
+    email_terms = ["correo", "email", "mail", "enviar", "mandar", "envialo", "enviarlo", "enviame", "mándalo", "mandalo"]
+    report_terms = ["reporte", "listado", "exporta", "exportar", "genera", "generar", "excel", "xlsx", "pdf", "descarga", "archivo"]
+    followup_terms = ["eso", "esto", "lo anterior", "el anterior", "envialo", "enviarlo", "mandalo", "mandarlo"]
+    wants_email = any(term in text for term in email_terms)
+    wants_report = bool(_normalize_copilot_report_format(message)) or any(term in text for term in report_terms)
+    has_history = any(str(item.content or "").strip() for item in history or [])
+
+    if any(term in text for term in followup_terms) and intent_message == message and not has_history:
+        return {
+            "intent": "referencia_anterior",
+            "missing_fields": ["referencia"],
+            "title": "Necesito saber a qué te refieres",
+            "bullets": ["No tengo una solicitud anterior clara para reutilizar."],
+            "options": [
+                "Ventas por local",
+                "Días faltantes",
+                "Estado operativo",
+                "Importaciones fallidas",
+            ],
+        }
+
+    if wants_email:
+        recipients = _normalize_email_list(re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", message), strict=False)
+        if not recipients:
+            return {
+                "intent": "enviar_email",
+                "missing_fields": ["destinatarios"],
+                "title": "Falta el destinatario",
+                "bullets": ["Puedo preparar el reporte en HTML y adjunto si aplica.", "Indícame a qué correo debo enviarlo."],
+                "options": [
+                    "Enviar a operaciones@empresa.com",
+                    "Enviar a varios correos separados por coma",
+                    "Solo preparar el reporte sin enviarlo",
+                ],
+            }
+        if not _has_copilot_report_type(intent_message):
+            return {
+                "intent": "enviar_email",
+                "missing_fields": ["tipo_reporte"],
+                "title": "Necesito confirmar qué reporte enviar",
+                "bullets": ["Tengo los destinatarios, pero falta el contenido del correo."],
+                "options": [
+                    "Resumen operativo",
+                    "Ventas por local",
+                    "Días faltantes",
+                    "Importaciones fallidas",
+                ],
+            }
+
+    if wants_report and not _has_copilot_report_type(intent_message):
+        return {
+            "intent": "generar_reporte",
+            "missing_fields": ["tipo_reporte"],
+            "title": "Necesito confirmar el tipo de reporte",
+            "bullets": ["Para no generar el archivo equivocado, dime qué información quieres."],
+            "options": [
+                "Ventas por local",
+                "Ingresos brutos por local",
+                "Días faltantes",
+                "Salud operativa",
+            ],
+        }
+
+    report_type = _normalize_copilot_report_type(intent_message)
+    needs_period = report_type in {"ventas", "ingresos_brutos_local", "dias_faltantes"}
+    if (wants_report or wants_email) and needs_period and not _has_copilot_period(intent_message):
+        return {
+            "intent": "periodo_reporte",
+            "missing_fields": ["periodo"],
+            "title": "Necesito confirmar el período",
+            "bullets": ["El reporte solicitado depende de fechas y no quiero asumir un rango incorrecto."],
+            "options": [
+                "Hoy",
+                "Este mes",
+                "Mes anterior",
+                "Rango específico: 01/06/2026 al 30/06/2026",
+            ],
+        }
+
+    diagnostic_terms = ["por que", "porque", "no aparece", "no se ve", "diagnostico", "diagnóstico", "cubo", "monitor"]
+    if any(term in intent_text for term in diagnostic_terms) and not _has_copilot_local_reference(intent_message):
+        return {
+            "intent": "diagnostico_local",
+            "missing_fields": ["local"],
+            "title": "Necesito saber qué local revisar",
+            "bullets": ["El diagnóstico compara ventas, monitor y archivos por local."],
+            "options": [
+                "Revisar Skechers",
+                "Revisar Sportline",
+                "Revisar todos los locales con problemas",
+            ],
+        }
+
+    if len(text.split()) <= 3 and not any(term in text for term in ["hoy", "estado", "salud"]):
+        return {
+            "intent": "comando_ambiguo",
+            "missing_fields": ["intencion"],
+            "title": "Necesito un poco más de detalle",
+            "bullets": ["Tu comando es muy corto y podría referirse a varias acciones."],
+            "options": [
+                "Qué debo revisar hoy",
+                "Días faltantes por local",
+                "Ventas por local",
+                "Importaciones fallidas",
+            ],
+        }
+
+    return None
+
+
+def _latest_copilot_intent_message(message: str, history: List[CopilotChatMessage]) -> str:
+    text = _normalize_store_catalog_key(message)
+    followup_terms = [
+        "envialo", "enviarlo", "mandalo", "mandarlo", "por mail", "por correo", "por email",
+        "eso", "esto", "lo anterior", "el anterior", "mismo", "misma", "igual", "tambien", "también",
+        "ahora", "solo", "solamente", "agregale", "agrégale", "incluye", "quitale", "quítale",
+        "en pdf", "en excel", "xlsx", "html", "con junio", "con mayo", "mes anterior", "este mes",
+    ]
+    is_followup = any(term in text for term in followup_terms)
+    if not is_followup:
+        return message
+
+    for item in reversed(history or []):
+        role = str(item.role or "").strip().lower()
+        content = str(item.content or "").strip()
+        if role != "user" or not content:
+            continue
+        normalized = _normalize_store_catalog_key(content)
+        if any(term in normalized for term in ["envialo", "enviarlo", "mandalo", "mandarlo", "por mail", "por correo", "por email"]):
+            continue
+        return content
+    return message
+
+
+def _resolve_copilot_conversation_intent(message: str, history: List[CopilotChatMessage]) -> str:
+    base_message = _latest_copilot_intent_message(message, history)
+    if base_message == message:
+        return message
+
+    text = _normalize_store_catalog_key(message)
+    modifier_terms = [
+        "eso", "esto", "lo anterior", "el anterior", "mismo", "misma", "igual", "tambien", "también",
+        "ahora", "solo", "solamente", "agregale", "agrégale", "incluye", "quitale", "quítale",
+        "pdf", "excel", "xlsx", "html", "mayo", "junio", "julio", "agosto", "septiembre",
+        "octubre", "noviembre", "diciembre", "enero", "febrero", "marzo", "abril",
+        "hoy", "ayer", "este mes", "mes anterior", "rango", "local", "skecher", "skechers", "sportline",
+    ]
+    should_compose = any(term in text for term in modifier_terms)
+    if not should_compose:
+        return base_message
+
+    clean_message = re.sub(
+        r"\b(eso|esto|lo anterior|el anterior|mismo|misma|igual)\b",
+        "",
+        message,
+        flags=re.IGNORECASE,
+    ).strip(" .,")
+    if not clean_message:
+        return base_message
+    return f"{base_message}. Ajuste solicitado: {clean_message}"
+
+
+def _parse_copilot_email_request(message: str, intent_message: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    text = _normalize_store_catalog_key(message)
+    if not any(term in text for term in ["correo", "email", "mail", "enviar", "mandar", "envialo", "enviarlo", "enviame"]):
+        return None
+
+    recipients = _normalize_email_list(re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", message), strict=False)
+    wants_pdf = "pdf" in text
+    wants_xlsx = any(term in text for term in ["excel", "xlsx", "xls", "hoja de calculo"])
+    wants_html = "html" in text or any(term in text for term in ["cuerpo", "resumen", "correo"])
+    if not wants_pdf and not wants_xlsx and not wants_html:
+        wants_html = True
+        wants_xlsx = True
+
+    body_note = None
+    note_match = re.search(
+        r"(?:escribe|pon|incluye|agrega)\s+en\s+el\s+cuerpo(?:\s+del\s+(?:mail|correo|email))?\s+que\s+(.+)$",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if note_match:
+        raw_note = note_match.group(1).strip(" .")
+        normalized_note = _normalize_store_catalog_key(raw_note)
+        if "copilot" in normalized_note and "msmall" in normalized_note and ("eres" in normalized_note or "asistente" in normalized_note):
+            body_note = "Hola, reciban un cordial saludo. Soy el Copilot de MsMall y comparto este diagnostico operativo para apoyar la revision de la informacion solicitada."
+        else:
+            body_note = _truncate_text(raw_note, 500)
+
+    attachment_format = "pdf" if wants_pdf else "xlsx" if wants_xlsx else None
+    return {
+        "recipients": recipients,
+        "report_type": _normalize_copilot_report_type(intent_message or message) or "locales",
+        "include_html": True,
+        "attachment_format": attachment_format,
+        "body_note": body_note,
+    }
+
+
+def _report_value(value: Any) -> Any:
+    if isinstance(value, float):
+        return round(value, 2)
+    return value if value is not None else ""
+
+
+def _copilot_report_definition(report_type: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    mall_name = (context.get("mall") or {}).get("nombre") or "MsMall"
+    generated_at = context.get("generated_at_utc") or datetime.utcnow().isoformat()
+
+    if report_type == "ventas":
+        sales = context.get("ventas_recientes") or {}
+        rows = sales.get("locales") or sales.get("top_locales") or []
+        return {
+            "title": "Ventas recientes por local",
+            "subtitle": f"{mall_name} | {sales.get('fecha_inicio', '')} al {sales.get('fecha_fin', '')}",
+            "filename_base": "msmall_ventas_recientes",
+            "sources": ["ventas_recientes"],
+            "headers": ["Local", "Total Bruto", "Total Neto", "Transacciones", "Ticket Promedio"],
+            "rows": [
+                [
+                    row.get("local") or row.get("name"),
+                    _report_value(row.get("total_bruto") or row.get("total") or 0),
+                    _report_value(row.get("total_neto") or 0),
+                    row.get("transacciones") or 0,
+                    _report_value((row.get("total_bruto") or row.get("total") or 0) / max(1, int(row.get("transacciones") or 0))),
+                ]
+                for row in rows
+            ],
+            "summary": [
+                ["Total Bruto", _report_value(sales.get("ventas_totales_bruto") or 0)],
+                ["Total Neto", _report_value(sales.get("ventas_totales_neto") or 0)],
+                ["Transacciones", sales.get("transacciones") or 0],
+                ["Ticket Promedio", _report_value(sales.get("ticket_promedio") or 0)],
+            ],
+            "generated_at": generated_at,
+        }
+
+    if report_type == "ingresos_brutos_local":
+        sales = context.get("ventas_recientes") or {}
+        rows = sales.get("locales") or sales.get("top_locales") or []
+        return {
+            "title": "Ingresos brutos por local",
+            "subtitle": f"{mall_name} | {sales.get('fecha_inicio', '')} al {sales.get('fecha_fin', '')}",
+            "filename_base": "msmall_ingresos_brutos_por_local",
+            "sources": ["ventas_recientes"],
+            "headers": ["Local", "Ingreso Bruto", "Transacciones", "Ticket Promedio Bruto"],
+            "rows": [
+                [
+                    row.get("local") or row.get("name"),
+                    _report_value(row.get("total_bruto") or row.get("total") or 0),
+                    row.get("transacciones") or 0,
+                    _report_value((row.get("total_bruto") or row.get("total") or 0) / max(1, int(row.get("transacciones") or 0))),
+                ]
+                for row in rows
+            ],
+            "summary": [
+                ["Ingreso Bruto Total", _report_value(sales.get("ventas_totales_bruto") or 0)],
+                ["Transacciones", sales.get("transacciones") or 0],
+                ["Ticket Promedio Bruto", _report_value(sales.get("ticket_promedio") or 0)],
+            ],
+            "generated_at": generated_at,
+        }
+
+    if report_type == "dias_faltantes":
+        missing = context.get("dias_informacion") or {}
+        rows = missing.get("top_brechas") or []
+        return {
+            "title": "Dias faltantes por local",
+            "subtitle": f"{mall_name} | {missing.get('fecha_inicio', '')} al {missing.get('fecha_fin', '')}",
+            "filename_base": "msmall_dias_faltantes",
+            "sources": ["dias_informacion"],
+            "headers": ["Local", "Dias con informacion", "Dias faltantes", "Fechas faltantes"],
+            "rows": [
+                [
+                    row.get("local"),
+                    row.get("dias_con_informacion") or 0,
+                    row.get("dias_faltantes") or 0,
+                    ", ".join(row.get("fechas_faltantes") or []),
+                ]
+                for row in rows
+            ],
+            "summary": [
+                ["Locales con brechas", missing.get("locales_con_brechas") or 0],
+                ["Locales completos", missing.get("locales_completos") or 0],
+                ["Dias esperados por local", missing.get("dias_esperados_por_local") or 0],
+            ],
+            "generated_at": generated_at,
+        }
+
+    if report_type == "operations_auditor":
+        auditor = context.get("operations_auditor") or {}
+        summary = auditor.get("summary") or {}
+        rows = auditor.get("open_findings") or []
+        return {
+            "title": "Hallazgos operativos",
+            "subtitle": f"{mall_name} | Estado {auditor.get('health') or 'NO_DISPONIBLE'}",
+            "filename_base": "msmall_hallazgos_operativos",
+            "sources": ["operations_auditor"],
+            "headers": ["Severidad", "Local", "Tipo", "Fuente", "Titulo", "Causa probable", "Recomendacion", "Confianza"],
+            "rows": [
+                [
+                    row.get("severity"),
+                    row.get("local"),
+                    row.get("type"),
+                    row.get("source"),
+                    row.get("title"),
+                    row.get("root_cause"),
+                    row.get("recommendation"),
+                    _report_value(row.get("confidence") or 0),
+                ]
+                for row in rows
+            ],
+            "summary": [
+                ["Estado", auditor.get("health") or "NO_DISPONIBLE"],
+                ["Abiertos", summary.get("total_open") or 0],
+                ["Criticos", summary.get("critical") or 0],
+                ["Altos", summary.get("high") or 0],
+                ["Advertencias", summary.get("warning") or 0],
+                ["Locales afectados", summary.get("affected_locals") or 0],
+            ],
+            "generated_at": generated_at,
+        }
+
+    if report_type == "monitor_carga":
+        monitor = context.get("monitor_carga") or {}
+        rows = monitor.get("logs_recientes") or []
+        return {
+            "title": "Monitor de carga reciente",
+            "subtitle": f"{mall_name} | ultimos {len(rows)} registros",
+            "filename_base": "msmall_monitor_carga",
+            "sources": ["monitor_carga"],
+            "headers": ["Fecha/Hora", "Local", "Estado", "Canal", "Archivo", "Procesados", "Errores", "Mensaje"],
+            "rows": [
+                [
+                    row.get("fecha_hora"),
+                    row.get("local"),
+                    row.get("estado"),
+                    row.get("canal"),
+                    row.get("archivo"),
+                    row.get("records_processed") or 0,
+                    row.get("error_count") or 0,
+                    row.get("mensaje"),
+                ]
+                for row in rows
+            ],
+            "summary": [[key, value] for key, value in (monitor.get("conteo_por_estado") or {}).items()],
+            "generated_at": generated_at,
+        }
+
+    if report_type == "diagnostico_carga_ventas":
+        diagnostic = context.get("diagnostico_carga_ventas") or {}
+        period = diagnostic.get("periodo") or {}
+        rows = []
+        for item in diagnostic.get("diagnosticos") or []:
+            ventas_dates = ", ".join(row.get("fecha") or "" for row in (item.get("ventas_por_fecha") or [])[:12])
+            missing_dates = ", ".join(item.get("dias_faltantes") or [])
+            out_of_period_files = ", ".join(
+                f"{log.get('archivo')} -> {log.get('fecha_detectada_archivo')}"
+                for log in (item.get("logs_con_fecha_archivo_fuera_periodo") or [])[:6]
+                if log.get("archivo")
+            )
+            rows.append([
+                item.get("local"),
+                item.get("codigo"),
+                item.get("dias_con_ventas") or 0,
+                item.get("registros_ventas") or 0,
+                _report_value(item.get("total_bruto") or 0),
+                _report_value(item.get("total_neto") or 0),
+                ventas_dates,
+                missing_dates,
+                out_of_period_files,
+            ])
+        return {
+            "title": "Diagnostico de carga vs ventas",
+            "subtitle": f"{mall_name} | {period.get('fecha_inicio', '')} al {period.get('fecha_fin', '')}",
+            "filename_base": "msmall_diagnostico_carga_ventas",
+            "sources": ["diagnostico_carga_ventas"],
+            "layout": "diagnostico_carga_ventas",
+            "diagnostics": diagnostic.get("diagnosticos") or [],
+            "period": period,
+            "headers": [
+                "Local", "Codigo", "Dias con ventas", "Registros ventas",
+                "Total Bruto", "Total Neto", "Fechas con ventas",
+                "Dias faltantes", "Archivos fuera del periodo",
+            ],
+            "rows": rows,
+            "summary": [
+                ["Estado", diagnostic.get("status") or ""],
+                ["Periodo inicio", period.get("fecha_inicio") or ""],
+                ["Periodo fin", period.get("fecha_fin") or ""],
+                ["Locales analizados", diagnostic.get("locales_analizados") or 0],
+            ],
+            "generated_at": generated_at,
+        }
+
+    locales = (context.get("locales") or {}).get("muestra") or []
+    return {
+        "title": "Listado de locales",
+        "subtitle": f"{mall_name} | {len(locales)} locales incluidos",
+        "filename_base": "msmall_listado_locales",
+        "sources": ["locales"],
+        "headers": ["Codigo", "Nombre", "Email", "Rubro", "Tipo de Negocio", "Estado Proceso", "Fallas", "Importacion Activa"],
+        "rows": [
+            [
+                row.get("codigo"),
+                row.get("nombre"),
+                row.get("email"),
+                row.get("rubro"),
+                row.get("tipo_negocio"),
+                row.get("processing_status"),
+                row.get("consecutive_failures") or 0,
+                "Si" if row.get("upsert_activo") else "No",
+            ]
+            for row in locales
+        ],
+        "summary": [
+            ["Total locales", (context.get("locales") or {}).get("total") or len(locales)],
+            ["Con importacion activa", (context.get("locales") or {}).get("con_importacion_activa") or 0],
+            ["En proceso", (context.get("locales") or {}).get("en_proceso") or 0],
+            ["Con fallas consecutivas", (context.get("locales") or {}).get("con_fallas_consecutivas") or 0],
+        ],
+        "generated_at": generated_at,
+    }
+
+
+def _build_copilot_excel(definition: Dict[str, Any]) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Reporte"
+
+    title_font = Font(size=14, bold=True, color="111827")
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="111827")
+
+    sheet.append([definition["title"]])
+    sheet["A1"].font = title_font
+    sheet.append([definition.get("subtitle") or ""])
+    sheet.append(["Generado", definition.get("generated_at") or datetime.utcnow().isoformat()])
+    sheet.append([])
+
+    summary = definition.get("summary") or []
+    if summary:
+        sheet.append(["Resumen"])
+        sheet.cell(row=sheet.max_row, column=1).font = Font(bold=True)
+        for label, value in summary:
+            sheet.append([label, _report_value(value)])
+        sheet.append([])
+
+    headers = definition.get("headers") or []
+    sheet.append(headers)
+    header_row = sheet.max_row
+    for column in range(1, len(headers) + 1):
+        cell = sheet.cell(row=header_row, column=column)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    for row in definition.get("rows") or []:
+        sheet.append([_report_value(value) for value in row])
+
+    for column_cells in sheet.columns:
+        max_length = 10
+        column_letter = column_cells[0].column_letter
+        for cell in column_cells:
+            max_length = max(max_length, len(str(cell.value or "")))
+        sheet.column_dimensions[column_letter].width = min(max_length + 2, 48)
+
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def _build_copilot_pdf(definition: Dict[str, Any]) -> bytes:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    output = io.BytesIO()
+    doc = SimpleDocTemplate(output, pagesize=landscape(letter), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph(definition["title"], styles["Title"]),
+        Paragraph(definition.get("subtitle") or "", styles["Normal"]),
+        Paragraph(f"Generado: {definition.get('generated_at') or datetime.utcnow().isoformat()}", styles["Normal"]),
+        Spacer(1, 12),
+    ]
+
+    summary = definition.get("summary") or []
+    if summary:
+        story.append(Paragraph("Resumen", styles["Heading3"]))
+        summary_table = Table([["Indicador", "Valor"], *[[_truncate_text(label, 60), _report_value(value)] for label, value in summary]])
+        summary_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+        ]))
+        story.extend([summary_table, Spacer(1, 12)])
+
+    headers = definition.get("headers") or []
+    rows = definition.get("rows") or []
+    table_rows = [headers] + [
+        [_truncate_text(_report_value(value), 72) for value in row]
+        for row in rows[:80]
+    ]
+    if len(table_rows) == 1:
+        table_rows.append(["Sin datos disponibles"] + [""] * max(0, len(headers) - 1))
+
+    table = Table(table_rows, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(table)
+    doc.build(story)
+    return output.getvalue()
+
+
+def _build_copilot_diagnostic_html(definition: Dict[str, Any], note_html: str) -> str:
+    def _fmt_money(value: Any) -> str:
+        try:
+            return f"${float(value or 0):,.2f}"
+        except Exception:
+            return "$0.00"
+
+    def _date_label(value: Any) -> str:
+        text = str(value or "")
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except Exception:
+            return text
+
+    def _chips(values: List[str], empty_text: str) -> str:
+        if not values:
+            return f'<span style="color:#64748b">{html.escape(empty_text)}</span>'
+        return "".join(
+            "<span style=\"display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;"
+            "border-radius:999px;padding:5px 9px;margin:3px;font-size:12px;color:#334155\">"
+            f"{html.escape(_date_label(value))}</span>"
+            for value in values
+        )
+
+    summary_map = {str(label): value for label, value in (definition.get("summary") or [])}
+    period = definition.get("period") or {}
+    diagnostics = definition.get("diagnostics") or []
+    local_cards = ""
+    for item in diagnostics:
+        sales_dates = [row.get("fecha") for row in (item.get("ventas_por_fecha") or []) if row.get("fecha")]
+        missing_dates = list(item.get("dias_faltantes") or [])
+        outside_logs = item.get("logs_con_fecha_archivo_fuera_periodo") or []
+        outside_rows = ""
+        for log in outside_logs[:8]:
+            outside_rows += (
+                "<tr>"
+                f"<td>{html.escape(str(log.get('archivo') or ''))}</td>"
+                f"<td>{html.escape(_date_label(log.get('fecha_detectada_archivo')))}</td>"
+                f"<td>{html.escape(str(log.get('records_processed') or 0))}</td>"
+                "</tr>"
+            )
+        if not outside_rows:
+            outside_rows = '<tr><td colspan="3" style="color:#64748b">Sin archivos fuera del periodo en los logs recientes.</td></tr>'
+
+        local_cards += f"""
+        <div style="border:1px solid #e2e8f0;border-radius:16px;margin-top:18px;overflow:hidden">
+          <div style="background:#f8fafc;padding:16px 18px;border-bottom:1px solid #e2e8f0">
+            <h2 style="margin:0;font-size:17px;color:#0f172a">{html.escape(str(item.get('local') or 'Local'))}</h2>
+            <p style="margin:4px 0 0;color:#64748b;font-size:12px">Codigo: {html.escape(str(item.get('codigo') or ''))}</p>
+          </div>
+          <div style="padding:16px 18px">
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+              <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:10px 12px;min-width:125px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Dias con ventas</div>
+                <strong style="font-size:18px;color:#1e3a8a">{html.escape(str(item.get('dias_con_ventas') or 0))}</strong>
+              </div>
+              <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:10px 12px;min-width:125px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Dias faltantes</div>
+                <strong style="font-size:18px;color:#991b1b">{len(missing_dates)}</strong>
+              </div>
+              <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:125px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Registros</div>
+                <strong style="font-size:18px;color:#0f172a">{html.escape(str(item.get('registros_ventas') or 0))}</strong>
+              </div>
+              <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:145px">
+                <div style="font-size:11px;color:#475569;text-transform:uppercase">Total neto</div>
+                <strong style="font-size:18px;color:#0f172a">{html.escape(_fmt_money(item.get('total_neto')))}</strong>
+              </div>
+            </div>
+
+            <h3 style="font-size:14px;margin:14px 0 8px;color:#0f172a">Fechas con ventas registradas</h3>
+            <div style="line-height:2">{_chips(sales_dates, 'Sin ventas registradas en el periodo.')}</div>
+
+            <h3 style="font-size:14px;margin:18px 0 8px;color:#0f172a">Dias faltantes</h3>
+            <div style="line-height:2">{_chips(missing_dates, 'Sin dias faltantes en el periodo.')}</div>
+
+            <h3 style="font-size:14px;margin:18px 0 8px;color:#0f172a">Archivos recientes fuera del periodo consultado</h3>
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr style="background:#f1f5f9"><th>Archivo</th><th>Fecha detectada</th><th>Registros</th></tr></thead>
+              <tbody>{outside_rows}</tbody>
+            </table>
+          </div>
+        </div>
+        """
+
+    if not local_cards:
+        local_cards = '<div style="padding:16px;border:1px solid #e2e8f0;border-radius:12px;color:#64748b">Sin datos disponibles para el diagnostico.</div>'
+
+    return f"""
+    <div style="font-family:Arial,sans-serif;color:#0f172a;background:#f8fafc;padding:24px">
+      <div style="max-width:920px;margin:auto;background:white;border:1px solid #e2e8f0;border-radius:18px;overflow:hidden">
+        <div style="background:#111827;color:white;padding:20px 24px">
+          <h1 style="margin:0;font-size:20px">{html.escape(str(definition.get('title') or 'Reporte MsMall'))}</h1>
+          <p style="margin:6px 0 0;color:#cbd5e1">{html.escape(str(definition.get('subtitle') or ''))}</p>
+        </div>
+        <div style="padding:22px 24px">
+          <p style="margin:0 0 16px;color:#64748b;font-size:13px">Generado: {html.escape(str(definition.get('generated_at') or datetime.utcnow().isoformat()))}</p>
+          {note_html}
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
+              <div style="font-size:11px;color:#475569;text-transform:uppercase">Periodo inicio</div>
+              <strong>{html.escape(_date_label(period.get('fecha_inicio') or summary_map.get('Periodo inicio')))}</strong>
+            </div>
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
+              <div style="font-size:11px;color:#475569;text-transform:uppercase">Periodo fin</div>
+              <strong>{html.escape(_date_label(period.get('fecha_fin') or summary_map.get('Periodo fin')))}</strong>
+            </div>
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
+              <div style="font-size:11px;color:#475569;text-transform:uppercase">Locales analizados</div>
+              <strong>{html.escape(str(summary_map.get('Locales analizados') or len(diagnostics)))}</strong>
+            </div>
+          </div>
+          {local_cards}
+          <p style="margin-top:20px;color:#94a3b8;font-size:12px">Enviado por Copilot MsMall. Fuente: {html.escape(', '.join(definition.get('sources') or []))}</p>
+        </div>
+      </div>
+    </div>
+    <style>
+      th, td {{ border-bottom:1px solid #e2e8f0; padding:9px 10px; text-align:left; vertical-align:top; }}
+      th {{ color:#475569; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
+    </style>
+    """
+
+
+def _build_copilot_report_html(definition: Dict[str, Any]) -> str:
+    body_note = str(definition.get("body_note") or "").strip()
+    if not body_note:
+        body_note = "Hola, reciban un cordial saludo. Soy el Copilot de MsMall y comparto este reporte operativo para apoyar la revision de la informacion solicitada."
+    note_html = (
+        "<div style=\"background:#ecfdf5;border:1px solid #bbf7d0;color:#065f46;"
+        "padding:12px 14px;border-radius:12px;margin-bottom:18px\">"
+        f"{html.escape(body_note)}</div>"
+        if body_note else ""
+    )
+    if definition.get("layout") == "diagnostico_carga_ventas":
+        return _build_copilot_diagnostic_html(definition, note_html)
+
+    summary_rows = "".join(
+        f"<tr><td>{html.escape(str(label))}</td><td><strong>{html.escape(str(_report_value(value)))}</strong></td></tr>"
+        for label, value in (definition.get("summary") or [])
+    )
+    headers = definition.get("headers") or []
+    body_rows = ""
+    for row in (definition.get("rows") or [])[:80]:
+        cells = "".join(f"<td>{html.escape(str(_report_value(value)))}</td>" for value in row)
+        body_rows += f"<tr>{cells}</tr>"
+    if not body_rows:
+        body_rows = f"<tr><td colspan=\"{max(1, len(headers))}\">Sin datos disponibles.</td></tr>"
+    header_cells = "".join(f"<th>{html.escape(str(header))}</th>" for header in headers)
+    return f"""
+    <div style="font-family:Arial,sans-serif;color:#0f172a;background:#f8fafc;padding:24px">
+      <div style="max-width:920px;margin:auto;background:white;border:1px solid #e2e8f0;border-radius:18px;overflow:hidden">
+        <div style="background:#111827;color:white;padding:20px 24px">
+          <h1 style="margin:0;font-size:20px">{html.escape(str(definition.get('title') or 'Reporte MsMall'))}</h1>
+          <p style="margin:6px 0 0;color:#cbd5e1">{html.escape(str(definition.get('subtitle') or ''))}</p>
+        </div>
+        <div style="padding:22px 24px">
+          <p style="margin:0 0 16px;color:#64748b;font-size:13px">Generado: {html.escape(str(definition.get('generated_at') or datetime.utcnow().isoformat()))}</p>
+          {note_html}
+          {f'<h2 style="font-size:15px">Resumen</h2><table style="width:100%;border-collapse:collapse;margin-bottom:20px">{summary_rows}</table>' if summary_rows else ''}
+          <h2 style="font-size:15px">Detalle</h2>
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead><tr style="background:#f1f5f9">{header_cells}</tr></thead>
+              <tbody>{body_rows}</tbody>
+            </table>
+          </div>
+          <p style="margin-top:20px;color:#94a3b8;font-size:12px">Enviado por Copilot MsMall. Fuente: {html.escape(', '.join(definition.get('sources') or []))}</p>
+        </div>
+      </div>
+    </div>
+    <style>
+      th, td {{ border-bottom:1px solid #e2e8f0; padding:10px 12px; text-align:left; vertical-align:top; }}
+      th {{ color:#475569; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
+    </style>
+    """
+
+
+def _cleanup_copilot_downloads(now: Optional[float] = None) -> None:
+    current_time = now or time.time()
+    expired = [
+        key for key, item in _COPILOT_DOWNLOADS.items()
+        if float(item.get("expires_at_epoch") or 0) <= current_time
+    ]
+    for key in expired:
+        _COPILOT_DOWNLOADS.pop(key, None)
+
+
+def _store_copilot_download(filename: str, mime_type: str, content: bytes) -> Dict[str, Any]:
+    download_id = secrets.token_urlsafe(24)
+    expires_at_epoch = time.time() + _COPILOT_DOWNLOAD_TTL_SECONDS
+    safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename).strip("_") or "msmall_reporte"
+    with _COPILOT_DOWNLOADS_LOCK:
+        _cleanup_copilot_downloads()
+        _COPILOT_DOWNLOADS[download_id] = {
+            "filename": safe_filename,
+            "mime_type": mime_type,
+            "content": content,
+            "expires_at_epoch": expires_at_epoch,
+        }
+    return {
+        "id": download_id,
+        "filename": safe_filename,
+        "mime_type": mime_type,
+        "download_url": f"/api/v1/copilot/download/{download_id}",
+        "expires_at": datetime.utcfromtimestamp(expires_at_epoch).isoformat(),
+    }
+
+
+def _store_copilot_email_draft(draft: Dict[str, Any]) -> Dict[str, Any]:
+    draft_id = secrets.token_urlsafe(24)
+    expires_at_epoch = time.time() + _COPILOT_DOWNLOAD_TTL_SECONDS
+    with _COPILOT_EMAIL_DRAFTS_LOCK:
+        _cleanup_copilot_email_drafts()
+        _COPILOT_EMAIL_DRAFTS[draft_id] = {
+            **draft,
+            "expires_at_epoch": expires_at_epoch,
+        }
+    return {
+        "id": draft_id,
+        "expires_at": datetime.utcfromtimestamp(expires_at_epoch).isoformat(),
+    }
+
+
+def _cleanup_copilot_email_drafts(now: Optional[float] = None) -> None:
+    current_time = now or time.time()
+    expired = [
+        key for key, item in _COPILOT_EMAIL_DRAFTS.items()
+        if float(item.get("expires_at_epoch") or 0) <= current_time
+    ]
+    for key in expired:
+        _COPILOT_EMAIL_DRAFTS.pop(key, None)
+
+
+def _build_copilot_email_draft(email_request: Dict[str, Any], context: Dict[str, Any], mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    recipients = email_request.get("recipients") or []
+    if not recipients:
+        raise HTTPException(status_code=400, detail="Indica al menos un correo destinatario para enviar el reporte.")
+
+    definition = _copilot_report_definition(email_request["report_type"], context)
+    if email_request.get("body_note"):
+        definition["body_note"] = email_request["body_note"]
+    html_body = _build_copilot_report_html(definition)
+    subject = f"{definition['title']} - MsMall"
+    attachments = []
+    attachment_format = email_request.get("attachment_format")
+    if attachment_format:
+        generated_date = datetime.utcnow().strftime("%Y%m%d_%H%M")
+        if attachment_format == "pdf":
+            content = _build_copilot_pdf(definition)
+            filename = f"{definition['filename_base']}_{generated_date}.pdf"
+            mime_type = "application/pdf"
+        else:
+            content = _build_copilot_excel(definition)
+            filename = f"{definition['filename_base']}_{generated_date}.xlsx"
+            mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        attachments.append({"filename": filename, "content": content, "mime_type": mime_type})
+
+    stored = _store_copilot_email_draft({
+        "mall_id": mall_id,
+        "recipients": recipients,
+        "subject": subject,
+        "html_body": html_body,
+        "text": "\n".join(
+            item for item in [
+                str(email_request.get("body_note") or ""),
+                definition["title"],
+                definition.get("subtitle") or "",
+            ]
+            if item
+        ),
+        "attachments": attachments,
+        "report_type": email_request["report_type"],
+        "row_count": len(definition.get("rows") or []),
+        "sources": definition.get("sources") or [],
+        "created_by": operator_ctx.get("email") or operator_ctx.get("user_id"),
+    })
+    return {
+        **stored,
+        "recipients": recipients,
+        "subject": subject,
+        "report_type": email_request["report_type"],
+        "row_count": len(definition.get("rows") or []),
+        "attachment_count": len(attachments),
+        "sources": definition.get("sources") or [],
+    }
+
+
+def _generate_copilot_report_attachment(report_request: Dict[str, str], context: Dict[str, Any]) -> Dict[str, Any]:
+    definition = _copilot_report_definition(report_request["type"], context)
+    generated_date = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    if report_request["format"] == "pdf":
+        filename = f"{definition['filename_base']}_{generated_date}.pdf"
+        content = _build_copilot_pdf(definition)
+        mime_type = "application/pdf"
+    else:
+        filename = f"{definition['filename_base']}_{generated_date}.xlsx"
+        content = _build_copilot_excel(definition)
+        mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    attachment = _store_copilot_download(filename, mime_type, content)
+    attachment.update({
+        "label": definition["title"],
+        "report_type": report_request["type"],
+        "format": report_request["format"],
+        "sources": definition.get("sources") or [],
+        "row_count": len(definition.get("rows") or []),
+    })
+    return attachment
+
+
+@app.get("/api/v1/operations/findings")
+async def list_operational_findings(
+    mall_id: str = Query(...),
+    status: Optional[str] = Query("OPEN"),
+    severity: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    local_id: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=300),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    try:
+        return await asyncio.to_thread(
+            _operations_auditor_service().list_findings,
+            mall_id,
+            status,
+            severity,
+            source,
+            local_id,
+            limit,
+        )
+    except Exception as exc:
+        logger.error("Error listando hallazgos operativos: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudieron cargar los hallazgos operativos.")
+
+
+@app.get("/api/v1/operations/findings/{finding_id}")
+async def get_operational_finding(
+    finding_id: str,
+    mall_id: str = Query(...),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    finding = await asyncio.to_thread(_operations_auditor_service().get_finding, mall_id, finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="Hallazgo operativo no encontrado.")
+    return finding
+
+
+@app.post("/api/v1/operations/findings/{finding_id}/acknowledge")
+async def acknowledge_operational_finding(
+    finding_id: str,
+    mall_id: str = Query(...),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    operator = operator_ctx.get("email") or operator_ctx.get("user_id") or "operador"
+    try:
+        return await asyncio.to_thread(
+            _operations_auditor_service().acknowledge_finding,
+            mall_id,
+            finding_id,
+            operator,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Hallazgo operativo no encontrado.")
+
+
+@app.post("/api/v1/operations/findings/{finding_id}/resolve")
+async def resolve_operational_finding(
+    finding_id: str,
+    mall_id: str = Query(...),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    operator = operator_ctx.get("email") or operator_ctx.get("user_id") or "operador"
+    try:
+        return await asyncio.to_thread(
+            _operations_auditor_service().resolve_finding,
+            mall_id,
+            finding_id,
+            operator,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Hallazgo operativo no encontrado.")
+
+
+@app.post("/api/v1/operations/auditor/run")
+async def run_operations_auditor(
+    mall_id: str = Query(...),
+    lookback_days: int = Query(7, ge=1, le=45),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    operator = operator_ctx.get("email") or operator_ctx.get("user_id") or "operador"
+    try:
+        return await asyncio.to_thread(
+            _operations_auditor_service().run_audit,
+            mall_id,
+            operator,
+            lookback_days,
+        )
+    except Exception as exc:
+        logger.error("Error ejecutando Operations Auditor: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudo ejecutar Operations Auditor.")
+
+
+@app.post("/api/v1/operations/agent/process")
+async def process_operations_agent_events(
+    limit: int = Query(50, ge=1, le=200),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    try:
+        return await asyncio.to_thread(_operations_agent_worker().process_pending_events, limit)
+    except Exception as exc:
+        logger.error("Error procesando eventos de Operations Agent: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudieron procesar los eventos operativos.")
+
+
+@app.get("/api/v1/operations/intelligence")
+async def get_operations_intelligence(
+    mall_id: str = Query(...),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    try:
+        return await asyncio.to_thread(_operations_intelligence_service().build_copilot_context, mall_id)
+    except Exception as exc:
+        logger.error("Error cargando inteligencia operativa: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudo cargar la inteligencia operativa.")
+
+
+@app.get("/api/v1/copilot/download/{download_id}")
+async def download_copilot_report(download_id: str):
+    with _COPILOT_DOWNLOADS_LOCK:
+        _cleanup_copilot_downloads()
+        item = _COPILOT_DOWNLOADS.get(download_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Reporte no encontrado o expirado.")
+
+    filename = item["filename"]
+    return StreamingResponse(
+        io.BytesIO(item["content"]),
+        media_type=item["mime_type"],
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/v1/copilot/email/send")
+async def send_copilot_email(
+    payload: CopilotEmailSendRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    mall_id = str(payload.mall_id or "").strip()
+    draft_id = str(payload.draft_id or "").strip()
+    if not mall_id or not draft_id:
+        raise HTTPException(status_code=400, detail="mall_id y draft_id son requeridos.")
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+
+    with _COPILOT_EMAIL_DRAFTS_LOCK:
+        _cleanup_copilot_email_drafts()
+        draft = _COPILOT_EMAIL_DRAFTS.get(draft_id)
+    if not draft or draft.get("mall_id") != mall_id:
+        raise HTTPException(status_code=404, detail="Borrador de correo no encontrado o expirado.")
+
+    recipients = draft.get("recipients") or []
+    if not recipients:
+        raise HTTPException(status_code=400, detail="El borrador no tiene destinatarios.")
+
+    sent = []
+    for recipient in recipients:
+        result = await asyncio.to_thread(
+            _send_resend_email,
+            recipient,
+            draft.get("subject") or "Reporte MsMall",
+            draft.get("text") or "Reporte generado por Copilot MsMall.",
+            draft.get("html_body"),
+            None,
+            draft.get("attachments") or [],
+        )
+        sent.append({"email": recipient, "resend_id": result.get("id")})
+
+    with _COPILOT_EMAIL_DRAFTS_LOCK:
+        _COPILOT_EMAIL_DRAFTS.pop(draft_id, None)
+
+    return {
+        "sent": sent,
+        "subject": draft.get("subject"),
+        "attachment_count": len(draft.get("attachments") or []),
+    }
+
+
+def _copilot_system_prompt() -> str:
+    return (
+        "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
+        "Responde en español, de forma breve y accionable. Usa solamente el contexto JSON del sistema: "
+        "Operations Auditor, observations, patterns, operational_digest, ventas recientes, monitor de carga, monitor de conexiones, locales, dias de informacion y diagnostico_carga_ventas. "
+        "Cuando exista operations_auditor.open_findings, recent_observations, patterns u operational_digest, consultalos primero y explica el impacto operativo antes del detalle tecnico. "
+        "Usa semaforo VERDE/AMARILLO/ROJO si el usuario pide estado general. "
+        "Cuando el usuario pregunte por diferencias entre cubo, monitor e importaciones, prioriza diagnostico_carga_ventas: "
+        "explica dias con ventas, dias faltantes, logs recientes y fechas detectadas en archivos. "
+        "Si el contexto no contiene un dato solicitado, dilo claramente y sugiere donde revisarlo. "
+        "No inventes cifras, locales, fechas ni estados. Cuando sea util, menciona la fuente del dato. "
+        "Formato obligatorio: usa un titulo corto en negrita, luego lineas separadas con bullets. "
+        "Para reportes numericos, incluye periodo, fuente y maximo 8 bullets. "
+        "No respondas en un parrafo largo; evita tablas markdown porque el chat es angosto."
+    )
+
+
+def _sanitize_copilot_history(history: List[CopilotChatMessage]) -> List[Dict[str, str]]:
+    sanitized = []
+    for item in (history or [])[-8:]:
+        role = str(item.role or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = _truncate_text(item.content, 900)
+        if content:
+            sanitized.append({"role": role, "content": content})
+    return sanitized
+
+
+def _build_copilot_user_context(context: Dict[str, Any], message: str) -> str:
+    context_json = json.dumps(context, ensure_ascii=False, default=str)
+    return (
+        "Contexto operacional de MsMall en JSON:\n"
+        f"{context_json}\n\n"
+        "Pregunta del usuario:\n"
+        f"{message.strip()}"
+    )
+
+
+def _extract_llm_error(prefix: str, raw: str) -> str:
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            error = parsed.get("error")
+            if isinstance(error, dict):
+                return error.get("message") or error.get("status") or prefix
+            if isinstance(error, str):
+                return error
+            if isinstance(parsed.get("message"), str):
+                return parsed["message"]
+    except Exception:
+        pass
+    return raw[:240] if raw else prefix
+
+
+def _call_openai_copilot(api_key: str, model: str, context: Dict[str, Any], message: str, history: List[CopilotChatMessage]) -> str:
+    messages = [{"role": "system", "content": _copilot_system_prompt()}]
+    messages.extend(_sanitize_copilot_history(history))
+    messages.append({"role": "user", "content": _build_copilot_user_context(context, message)})
+    payload = {
+        "model": model or COPILOT_DEFAULT_MODELS["openai"],
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 700,
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": RESEND_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as response:
+            parsed = json.loads(response.read().decode("utf-8"))
+        return (
+            parsed.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        ) or "No recibi una respuesta del proveedor."
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=502, detail=f"OpenAI: {_extract_llm_error('Error consultando OpenAI.', raw)}")
+    except urllib.error.URLError:
+        raise HTTPException(status_code=502, detail="No se pudo conectar con OpenAI.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Copilot OpenAI error: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="Error inesperado consultando OpenAI.")
+
+
+def _call_gemini_copilot(api_key: str, model: str, context: Dict[str, Any], message: str, history: List[CopilotChatMessage]) -> str:
+    history_text = "\n".join(
+        f"{item['role']}: {item['content']}"
+        for item in _sanitize_copilot_history(history)
+    )
+    prompt = (
+        f"{_build_copilot_user_context(context, message)}\n\n"
+        f"Historial reciente:\n{history_text or 'Sin historial previo.'}"
+    )
+    payload = {
+        "systemInstruction": {"parts": [{"text": _copilot_system_prompt()}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 700,
+        },
+    }
+    safe_model = (model or COPILOT_DEFAULT_MODELS["gemini"]).strip()
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{safe_model}:generateContent?key={api_key}"
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": RESEND_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as response:
+            parsed = json.loads(response.read().decode("utf-8"))
+        parts = (
+            parsed.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [])
+        )
+        return "\n".join(str(part.get("text") or "").strip() for part in parts if part.get("text")).strip() or "No recibi una respuesta del proveedor."
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=502, detail=f"Gemini: {_extract_llm_error('Error consultando Gemini.', raw)}")
+    except urllib.error.URLError:
+        raise HTTPException(status_code=502, detail="No se pudo conectar con Gemini.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Copilot Gemini error: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="Error inesperado consultando Gemini.")
+
+
+def _call_copilot_provider(settings: Dict[str, Any], context: Dict[str, Any], message: str, history: List[CopilotChatMessage]) -> str:
+    provider = _normalize_copilot_provider(settings.get("provider"))
+    api_key = _get_system_health_value(_copilot_api_key_name(provider)) or ""
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Copilot no tiene API key configurada.")
+    if provider == "gemini":
+        return _call_gemini_copilot(api_key, settings.get("model") or "", context, message, history)
+    return _call_openai_copilot(api_key, settings.get("model") or "", context, message, history)
+
+
+@app.get("/api/v1/admin/copilot/settings")
+async def get_copilot_settings(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+    return _copilot_config_status()
+
+
+@app.put("/api/v1/admin/copilot/settings")
+async def save_copilot_settings(
+    payload: CopilotSettingsRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    try:
+        return _save_copilot_settings(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error guardando configuracion de Copilot: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudo guardar la configuracion de Copilot.")
+
+
+@app.get("/api/v1/copilot/status")
+async def get_copilot_status(
+    mall_id: str = Query(...),
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    return _copilot_config_status()
+
+
+@app.post("/api/v1/copilot/chat")
+async def chat_with_copilot(
+    payload: CopilotChatRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    mall_id = str(payload.mall_id or "").strip()
+    message = str(payload.message or "").strip()
+    if not mall_id:
+        raise HTTPException(status_code=400, detail="mall_id es requerido.")
+    if not message:
+        raise HTTPException(status_code=400, detail="Escribe una pregunta para Copilot.")
+    if len(message) > 1400:
+        raise HTTPException(status_code=400, detail="La pregunta es demasiado larga.")
+
+    settings = _copilot_config_status()
+    if not settings.get("enabled"):
+        raise HTTPException(status_code=503, detail="Copilot MsMall esta desactivado.")
+    if not settings.get("api_key_configured"):
+        raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
+
+    intent_message = _resolve_copilot_conversation_intent(message, payload.history or [])
+    clarification = _analyze_copilot_clarification_need(message, intent_message, payload.history or [])
+    if clarification:
+        return _copilot_clarification_response(
+            settings,
+            title=clarification["title"],
+            bullets=clarification["bullets"],
+            options=clarification["options"],
+            intent=clarification["intent"],
+            missing_fields=clarification["missing_fields"],
+        )
+
+    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx, intent_message)
+    email_request = _parse_copilot_email_request(message, intent_message)
+    if email_request:
+        try:
+            email_draft = await asyncio.to_thread(_build_copilot_email_draft, email_request, context, mall_id, operator_ctx)
+        except HTTPException as exc:
+            if exc.status_code == 400:
+                return {
+                    "answer": (
+                        "**Falta destinatario**\n"
+                        "- Puedo preparar el reporte en HTML y enviarlo por correo.\n"
+                        "- Indica el email destino, por ejemplo: `envialo a operaciones@empresa.com`."
+                    ),
+                    "provider": settings["provider"],
+                    "model": settings["model"],
+                    "context_generated_at": context.get("generated_at_utc"),
+                    "sources": [],
+                    "attachments": [],
+                    "email_actions": [],
+                }
+            raise
+        attachment_text = "HTML"
+        if email_draft.get("attachment_count"):
+            attachment_text += " + adjunto"
+        return {
+            "answer": (
+                f"**Correo preparado**\n"
+                f"- Para: **{', '.join(email_draft['recipients'])}**\n"
+                f"- Asunto: **{email_draft['subject']}**\n"
+                f"- Formato: **{attachment_text}**\n"
+                f"- Filas incluidas: **{email_draft.get('row_count', 0)}**\n"
+                f"- Confirma con el boton para enviarlo."
+            ),
+            "provider": settings["provider"],
+            "model": settings["model"],
+            "context_generated_at": context.get("generated_at_utc"),
+            "sources": email_draft.get("sources") or [],
+            "attachments": [],
+            "email_actions": [email_draft],
+        }
+
+    report_request = _parse_copilot_report_request(intent_message)
+    if report_request:
+        attachment = await asyncio.to_thread(_generate_copilot_report_attachment, report_request, context)
+        return {
+            "answer": (
+                f"**Reporte listo**\n"
+                f"- Archivo: **{attachment['filename']}**\n"
+                f"- Formato: **{report_request['format'].upper()}**\n"
+                f"- Filas incluidas: **{attachment.get('row_count', 0)}**\n"
+                f"- El enlace expira en aproximadamente 15 minutos."
+            ),
+            "provider": settings["provider"],
+            "model": settings["model"],
+            "context_generated_at": context.get("generated_at_utc"),
+            "sources": attachment.get("sources") or [],
+            "attachments": [attachment],
+        }
+
+    answer = await asyncio.to_thread(
+        _call_copilot_provider,
+        settings,
+        context,
+        message,
+        payload.history or [],
+    )
+    return {
+        "answer": answer,
+        "provider": settings["provider"],
+        "model": settings["model"],
+        "context_generated_at": context.get("generated_at_utc"),
+        "sources": ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion", "diagnostico_carga_ventas"],
+        "attachments": [],
+    }
+
+
+def _normalize_resend_sender_email(value: str) -> str:
+    email = str(value or "").strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HTTPException(status_code=400, detail="Correo remitente invalido.")
+    if not email.endswith(f"@{RESEND_DOMAIN}"):
+        raise HTTPException(status_code=400, detail=f"El remitente debe usar el dominio {RESEND_DOMAIN}.")
+    return email
+
+
+def _normalize_resend_sender_name(value: str) -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nombre remitente requerido.")
+    if len(name) > 80:
+        raise HTTPException(status_code=400, detail="Nombre remitente demasiado largo.")
+    return name
+
+
+def _resolve_resend_sender_config() -> Dict[str, str]:
+    raw_email = _get_system_health_value(RESEND_SENDER_EMAIL_KEY) or os.getenv("RESEND_FROM_EMAIL") or RESEND_FROM_EMAIL
+    raw_name = _get_system_health_value(RESEND_SENDER_NAME_KEY) or os.getenv("RESEND_FROM_NAME") or RESEND_FROM_NAME
+    try:
+        from_email = _normalize_resend_sender_email(raw_email)
+    except HTTPException:
+        logger.warning("Remitente Resend invalido en configuracion persistida: %s", raw_email)
+        from_email = RESEND_FROM_EMAIL
+    try:
+        from_name = _normalize_resend_sender_name(raw_name)
+    except HTTPException:
+        logger.warning("Nombre remitente Resend invalido en configuracion persistida: %s", raw_name)
+        from_name = RESEND_FROM_NAME
+    return {"from_email": from_email, "from_name": from_name}
+
+
+def _resend_config_status() -> Dict[str, Any]:
+    sender = _resolve_resend_sender_config()
+    return {
+        "provider": "resend",
+        "domain": RESEND_DOMAIN,
+        "from_email": sender["from_email"],
+        "from_name": sender["from_name"],
+        "configured": bool(os.getenv(RESEND_API_KEY_ENV)),
+        "api_key_env": RESEND_API_KEY_ENV,
+    }
+
+
+def _send_resend_email(
+    to_email: str,
+    subject: str,
+    message: str,
+    html_body: Optional[str] = None,
+    cc_emails: Optional[List[str]] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    api_key = os.getenv(RESEND_API_KEY_ENV)
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Resend no esta configurado. Falta la variable {RESEND_API_KEY_ENV}.",
+        )
+
+    sender = _resolve_resend_sender_config()
+    payload = {
+        "from": f"{sender['from_name']} <{sender['from_email']}>",
+        "to": [to_email],
+        "subject": subject,
+        "text": message,
+        "html": html_body or f"<p>{html.escape(message or '').replace(chr(10), '<br />')}</p>",
+    }
+    cc_list = _normalize_email_list(cc_emails or [])
+    if cc_list:
+        payload["cc"] = cc_list
+    attachment_payload = []
+    for attachment in attachments or []:
+        content = attachment.get("content") or b""
+        if isinstance(content, str):
+            content_bytes = content.encode("utf-8")
+        else:
+            content_bytes = bytes(content)
+        attachment_payload.append({
+            "filename": attachment.get("filename") or "msmall_reporte",
+            "content": base64.b64encode(content_bytes).decode("ascii"),
+            "content_type": attachment.get("mime_type") or "application/octet-stream",
+        })
+    if attachment_payload:
+        payload["attachments"] = attachment_payload
+
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": RESEND_USER_AGENT,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw)
+            detail = parsed.get("message") or parsed.get("detail") or parsed.get("error") or raw
+        except Exception:
+            detail = raw or "Resend rechazo el envio."
+        logger.warning("Resend API error %s: %s", e.code, detail)
+        raise HTTPException(status_code=502, detail=f"Resend: {detail}")
+    except urllib.error.URLError as e:
+        logger.error("Resend network error: %s", e)
+        raise HTTPException(status_code=502, detail="No se pudo conectar con Resend.")
+    except Exception as e:
+        logger.error("Unexpected Resend error: %s", e)
+        raise HTTPException(status_code=500, detail="Error inesperado enviando con Resend.")
+
+
+def _default_missing_days_email_settings(mall_id: str) -> Dict[str, Any]:
+    return {
+        "id": None,
+        "mall_id": mall_id,
+        "notification_type": "missing_days_audit",
+        "enabled": False,
+        "weekdays": [],
+        "send_time": "08:00",
+        "lookback_days": 7,
+        "send_only_with_gaps": True,
+        "cc_emails": [],
+        "subject_template": DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+        "body_template": DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+def _normalize_weekdays(weekdays: List[int]) -> List[int]:
+    normalized = set()
+    for day in weekdays or []:
+        try:
+            value = int(day)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= value <= 6:
+            normalized.add(value)
+    return sorted(normalized)
+
+
+def _normalize_email_list(values: List[str], *, strict: bool = True) -> List[str]:
+    emails = []
+    if isinstance(values, str):
+        values = re.split(r"[\n,;]+", values)
+    for value in values or []:
+        email = str(value or "").strip().lower()
+        if not email:
+            continue
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            if not strict:
+                continue
+            raise HTTPException(status_code=400, detail=f"Email invalido: {email}")
+        emails.append(email)
+    return sorted(set(emails))
+
+
+def _normalize_send_time(value: str) -> str:
+    candidate = str(value or "").strip()
+    if re.match(r"^\d{2}:\d{2}$", candidate):
+        candidate = f"{candidate}:00"
+    if not re.match(r"^\d{2}:\d{2}:\d{2}$", candidate):
+        raise HTTPException(status_code=400, detail="Hora de envio invalida. Use HH:MM.")
+    hour, minute, second = [int(part) for part in candidate.split(":")]
+    if hour > 23 or minute > 59 or second > 59:
+        raise HTTPException(status_code=400, detail="Hora de envio invalida. Use HH:MM.")
+    return f"{hour:02d}:{minute:02d}:00"
+
+
+def _normalize_email_template(value: Optional[str], default: str, *, max_length: int) -> str:
+    template = str(value or "").strip() or default
+    if len(template) > max_length:
+        raise HTTPException(status_code=400, detail=f"La plantilla no puede exceder {max_length} caracteres.")
+    return template
+
+
+def _sanitize_missing_days_email_settings_row(row: Optional[Dict[str, Any]], mall_id: str) -> Dict[str, Any]:
+    if not row:
+        return _default_missing_days_email_settings(mall_id)
+    data = _default_missing_days_email_settings(mall_id)
+    try:
+        lookback_days = int(row.get("lookback_days") or 7)
+    except (TypeError, ValueError):
+        lookback_days = 7
+    lookback_days = max(1, min(90, lookback_days))
+    data.update({
+        "id": row.get("id"),
+        "mall_id": row.get("mall_id") or mall_id,
+        "notification_type": row.get("notification_type") or "missing_days_audit",
+        "enabled": bool(row.get("enabled")),
+        "weekdays": _normalize_weekdays(row.get("weekdays") or []),
+        "send_time": str(row.get("send_time") or "08:00")[:5],
+        "lookback_days": lookback_days,
+        "send_only_with_gaps": row.get("send_only_with_gaps") is not False,
+        "cc_emails": _normalize_email_list(row.get("cc_emails") or [], strict=False),
+        "subject_template": _normalize_email_template(
+            row.get("subject_template"),
+            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+            max_length=160,
+        ),
+        "body_template": _normalize_email_template(
+            row.get("body_template"),
+            DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+            max_length=2000,
+        ),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    })
+    return data
+
+
+def _is_missing_email_settings_table_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "email_notification_settings" in text and (
+        "does not exist" in text or "schema cache" in text or "pgrst205" in text
+    )
+
+
+def _is_missing_email_template_columns_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "email_notification_settings" in text and (
+        "subject_template" in text or "body_template" in text
+    ) and (
+        "schema cache" in text or "could not find" in text or "pgrst204" in text
+    )
+
+
+def _load_missing_days_email_settings_row(mall_id: str) -> Dict[str, Any]:
+    res = (
+        supabase.table("email_notification_settings")
+        .select("*")
+        .eq("mall_id", mall_id)
+        .eq("notification_type", "missing_days_audit")
+        .maybe_single()
+        .execute()
+    )
+    return _sanitize_missing_days_email_settings_row(res.data, mall_id)
+
+
+def _normalize_missing_days_sale_date(raw_value: Any) -> Optional[str]:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, datetime):
+        return raw_value.strftime("%Y-%m-%d")
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    if len(value) >= 10 and value[4] == "-" and value[7] == "-":
+        return value[:10]
+    try:
+        parsed = pd.to_datetime(value, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        return parsed.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _load_missing_days_details_for_local(
+    local_id: str,
+    local_name: str,
+    mall_id: str,
+    fecha_inicio: str,
+    fecha_fin: str,
+) -> List[Dict[str, Any]]:
+    start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d")
+    end_date = datetime.strptime(fecha_fin, "%Y-%m-%d")
+    total_days = (end_date - start_date).days + 1
+    expected_dates = {
+        (start_date + timedelta(days=x)).strftime("%Y-%m-%d")
+        for x in range(total_days)
+    }
+
+    rows: List[Dict[str, Any]] = []
+    page_size = 2000
+    page = 0
+    while True:
+        chunk = (
+            supabase.table("ventas")
+            .select("id, fecha")
+            .eq("local_id", local_id)
+            .gte("fecha", fecha_inicio)
+            .lte("fecha", fecha_fin)
+            .order("id")
+            .range(page * page_size, (page + 1) * page_size - 1)
+            .execute()
+        ).data or []
+        if not chunk:
+            break
+        rows.extend(chunk)
+        if len(chunk) < page_size:
+            break
+        page += 1
+
+    actual_dates = {
+        normalized
+        for normalized in (_normalize_missing_days_sale_date(row.get("fecha")) for row in rows)
+        if normalized
+    }
+    missing_dates = sorted(list(expected_dates - actual_dates))
+    if not missing_dates:
+        return []
+
+    try:
+        logs_resp = (
+            supabase.table("logs_carga")
+            .select("*")
+            .eq("local_id", local_id)
+            .gte("fecha_hora", f"{fecha_inicio}T00:00:00")
+            .lte("fecha_hora", f"{fecha_fin}T23:59:59")
+            .order("fecha_hora", desc=True)
+            .execute()
+        )
+    except Exception:
+        logs_resp = type("Tmp", (), {"data": []})()
+
+    if not logs_resp.data and local_name:
+        legacy_q = (
+            supabase.table("logs_carga")
+            .select("*")
+            .eq("local_nombre", local_name)
+            .gte("fecha_hora", f"{fecha_inicio}T00:00:00")
+            .lte("fecha_hora", f"{fecha_fin}T23:59:59")
+            .order("fecha_hora", desc=True)
+        )
+        if mall_id:
+            legacy_q = legacy_q.eq("mall_id", mall_id)
+        logs_resp = legacy_q.execute()
+
+    logs_df = pd.DataFrame(logs_resp.data or [])
+    if not logs_df.empty:
+        logs_df["fecha_log"] = logs_df["fecha_hora"].apply(lambda x: str(x).split("T")[0] if x else None)
+
+    details: List[Dict[str, Any]] = []
+    for missing_date in missing_dates:
+        cause = "Proceso no ejecutado / Sin conexión"
+        log_id = None
+        if not logs_df.empty:
+            day_logs = logs_df[logs_df["fecha_log"] == missing_date]
+            if not day_logs.empty:
+                last_log = day_logs.iloc[0]
+                log_id = last_log.get("id")
+                status_text = str(last_log.get("estado") or "").strip().lower()
+                if status_text == "error":
+                    cause = "Fallo Técnico / Error de Lectura"
+                elif status_text in {"no_encontrado", "no encontrado"}:
+                    cause = "Archivo no disponible en FTP"
+                elif status_text in {"exito", "éxito", "success", "parcial"}:
+                    cause = "Procesado con Éxito (Posible archivo vacío)"
+        details.append({"fecha": missing_date, "causa": cause, "log_id": log_id})
+    return details
+
+
+def _missing_days_report_url(mall_id: str, local_id: str, fecha_inicio: str, fecha_fin: str) -> Optional[str]:
+    app_url = (os.getenv("APP_BASE_URL") or os.getenv("FRONTEND_URL") or "").strip().rstrip("/")
+    if not app_url:
+        return None
+    return (
+        f"{app_url}/?view=reports"
+        f"&mall_id={mall_id}"
+        f"&local_id={local_id}"
+        f"&start_date={fecha_inicio}"
+        f"&end_date={fecha_fin}"
+    )
+
+
+@app.get("/api/v1/admin/messaging/resend")
+async def get_resend_messaging_config(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+    return _resend_config_status()
+
+
+@app.put("/api/v1/admin/messaging/resend/sender")
+async def update_resend_sender_config(
+    payload: ResendSenderUpdateRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    from_email = _normalize_resend_sender_email(payload.from_email)
+    from_name = _normalize_resend_sender_name(payload.from_name)
+    try:
+        _upsert_system_health_value_sync(RESEND_SENDER_EMAIL_KEY, from_email)
+        _upsert_system_health_value_sync(RESEND_SENDER_NAME_KEY, from_name)
+    except Exception as exc:
+        logger.error("Error guardando remitente Resend: %s", exc)
+        raise HTTPException(status_code=500, detail="No se pudo guardar el remitente de Resend.")
+    return _resend_config_status()
+
+
+@app.post("/api/v1/admin/messaging/resend/test")
+async def send_resend_test_message(
+    payload: ResendTestMessageRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    to_email = (payload.to or "").strip()
+    subject = (payload.subject or "Prueba de notificaciones MSMALL").strip()
+    message = (payload.message or "Mensaje de prueba desde MSMALL usando Resend.").strip()
+
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", to_email):
+        raise HTTPException(status_code=400, detail="Destinatario invalido.")
+    if not subject:
+        raise HTTPException(status_code=400, detail="Asunto requerido.")
+    if not message:
+        raise HTTPException(status_code=400, detail="Mensaje requerido.")
+
+    result = await asyncio.to_thread(_send_resend_email, to_email, subject, message)
+    return {
+        "status": "success",
+        "id": result.get("id"),
+        "to": to_email,
+        "from_email": _resolve_resend_sender_config()["from_email"],
+        "domain": RESEND_DOMAIN,
+        "message": "Mensaje de prueba enviado correctamente.",
+    }
+
+
+@app.post("/api/v1/admin/messaging/missing-days/preview-html")
+async def preview_missing_days_email_html(
+    payload: MissingDaysEmailPreviewRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    return {
+        "html": build_missing_days_email_html(
+            mall_name=payload.mall_name,
+            local_name=payload.local_name,
+            fecha_inicio=payload.fecha_inicio,
+            fecha_fin=payload.fecha_fin,
+            missing_details=payload.missing_details,
+            report_url=payload.report_url,
+        )
+    }
+
+
+@app.get("/api/v1/admin/messaging/missing-days/settings")
+async def get_missing_days_email_settings(
+    mall_id: str = Query(...),
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    _ensure_operator_can_access_mall(admin_ctx, mall_id)
+    try:
+        return _load_missing_days_email_settings_row(mall_id)
+    except Exception as exc:
+        if _is_missing_email_settings_table_error(exc):
+            logger.warning(
+                "Tabla email_notification_settings no disponible al cargar programacion; usando defaults para mall %s: %s",
+                mall_id,
+                exc,
+            )
+            return _default_missing_days_email_settings(mall_id)
+        logger.warning(
+            "Error cargando configuracion de emails de dias faltantes; usando defaults para mall %s: %s",
+            mall_id,
+            exc,
+        )
+        return _default_missing_days_email_settings(mall_id)
+
+
+@app.put("/api/v1/admin/messaging/missing-days/settings")
+async def save_missing_days_email_settings(
+    payload: MissingDaysEmailSettingsRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    mall_id = (payload.mall_id or "").strip()
+    if not mall_id:
+        raise HTTPException(status_code=400, detail="mall_id es requerido.")
+    _ensure_operator_can_access_mall(admin_ctx, mall_id)
+
+    weekdays = _normalize_weekdays(payload.weekdays)
+    if payload.enabled and not weekdays:
+        raise HTTPException(status_code=400, detail="Seleccione al menos un dia de envio.")
+
+    lookback_days = int(payload.lookback_days or 7)
+    if lookback_days < 1 or lookback_days > 90:
+        raise HTTPException(status_code=400, detail="La ventana de auditoria debe estar entre 1 y 90 dias.")
+
+    row = {
+        "mall_id": mall_id,
+        "notification_type": "missing_days_audit",
+        "enabled": bool(payload.enabled),
+        "weekdays": weekdays,
+        "send_time": _normalize_send_time(payload.send_time),
+        "lookback_days": lookback_days,
+        "send_only_with_gaps": bool(payload.send_only_with_gaps),
+        "cc_emails": _normalize_email_list(payload.cc_emails),
+        "updated_by": admin_ctx.get("user_id"),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    template_fields = {
+        "subject_template": _normalize_email_template(
+            payload.subject_template,
+            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+            max_length=160,
+        ),
+        "body_template": _normalize_email_template(
+            payload.body_template,
+            DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+            max_length=2000,
+        ),
+    }
+    row_with_templates = {**row, **template_fields}
+
+    try:
+        res = (
+            supabase.table("email_notification_settings")
+            .upsert(row_with_templates, on_conflict="mall_id,notification_type")
+            .execute()
+        )
+        saved = (res.data or [None])[0]
+        if not saved:
+            logger.info("Supabase upsert de programacion no devolvio fila; recargando mall %s", mall_id)
+        return _load_missing_days_email_settings_row(mall_id)
+    except Exception as exc:
+        if _is_missing_email_template_columns_error(exc):
+            logger.warning(
+                "Columnas de plantilla de email no disponibles; guardando solo programacion para mall %s: %s",
+                mall_id,
+                exc,
+            )
+            try:
+                supabase.table("email_notification_settings").upsert(
+                    row,
+                    on_conflict="mall_id,notification_type",
+                ).execute()
+                saved = _load_missing_days_email_settings_row(mall_id)
+                saved["subject_template"] = template_fields["subject_template"]
+                saved["body_template"] = template_fields["body_template"]
+                return saved
+            except Exception as fallback_exc:
+                if _is_missing_email_settings_table_error(fallback_exc):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="La base de datos no está actualizada: ejecute el script 20260511_email_notification_settings.sql.",
+                    )
+                logger.error("Error guardando programacion sin plantillas: %s", fallback_exc)
+                raise HTTPException(status_code=500, detail="No se pudo guardar la programacion de envio.")
+        if _is_missing_email_settings_table_error(exc):
+            raise HTTPException(
+                status_code=503,
+                detail="La base de datos no está actualizada: ejecute el script 20260511_email_notification_settings.sql.",
+            )
+        logger.error("Error guardando configuracion de emails de dias faltantes: %s", exc)
+        raise HTTPException(status_code=500, detail="No se pudo guardar la programacion de envio.")
+
+
+@app.post("/api/v1/admin/messaging/missing-days/send-now")
+async def send_missing_days_email_now(
+    payload: MissingDaysSendNowRequest,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado.")
+    if not os.getenv(RESEND_API_KEY_ENV):
+        raise HTTPException(status_code=503, detail=f"Resend no esta configurado. Falta {RESEND_API_KEY_ENV}.")
+
+    mall_id = (payload.mall_id or "").strip()
+    if not mall_id:
+        raise HTTPException(status_code=400, detail="mall_id es requerido.")
+    _ensure_operator_can_access_mall(admin_ctx, mall_id)
+
+    try:
+        settings_res = (
+            supabase.table("email_notification_settings")
+            .select("*")
+            .eq("mall_id", mall_id)
+            .eq("notification_type", "missing_days_audit")
+            .maybe_single()
+            .execute()
+        )
+        settings = _sanitize_missing_days_email_settings_row(settings_res.data, mall_id)
+    except Exception as exc:
+        if _is_missing_email_settings_table_error(exc):
+            logger.warning(
+                "Tabla email_notification_settings no disponible para envio inmediato; usando defaults para mall %s: %s",
+                mall_id,
+                exc,
+            )
+            settings = _default_missing_days_email_settings(mall_id)
+        else:
+            logger.warning(
+                "Error cargando configuracion para envio inmediato; usando defaults para mall %s: %s",
+                mall_id,
+                exc,
+            )
+            settings = _default_missing_days_email_settings(mall_id)
+
+    result = await asyncio.to_thread(
+        send_missing_days_emails_for_mall,
+        supabase,
+        settings,
+        logger=logger,
+    )
+    return {
+        **result,
+        "message": (
+            f"Envio inmediato completado: {result['sent']} enviados, "
+            f"{result['skipped']} omitidos, {result['failed']} fallidos."
+        ),
+    }
+
+
 @app.delete("/api/v1/admin/reset-sales")
 async def reset_sales(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     """Wipes all sales data to reset testing environment."""
@@ -3611,72 +7535,126 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached
-    
-    try:
-        # Fast path: Use DB-side aggregation function (RPC) for better scalability.
-        rpc_res = supabase.rpc("get_dashboard_kpis", {
-            "mall_id_param": mall_id,
-            "start_date_param": start_date,
-            "end_date_param": end_date
-        }).execute()
-
-        if rpc_res.data and len(rpc_res.data) > 0:
-            row = rpc_res.data[0]
-            result = {
-                "ventas_totales_bruto": float(row.get("ventas_totales_bruto") or 0),
-                "ventas_totales_neto": float(row.get("ventas_totales_neto") or 0),
-                "transacciones": int(row.get("transacciones") or 0),
-                "ticket_promedio": float(row.get("ticket_promedio") or 0),
-                "variacion_ventas": float(row.get("variacion_ventas") or 0),
-                "top_locales": row.get("top_locales") or [],
-                "ventas_por_dia": row.get("ventas_por_dia") or [],
-                "ventas_por_rubro": row.get("ventas_por_rubro") or [],
-                "ventas_por_tienda_completo": row.get("ventas_por_tienda_completo") or {}
-            }
-            _cache_set(cache_key, result, TTL_DASHBOARD)
-            return result
-    except Exception as rpc_err:
-        # Fallback path keeps endpoint functional while RPC is being rolled out.
-        logger.warning(f"Dashboard RPC unavailable, fallback to python aggregation: {rpc_err}")
 
     try:
-        # 1. Fetch Sales
-        # Note: 'fecha' in DB is likely YYYY-MM-DD or timestamp. If timestamp, string comparison might be tricky.
-        # Assuming YYYY-MM-DD string or compatible date type.
-        sales_res = (
-            supabase.table("ventas")
-            .select("local_id, fecha, total_bruto, total_neto")
-            .eq("mall_id", mall_id)
-            .gte("fecha", start_date)
-            .lte("fecha", end_date)
-            .execute()
-        )
-        sales = sales_res.data or []
-        
-        # 2. Fetch Stores
-        stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
-        stores = stores_res.data or []
-        store_map = {s['id']: s['nombre'] for s in stores}
-        
-        # 3. Aggregate
+        stores_res = supabase.table("locales").select("id, nombre, rubro, tipo_negocio, activo").eq("mall_id", mall_id).execute()
+        stores = [row for row in (stores_res.data or []) if _is_store_active(row)]
+        store_map = {str(s['id']): s for s in stores if s.get('id')}
+        allowed_local_ids = list(store_map.keys())
+        empty_result = {
+            "ventas_totales_bruto": 0,
+            "ventas_totales_neto": 0,
+            "transacciones": 0,
+            "ticket_promedio": 0,
+            "variacion_ventas": 0,
+            "top_locales": [],
+            "ventas_por_dia": [],
+            "ventas_por_tipo_negocio": [],
+            "ventas_por_rubro": [],
+            "ventas_por_tipo_negocio_top_locales": {},
+            "ventas_por_rubro_top_locales": {},
+            "ventas_por_tienda_completo": {}
+        }
+
+        if not allowed_local_ids:
+            _cache_set(cache_key, empty_result, TTL_DASHBOARD)
+            return empty_result
+
+        # Source of truth: only sales linked to valid locales for the current mall.
+        # Filtering by ventas.mall_id alone allows legacy/orphan rows to leak into KPIs as "Desconocido".
+        sales = []
+        page_size = 1000
+        page = 0
+        while True:
+            sales_res = (
+                supabase.table("ventas")
+                .select("local_id, fecha, total_bruto, total_neto")
+                .in_("local_id", allowed_local_ids)
+                .gte("fecha", start_date)
+                .lte("fecha", end_date)
+                .order("fecha")
+                .range(page * page_size, (page + 1) * page_size - 1)
+                .execute()
+            )
+            chunk = sales_res.data or []
+            if not chunk:
+                break
+            sales.extend(chunk)
+            if len(chunk) < page_size:
+                break
+            page += 1
+
         sales_by_store = {}
         total_bruto = 0
         total_neto = 0
         sales_by_day = {}
+        sales_by_business_type = {}
+        sales_by_rubro = {}
+        stores_by_business_type = {}
+        stores_by_rubro = {}
+
+        def segment_label(value, fallback):
+            label = str(value or "").strip()
+            return label if label else fallback
+
+        def add_segment_store(segment_store_map, segment, store_name, bruto, neto):
+            store_totals = segment_store_map.setdefault(segment, {})
+            totals = store_totals.setdefault(store_name, {
+                "name": store_name,
+                "total": 0,
+                "total_neto": 0,
+                "transacciones": 0,
+            })
+            totals["total"] += bruto
+            totals["total_neto"] += neto
+            totals["transacciones"] += 1
         
         for s in sales:
+            lid = str(s.get('local_id') or "")
+            store = store_map.get(lid)
+            if not store:
+                continue
+            s_name = store.get('nombre') or "Local sin nombre"
+
             bruto = float(s.get('total_bruto') or 0)
             neto = float(s.get('total_neto') or 0)
             total_bruto += bruto
             total_neto += neto
-            
-            lid = s.get('local_id')
-            s_name = store_map.get(lid, "Desconocido")
-            
+
             sales_by_store[s_name] = sales_by_store.get(s_name, 0) + bruto
+            business_type = segment_label(store.get('tipo_negocio'), "Sin tipo de negocio")
+            rubro = segment_label(store.get('rubro'), "Sin rubro")
+            sales_by_business_type[business_type] = sales_by_business_type.get(business_type, 0) + bruto
+            sales_by_rubro[rubro] = sales_by_rubro.get(rubro, 0) + bruto
+            add_segment_store(stores_by_business_type, business_type, s_name, bruto, neto)
+            add_segment_store(stores_by_rubro, rubro, s_name, bruto, neto)
             
             day = s.get('fecha')
             sales_by_day[day] = sales_by_day.get(day, 0) + bruto
+
+        def segment_items(values):
+            return [
+                {"name": k, "value": v}
+                for k, v in sorted(values.items(), key=lambda item: item[1], reverse=True)
+            ]
+
+        def segment_top_stores(segment_store_map):
+            out = {}
+            for segment, stores_in_segment in segment_store_map.items():
+                segment_total = sum(float(item.get("total") or 0) for item in stores_in_segment.values())
+                out[segment] = []
+                for item in sorted(stores_in_segment.values(), key=lambda row: row["total"], reverse=True)[:10]:
+                    bruto = float(item.get("total") or 0)
+                    transacciones = int(item.get("transacciones") or 0)
+                    out[segment].append({
+                        "name": item["name"],
+                        "total": bruto,
+                        "total_neto": float(item.get("total_neto") or 0),
+                        "transacciones": transacciones,
+                        "ticket_promedio": (bruto / transacciones) if transacciones > 0 else 0,
+                        "participacion": (bruto / segment_total * 100) if segment_total > 0 else 0,
+                    })
+            return out
             
         result = {
             "ventas_totales_bruto": total_bruto,
@@ -3686,7 +7664,10 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
             "variacion_ventas": 0,
             "top_locales": [ {"name": k, "total": v} for k, v in sorted(sales_by_store.items(), key=lambda item: item[1], reverse=True)[:5] ],
             "ventas_por_dia": [ {"fecha": k, "total": v} for k, v in sorted(sales_by_day.items()) ],
-            "ventas_por_rubro": [], # Simplified for now
+            "ventas_por_tipo_negocio": segment_items(sales_by_business_type),
+            "ventas_por_rubro": segment_items(sales_by_rubro),
+            "ventas_por_tipo_negocio_top_locales": segment_top_stores(stores_by_business_type),
+            "ventas_por_rubro_top_locales": segment_top_stores(stores_by_rubro),
             "ventas_por_tienda_completo": sales_by_store
         }
         _cache_set(cache_key, result, TTL_DASHBOARD)
@@ -4158,6 +8139,470 @@ async def admin_update_user(
         logger.error(f"Error updating user {target_user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+def _security_token_service():
+    return build_token_auth_service()
+
+
+def _security_allowed_mall_ids(operator_ctx: Dict[str, Any]) -> Optional[set]:
+    if operator_ctx.get("role") == "admin":
+        return None
+    return set(_get_user_mall_ids(operator_ctx.get("user_id")))
+
+
+def _security_filter_rows_by_mall_access(rows: List[Dict[str, Any]], operator_ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    allowed = _security_allowed_mall_ids(operator_ctx)
+    if allowed is None:
+        return rows
+    return [row for row in rows if row.get("mall_id") in allowed]
+
+
+def _security_ensure_row_access(operator_ctx: Dict[str, Any], row: Optional[Dict[str, Any]], not_found_detail: str):
+    if not row:
+        raise HTTPException(status_code=404, detail=not_found_detail)
+    _ensure_operator_can_access_mall(operator_ctx, row.get("mall_id"))
+    return row
+
+
+def _security_validate_local_alignment(local_id: Optional[str], mall_id: str, operator_ctx: Dict[str, Any]) -> None:
+    if not local_id:
+        return
+    local_cfg = _load_local_config_with_access(local_id, operator_ctx)
+    local_mall_id = str(local_cfg.get("mall_id") or "")
+    if local_mall_id and str(mall_id) != local_mall_id:
+        raise HTTPException(status_code=400, detail="local_id no pertenece al mall_id indicado")
+
+
+def _security_text_search(rows: List[Dict[str, Any]], q: Optional[str], fields: List[str]) -> List[Dict[str, Any]]:
+    term = (q or "").strip().lower()
+    if not term:
+        return rows
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        haystack = " ".join(str(row.get(field) or "") for field in fields).lower()
+        if term in haystack:
+            out.append(row)
+    return out
+
+
+@app.get("/api/v1/security/service-accounts")
+async def security_list_service_accounts(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    token_type: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    q: Optional[str] = None,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    rows = svc.store.list_service_accounts({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "token_type": token_type,
+        "status": status_filter,
+    })
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    rows = _security_text_search(rows, q, ["name", "client_id", "created_by", "mall_id", "local_id"])
+
+    tokens = svc.store.list_tokens({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "token_type": TOKEN_TYPE_EXPORTER,
+    })
+    tokens = _security_filter_rows_by_mall_access(tokens, operator_ctx)
+    usage_by_sa: Dict[str, Dict[str, Any]] = {}
+    for token in tokens:
+        sa_id = token.get("service_account_id")
+        if not sa_id:
+            continue
+        usage = usage_by_sa.setdefault(sa_id, {
+            "last_used_at": None,
+            "last_used_ip": None,
+            "last_used_ua": None,
+            "active_tokens": 0,
+            "total_tokens": 0,
+        })
+        usage["total_tokens"] += 1
+        if token.get("status") == TOKEN_ACTIVE:
+            usage["active_tokens"] += 1
+        last_used_at = token.get("last_used_at")
+        if last_used_at and (not usage["last_used_at"] or str(last_used_at) > str(usage["last_used_at"])):
+            usage["last_used_at"] = last_used_at
+            usage["last_used_ip"] = token.get("last_used_ip")
+            usage["last_used_ua"] = token.get("last_used_ua")
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        safe = sanitize_token_service_account_row(row) or {}
+        usage = usage_by_sa.get(safe.get("id"), {})
+        safe.update({
+            "last_used_at": usage.get("last_used_at"),
+            "last_used_ip": usage.get("last_used_ip"),
+            "last_used_ua": usage.get("last_used_ua"),
+            "active_tokens": usage.get("active_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        })
+        out.append(safe)
+    return out
+
+
+@app.post("/api/v1/security/service-accounts")
+async def security_create_service_account(
+    payload: TokenCreateServiceAccountRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if payload.token_type == TOKEN_TYPE_EXPORTER and not payload.local_id:
+        raise HTTPException(status_code=400, detail="local_id requerido para exporter")
+    if not (payload.name or "").strip():
+        raise HTTPException(status_code=400, detail="name es requerido")
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(payload.local_id, payload.mall_id, operator_ctx)
+
+    svc = _security_token_service()
+    client_id = f"msa_{secrets.token_hex(8)}"
+    client_secret = secrets.token_urlsafe(32)
+    row = svc.store.create_service_account({
+        "name": payload.name.strip(),
+        "mall_id": payload.mall_id,
+        "local_id": payload.local_id,
+        "token_type": payload.token_type,
+        "client_id": client_id,
+        "client_secret_hash": token_auth_hash_token(client_secret),
+        "scopes": token_auth_parse_scopes(payload.scopes),
+        "status": TOKEN_ACTIVE,
+        "created_by": operator_ctx.get("user_id"),
+        "created_at": token_auth_utcnow().isoformat(),
+        "updated_at": token_auth_utcnow().isoformat(),
+    })
+    safe = sanitize_token_service_account_row(row) or {}
+    safe["client_secret"] = client_secret
+    safe["warning"] = "Este secreto no volverá a mostrarse completo."
+    return safe
+
+
+@app.patch("/api/v1/security/service-accounts/{service_account_id}/status")
+async def security_patch_service_account_status(
+    service_account_id: str,
+    payload: TokenPatchServiceAccountStatusRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(
+        operator_ctx,
+        svc.store.get_service_account(service_account_id),
+        "Service account no encontrado",
+    )
+    row = svc.store.update_service_account(base["id"], {"status": payload.status, "updated_at": token_auth_utcnow().isoformat()})
+    return sanitize_token_service_account_row(row)
+
+
+@app.post("/api/v1/security/service-accounts/{service_account_id}/regenerate")
+async def security_regenerate_service_account(
+    service_account_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(
+        operator_ctx,
+        svc.store.get_service_account(service_account_id),
+        "Service account no encontrado",
+    )
+    client_secret = secrets.token_urlsafe(32)
+    row = svc.store.update_service_account(base["id"], {
+        "client_secret_hash": token_auth_hash_token(client_secret),
+        "status": TOKEN_ACTIVE,
+        "updated_at": token_auth_utcnow().isoformat(),
+    })
+    svc.store.revoke_tokens_by_service_account(base["id"], revoked_by=operator_ctx.get("user_id"), reason="service_account_secret_regenerated")
+    safe = sanitize_token_service_account_row(row) or {}
+    safe["client_secret"] = client_secret
+    safe["warning"] = "Este secreto no volverá a mostrarse completo."
+    return safe
+
+
+@app.post("/api/v1/security/service-accounts/{service_account_id}/revoke-tokens")
+async def security_revoke_service_account_tokens(
+    service_account_id: str,
+    payload: TokenRevokeServiceAccountTokensRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(
+        operator_ctx,
+        svc.store.get_service_account(service_account_id),
+        "Service account no encontrado",
+    )
+    count = svc.store.revoke_tokens_by_service_account(base["id"], revoked_by=operator_ctx.get("user_id"), reason=payload.reason)
+    return {"revoked_count": count, "service_account_id": base["id"]}
+
+
+@app.get("/api/v1/security/tokens")
+async def security_list_tokens(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    token_type: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    q: Optional[str] = None,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    rows = svc.store.list_tokens({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "token_type": token_type,
+        "status": status_filter,
+    })
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    rows = _security_text_search(rows, q, ["jti", "created_by", "mall_id", "local_id", "token_type", "status"])
+    return [sanitize_token_auth_row(row) for row in rows]
+
+
+@app.post("/api/v1/security/tokens")
+async def security_create_token(
+    payload: TokenCreateTokenRequest,
+    request: Request,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if payload.token_type == TOKEN_TYPE_EXPORTER and not payload.local_id:
+        raise HTTPException(status_code=400, detail="local_id requerido para exporter")
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(payload.local_id, payload.mall_id, operator_ctx)
+    scopes = token_auth_parse_scopes(payload.scopes)
+    if not scopes:
+        raise HTTPException(status_code=400, detail="scopes requeridos")
+
+    svc = _security_token_service()
+    if payload.service_account_id:
+        sa = _security_ensure_row_access(operator_ctx, svc.store.get_service_account(payload.service_account_id), "Service account no encontrado")
+        if sa.get("mall_id") != payload.mall_id or sa.get("local_id") != payload.local_id:
+            raise HTTPException(status_code=400, detail="service_account_id no coincide con mall_id/local_id")
+
+    return svc._issue_pair(
+        mall_id=payload.mall_id,
+        local_id=payload.local_id,
+        token_type=payload.token_type,
+        scopes=scopes,
+        created_by=operator_ctx.get("user_id"),
+        service_account_id=payload.service_account_id,
+        request=request,
+        access_ttl_seconds=payload.expires_in,
+        access_never_expires=token_auth_request_explicit_never_expires(payload),
+    )
+
+
+@app.patch("/api/v1/security/tokens/{token_id}/status")
+async def security_patch_token_status(
+    token_id: str,
+    payload: TokenPatchTokenStatusRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(operator_ctx, svc.store.get_token_by_id(token_id), "Token no encontrado")
+    row = svc.store.update_api_token(base["id"], {"status": payload.status, "updated_at": token_auth_utcnow().isoformat()})
+    return sanitize_token_auth_row(row)
+
+
+@app.post("/api/v1/security/tokens/{token_id}/regenerate")
+async def security_regenerate_token(
+    token_id: str,
+    request: Request,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    base = _security_ensure_row_access(operator_ctx, svc.store.get_token_by_id(token_id), "Token no encontrado")
+    svc.store.update_api_token(base["id"], {
+        "status": TOKEN_REVOKED,
+        "revoked_at": token_auth_utcnow().isoformat(),
+        "revoked_by": operator_ctx.get("user_id"),
+        "revoke_reason": "regenerated",
+        "updated_at": token_auth_utcnow().isoformat(),
+    })
+    return svc._issue_pair(
+        mall_id=base["mall_id"],
+        local_id=base.get("local_id"),
+        token_type=base["token_type"],
+        scopes=token_auth_parse_scopes(base.get("scopes")),
+        created_by=operator_ctx.get("user_id"),
+        service_account_id=base.get("service_account_id"),
+        request=request,
+    )
+
+
+@app.post("/api/v1/security/tokens/revoke")
+async def security_revoke_token(
+    payload: TokenRevokeRequest,
+    request: Request,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    svc = _security_token_service()
+    target = None
+    if payload.token_id:
+        target = svc.store.get_token_by_id(payload.token_id)
+    elif payload.jti:
+        target = svc.store.get_token_by_jti(payload.jti)
+    _security_ensure_row_access(operator_ctx, target, "Token no encontrado")
+    return svc.revoke(
+        token_id=payload.token_id,
+        jti=payload.jti,
+        actor=operator_ctx.get("user_id"),
+        reason=payload.reason,
+        current_ctx=None,
+        request=request,
+    )
+
+
+@app.post("/api/v1/security/tokens/revoke/local")
+async def security_revoke_tokens_by_local(
+    payload: TokenRevokeLocalRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(payload.local_id, payload.mall_id, operator_ctx)
+    svc = _security_token_service()
+    count = svc.store.revoke_tokens_by_scope(
+        mall_id=payload.mall_id,
+        local_id=payload.local_id,
+        revoked_by=operator_ctx.get("user_id"),
+        reason=payload.reason,
+    )
+    return {"revoked_count": count}
+
+
+@app.post("/api/v1/security/tokens/revoke/mall")
+async def security_revoke_tokens_by_mall(
+    payload: TokenRevokeMallRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    svc = _security_token_service()
+    count = svc.store.revoke_tokens_by_scope(
+        mall_id=payload.mall_id,
+        revoked_by=operator_ctx.get("user_id"),
+        reason=payload.reason,
+    )
+    return {"revoked_count": count}
+
+
+@app.get("/api/v1/security/token-audit")
+async def security_list_token_audit(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+    token_id: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=1000),
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if mall_id:
+        _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    elif operator_ctx.get("role") != "admin":
+        # For IT users without explicit mall filter, restrict to their first allowed mall set in-memory after query.
+        pass
+
+    svc = _security_token_service()
+    rows = svc.store.list_audit_logs({
+        "mall_id": mall_id,
+        "local_id": local_id,
+        "event_type": event_type,
+        "token_id": token_id,
+    }, limit=limit)
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    rows = _security_text_search(rows, q, ["event_type", "mall_id", "local_id", "ip", "ua", "token_id"])
+    return rows
+
+@app.get("/api/v1/security/exporter/configs")
+async def security_list_exporter_webservice_configs(
+    mall_id: Optional[str] = None,
+    local_id: Optional[str] = None,
+    enabled: Optional[bool] = None,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    if mall_id:
+        _ensure_operator_can_access_mall(operator_ctx, mall_id)
+        if local_id:
+            _security_validate_local_alignment(local_id, mall_id, operator_ctx)
+    elif local_id:
+        local_cfg = _load_local_config_with_access(local_id, operator_ctx)
+        mall_id = str(local_cfg.get("mall_id") or "") or None
+
+    svc = _security_token_service()
+    lister = getattr(svc.store, "list_exporter_webservice_configs", None)
+    if not callable(lister):
+        raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+
+    rows = lister({"mall_id": mall_id, "local_id": local_id, "enabled": enabled})
+    rows = _security_filter_rows_by_mall_access(rows, operator_ctx)
+    return [sanitize_token_exporter_webservice_config_row(row) for row in rows]
+
+
+@app.get("/api/v1/security/exporter/configs/{local_id}")
+async def security_get_exporter_webservice_config(
+    local_id: str,
+    mall_id: str,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    _security_validate_local_alignment(local_id, mall_id, operator_ctx)
+
+    svc = _security_token_service()
+    getter = getattr(svc.store, "get_exporter_webservice_config", None)
+    if not callable(getter):
+        raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+
+    row = getter(mall_id, local_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Configuracion exporter webservice no encontrada")
+    return sanitize_token_exporter_webservice_config_row(row)
+
+
+@app.put("/api/v1/security/exporter/configs/{local_id}")
+async def security_put_exporter_webservice_config(
+    local_id: str,
+    payload: TokenUpsertExporterWebserviceConfigRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+):
+    _ensure_operator_can_access_mall(operator_ctx, payload.mall_id)
+    _security_validate_local_alignment(local_id, payload.mall_id, operator_ctx)
+
+    svc = _security_token_service()
+    upserter = getattr(svc.store, "upsert_exporter_webservice_config", None)
+    if not callable(upserter):
+        raise HTTPException(status_code=500, detail="Store no soporta configuracion exporter webservice")
+
+    granularity = str(payload.default_granularity or "transaction").strip().lower()
+    if granularity == "daily_summary":
+        granularity = "daily"
+
+    try:
+        row = upserter({
+            "mall_id": payload.mall_id,
+            "local_id": local_id,
+            "enabled": payload.enabled,
+            "contract_type": payload.contract_type,
+            "default_granularity": granularity,
+            "allow_transaction": payload.allow_transaction,
+            "allow_daily": payload.allow_daily,
+            "strict_validation": payload.strict_validation,
+            "notes": payload.notes.strip() if payload.notes else None,
+            "updated_by": operator_ctx.get("user_id"),
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error guardando exporter webservice config mall=%s local=%s user=%s: %s",
+            payload.mall_id,
+            local_id,
+            operator_ctx.get("user_id"),
+            e,
+        )
+        detail = str(e).strip() or "No se pudo guardar la configuracion exporter webservice"
+        raise HTTPException(status_code=500, detail=detail)
+    if not row:
+        raise HTTPException(status_code=500, detail="No se pudo guardar la configuracion exporter webservice")
+    return sanitize_token_exporter_webservice_config_row(row)
+
+
 @router_export.get("/sales-report/excel")
 async def export_sales_report_excel(
     fecha_inicio: str, 
@@ -4167,8 +8612,23 @@ async def export_sales_report_excel(
     current_mall: str = Depends(get_current_mall)
 ):
     try:
-        if type not in ['detailed', 'summary']: type = 'detailed'
-        data = await export_service.generate_sales_report_excel(fecha_inicio, fecha_fin, local_id, type)
+        if type not in ['detailed', 'summary', 'missing_days']:
+            type = 'detailed'
+        if type == 'missing_days':
+            data = await export_service.generate_missing_days_report_excel(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                mall_id=current_mall,
+                local_id=local_id,
+            )
+        else:
+            data = await export_service.generate_sales_report_excel(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                local_id=local_id,
+                report_type=type,
+                mall_id=current_mall,
+            )
         return StreamingResponse(
             data,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -4187,7 +8647,8 @@ async def export_sales_report_pdf(
     current_mall: str = Depends(get_current_mall)
 ):
     try:
-        if type not in ['detailed', 'summary']: type = 'detailed'
+        if type not in ['detailed', 'summary', 'missing_days']:
+            type = 'detailed'
         
         # Fetch Mall Name
         mall_name = "MS MALL"
@@ -4198,8 +8659,24 @@ async def export_sales_report_pdf(
         except Exception:
             logger.warning(f"Could not fetch mall name for {current_mall}, using default.")
 
-        logger.info(f"Exporting PDF for Mall: {mall_name} ({current_mall})")
-        data = await export_service.generate_sales_report_pdf(fecha_inicio, fecha_fin, local_id, type, mall_name=mall_name)
+        logger.info(f"Exporting PDF for Mall: {mall_name} ({current_mall}) type={type}")
+        if type == 'missing_days':
+            data = await export_service.generate_missing_days_report_pdf(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                mall_id=current_mall,
+                local_id=local_id,
+                mall_name=mall_name,
+            )
+        else:
+            data = await export_service.generate_sales_report_pdf(
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                local_id=local_id,
+                report_type=type,
+                mall_name=mall_name,
+                mall_id=current_mall,
+            )
         return StreamingResponse(
             data,
             media_type="application/pdf",
@@ -4216,16 +8693,21 @@ async def export_sales_cube_excel(
     agrupacion: str = "dia",
     metrica: str = "total_neto",
     local_id: Optional[str] = None,
+    custom_dimension_key: Optional[str] = None,
+    custom_filters: Optional[str] = None,
     current_mall: str = Depends(get_current_mall)
 ):
     try:
+        parsed_custom_filters = json.loads(custom_filters) if custom_filters else None
         data = await export_service.generate_sales_cube_excel(
             fecha_inicio,
             fecha_fin,
             agrupacion,
             metrica,
             mall_id=current_mall,
-            local_id=local_id
+            local_id=local_id,
+            custom_dimension_key=custom_dimension_key,
+            custom_filters=parsed_custom_filters,
         )
         return StreamingResponse(
             data,
@@ -4293,6 +8775,35 @@ async def get_sales_gaps(
             except Exception:
                 return None
 
+        def _load_actual_dates_for_local(target_local_id: str) -> Set[str]:
+            rows: List[Dict[str, Any]] = []
+            page_size = 2000
+            page = 0
+            while True:
+                chunk = (
+                    supabase.table('ventas')
+                    .select('id, fecha')
+                    .eq('local_id', target_local_id)
+                    .gte('fecha', fecha_inicio)
+                    .lte('fecha', fecha_fin)
+                    .order('id')
+                    .range(page * page_size, (page + 1) * page_size - 1)
+                    .execute()
+                ).data or []
+                if not chunk:
+                    break
+                rows.extend(chunk)
+                if len(chunk) < page_size:
+                    break
+                page += 1
+
+            actual_dates: Set[str] = set()
+            for row in rows:
+                normalized_date = _normalize_sales_date(row.get('fecha'))
+                if normalized_date:
+                    actual_dates.add(normalized_date)
+            return actual_dates
+
         # 1. Calendario Ideal
         start_date = datetime.strptime(fecha_inicio, '%Y-%m-%d')
         end_date = datetime.strptime(fecha_fin, '%Y-%m-%d')
@@ -4325,50 +8836,12 @@ async def get_sales_gaps(
             
             stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
             stores = stores_resp.data or []
-            store_ids = [str(s['id']) for s in stores if s.get('id')]
-
-            # Paginar ventas por local_id para no truncar por límites del cliente.
-            sales_rows: List[Dict[str, Any]] = []
-            if store_ids:
-                page_size = 2000
-                page = 0
-                while True:
-                    chunk = (
-                        supabase.table('ventas')
-                        .select('id, local_id, fecha')
-                        .in_('local_id', store_ids)
-                        .gte('fecha', fecha_inicio)
-                        .lte('fecha', fecha_fin)
-                        # Use a unique deterministic order to avoid pagination gaps/duplicates.
-                        .order('id')
-                        .range(page * page_size, (page + 1) * page_size - 1)
-                        .execute()
-                    ).data or []
-                    if not chunk:
-                        break
-                    sales_rows.extend(chunk)
-                    if len(chunk) < page_size:
-                        break
-                    page += 1
-
-            sales_df = pd.DataFrame(sales_rows)
-            if not sales_df.empty:
-                sales_df['local_id_norm'] = sales_df['local_id'].astype(str)
-                sales_df['fecha_norm'] = sales_df['fecha'].apply(_normalize_sales_date)
             
             global_summary = []
             
             for store in stores:
                 sid = str(store['id'])
-                # Fechas reales para este local
-                if not sales_df.empty:
-                    s_actual = set(
-                        sales_df[sales_df['local_id_norm'] == sid]['fecha_norm']
-                        .dropna()
-                        .unique()
-                    )
-                else:
-                    s_actual = set()
+                s_actual = _load_actual_dates_for_local(sid)
                 
                 missing = sorted(list(expected_dates - s_actual))
                 count_missing = len(missing)
@@ -4400,33 +8873,7 @@ async def get_sales_gaps(
 
         # --- MODO INDIVIDUAL (Detailed View) ---
         # 2. Calendario Real (Individual)
-        individual_sales_rows: List[Dict[str, Any]] = []
-        page_size = 2000
-        page = 0
-        while True:
-            chunk = (
-                supabase.table('ventas')
-                .select('id, fecha')
-                .eq('local_id', local_id)
-                .gte('fecha', fecha_inicio)
-                .lte('fecha', fecha_fin)
-                # Use a unique deterministic order to avoid pagination gaps/duplicates.
-                .order('id')
-                .range(page * page_size, (page + 1) * page_size - 1)
-                .execute()
-            ).data or []
-            if not chunk:
-                break
-            individual_sales_rows.extend(chunk)
-            if len(chunk) < page_size:
-                break
-            page += 1
-
-        actual_dates = set()
-        for row in individual_sales_rows:
-            normalized_date = _normalize_sales_date(row.get('fecha'))
-            if normalized_date:
-                actual_dates.add(normalized_date)
+        actual_dates = _load_actual_dates_for_local(local_id)
         
         # 3. Brechas
         missing_dates = sorted(list(expected_dates - actual_dates))

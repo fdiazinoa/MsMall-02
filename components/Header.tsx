@@ -2,8 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { Building, ChevronDown, Activity, AlertCircle, KeyRound } from 'lucide-react';
 import { supabase } from '../api';
-
-type AppTab = 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
+import { AppTab } from './appTabs';
 
 interface HeaderProps {
   activeTab: AppTab;
@@ -11,7 +10,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
-  const { currentMall, malls, setCurrentMall, changePassword, isAdmin, isTic } = useAuth();
+  const { currentMall, malls, setCurrentMall, changePassword, isAdmin, isTic, isAuditor } = useAuth();
   const [systemStatus, setSystemStatus] = useState<'operational' | 'down' | 'loading'>('loading');
   const [lastHeartbeat, setLastHeartbeat] = useState<string | null>(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -26,13 +25,20 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     { id: 'financial', label: 'Gestión Financiera', visible: true },
     { id: 'cube', label: 'Cubo de Ventas', visible: true },
     { id: 'comparisons', label: 'Comparativas BI', visible: true },
-    { id: 'reports', label: 'Auditoría Ventas', visible: isAdmin || isTic },
+    { id: 'reports', label: 'Auditoría Ventas', visible: isAdmin || isTic || isAuditor },
+    { id: 'operations', label: 'Operations Center', visible: isAdmin || isTic || isAuditor },
     { id: 'monitor', label: 'Monitor de Cargas', visible: isAdmin || isTic },
     { id: 'stores', label: 'Mantenimiento', visible: isAdmin || isTic },
+    { id: 'store-catalogs', label: 'Catálogos Locales', visible: isAdmin || isTic },
     { id: 'auto-import', label: 'Importación FTP', visible: isAdmin || isTic },
+    { id: 'erp-webservice', label: 'ERP Webservice', visible: isAdmin || isTic },
     { id: 'upload', label: 'Ingesta CSV', visible: isAdmin || isTic },
+    { id: 'store-import', label: 'Importador Locales', visible: isAdmin || isTic },
     { id: 'malls', label: 'Gestión de Malls', visible: isAdmin },
-    { id: 'users', label: 'Usuarios y Roles', visible: isAdmin }
+    { id: 'users', label: 'Usuarios y Roles', visible: isAdmin },
+    { id: 'messaging', label: 'Mensajería Resend', visible: isAdmin },
+    { id: 'copilot', label: 'Copilot MsMall', visible: isAdmin },
+    { id: 'security', label: 'Seguridad Tokens', visible: isAdmin }
   ];
 
   const resetPasswordModal = () => {

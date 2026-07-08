@@ -2,8 +2,10 @@ import React, { useState, Suspense } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
+import { AppTab } from './components/appTabs';
 import { useAuth } from './context/AuthProvider';
 import { supabase } from './api';
+import { CopilotWidget } from './components/CopilotWidget';
 
 // Suppress Recharts deprecation warnings (XAxis, YAxis defaultProps)
 const originalConsoleError = console.error;
@@ -15,7 +17,7 @@ console.error = (...args: any[]) => {
 };
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons'>('analytics');
+  const [activeTab, setActiveTab] = useState<AppTab>('analytics');
   const { session, loading } = useAuth();
 
   // Estados para el login
@@ -60,7 +62,7 @@ const App: React.FC = () => {
     return (
       <div className="flex items-center justify-center min-h-screen bg-slate-900 text-white p-6">
         <div className="max-w-md w-full bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
-          <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center font-bold text-2xl mx-auto mb-6 shadow-lg shadow-indigo-500/20">M</div>
+          <img src="/msmall-icon-192.png" alt="MSMALL" className="w-16 h-16 rounded-2xl mx-auto mb-6 shadow-lg shadow-indigo-500/20" />
           <h2 className="text-2xl font-bold mb-2 text-center">Bienvenido a MSMALL</h2>
           <p className="text-slate-400 mb-8 text-center">Inicia sesión para acceder al sistema de auditoría.</p>
 
@@ -123,28 +125,30 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    <div className="flex h-screen overflow-hidden bg-slate-50">
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
 
-      <div className="flex-1 flex flex-col">
+      <div className="min-h-0 min-w-0 flex-1 flex flex-col">
         <Header activeTab={activeTab} setActiveTab={setActiveTab} />
 
-        <main className="p-6 md:p-10 flex-1 overflow-y-auto">
-          <div className="max-w-7xl mx-auto">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5 md:px-8 lg:px-10">
+          <div className="mx-auto w-full max-w-7xl min-w-0">
             <Suspense fallback={
               <div className="flex items-center justify-center h-64">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
               </div>
             }>
-              <Dashboard activeTab={activeTab} />
+          <Dashboard activeTab={activeTab} setActiveTab={setActiveTab} />
             </Suspense>
           </div>
         </main>
 
         <footer className="border-t border-slate-200 py-4 px-6 text-center text-sm text-slate-500">
-          &copy; {new Date().getFullYear()} MSMALL Audit Systems - Prototipo MVP
+          &copy; MercaSend, SRL. MsMall v.20
         </footer>
       </div>
+
+      <CopilotWidget />
     </div>
   );
 };

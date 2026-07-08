@@ -3,14 +3,20 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
 // Fix: Import types from '../types' instead of '../api'
-import { ImportConfig, ImportProtocol, RemoteConnection } from '../types';
+import { ImportConfig, ImportProtocol, LoadLogEntry, RemoteConnection, SecurityExporterWebserviceConfig } from '../types';
+import {
+  describeLoadLog,
+  getLoadLogErrorCount,
+  getLoadLogProcessedCount,
+  getLoadLogStatus,
+} from '../utils/loadLogMessages';
 import { SmartMappingModal } from './SmartMappingModal';
 import MappingModal from './MappingModal';
 import {
   Server, Plus, Play, Trash2, Settings2,
   ArrowRightLeft, CheckCircle2, XCircle, Clock,
   Key, Globe, FolderOpen, Database, RefreshCw, AlertCircle, FileSearch, FileText, Wand2, RotateCcw,
-  LayoutGrid, List
+  LayoutGrid, List, Search
 } from 'lucide-react';
 
 const STANDARD_FIELDS = [
@@ -23,6 +29,61 @@ const STANDARD_FIELDS = [
   { key: 'comprobante', label: 'Comprobante', required: false },
   { key: 'hora_transaccion', label: 'Hora Transacción', required: false }
 ];
+
+const TRANSFORM_MODES = {
+  CONCAT: 'concat',
+  GENERATED_SEQUENCE: 'generated_sequence'
+} as const;
+
+const splitTransformFields = (value?: string) =>
+  String(value || '')
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean);
+
+const fieldModeKey = (fieldKey: string) => `_${fieldKey}_mode`;
+const concatFieldsKey = (fieldKey: string) => `_${fieldKey}_concat_fields`;
+const concatSeparatorKey = (fieldKey: string) => `_${fieldKey}_concat_separator`;
+const decimalSeparatorKey = '_decimal_separator';
+const movingWindowModeKey = '_moving_window_mode';
+const removeSpecialCharsKey = '_remove_special_chars';
+const specialCharsToRemoveKey = '_special_chars_to_remove';
+const webserviceDataPathKey = '_webservice_data_path';
+const webservicePageParamKey = '_webservice_page_param';
+const webserviceStartPageKey = '_webservice_start_page';
+const webserviceMaxPagesKey = '_webservice_max_pages';
+const webserviceTimeoutKey = '_webservice_timeout_seconds';
+
+const isWebserviceProtocol = (protocol?: ImportProtocol | string) =>
+  ['WEBSERVICE', 'API'].includes(String(protocol || '').toUpperCase());
+
+const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
+  const mode = config.constants?.[fieldModeKey(fieldKey)];
+  if (mode === TRANSFORM_MODES.CONCAT) return 'CONCAT';
+  if (mode === TRANSFORM_MODES.GENERATED_SEQUENCE) return 'GENERATED_SEQUENCE';
+  if ((config.constants || {}) && fieldKey in (config.constants || {})) return 'CONSTANT';
+  return 'VARIABLE';
+};
+
+const hasFieldMappingValue = (config: ImportConfig, fieldKey: string) => {
+  const mode = getFieldMappingMode(config, fieldKey);
+  if (mode === 'CONCAT') {
+    return splitTransformFields(config.constants?.[concatFieldsKey(fieldKey)]).length > 0;
+  }
+  if (mode === 'GENERATED_SEQUENCE') return true;
+  return Boolean(config.mapping?.[fieldKey] || config.constants?.[fieldKey]);
+};
+
+const cleanFieldMappingConfig = (config: ImportConfig, fieldKey: string) => {
+  const mapping = { ...(config.mapping || {}) };
+  const constants = { ...(config.constants || {}) };
+  delete mapping[fieldKey];
+  delete constants[fieldKey];
+  delete constants[fieldModeKey(fieldKey)];
+  delete constants[concatFieldsKey(fieldKey)];
+  delete constants[concatSeparatorKey(fieldKey)];
+  return { mapping, constants };
+};
 
 const createDefaultImportConfig = (): ImportConfig => ({
   id: '',
@@ -47,14 +108,72 @@ const createDefaultImportConfig = (): ImportConfig => ({
     hora_transaccion: ''
   },
   constants: {},
+  fecha_corte_importacion: null,
   password: ''
 });
 
-export const ImportManager: React.FC = () => {
+const createDefaultExporterWebserviceDraft = () => ({
+  enabled: true,
+  contract_type: 'msmall_sales_v1' as const,
+  default_granularity: 'transaction' as 'transaction' | 'daily',
+  allow_transaction: true,
+  allow_daily: true,
+  strict_validation: true,
+  notes: ''
+});
+
+const safeLoadLogDate = (value?: string | null): Date | null => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const formatLoadLogDateTime = (value?: string | null): string => {
+  const parsed = safeLoadLogDate(value);
+  return parsed ? parsed.toLocaleString() : 'Sin fecha';
+};
+
+const getLoadLogFileName = (log: LoadLogEntry | null): string => {
+  const archivo = String(log?.archivo || '').trim();
+  if (archivo && archivo.toUpperCase() !== 'N/A') return archivo;
+  if (log?.batch_id) return `Batch ${log.batch_id}`;
+  return 'Sin archivo';
+};
+
+const getLoadLogChannel = (log: LoadLogEntry | null): string => {
+  const raw = String(log?.canal || log?.metadata?.canal || '').trim();
+  return raw || 'Sin canal';
+};
+
+const getLoadLogMessage = (log: LoadLogEntry | null): string => {
+  return describeLoadLog(log).summary;
+};
+
+const getLoadLogStatusBadge = (log: LoadLogEntry) => {
+  const status = getLoadLogStatus(log);
+  if (status === 'exito') {
+    return <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-0.5 text-[11px] font-bold text-green-700"><CheckCircle2 size={12} /> Exito</span>;
+  }
+  if (status === 'parcial') {
+    return <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-700"><AlertCircle size={12} /> Parcial</span>;
+  }
+  if (status === 'no_encontrado') {
+    return <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-700"><AlertCircle size={12} /> No encontrado</span>;
+  }
+  return <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-0.5 text-[11px] font-bold text-red-700"><XCircle size={12} /> Fallido</span>;
+};
+
+interface ImportManagerProps {
+  initialSection?: 'ftp' | 'webservice';
+  onCloseWebserviceModal?: () => void;
+}
+
+export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = 'ftp', onCloseWebserviceModal }) => {
   const { currentMall, isAdmin, isTic, session } = useAuth();
   const canManageImports = isAdmin || isTic;
   const authToken = session?.access_token || '';
   const [configs, setConfigs] = useState<ImportConfig[]>([]);
+  const [connectionSearchTerm, setConnectionSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
@@ -69,6 +188,10 @@ export const ImportManager: React.FC = () => {
   const [explorerPath, setExplorerPath] = useState('.');
   const [explorerItems, setExplorerItems] = useState<{ nombre: string, ruta: string, es_dir: boolean }[]>([]);
   const [explorerLoading, setExplorerLoading] = useState(false);
+  const [browserFilesSelection, setBrowserFilesSelection] = useState<{
+    count: number;
+    names: string[];
+  } | null>(null);
 
   // Mapping Helper State
   const [remoteHeaders, setRemoteHeaders] = useState<string[]>([]);
@@ -113,13 +236,20 @@ export const ImportManager: React.FC = () => {
     message: string;
   }>(initialBatchProgress);
   const batchCancelRef = useRef(false);
+  const browserFilesInputRef = useRef<HTMLInputElement | null>(null);
+  const exporterWebservicePanelRef = useRef<HTMLDivElement | null>(null);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
+  const isWebserviceModalMode = initialSection === 'webservice';
 
   // Progress Modal State
   const [showProgressModal, setShowProgressModal] = useState(false);
   const [progressStep, setProgressStep] = useState<'downloading' | 'processing' | 'inserting' | 'complete' | 'error'>('downloading');
   const [progressMessage, setProgressMessage] = useState('');
   const [progressRecords, setProgressRecords] = useState(0);
+  const [auditConfig, setAuditConfig] = useState<ImportConfig | null>(null);
+  const [auditLogs, setAuditLogs] = useState<LoadLogEntry[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
 
   // Mapping Modal State
   const [showMappingModal, setShowMappingModal] = useState(false);
@@ -127,6 +257,7 @@ export const ImportManager: React.FC = () => {
     fileHeaders: string[],
     suggestedMapping: Record<string, any>,
     currentMapping: Record<string, string>,
+    currentConstants: Record<string, string>,
     sampleRow: Record<string, any>,
     filename: string
   } | null>(null);
@@ -134,6 +265,12 @@ export const ImportManager: React.FC = () => {
   const [editingConfig, setEditingConfig] = useState<ImportConfig>(createDefaultImportConfig());
 
   const [availableStores, setAvailableStores] = useState<any[]>([]);
+  const [exporterWsConfigs, setExporterWsConfigs] = useState<SecurityExporterWebserviceConfig[]>([]);
+  const [exporterWsLoading, setExporterWsLoading] = useState(false);
+  const [exporterWsSaving, setExporterWsSaving] = useState(false);
+  const [selectedExporterLocalId, setSelectedExporterLocalId] = useState('');
+  const [exporterWsDraft, setExporterWsDraft] = useState(createDefaultExporterWebserviceDraft());
+  const [exporterWsError, setExporterWsError] = useState<string | null>(null);
 
   const loadConfigs = async () => {
     if (!currentMall?.id) return;
@@ -143,15 +280,29 @@ export const ImportManager: React.FC = () => {
     setLoading(false);
   };
 
-  const loadStores = async () => {
-    const stores = await ApiService.getStores();
-    setAvailableStores(stores);
+  const loadStores = async (mallId?: string) => {
+    if (!mallId) {
+      setAvailableStores([]);
+      setSelectedExporterLocalId('');
+      return;
+    }
+    try {
+      const stores = await ApiService.getStores(mallId);
+      // Avoid stale async overwrite when mall changes quickly.
+      if (String(currentMall?.id || '') !== String(mallId)) {
+        return;
+      }
+      setAvailableStores(stores || []);
+    } catch (error) {
+      console.error("Error loading stores:", error);
+      setAvailableStores([]);
+    }
   };
 
   const loadRemoteConnections = async () => {
     if (!currentMall?.id) return;
     try {
-      const items = await ApiService.getRemoteConnections(currentMall.id);
+      const items = await ApiService.getRemoteConnections(currentMall.id, authToken);
       setRemoteConnections(items);
     } catch (error: any) {
       console.error("Error loading remote connections:", error);
@@ -159,13 +310,406 @@ export const ImportManager: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    if (currentMall) {
-      loadConfigs();
-      loadStores();
-      loadRemoteConnections();
+  const loadExporterWebserviceConfigs = async () => {
+    if (!currentMall?.id || !authToken) {
+      setExporterWsConfigs([]);
+      return;
     }
-  }, [currentMall]);
+    setExporterWsLoading(true);
+    setExporterWsError(null);
+    try {
+      const rows = await ApiService.getSecurityExporterWebserviceConfigs(authToken, { mall_id: currentMall.id });
+      setExporterWsConfigs(rows);
+    } catch (error: any) {
+      console.error("Error loading exporter webservice configs:", error);
+      setExporterWsConfigs([]);
+      setExporterWsError(error?.message || 'No se pudo cargar la configuración webservice ERP.');
+    } finally {
+      setExporterWsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const mallId = currentMall?.id;
+    if (mallId) {
+      loadConfigs();
+      loadStores(mallId);
+      loadRemoteConnections();
+    } else {
+      setAvailableStores([]);
+      setSelectedExporterLocalId('');
+    }
+  }, [currentMall?.id, authToken]);
+
+  useEffect(() => {
+    if (currentMall?.id && authToken) {
+      loadExporterWebserviceConfigs();
+    } else {
+      setExporterWsConfigs([]);
+    }
+  }, [currentMall?.id, authToken]);
+
+  useEffect(() => {
+    if (initialSection !== 'webservice') return;
+    const id = window.setTimeout(() => {
+      exporterWebservicePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [initialSection, loading, configs.length]);
+
+  useEffect(() => {
+    if (!selectedExporterLocalId && availableStores.length > 0) {
+      setSelectedExporterLocalId(String(availableStores[0].id || ''));
+    }
+  }, [availableStores, selectedExporterLocalId]);
+
+  useEffect(() => {
+    if (!selectedExporterLocalId) return;
+    const existsInMall = (availableStores || []).some((store) => String(store?.id) === String(selectedExporterLocalId));
+    if (!existsInMall) {
+      setSelectedExporterLocalId('');
+    }
+  }, [availableStores, selectedExporterLocalId]);
+
+  useEffect(() => {
+    if (!selectedExporterLocalId) {
+      setExporterWsDraft(createDefaultExporterWebserviceDraft());
+      return;
+    }
+    const existing = exporterWsConfigs.find((row) => String(row.local_id) === String(selectedExporterLocalId));
+    if (!existing) {
+      setExporterWsDraft(createDefaultExporterWebserviceDraft());
+      return;
+    }
+    setExporterWsDraft({
+      enabled: !!existing.enabled,
+      contract_type: 'msmall_sales_v1',
+      default_granularity: existing.default_granularity === 'daily' ? 'daily' : 'transaction',
+      allow_transaction: existing.allow_transaction !== false,
+      allow_daily: existing.allow_daily !== false,
+      strict_validation: existing.strict_validation !== false,
+      notes: existing.notes || ''
+    });
+  }, [selectedExporterLocalId, exporterWsConfigs]);
+
+  const getStoreLabel = (localId?: string | null) => {
+    if (!localId) return 'Local no definido';
+    const store = (availableStores || []).find((s) => String(s.id) === String(localId));
+    if (!store) return localId;
+    return `${store.nombre} (${store.codigo_interno || 'sin código'})`;
+  };
+
+  const exporterWsRowsByLocal = useMemo(() => {
+    const byLocal = new Map<string, SecurityExporterWebserviceConfig>();
+    (exporterWsConfigs || []).forEach((row) => {
+      if (!row?.local_id) return;
+      byLocal.set(String(row.local_id), row);
+    });
+
+    const storeRows = [...(availableStores || [])]
+      .sort((a, b) => String(a?.nombre || '').localeCompare(String(b?.nombre || '')))
+      .map((store) => {
+        const localId = String(store?.id || '');
+        return { localId, store, config: byLocal.get(localId) || null };
+      });
+
+    const knownIds = new Set(storeRows.map((row) => row.localId));
+    const orphanRows = (exporterWsConfigs || [])
+      .filter((row) => row?.local_id && !knownIds.has(String(row.local_id)))
+      .map((row) => ({
+        localId: String(row.local_id),
+        store: null,
+        config: row,
+      }));
+
+    return [...storeRows, ...orphanRows];
+  }, [availableStores, exporterWsConfigs]);
+
+  const filteredConfigs = useMemo(() => {
+    const query = connectionSearchTerm.trim().toLowerCase();
+    if (!query) return configs;
+    return (configs || []).filter((config) => {
+      return [
+        config.nombre,
+        config.protocolo,
+        config.host,
+        config.usuario,
+        config.ruta_remota,
+        config.tipo_archivo,
+        config.estado,
+      ].some((value) => String(value || '').toLowerCase().includes(query));
+    });
+  }, [configs, connectionSearchTerm]);
+
+  const saveExporterWebserviceConfig = async () => {
+    if (!currentMall?.id) {
+      alert('Debe seleccionar un mall antes de configurar webservice ERP.');
+      return;
+    }
+    if (!authToken) {
+      alert('No hay sesión activa para guardar la configuración webservice ERP.');
+      return;
+    }
+    if (!selectedExporterLocalId) {
+      alert('Seleccione un local para configurar el webservice ERP.');
+      return;
+    }
+    const selectedStore = (availableStores || []).find((store) => String(store?.id) === String(selectedExporterLocalId));
+    const selectedStoreMallId = String(selectedStore?.mall_id || '');
+    if (selectedStoreMallId && selectedStoreMallId !== String(currentMall.id)) {
+      setExporterWsError('El local seleccionado no pertenece al mall activo. Recargue la lista e intente nuevamente.');
+      alert('El local seleccionado no pertenece al mall activo. Recargue la lista e intente nuevamente.');
+      return;
+    }
+    const targetMallId = selectedStoreMallId || String(currentMall.id || '');
+    if (!targetMallId) {
+      alert('No se pudo determinar el mall del local seleccionado.');
+      return;
+    }
+    setExporterWsSaving(true);
+    try {
+      const saved = await ApiService.upsertSecurityExporterWebserviceConfig(
+        selectedExporterLocalId,
+        {
+          mall_id: targetMallId,
+          enabled: exporterWsDraft.enabled,
+          contract_type: 'msmall_sales_v1',
+          default_granularity: exporterWsDraft.default_granularity,
+          allow_transaction: exporterWsDraft.allow_transaction,
+          allow_daily: exporterWsDraft.allow_daily,
+          strict_validation: exporterWsDraft.strict_validation,
+          notes: (exporterWsDraft.notes || '').trim() || null
+        },
+        authToken
+      );
+      setExporterWsConfigs((prev) => {
+        const next = prev.filter((row) => String(row.local_id) !== String(saved.local_id));
+        return [saved, ...next];
+      });
+      setExporterWsError(null);
+      alert(`Configuración webservice ERP guardada para ${getStoreLabel(saved.local_id)}.`);
+    } catch (error: any) {
+      console.error("Error saving exporter webservice config:", error);
+      setExporterWsError(error?.message || 'No se pudo guardar la configuración webservice ERP.');
+      alert(error?.message || 'No se pudo guardar la configuración webservice ERP.');
+    } finally {
+      setExporterWsSaving(false);
+    }
+  };
+
+  const renderExporterWebservicePanel = () => (
+    <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-4">
+      <div className="bg-white border border-emerald-100 rounded-2xl shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-emerald-50 bg-gradient-to-r from-emerald-50 to-white">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <ArrowRightLeft size={16} className="text-emerald-600" />
+                ERP Webservice (MsExportador)
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Configura por local la recepción de ventas vía webservice. Este canal es independiente de FTP/SFTP.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadExporterWebserviceConfigs}
+              disabled={exporterWsLoading || !currentMall?.id || !authToken}
+              className="px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50 flex items-center gap-2"
+            >
+              <RefreshCw size={13} className={exporterWsLoading ? 'animate-spin' : ''} />
+              Recargar
+            </button>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {exporterWsError && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span>{exporterWsError}</span>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+              Local
+            </label>
+            <select
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-emerald-500"
+              value={selectedExporterLocalId}
+              onChange={(e) => setSelectedExporterLocalId(e.target.value)}
+            >
+              <option value="">-- Seleccionar local --</option>
+              {(availableStores || []).map((store) => (
+                <option key={store.id} value={store.id}>
+                  {store.nombre} ({store.codigo_interno || 'sin código'})
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-slate-500 mt-2">
+              Se guarda por local. Selecciona un local, guarda y luego cambia al siguiente para configurarlo.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="flex items-center gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.enabled}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, enabled: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <span className="text-sm font-medium text-slate-700">Canal habilitado</span>
+            </label>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                Granularidad por defecto
+              </label>
+              <select
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium text-sm focus:ring-2 focus:ring-emerald-500"
+                value={exporterWsDraft.default_granularity}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, default_granularity: e.target.value as 'transaction' | 'daily' }))}
+              >
+                <option value="transaction">Transacción</option>
+                <option value="daily">Resumen diario</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.allow_transaction}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, allow_transaction: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Permitir transacción
+            </label>
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.allow_daily}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, allow_daily: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Permitir resumen diario
+            </label>
+            <label className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={exporterWsDraft.strict_validation}
+                onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, strict_validation: e.target.checked }))}
+                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Validación estricta
+            </label>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+              Notas
+            </label>
+            <textarea
+              rows={3}
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white text-sm focus:ring-2 focus:ring-emerald-500"
+              placeholder="Ej: ERP activo desde marzo, envío por transacción."
+              value={exporterWsDraft.notes}
+              onChange={(e) => setExporterWsDraft((prev) => ({ ...prev, notes: e.target.value }))}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-2">
+            <div className="text-xs text-slate-500">
+              Contrato fijo: <span className="font-semibold text-slate-700">msmall_sales_v1</span>
+            </div>
+            <button
+              type="button"
+              onClick={saveExporterWebserviceConfig}
+              disabled={exporterWsSaving || !selectedExporterLocalId || !currentMall?.id || !authToken}
+              className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2"
+              title={selectedExporterLocalId ? `Guardar para ${getStoreLabel(selectedExporterLocalId)}` : 'Seleccione un local'}
+            >
+              {exporterWsSaving ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+              {exporterWsSaving ? 'Guardando...' : 'Guardar Configuración'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/80">
+          <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+            <Database size={15} className="text-slate-500" />
+            Estado Webservice por Local
+          </h3>
+          <p className="text-xs text-slate-500 mt-1">
+            Se configura un local a la vez. Haz click en cualquier local para cargar su configuración en el formulario.
+          </p>
+        </div>
+
+        <div className="p-4">
+          {exporterWsLoading ? (
+            <div className="text-sm text-slate-500 flex items-center gap-2">
+              <RefreshCw size={14} className="animate-spin" />
+              Cargando configuración webservice...
+            </div>
+          ) : exporterWsRowsByLocal.length === 0 ? (
+            <div className="text-sm text-slate-500 border border-dashed border-slate-200 rounded-xl p-4">
+              No hay locales disponibles para configurar en este mall.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+              {exporterWsRowsByLocal.map((row) => {
+                const { localId, store, config } = row;
+                const isSelected = String(localId) === String(selectedExporterLocalId);
+                const storeLabel = store
+                  ? `${store.nombre} (${store.codigo_interno || 'sin código'})`
+                  : `${localId} (local no encontrado)`;
+                return (
+                  <button
+                    key={`erpws-${localId}`}
+                    type="button"
+                    onClick={() => setSelectedExporterLocalId(String(localId))}
+                    className={`w-full text-left rounded-xl border px-3 py-3 transition-all ${
+                      isSelected ? 'border-emerald-300 bg-emerald-50/70' : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-800">{storeLabel}</div>
+                        <div className="text-[11px] text-slate-500 mt-1">
+                          {config
+                            ? `${config.allow_transaction ? 'Transacción' : 'Sin transacción'} · ${config.allow_daily ? 'Daily' : 'Sin daily'} · Default ${config.default_granularity}`
+                            : 'Sin configuración webservice guardada'}
+                        </div>
+                      </div>
+                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-[10px] font-bold ${
+                        !config
+                          ? 'bg-slate-100 text-slate-600'
+                          : config.enabled
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : 'bg-amber-100 text-amber-700'
+                      }`}>
+                        {!config ? 'SIN CONFIG' : config.enabled ? 'HABILITADO' : 'DESHABILITADO'}
+                      </span>
+                    </div>
+                    {config?.notes && (
+                      <div className="mt-2 text-xs text-slate-600 line-clamp-2">
+                        {config.notes}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 
   const closeFormDrawer = () => {
     setShowForm(false);
@@ -173,6 +717,7 @@ export const ImportManager: React.FC = () => {
     setTempPassword('');
     setSelectedConnectionId('');
     setShowExplorer(false);
+    setBrowserFilesSelection(null);
     setSelectedFilePreview(null);
     setEditingConfig(createDefaultImportConfig());
   };
@@ -181,6 +726,7 @@ export const ImportManager: React.FC = () => {
     setEditingConfig(createDefaultImportConfig());
     setTempPassword('');
     setSelectedConnectionId('');
+    setBrowserFilesSelection(null);
     setActiveStep(1);
     setShowForm(true);
   };
@@ -188,9 +734,49 @@ export const ImportManager: React.FC = () => {
   const openEditConnectionDrawer = (config: ImportConfig) => {
     setEditingConfig(config);
     setTempPassword(config.password || '');
+    setBrowserFilesSelection(null);
     setActiveStep(1);
     setSelectedConnectionId('');
     setShowForm(true);
+  };
+
+  const openQuickAudit = async (config: ImportConfig) => {
+    if (!currentMall?.id) {
+      setAuditError('Selecciona un mall antes de consultar la auditoria.');
+      return;
+    }
+
+    setAuditConfig(config);
+    setAuditLoading(true);
+    setAuditError(null);
+
+    try {
+      const logs = await ApiService.getLoadLogs(currentMall.id, authToken);
+      const localId = String(config.id || '');
+      const localName = String(config.nombre || '').trim().toLowerCase();
+      const filteredLogs = (logs || [])
+        .filter((log) => {
+          const logLocalId = String(log.local_id || '');
+          const logLocalName = String(log.local_nombre || '').trim().toLowerCase();
+          return (localId && logLocalId === localId) || (localName && logLocalName === localName);
+        })
+        .slice(0, 30);
+
+      setAuditLogs(filteredLogs);
+    } catch (error: any) {
+      console.error('Error loading quick audit logs:', error);
+      setAuditLogs([]);
+      setAuditError(error?.message || 'No se pudo cargar el monitor de carga para este local.');
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const closeQuickAudit = () => {
+    setAuditConfig(null);
+    setAuditLogs([]);
+    setAuditError(null);
+    setAuditLoading(false);
   };
 
   const resetManualExecutionState = () => {
@@ -228,6 +814,49 @@ export const ImportManager: React.FC = () => {
     }
   };
 
+  const handleAnalyzeWebserviceFields = async () => {
+    if (!isWebserviceProtocol(editingConfig.protocolo)) return;
+    if (!editingConfig.host) {
+      alert("Completa el endpoint del Webservice antes de leer campos.");
+      return;
+    }
+
+    setFetchingHeaders(true);
+    try {
+      const analysis = await ApiService.analyzeRemoteMapping(
+        { ...editingConfig, tipo_archivo: 'JSON' },
+        tempPassword || editingConfig.password,
+        undefined,
+        authToken
+      );
+      const headers = analysis.csv_headers || analysis.headers || [];
+      const suggested = analysis.suggested_mapping || {};
+      const suggestedMapping = Object.entries(suggested).reduce((acc, [field, value]: [string, any]) => {
+        const header = value?.csv_header || value;
+        if (header) acc[field] = String(header);
+        return acc;
+      }, {} as Record<string, string>);
+
+      setRemoteHeaders(headers);
+      setEditingConfig(prev => ({
+        ...prev,
+        mapping: { ...(prev.mapping || {}), ...suggestedMapping }
+      }));
+      setSelectedFilePreview({
+        filename: 'WEBSERVICE_API',
+        lines: Object.entries(analysis.sample_row || {}).map(([key, value]) => `${key}: ${String(value ?? '')}`),
+        analysisType: 'JSON',
+        detectedDelimiter: null,
+        detectedHasHeader: true
+      });
+      alert(`Campos detectados: ${headers.length}`);
+    } catch (error: any) {
+      alert(`No se pudieron leer los campos del Webservice: ${error.message || error}`);
+    } finally {
+      setFetchingHeaders(false);
+    }
+  };
+
   const applySavedConnection = (connectionId: string) => {
     setSelectedConnectionId(connectionId);
     if (!connectionId) return;
@@ -251,7 +880,7 @@ export const ImportManager: React.FC = () => {
       return;
     }
     if (editingConfig.protocolo === 'LOCAL') {
-      alert("Las conexiones guardadas aplican para FTP/SFTP/API.");
+      alert("Las conexiones guardadas aplican solo para FTP/SFTP.");
       return;
     }
     if (!editingConfig.host || !editingConfig.usuario) {
@@ -269,11 +898,11 @@ export const ImportManager: React.FC = () => {
         nombre: name,
         protocolo: editingConfig.protocolo,
         host: editingConfig.host.trim(),
-        puerto: Number(editingConfig.puerto) || (editingConfig.protocolo === 'SFTP' ? 22 : editingConfig.protocolo === 'API' ? 443 : 21),
+        puerto: Number(editingConfig.puerto) || (editingConfig.protocolo === 'SFTP' ? 22 : 21),
         usuario: editingConfig.usuario.trim(),
         password: tempPassword || editingConfig.password || '',
         ruta_base: editingConfig.ruta_remota || '.'
-      });
+      }, authToken);
       await loadRemoteConnections();
       setSelectedConnectionId(saved.id);
       alert("Conexión guardada correctamente.");
@@ -290,7 +919,7 @@ export const ImportManager: React.FC = () => {
     if (!confirm("¿Eliminar esta conexión guardada?")) return;
 
     try {
-      await ApiService.deleteRemoteConnection(selectedConnectionId);
+      await ApiService.deleteRemoteConnection(selectedConnectionId, authToken);
       setSelectedConnectionId('');
       await loadRemoteConnections();
       alert("Conexión eliminada.");
@@ -302,7 +931,7 @@ export const ImportManager: React.FC = () => {
   const handleSave = async () => {
     // Validar mapeo mínimo
 
-    const missing = STANDARD_FIELDS.filter(f => f.required && !editingConfig.mapping[f.key] && !editingConfig.constants?.[f.key]);
+    const missing = STANDARD_FIELDS.filter(f => f.required && !hasFieldMappingValue(editingConfig, f.key));
     if (missing.length > 0) {
       alert(`Faltan campos obligatorios en el mapeo: ${missing.map(m => m.label).join(', ')}`);
       return;
@@ -397,7 +1026,13 @@ export const ImportManager: React.FC = () => {
       }));
 
       try {
-        const result = await ApiService.executeManualImport(config, file.nombre, authToken);
+        const isLargeRemoteFile = Number(file?.tamano || 0) >= 15 * 1024 * 1024;
+        const result = await ApiService.executeManualImport(
+          config,
+          file.nombre,
+          authToken,
+          { largeFile: isLargeRemoteFile }
+        );
         const records = Number(result?.records_processed || 0);
         const ok = (result?.status === 'success' || result?.status === 'partial') && records > 0;
 
@@ -452,7 +1087,7 @@ export const ImportManager: React.FC = () => {
 
   const hasRequiredMapping = (config: ImportConfig) => {
     const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
-    return requiredFields.every(field => Boolean(config.mapping?.[field] || config.constants?.[field]));
+    return requiredFields.every(field => hasFieldMappingValue(config, field));
   };
 
   const isHeaderEnabled = (config: ImportConfig) => (config.constants?.['_has_header'] ?? 'true') !== 'false';
@@ -513,13 +1148,15 @@ export const ImportManager: React.FC = () => {
 
   const resolveProcessedCountFromLogs = async (config: ImportConfig, filename: string): Promise<number | null> => {
     try {
-      const logs = await ApiService.getLoadLogs(currentMall?.id);
+      const logs = await ApiService.getLoadLogs(currentMall?.id, authToken);
       const targetLog = (logs || []).find((log: any) =>
         log?.archivo === filename &&
         log?.local_nombre === config.nombre &&
         (log?.estado === 'exito' || log?.estado === 'parcial')
       );
 
+      const structuredCount = Number(targetLog?.records_processed);
+      if (Number.isFinite(structuredCount)) return structuredCount;
       if (!targetLog?.mensaje) return null;
 
       const match = String(targetLog.mensaje).match(/(\d+)\s+registros/i);
@@ -533,42 +1170,89 @@ export const ImportManager: React.FC = () => {
     }
   };
 
+  const tryRecoverSuccessfulImport = async (
+    config: ImportConfig,
+    filename: string
+  ): Promise<{
+    recovered: boolean;
+    processedCount: number | null;
+    latestFiles: { nombre: string, fecha: string, tamano: number }[];
+    renamedExists: boolean;
+    originalExists: boolean;
+  }> => {
+    let latestFiles: { nombre: string, fecha: string, tamano: number }[] = [];
+    try {
+      latestFiles = await ApiService.listRemoteFiles(config, authToken);
+    } catch (error) {
+      console.warn("No se pudo listar archivos remotos al intentar recuperar la ejecución:", error);
+    }
+
+    const renamedExists = latestFiles.some((file) => file.nombre === `PR_${filename}`);
+    const originalExists = latestFiles.some((file) => file.nombre === filename);
+    const processedCount = await resolveProcessedCountFromLogs(config, filename);
+    const recovered = (renamedExists && !originalExists) || ((processedCount || 0) > 0);
+
+    return {
+      recovered,
+      processedCount,
+      latestFiles,
+      renamedExists,
+      originalExists
+    };
+  };
+
   const handleExecuteManualFile = async (filename: string) => {
     if (!activeConfigId) return;
     const config = configs.find(c => c.id === activeConfigId);
     if (!config) return;
+    const targetFile = (manualFiles || []).find((file) => file.nombre === filename);
+    const isLargeRemoteFile = Number(targetFile?.tamano || 0) >= 15 * 1024 * 1024;
+    const isWebservice = isWebserviceProtocol(config.protocolo);
+    const analysisTimeoutMs = (isLargeRemoteFile || filename.toLowerCase().endsWith('.json')) ? 420000 : 180000;
+    const mappingReady = hasRequiredMapping(config);
 
     setExecutingFile(filename);
     setShowProgressModal(true);
     setProgressStep('downloading');
-    setProgressMessage(`Conectando al servidor y descargando ${filename}...`);
+    setProgressMessage(isWebservice ? 'Conectando al Webservice...' : `Conectando al servidor y descargando ${filename}...`);
     setProgressRecords(0);
 
     try {
-      // Step 1: Analyze file structure to validate content and mapping readiness.
-      console.log("Analizando estructura del archivo:", filename);
-      setProgressStep('processing');
-      setProgressMessage(`Analizando estructura del archivo...`);
-      const analysis = await ApiService.analyzeSingleFile(config, filename, authToken);
+      if (!mappingReady) {
+        // First load or incomplete mapping: analyze remote structure before processing.
+        console.log("Analizando estructura del archivo:", filename);
+        setProgressStep('processing');
+        setProgressMessage(
+          isLargeRemoteFile
+            ? 'Analizando estructura del archivo grande. La primera carga puede tardar varios minutos...'
+            : 'Analizando estructura del archivo...'
+        );
+        const analysis = isWebservice
+          ? await ApiService.analyzeRemoteMapping(config, config.password, undefined, authToken)
+          : await ApiService.analyzeSingleFile(
+            config,
+            filename,
+            authToken,
+            { timeoutMs: analysisTimeoutMs }
+          );
 
-      if (!hasDataRowsInAnalysis(analysis)) {
-        const previewLines = Array.isArray(analysis?.raw_preview_lines)
-          ? analysis.raw_preview_lines.filter((line: string) => String(line || '').trim() !== '')
-          : [];
+        if (!hasDataRowsInAnalysis(analysis)) {
+          const previewLines = Array.isArray(analysis?.raw_preview_lines)
+            ? analysis.raw_preview_lines.filter((line: string) => String(line || '').trim() !== '')
+            : [];
 
-        if (previewLines.length === 0) {
-          setProgressStep('error');
-          setProgressMessage('⚠️ El archivo seleccionado no contiene filas de data para importar (vacío o solo encabezado).');
-          setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
-          return;
+          if (previewLines.length === 0) {
+            setProgressStep('error');
+            setProgressMessage('⚠️ El archivo seleccionado no contiene filas de data para importar (vacío o solo encabezado).');
+            setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
+            return;
+          }
+
+          console.warn("Análisis preliminar sin filas detectadas, pero hay contenido crudo. Se intentará procesar.");
+          setProgressStep('processing');
+          setProgressMessage('⚠️ El análisis preliminar no detectó filas con certeza, intentando procesar el archivo...');
         }
 
-        console.warn("Análisis preliminar sin filas detectadas, pero hay contenido crudo. Se intentará procesar.");
-        setProgressStep('processing');
-        setProgressMessage('⚠️ El análisis preliminar no detectó filas con certeza, intentando procesar el archivo...');
-      }
-
-      if (!hasRequiredMapping(config)) {
         const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
         const currentMapping = analysis.current_mapping || {};
         const missingFields = requiredFields.filter(f => !currentMapping[f]);
@@ -580,6 +1264,7 @@ export const ImportManager: React.FC = () => {
             fileHeaders: analysis.csv_headers,
             suggestedMapping: analysis.suggested_mapping,
             currentMapping: analysis.current_mapping,
+            currentConstants: config.constants || {},
             sampleRow: analysis.sample_row,
             filename: filename
           });
@@ -590,14 +1275,27 @@ export const ImportManager: React.FC = () => {
         }
       } else {
         console.log("Mapeo requerido detectado, omitiendo análisis remoto previo");
+        setProgressStep('processing');
+        setProgressMessage('Mapeo existente detectado. Omitiendo análisis previo y preparando inserción...');
       }
 
       // Step 2: If mapping is OK, process directly
       console.log("Mapeo completo, procesando directamente");
       setProgressStep('inserting');
-      setProgressMessage(`Procesando e insertando registros en la base de datos...`);
+      setProgressMessage(
+        isWebservice
+          ? 'Consultando Webservice e insertando ventas en la base de datos...'
+          : isLargeRemoteFile
+          ? 'Procesando archivo grande e insertando registros. Esto puede tardar varios minutos...'
+          : 'Procesando e insertando registros en la base de datos...'
+      );
 
-      const result = await ApiService.executeManualImport(config, filename, authToken);
+      const result = await ApiService.executeManualImport(
+        config,
+        filename,
+        authToken,
+        { largeFile: isLargeRemoteFile }
+      );
 
       setProgressRecords(result.records_processed || 0);
 
@@ -621,28 +1319,33 @@ export const ImportManager: React.FC = () => {
       console.error(error);
 
       if (
+        errorMsg.includes('Timeout ejecutando importación remota') ||
         errorMsg.includes('ERR_NETWORK_CHANGED') ||
         errorMsg.includes('Failed to fetch') ||
         errorMsg.includes('No se pudo confirmar la importación')
       ) {
         try {
-          const latestFiles = await ApiService.listRemoteFiles(config, authToken);
-          const renamedExists = latestFiles.some(f => f.nombre === `PR_${filename}`);
-          const originalExists = latestFiles.some(f => f.nombre === filename);
+          const recovery = await tryRecoverSuccessfulImport(config, filename);
 
-          if (renamedExists && !originalExists) {
-            const processedCount = await resolveProcessedCountFromLogs(config, filename);
+          if (recovery.recovered) {
+            const processedCount = recovery.processedCount;
             if (processedCount && processedCount > 0) {
               setProgressRecords(processedCount);
             }
             setProgressStep('complete');
             setProgressMessage(
-              processedCount && processedCount > 0
-                ? `Conexión cambiada durante la confirmación, pero el archivo se procesó correctamente (${processedCount} registros).`
-                : 'Conexión cambiada durante la confirmación, pero el archivo quedó procesado (renombrado con PR_).'
+              recovery.renamedExists && !recovery.originalExists
+                ? (
+                  processedCount && processedCount > 0
+                    ? `La confirmación tardó demasiado, pero el archivo se procesó correctamente (${processedCount} registros).`
+                    : 'La confirmación tardó demasiado, pero el archivo quedó procesado y renombrado con PR_.'
+                )
+                : `La confirmación tardó demasiado, pero el monitor reporta ${processedCount || 0} registros procesados.`
             );
             setFileStatuses(prev => ({ ...prev, [filename]: 'success' }));
-            setManualFiles(latestFiles);
+            if (recovery.latestFiles.length > 0) {
+              setManualFiles(recovery.latestFiles);
+            }
             return;
           }
         } catch (checkErr) {
@@ -666,29 +1369,25 @@ export const ImportManager: React.FC = () => {
     if (!activeConfigId || !mappingData) return;
     const config = configs.find(c => c.id === activeConfigId);
     if (!config) return;
+    const targetFilename = mappingData.filename;
+    const updatedConfig = {
+      ...config,
+      mapping: { ...mapping },
+      constants
+    };
 
     setShowMappingModal(false);
-    setExecutingFile(mappingData.filename);
+    setExecutingFile(targetFilename);
 
     // Show progress modal
     setShowProgressModal(true);
     setProgressStep('downloading');
-    setProgressMessage(`Conectando al servidor y descargando ${mappingData.filename}...`);
+    setProgressMessage(`Conectando al servidor y descargando ${targetFilename}...`);
     setProgressRecords(0);
 
     try {
-      // Combine mapping and constants into final mapping
-      const finalMapping: Record<string, string> = { ...mapping };
-
       console.log("Mapping recibido del modal:", mapping);
       console.log("Constants recibidos del modal:", constants);
-
-      // Update config with new mapping and constants
-      const updatedConfig = {
-        ...config,
-        mapping: finalMapping,
-        constants: constants
-      };
 
       console.log("Configuración actualizada a enviar:", updatedConfig);
 
@@ -697,11 +1396,21 @@ export const ImportManager: React.FC = () => {
       setProgressMessage('Aplicando mapeo de campos personalizado...');
 
       // Show inserting step
+      const isLargeRemoteFile = Number((manualFiles || []).find((file) => file.nombre === targetFilename)?.tamano || 0) >= 15 * 1024 * 1024;
       setProgressStep('inserting');
-      setProgressMessage('Procesando e insertando registros en la base de datos...');
+      setProgressMessage(
+        isLargeRemoteFile
+          ? 'Procesando archivo grande e insertando registros. Esto puede tardar varios minutos...'
+          : 'Procesando e insertando registros en la base de datos...'
+      );
 
       // Execute import with updated mapping
-      const result = await ApiService.executeManualImport(updatedConfig, mappingData.filename, authToken);
+      const result = await ApiService.executeManualImport(
+        updatedConfig,
+        targetFilename,
+        authToken,
+        { largeFile: isLargeRemoteFile }
+      );
 
       setProgressRecords(result.records_processed || 0);
 
@@ -714,7 +1423,7 @@ export const ImportManager: React.FC = () => {
           successMessage += ` (${result.errors.length} errores parciales)`;
         }
         setProgressMessage(successMessage);
-        setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'success' }));
+        setFileStatuses(prev => ({ ...prev, [targetFilename]: 'success' }));
 
         // Auto-close after 3 seconds on success
         setTimeout(() => {
@@ -725,15 +1434,50 @@ export const ImportManager: React.FC = () => {
       } else {
         setProgressStep('error');
         setProgressMessage(result.message || '❌ Error en la importación');
-        setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'error' }));
+        setFileStatuses(prev => ({ ...prev, [targetFilename]: 'error' }));
       }
 
       setMappingData(null);
     } catch (error: any) {
       console.error(error);
+      const errorMsg = String(error?.message || error || '');
+      if (
+        errorMsg.includes('Timeout ejecutando importación remota') ||
+        errorMsg.includes('ERR_NETWORK_CHANGED') ||
+        errorMsg.includes('Failed to fetch') ||
+        errorMsg.includes('No se pudo confirmar la importación')
+      ) {
+        try {
+          const recovery = await tryRecoverSuccessfulImport(updatedConfig, targetFilename);
+          if (recovery.recovered) {
+            const processedCount = recovery.processedCount;
+            if (processedCount && processedCount > 0) {
+              setProgressRecords(processedCount);
+            }
+            setProgressStep('complete');
+            setProgressMessage(
+              processedCount && processedCount > 0
+                ? `La confirmación tardó demasiado, pero el archivo se procesó correctamente (${processedCount} registros).`
+                : 'La confirmación tardó demasiado, pero el archivo quedó procesado correctamente.'
+            );
+            setFileStatuses(prev => ({ ...prev, [targetFilename]: 'success' }));
+            if (recovery.latestFiles.length > 0) {
+              setManualFiles(recovery.latestFiles);
+            }
+            setTimeout(() => {
+              setShowProgressModal(false);
+              setShowManualModal(true);
+              if (activeConfigId) refreshFileList(activeConfigId);
+            }, 3000);
+            return;
+          }
+        } catch (checkErr) {
+          console.warn("No se pudo verificar estado post error de confirmación:", checkErr);
+        }
+      }
       setProgressStep('error');
       setProgressMessage("❌ Error procesando archivo: " + (error.message || error));
-      setFileStatuses(prev => ({ ...prev, [mappingData.filename]: 'error' }));
+      setFileStatuses(prev => ({ ...prev, [targetFilename]: 'error' }));
     } finally {
       setExecutingFile(null);
     }
@@ -785,9 +1529,15 @@ export const ImportManager: React.FC = () => {
     setExplorerLoading(true);
 
     try {
+      const localInitialPath =
+        editingConfig.protocolo === 'LOCAL' &&
+        (!initialPath || initialPath === '.' || initialPath === './' || initialPath === '/app')
+          ? ''
+          : initialPath;
+
       console.log("Calling ApiService.exploreDirectory...");
       const data = await ApiService.exploreDirectory(
-        initialPath || '.',
+        localInitialPath,
         editingConfig.protocolo,
         editingConfig.host,
         editingConfig.puerto,
@@ -804,6 +1554,66 @@ export const ImportManager: React.FC = () => {
       setExplorerItems([]);
     }
     setExplorerLoading(false);
+  };
+
+  const handlePickBrowserFiles = () => {
+    try {
+      const openFilePicker = (window as any).showOpenFilePicker as undefined | ((opts?: any) => Promise<any[]>);
+      if (typeof openFilePicker === 'function') {
+        openFilePicker({
+          multiple: true,
+          types: [
+            {
+              description: 'Archivos de importación',
+              accept: {
+                'text/csv': ['.csv'],
+                'text/plain': ['.txt'],
+                'application/json': ['.json'],
+                'application/xml': ['.xml'],
+                'text/xml': ['.xml']
+              }
+            }
+          ]
+        }).then((handles) => {
+          if (!handles || handles.length === 0) return;
+          const names = handles.map((h: any) => String(h?.name || 'archivo'));
+          setBrowserFilesSelection({
+            count: handles.length,
+            names: names.slice(0, 5)
+          });
+          if (handles.length === 1) {
+            setEditingConfig(prev => ({ ...prev, tipo_archivo: detectFileType(names[0]) }));
+          }
+        }).catch((err: any) => {
+          const msg = String(err?.message || err || '').toLowerCase();
+          if (msg.includes('abort') || msg.includes('cancel')) return;
+          browserFilesInputRef.current?.click();
+        });
+        return;
+      }
+
+      browserFilesInputRef.current?.click();
+    } catch (error: any) {
+      console.error(error);
+      alert('No se pudo abrir el selector de archivos del navegador.');
+    }
+  };
+
+  const handleBrowserFilesInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const names = files.map((f) => f.name);
+    setBrowserFilesSelection({
+      count: files.length,
+      names: names.slice(0, 5)
+    });
+    if (files.length === 1) {
+      setEditingConfig(prev => ({ ...prev, tipo_archivo: detectFileType(files[0].name) }));
+    }
+
+    // Allow re-selecting the same file(s).
+    e.target.value = '';
   };
 
   const handleNavigateExplorer = async (path: string) => {
@@ -888,7 +1698,14 @@ export const ImportManager: React.FC = () => {
       <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
         <div className="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-300 flex flex-col max-h-[80vh]">
           <div className="bg-slate-50 p-3 border-b border-slate-100 flex justify-between items-center">
-            <span className="text-[10px] font-bold text-slate-500 truncate max-w-[80%]">{explorerPath}</span>
+            <div className="min-w-0 max-w-[85%]">
+              <span className="text-[10px] font-bold text-slate-500 truncate block">{explorerPath}</span>
+              {editingConfig.protocolo === 'LOCAL' && (
+                <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 inline-block mt-1">
+                  Directorio local (servidor): muestra carpetas del servidor donde corre MsMall
+                </span>
+              )}
+            </div>
             <button onClick={() => setShowExplorer(false)} className="text-slate-400 hover:text-slate-600"><XCircle size={14} /></button>
           </div>
           <div className="max-h-60 overflow-y-auto p-2 space-y-1">
@@ -960,6 +1777,36 @@ export const ImportManager: React.FC = () => {
     );
   }
 
+  if (isWebserviceModalMode) {
+    return (
+      <div className="fixed inset-0 z-[120] bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+        <div
+          className="absolute inset-0"
+          onClick={() => {
+            if (onCloseWebserviceModal) onCloseWebserviceModal();
+          }}
+        />
+        <div className="relative h-full w-full p-4 md:p-6 lg:p-8 flex items-center justify-center">
+          <div className="relative w-full max-w-7xl max-h-[92vh] overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => {
+                if (onCloseWebserviceModal) onCloseWebserviceModal();
+              }}
+              className="absolute right-3 top-3 z-10 rounded-full bg-white/95 border border-slate-200 text-slate-500 hover:text-slate-700 hover:bg-white p-2 shadow-sm"
+              title="Cerrar ERP Webservice"
+            >
+              <XCircle size={20} />
+            </button>
+            <div ref={exporterWebservicePanelRef}>
+              {renderExporterWebservicePanel()}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -967,7 +1814,17 @@ export const ImportManager: React.FC = () => {
           <h2 className="text-2xl font-bold text-slate-800">Importación Automatizada</h2>
           <p className="text-slate-500 text-sm">Configure conexiones directas vía FTP/SFTP para auditoría automática.</p>
         </div>
-        <div className="flex items-center gap-3 w-full md:w-auto">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full md:w-auto">
+          <div className="relative w-full sm:w-72">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="search"
+              value={connectionSearchTerm}
+              onChange={(e) => setConnectionSearchTerm(e.target.value)}
+              placeholder="Buscar conexión..."
+              className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm font-medium text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+            />
+          </div>
           <div className="inline-flex items-center bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
             <button
               onClick={() => setViewMode('cards')}
@@ -1085,10 +1942,10 @@ export const ImportManager: React.FC = () => {
                     />
                   </div>
 
-                  {editingConfig.protocolo !== 'LOCAL' && (
+                  {editingConfig.protocolo !== 'LOCAL' && !isWebserviceProtocol(editingConfig.protocolo) && (
                     <div className="p-3 rounded-xl border border-indigo-100 bg-indigo-50/50 space-y-2">
                       <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest">
-                        Conexiones Guardadas
+                        Conexiones Guardadas (FTP/SFTP)
                       </label>
                       <div className="flex flex-col md:flex-row gap-2">
                         <select
@@ -1133,16 +1990,32 @@ export const ImportManager: React.FC = () => {
                         onChange={e => {
                           const nextProtocol = e.target.value as ImportProtocol;
                           if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
-                          setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : nextProtocol === 'API' ? 443 : 21, tipo_archivo: nextProtocol === 'API' ? 'JSON' : editingConfig.tipo_archivo });
+                          if (nextProtocol !== 'LOCAL') setBrowserFilesSelection(null);
+                          const nextConstants = { ...(editingConfig.constants || {}) };
+                          if (isWebserviceProtocol(nextProtocol)) {
+                            nextConstants[webservicePageParamKey] = nextConstants[webservicePageParamKey] || 'page';
+                            nextConstants[webserviceStartPageKey] = nextConstants[webserviceStartPageKey] || '1';
+                            nextConstants[webserviceMaxPagesKey] = nextConstants[webserviceMaxPagesKey] || '50';
+                            nextConstants[webserviceTimeoutKey] = nextConstants[webserviceTimeoutKey] || '45';
+                          }
+                          setEditingConfig({
+                            ...editingConfig,
+                            protocolo: nextProtocol,
+                            puerto: nextProtocol === 'SFTP' ? 22 : isWebserviceProtocol(nextProtocol) ? 443 : 21,
+                            tipo_archivo: isWebserviceProtocol(nextProtocol) ? 'JSON' : editingConfig.tipo_archivo,
+                            accion_post_procesado: isWebserviceProtocol(nextProtocol) ? 'NINGUNA' : editingConfig.accion_post_procesado,
+                            constants: nextConstants
+                          });
                         }}
                       >
                         <option value="SFTP">SFTP (SSH File Transfer)</option>
                         <option value="FTP">FTP (Estándar)</option>
+                        <option value="WEBSERVICE">Webservice API</option>
                         <option value="API">API REST</option>
-                        <option value="LOCAL">Directorio Local (Windows/Linux)</option>
+                        <option value="LOCAL">Directorio local (servidor)</option>
                       </select>
                     </div>
-                    {editingConfig.protocolo !== 'LOCAL' && editingConfig.protocolo !== 'API' && (
+                    {editingConfig.protocolo !== 'LOCAL' && (
                       <div className="w-28">
                         <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Puerto</label>
                         <input
@@ -1162,20 +2035,19 @@ export const ImportManager: React.FC = () => {
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
                       <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                        {editingConfig.protocolo === 'API' ? 'URL Base API' : 'Host del Servidor'}
+                        {editingConfig.protocolo === 'API' ? 'URL Base API' : isWebserviceProtocol(editingConfig.protocolo) ? 'Endpoint Webservice' : 'Host del Servidor'}
                       </label>
                       <div className="relative">
                         <Globe size={18} className="absolute left-3.5 top-3 text-slate-300" />
                         <input
                           type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                          placeholder={editingConfig.protocolo === 'API' ? 'https://alcagora.ddns.net' : 'sftp.tu-tienda.com'}
+                          placeholder={editingConfig.protocolo === 'API' ? 'https://alcagora.ddns.net' : isWebserviceProtocol(editingConfig.protocolo) ? 'https://apisuba.kation.com.do/api/external/v1/invoices' : 'sftp.tu-tienda.com'}
                           value={editingConfig.host}
                           onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
                         />
                       </div>
                     </div>
                   )}
-                  {editingConfig.protocolo !== 'API' && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Tipo de Archivo</label>
                     <div className="flex gap-2">
@@ -1194,7 +2066,6 @@ export const ImportManager: React.FC = () => {
                       ))}
                     </div>
                   </div>
-                  )}
 
                   <div className="pt-4 border-t border-slate-100">
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Frecuencia de Sincronización</label>
@@ -1238,22 +2109,26 @@ export const ImportManager: React.FC = () => {
                 <div className="space-y-5">
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Credenciales de Acceso</label>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                        {editingConfig.protocolo === 'API' ? 'Autenticación Client Credentials' : isWebserviceProtocol(editingConfig.protocolo) ? 'Autenticación Bearer' : 'Credenciales de Acceso'}
+                      </label>
                       <div className="space-y-3">
-                        <div className="relative">
-                          <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
-                          <input
-                            type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                          placeholder={editingConfig.protocolo === 'API' ? 'Client ID' : 'Nombre de usuario'}
-                            value={editingConfig.usuario}
-                            onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
-                          />
-                        </div>
+                        {(!isWebserviceProtocol(editingConfig.protocolo) || editingConfig.protocolo === 'API') && (
+                          <div className="relative">
+                            <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
+                            <input
+                              type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
+                              placeholder={editingConfig.protocolo === 'API' ? 'Client ID' : 'Nombre de usuario'}
+                              value={editingConfig.usuario}
+                              onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
+                            />
+                          </div>
+                        )}
                         <div className="relative">
                           <Key size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="password" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder={editingConfig.protocolo === 'API' ? 'Client Secret' : 'Contraseña o Frase de paso SSH'}
+                            placeholder={editingConfig.protocolo === 'API' ? 'Client Secret' : isWebserviceProtocol(editingConfig.protocolo) ? 'Token Bearer' : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}
                           />
@@ -1261,12 +2136,85 @@ export const ImportManager: React.FC = () => {
                       </div>
                     </div>
                   )}
+                  {editingConfig.protocolo === 'API' && (
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">ID TPV</label>
+                      <input
+                        type="text"
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none"
+                        placeholder="AFB"
+                        value={editingConfig.ruta_remota}
+                        onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
+                      />
+                    </div>
+                  )}
+                  {isWebserviceProtocol(editingConfig.protocolo) && (
+                    <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Parámetros Webservice</p>
+                        <p className="text-xs text-cyan-700 mt-1">Configura paginación y dónde está la lista de ventas dentro del JSON.</p>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                          Ruta JSON de datos
+                          <input
+                            type="text"
+                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                            placeholder="Ej: data, results, invoices"
+                            value={editingConfig.constants?.[webserviceDataPathKey] || ''}
+                            onChange={e => setEditingConfig({
+                              ...editingConfig,
+                              constants: { ...editingConfig.constants, [webserviceDataPathKey]: e.target.value }
+                            })}
+                          />
+                        </label>
+                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                          Parámetro de página
+                          <input
+                            type="text"
+                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                            value={editingConfig.constants?.[webservicePageParamKey] || 'page'}
+                            onChange={e => setEditingConfig({
+                              ...editingConfig,
+                              constants: { ...editingConfig.constants, [webservicePageParamKey]: e.target.value || 'page' }
+                            })}
+                          />
+                        </label>
+                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                          Página inicial
+                          <input
+                            type="number"
+                            min={1}
+                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                            value={editingConfig.constants?.[webserviceStartPageKey] || '1'}
+                            onChange={e => setEditingConfig({
+                              ...editingConfig,
+                              constants: { ...editingConfig.constants, [webserviceStartPageKey]: e.target.value || '1' }
+                            })}
+                          />
+                        </label>
+                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                          Máximo de páginas
+                          <input
+                            type="number"
+                            min={1}
+                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                            value={editingConfig.constants?.[webserviceMaxPagesKey] || '50'}
+                            onChange={e => setEditingConfig({
+                              ...editingConfig,
+                              constants: { ...editingConfig.constants, [webserviceMaxPagesKey]: e.target.value || '50' }
+                            })}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  )}
+                  {!isWebserviceProtocol(editingConfig.protocolo) && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                      {editingConfig.protocolo === 'API' ? 'ID TPV' : editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio' : 'Ruta Remota de Archivos'}
+                      {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio (Servidor)' : 'Ruta Remota de Archivos'}
                     </label>
                     <div className="relative">
-                      {editingConfig.protocolo !== 'API' && (
                       <button
                         type="button"
                         onClick={() => handleOpenExplorer(editingConfig.ruta_remota)}
@@ -1275,18 +2223,49 @@ export const ImportManager: React.FC = () => {
                       >
                         <FolderOpen size={18} />
                       </button>
-                      )}
                       <input
-                        type="text" className={`w-full ${editingConfig.protocolo === 'API' ? 'px-4' : 'pl-11 pr-4'} py-2.5 rounded-xl border border-slate-200 outline-none`}
-                        placeholder={editingConfig.protocolo === 'API' ? 'AFB' : editingConfig.protocolo === 'LOCAL' ? 'Ej: C:\\Ventas' : '/home/audit/ventas_diarias/'}
+                        type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
+                        placeholder={editingConfig.protocolo === 'LOCAL' ? 'Ej: C:\\Ventas' : '/home/audit/ventas_diarias/'}
                         value={editingConfig.ruta_remota}
                         onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
                       />
                     </div>
+                    {editingConfig.protocolo === 'LOCAL' && (
+                      <div className="mt-2 space-y-2">
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenExplorer(editingConfig.ruta_remota)}
+                            className="px-3 py-2 rounded-lg border border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 text-xs font-bold"
+                          >
+                            Explorar directorio local (servidor)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handlePickBrowserFiles}
+                            className="px-3 py-2 rounded-lg border border-cyan-200 text-cyan-700 bg-cyan-50 hover:bg-cyan-100 text-xs font-bold"
+                          >
+                            Seleccionar archivos de mi equipo
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                          <code>Directorio local (servidor)</code> navega carpetas del servidor donde corre MsMall (ej. Railway/Linux). Tu PC no es accesible desde el backend.
+                        </p>
+                        {browserFilesSelection && (
+                          <p className="text-[11px] text-cyan-700 bg-cyan-50 border border-cyan-200 rounded-lg px-3 py-2">
+                            Archivos seleccionados de tu equipo: <strong>{browserFilesSelection.count}</strong>
+                            {browserFilesSelection.names.length > 0 ? ` · ${browserFilesSelection.names.join(', ')}` : ''}
+                            {browserFilesSelection.count > browserFilesSelection.names.length ? ' ...' : ''}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
+                  )}
 
-                  {editingConfig.protocolo !== 'API' && (
                   <div>
+                    {!isWebserviceProtocol(editingConfig.protocolo) && (
+                    <>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Acción Post-Procesado</label>
                     <div className="space-y-2">
                       {[
@@ -1322,8 +2301,9 @@ export const ImportManager: React.FC = () => {
                         </div>
                       ))}
                     </div>
+                    </>
+                    )}
                   </div>
-                  )}
 
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div className="flex flex-col gap-3">
@@ -1334,17 +2314,17 @@ export const ImportManager: React.FC = () => {
                         className="w-full py-2.5 border-2 border-indigo-50 text-indigo-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors disabled:opacity-50 shadow-sm"
                       >
                         {testingConnection ? <RefreshCw className="animate-spin" size={18} /> : <Play size={16} fill="currentColor" />}
-                        {testingConnection ? 'Verificando red...' : 'Probar Conexión'}
+                        {testingConnection ? 'Verificando red...' : isWebserviceProtocol(editingConfig.protocolo) ? 'Probar Webservice' : 'Probar Conexión'}
                       </button>
 
-                      {editingConfig.frecuencia === 'manual' && editingConfig.id && editingConfig.protocolo !== 'API' && (
+                      {editingConfig.frecuencia === 'manual' && editingConfig.id && (
                         <button
                           type="button"
                           onClick={() => handleSyncNow(editingConfig.id, editingConfig.nombre)}
                           className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-600 transition-all shadow-lg active:scale-95 group"
                         >
                           <Database size={18} className="text-indigo-400 group-hover:text-white transition-colors" />
-                          Listar y Procesar Archivos
+                          {isWebserviceProtocol(editingConfig.protocolo) ? 'Ejecutar Webservice ahora' : 'Listar y Procesar Archivos'}
                         </button>
                       )}
                     </div>
@@ -1368,6 +2348,10 @@ export const ImportManager: React.FC = () => {
 
                   <button
                     onClick={() => {
+                      if (isWebserviceProtocol(editingConfig.protocolo)) {
+                        handleAnalyzeWebserviceFields();
+                        return;
+                      }
                       console.log("Button 'Seleccionar Archivo Ejemplo' clicked");
                       handleOpenExplorer(editingConfig.ruta_remota);
                     }}
@@ -1375,7 +2359,7 @@ export const ImportManager: React.FC = () => {
                     disabled={fetchingHeaders}
                   >
                     {fetchingHeaders ? <RefreshCw className="animate-spin" size={16} /> : <FileSearch size={16} />}
-                    {fetchingHeaders ? 'Leyendo...' : 'Seleccionar Archivo'}
+                    {fetchingHeaders ? 'Leyendo...' : isWebserviceProtocol(editingConfig.protocolo) ? 'Leer campos Webservice' : 'Seleccionar Archivo'}
                   </button>
 
                   <button
@@ -1419,6 +2403,93 @@ export const ImportManager: React.FC = () => {
                       }}
                       className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm"
                     />
+                  </label>
+
+                  <label className="text-xs font-semibold text-slate-700 flex flex-col gap-1 md:col-span-2">
+                    Separador decimal de montos
+                    <select
+                      value={editingConfig.constants?.[decimalSeparatorKey] || '.'}
+                      onChange={(e) => {
+                        const nextConstants = { ...(editingConfig.constants || {}) } as Record<string, string>;
+                        nextConstants[decimalSeparatorKey] = e.target.value === ',' ? ',' : '.';
+                        setEditingConfig(prev => ({ ...prev, constants: nextConstants }));
+                      }}
+                      className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm"
+                    >
+                      <option value=".">Punto: 1234.56</option>
+                      <option value=",">Coma: 1234,56</option>
+                    </select>
+                  </label>
+
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 md:col-span-2">
+                    <label className="flex items-start gap-3 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={editingConfig.constants?.[removeSpecialCharsKey] === 'true'}
+                        onChange={(e) => {
+                          const nextConstants = { ...(editingConfig.constants || {}) } as Record<string, string>;
+                          nextConstants[removeSpecialCharsKey] = e.target.checked ? 'true' : 'false';
+                          if (e.target.checked && !nextConstants[specialCharsToRemoveKey]) {
+                            nextConstants[specialCharsToRemoveKey] = '"';
+                          }
+                          setEditingConfig(prev => ({ ...prev, constants: nextConstants }));
+                        }}
+                        className="mt-0.5 rounded border-slate-300"
+                      />
+                      <span>
+                        Eliminar caracteres especiales
+                        <span className="block pt-1 text-[11px] font-normal leading-relaxed text-slate-500">
+                          Limpia esos caracteres después de leer el archivo, sin alterar el delimitador del CSV.
+                        </span>
+                      </span>
+                    </label>
+                    {editingConfig.constants?.[removeSpecialCharsKey] === 'true' && (
+                      <label className="mt-3 block text-[11px] font-semibold text-slate-500">
+                        Caracteres a eliminar
+                        <input
+                          type="text"
+                          value={editingConfig.constants?.[specialCharsToRemoveKey] || ''}
+                          onChange={(e) => {
+                            const nextConstants = { ...(editingConfig.constants || {}) } as Record<string, string>;
+                            nextConstants[specialCharsToRemoveKey] = e.target.value;
+                            setEditingConfig(prev => ({ ...prev, constants: nextConstants }));
+                          }}
+                          placeholder={'Ej: " $ #'}
+                          className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm text-slate-700"
+                        />
+                      </label>
+                    )}
+                  </div>
+
+                  <label className="flex items-start gap-3 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-xs font-semibold text-slate-700 md:col-span-2">
+                    <input
+                      type="checkbox"
+                      checked={editingConfig.constants?.[movingWindowModeKey] === 'true'}
+                      onChange={(e) => {
+                        const nextConstants = { ...(editingConfig.constants || {}) } as Record<string, string>;
+                        nextConstants[movingWindowModeKey] = e.target.checked ? 'true' : 'false';
+                        setEditingConfig(prev => ({ ...prev, constants: nextConstants }));
+                      }}
+                      className="mt-0.5 rounded border-slate-300"
+                    />
+                    <span>
+                      Archivo de ventana móvil
+                      <span className="block pt-1 text-[11px] font-normal leading-relaxed text-slate-500">
+                        Usar cuando el locatario envía siempre un rango de días y cada archivo sustituye el día más viejo por el día nuevo.
+                        Los documentos ya cargados se omiten y solo se insertan los nuevos.
+                      </span>
+                    </span>
+                  </label>
+
+                  <label className="text-xs font-semibold text-slate-700 flex flex-col gap-1 md:col-span-2">
+                    Cierre de ventas hasta
+                    <input
+                      type="date"
+                      value={editingConfig.fecha_corte_importacion || ''}
+                      onChange={(e) => setEditingConfig({ ...editingConfig, fecha_corte_importacion: e.target.value || null })}
+                      className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm"
+                    />
+                    <span className="text-[10px] font-normal text-slate-400">Bloquea importaciones con fecha igual o anterior.</span>
                   </label>
                 </div>
 
@@ -1480,8 +2551,19 @@ export const ImportManager: React.FC = () => {
 
                 <div className="grid grid-cols-1 gap-y-6 pt-4">
                   {(STANDARD_FIELDS || []).map(field => {
-                    const isConstant = (editingConfig.constants || {}) && field.key in (editingConfig.constants || {});
+                    const fieldMode = getFieldMappingMode(editingConfig, field.key);
+                    const isConstant = fieldMode === 'CONSTANT';
+                    const isConcat = fieldMode === 'CONCAT';
+                    const isGeneratedSequence = fieldMode === 'GENERATED_SEQUENCE';
                     const currentValue = isConstant ? editingConfig.constants?.[field.key] : (editingConfig.mapping || {})[field.key];
+                    const concatFields = splitTransformFields(editingConfig.constants?.[concatFieldsKey(field.key)]);
+                    const transformOptions = [
+                      ...STANDARD_FIELDS.map(item => ({ value: item.key, label: item.label })),
+                      { value: 'numero_registro', label: 'Número de registro' },
+                      ...remoteHeaders
+                        .filter(header => !STANDARD_FIELDS.some(item => item.key === header))
+                        .map(header => ({ value: header, label: `Columna: ${header}` }))
+                    ];
 
                     return (
                       <div key={field.key} className="relative group bg-slate-50 p-4 rounded-xl border border-slate-200">
@@ -1498,34 +2580,53 @@ export const ImportManager: React.FC = () => {
                         <div className="flex flex-col md:flex-row gap-3">
                           <div className="md:w-1/3">
                             <select
-                              className={`w-full px-3 py-2.5 rounded-xl border outline-none text-sm font-medium transition-colors ${isConstant ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600'
+                              className={`w-full px-3 py-2.5 rounded-xl border outline-none text-sm font-medium transition-colors ${fieldMode !== 'VARIABLE' ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600'
                                 }`}
-                              value={isConstant ? 'CONSTANT' : 'VARIABLE'}
+                              value={fieldMode}
                               onChange={(e) => {
                                 const value = e.target.value;
+                                const { mapping, constants } = cleanFieldMappingConfig(editingConfig, field.key);
                                 if (value === 'CONSTANT') {
-                                  // Switch to constant, clear mapping, set default empty constant
-                                  const newMapping = { ...editingConfig.mapping };
-                                  delete newMapping[field.key];
-
                                   setEditingConfig({
                                     ...editingConfig,
-                                    mapping: newMapping,
-                                    constants: { ...editingConfig.constants, [field.key]: '' }
+                                    mapping,
+                                    constants: { ...constants, [field.key]: '' }
+                                  });
+                                } else if (value === 'CONCAT') {
+                                  setEditingConfig({
+                                    ...editingConfig,
+                                    mapping,
+                                    constants: {
+                                      ...constants,
+                                      [fieldModeKey(field.key)]: TRANSFORM_MODES.CONCAT,
+                                      [concatFieldsKey(field.key)]: field.key === 'factura_numero' ? 'local_codigo,fecha_venta,numero_registro' : '',
+                                      [concatSeparatorKey(field.key)]: field.key === 'factura_numero' ? '' : '-'
+                                    }
+                                  });
+                                } else if (value === 'GENERATED_SEQUENCE') {
+                                  setEditingConfig({
+                                    ...editingConfig,
+                                    mapping,
+                                    constants: {
+                                      ...constants,
+                                      [fieldModeKey(field.key)]: TRANSFORM_MODES.GENERATED_SEQUENCE
+                                    }
                                   });
                                 } else {
-                                  // Switch to variable, clear constant
-                                  const newConstants = { ...editingConfig.constants };
-                                  delete newConstants[field.key];
                                   setEditingConfig({
                                     ...editingConfig,
-                                    constants: newConstants
+                                    mapping,
+                                    constants
                                   });
                                 }
                               }}
                             >
                               <option value="VARIABLE">Columna CSV</option>
                               <option value="CONSTANT">Valor Constante</option>
+                              <option value="CONCAT">Concatenar Campos</option>
+                              {field.key === 'factura_numero' && (
+                                <option value="GENERATED_SEQUENCE">Consecutivo Local + Fecha</option>
+                              )}
                             </select>
                           </div>
 
@@ -1547,6 +2648,76 @@ export const ImportManager: React.FC = () => {
                                 <div className="absolute right-3 top-3 text-[10px] font-bold text-indigo-300 uppercase pointer-events-none group-focus-within/input:text-indigo-500 transition-colors">
                                   Valor Fijo
                                 </div>
+                              </div>
+                            ) : isConcat ? (
+                              <div className="space-y-3">
+                                <div className="flex flex-col sm:flex-row gap-2">
+                                  <select
+                                    className="flex-1 px-4 py-2.5 rounded-xl border border-indigo-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                                    value=""
+                                    onChange={e => {
+                                      const nextValue = e.target.value;
+                                      if (!nextValue || concatFields.includes(nextValue)) return;
+                                      setEditingConfig({
+                                        ...editingConfig,
+                                        constants: {
+                                          ...editingConfig.constants,
+                                          [concatFieldsKey(field.key)]: [...concatFields, nextValue].join(',')
+                                        }
+                                      });
+                                    }}
+                                  >
+                                    <option value="">Agregar campo a concatenar...</option>
+                                    {transformOptions.map(option => (
+                                      <option key={`${field.key}-${option.value}`} value={option.value}>{option.label}</option>
+                                    ))}
+                                  </select>
+                                  <input
+                                    type="text"
+                                    className="w-full sm:w-28 px-3 py-2.5 rounded-xl border border-indigo-200 bg-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                                    value={editingConfig.constants?.[concatSeparatorKey(field.key)] ?? '-'}
+                                    onChange={e => setEditingConfig({
+                                      ...editingConfig,
+                                      constants: {
+                                        ...editingConfig.constants,
+                                        [concatSeparatorKey(field.key)]: e.target.value
+                                      }
+                                    })}
+                                    placeholder="Separador"
+                                    aria-label="Separador"
+                                  />
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  {concatFields.length === 0 ? (
+                                    <span className="text-xs text-amber-600 font-semibold">
+                                      Agrega al menos un campo para construir el valor.
+                                    </span>
+                                  ) : concatFields.map(part => (
+                                    <button
+                                      key={`${field.key}-${part}`}
+                                      type="button"
+                                      onClick={() => setEditingConfig({
+                                        ...editingConfig,
+                                        constants: {
+                                          ...editingConfig.constants,
+                                          [concatFieldsKey(field.key)]: concatFields.filter(item => item !== part).join(',')
+                                        }
+                                      })}
+                                      className="px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold hover:bg-indigo-200"
+                                      title="Quitar campo"
+                                    >
+                                      {part} ×
+                                    </button>
+                                  ))}
+                                </div>
+                                <p className="text-xs text-slate-500">
+                                  Se construirá en el orden indicado. Usa “Número de registro” para diferenciar filas repetidas.
+                                </p>
+                              </div>
+                            ) : isGeneratedSequence ? (
+                              <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800">
+                                <p className="font-bold">Formato generado: LOCALFECHASECUENCIA</p>
+                                <p className="text-xs mt-1">Ejemplo: PABT01202606010034. La secuencia sale del registro dentro del archivo.</p>
                               </div>
                             ) : (
                               <div className="relative">
@@ -1625,6 +2796,14 @@ export const ImportManager: React.FC = () => {
             )}
 
             {renderExplorerModal()}
+            <input
+              ref={browserFilesInputRef}
+              type="file"
+              multiple
+              accept=".csv,.txt,.json,.xml,text/csv,text/plain,application/json,text/xml,application/xml"
+              onChange={handleBrowserFilesInputChange}
+              className="hidden"
+            />
                 </div>
               </div>
 
@@ -1671,12 +2850,20 @@ export const ImportManager: React.FC = () => {
           <p className="text-slate-400 text-sm mt-1 mb-8 max-w-sm">Conecte sus tiendas vía SFTP para que el sistema audite las ventas cada noche sin intervención manual.</p>
           <button onClick={openNewConnectionDrawer} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-xl shadow-indigo-100 hover:scale-105 transition-transform">Configurar Primera Fuente</button>
         </div>
+      ) : filteredConfigs.length === 0 ? (
+        <div className="py-16 bg-white rounded-[2rem] border border-slate-200 text-center">
+          <div className="w-14 h-14 mx-auto bg-slate-50 rounded-full flex items-center justify-center mb-4">
+            <Search size={22} className="text-slate-300" />
+          </div>
+          <h3 className="text-base font-bold text-slate-800">No encontramos conexiones</h3>
+          <p className="text-slate-400 text-sm mt-1">Ajusta la búsqueda para ver otras conexiones configuradas.</p>
+        </div>
       ) : viewMode === 'cards' ? (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {(configs || []).map(config => (
+          {filteredConfigs.map(config => (
             <div key={config.id} className="bg-white rounded-3xl border border-slate-200 p-6 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
               <div className={`absolute top-0 right-0 px-6 py-2 rounded-bl-3xl text-[10px] font-bold uppercase tracking-widest ${config.protocolo === 'SFTP' ? 'bg-indigo-600 text-white' : config.protocolo === 'LOCAL' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}`}>
-                {config.protocolo === 'LOCAL' ? 'Directorio' : config.protocolo}
+                {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
               </div>
 
               <div className="flex items-start gap-4 mb-6">
@@ -1740,6 +2927,13 @@ export const ImportManager: React.FC = () => {
 
                 <div className="flex items-center gap-2">
                   <button
+                    onClick={() => openQuickAudit(config)}
+                    className="p-2.5 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-xl transition-all"
+                    title="Auditoria rapida"
+                  >
+                    <FileSearch size={20} />
+                  </button>
+                  <button
                     onClick={() => openEditConnectionDrawer(config)}
                     className="p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
                     title="Editar Mapeo"
@@ -1783,7 +2977,7 @@ export const ImportManager: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {(configs || []).map((config) => {
+                {filteredConfigs.map((config) => {
                   const activeMappings = Object.keys(config.mapping || {}).filter(k => (config.mapping || {})[k]).length;
                   const isActive = config.estado === 'activo';
 
@@ -1802,7 +2996,7 @@ export const ImportManager: React.FC = () => {
                       </td>
                       <td className="px-5 py-4">
                         <span className={`inline-flex px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide ${config.protocolo === 'SFTP' ? 'bg-indigo-100 text-indigo-700' : config.protocolo === 'LOCAL' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                          {config.protocolo === 'LOCAL' ? 'Directorio' : config.protocolo}
+                          {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
                         </span>
                       </td>
                       <td className="px-5 py-4 text-xs text-slate-600 font-medium">
@@ -1843,6 +3037,13 @@ export const ImportManager: React.FC = () => {
                       <td className="px-5 py-4 text-center">
                         <div className="inline-flex items-center gap-2">
                           <button
+                            onClick={() => openQuickAudit(config)}
+                            className="p-2 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition-all"
+                            title="Auditoria rapida"
+                          >
+                            <FileSearch size={16} />
+                          </button>
+                          <button
                             onClick={() => openEditConnectionDrawer(config)}
                             className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
                             title="Editar"
@@ -1871,6 +3072,140 @@ export const ImportManager: React.FC = () => {
                 })}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Audit Modal */}
+      {auditConfig && (
+        <div className="fixed inset-0 z-[105] flex items-center justify-center bg-slate-950/45 backdrop-blur-md p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-5xl max-h-[86vh] overflow-hidden rounded-[2rem] border border-white/60 bg-white/85 shadow-2xl shadow-slate-900/20 backdrop-blur-xl animate-in zoom-in-95 duration-200 flex flex-col">
+            <div className="flex items-start justify-between gap-4 border-b border-white/70 bg-white/55 px-6 py-5">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full bg-sky-50 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-sky-700">
+                  <FileSearch size={13} />
+                  Auditoria rapida
+                </div>
+                <h3 className="mt-3 text-2xl font-black text-slate-900">{auditConfig.nombre}</h3>
+                <p className="mt-1 text-xs font-medium text-slate-500">
+                  Monitor de carga filtrado por este local. Se muestran las ultimas 30 ejecuciones.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => openQuickAudit(auditConfig)}
+                  disabled={auditLoading}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-xs font-bold text-slate-600 shadow-sm transition-all hover:bg-white disabled:opacity-50"
+                  title="Recargar auditoria"
+                >
+                  <RefreshCw size={14} className={auditLoading ? 'animate-spin' : ''} />
+                  Recargar
+                </button>
+                <button
+                  type="button"
+                  onClick={closeQuickAudit}
+                  className="rounded-xl border border-slate-200 bg-white/80 p-2 text-slate-400 shadow-sm transition-all hover:bg-white hover:text-slate-700"
+                  title="Cerrar"
+                >
+                  <XCircle size={20} />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
+                <div className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Local ID</p>
+                  <p className="mt-1 break-all text-xs font-bold text-slate-700">{auditConfig.id}</p>
+                </div>
+                <div className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Via</p>
+                  <p className="mt-1 text-sm font-bold text-slate-700">{auditConfig.protocolo}</p>
+                </div>
+                <div className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Ruta</p>
+                  <p className="mt-1 truncate text-xs font-bold text-slate-700" title={auditConfig.ruta_remota}>{auditConfig.ruta_remota || '-'}</p>
+                </div>
+                <div className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Resultados</p>
+                  <p className="mt-1 text-sm font-bold text-slate-700">{auditLogs.length} cargas</p>
+                </div>
+              </div>
+
+              {auditError && (
+                <div className="mb-5 flex items-start gap-3 rounded-2xl border border-rose-100 bg-rose-50/90 p-4 text-sm font-medium text-rose-700">
+                  <AlertCircle size={18} className="mt-0.5 shrink-0" />
+                  <span>{auditError}</span>
+                </div>
+              )}
+
+              {auditLoading ? (
+                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-3xl border border-white/70 bg-white/65 text-slate-500">
+                  <RefreshCw size={30} className="mb-3 animate-spin text-sky-500" />
+                  <p className="text-sm font-bold">Cargando monitor del local...</p>
+                </div>
+              ) : auditLogs.length === 0 ? (
+                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/65 text-center">
+                  <FileSearch size={34} className="mb-3 text-slate-300" />
+                  <p className="text-sm font-bold text-slate-700">Sin cargas registradas para este local.</p>
+                  <p className="mt-1 max-w-md text-xs text-slate-500">
+                    Si existen ejecuciones recientes, valida que el monitor tenga el local_id correcto en el log.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-3xl border border-white/70 bg-white/80 shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[920px] text-left">
+                      <thead>
+                        <tr className="border-b border-slate-100 bg-slate-50/80">
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Fecha y hora</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Via</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Archivo</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Estado</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Registros</th>
+                          <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Mensaje</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {auditLogs.map((log) => (
+                          <tr key={log.id} className="hover:bg-sky-50/50">
+                            <td className="px-4 py-3 text-xs font-semibold text-slate-700">{formatLoadLogDateTime(log.fecha_hora)}</td>
+                            <td className="px-4 py-3 text-xs font-bold text-slate-600">{getLoadLogChannel(log)}</td>
+                            <td className="px-4 py-3 text-xs font-medium text-slate-600">
+                              <span className="line-clamp-2 max-w-[220px]" title={getLoadLogFileName(log)}>{getLoadLogFileName(log)}</span>
+                            </td>
+                            <td className="px-4 py-3">{getLoadLogStatusBadge(log)}</td>
+                            <td className="px-4 py-3 text-xs font-bold text-slate-700">
+                              {getLoadLogProcessedCount(log)}
+                              {getLoadLogErrorCount(log) > 0 && (
+                                <span className="ml-2 text-[11px] font-bold text-amber-600">{getLoadLogErrorCount(log)} err.</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-xs text-slate-600">
+                              <span className="block max-w-[280px]" title={getLoadLogMessage(log)}>
+                                <span className="block font-bold text-slate-700">{describeLoadLog(log).title}</span>
+                                <span className="line-clamp-2">{getLoadLogMessage(log)}</span>
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end border-t border-white/70 bg-white/55 px-6 py-4">
+              <button
+                type="button"
+                onClick={closeQuickAudit}
+                className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-slate-200 transition-all hover:bg-sky-600 active:scale-95"
+              >
+                Cerrar
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2005,8 +3340,9 @@ export const ImportManager: React.FC = () => {
                     <tbody className="divide-y divide-slate-50">
                       {(manualFiles || []).map((file) => {
                         const isServerMarkedProcessed = file.nombre.startsWith('PR_');
+                        const isServerMarkedErrored = file.nombre.startsWith('ERR_');
                         const isProcessed = isServerMarkedProcessed || fileStatuses[file.nombre] === 'success';
-                        const isErrored = !isProcessed && fileStatuses[file.nombre] === 'error';
+                        const isErrored = isServerMarkedErrored || (!isProcessed && fileStatuses[file.nombre] === 'error');
 
                         return (
                         <tr key={file.nombre} className="hover:bg-indigo-50/30 transition-colors group">
@@ -2162,6 +3498,7 @@ export const ImportManager: React.FC = () => {
         fileHeaders={mappingData?.fileHeaders || []}
         suggestedMapping={mappingData?.suggestedMapping || {}}
         currentMapping={mappingData?.currentMapping || {}}
+        currentConstants={mappingData?.currentConstants || {}}
         sampleRow={mappingData?.sampleRow || {}}
         filename={mappingData?.filename || ''}
       />

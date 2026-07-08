@@ -1486,6 +1486,17 @@ def _clean_api_number(value: Any) -> float:
 
 def _studio_g_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
     constants = _webservice_constants(config)
+    today_date = _now_local().date()
+    date_mode = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "studio_g_date_mode",
+            "_studio_g_date_mode",
+            "date_mode",
+        )
+        or ""
+    ).strip().lower()
     fecha_inicio = _webservice_config_value(
         config,
         constants,
@@ -1502,11 +1513,30 @@ def _studio_g_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
         "fecha_fin",
         "FechaFin",
     )
-    today = _now_local().date().isoformat()
-    start = normalize_date(fecha_inicio) if fecha_inicio else today
-    end = normalize_date(fecha_fin) if fecha_fin else start
+
+    if date_mode in {"today", "hoy"}:
+        start = end = today_date.isoformat()
+    elif date_mode in {"yesterday", "ayer", "previous_day"}:
+        yesterday = today_date - timedelta(days=1)
+        start = end = yesterday.isoformat()
+    elif date_mode in {"current_month", "mes_actual", "month"}:
+        start = today_date.replace(day=1).isoformat()
+        end = today_date.isoformat()
+    elif date_mode in {"last_30_days", "ultimos_30_dias", "last_month"}:
+        start = (today_date - timedelta(days=29)).isoformat()
+        end = today_date.isoformat()
+    elif date_mode in {"custom", "range", "rango"}:
+        start = normalize_date(fecha_inicio) if fecha_inicio else None
+        end = normalize_date(fecha_fin) if fecha_fin else None
+    else:
+        today = today_date.isoformat()
+        start = normalize_date(fecha_inicio) if fecha_inicio else today
+        end = normalize_date(fecha_fin) if fecha_fin else start
+
     if not start or not end:
         raise ValueError("Rango de fechas Studio G invalido")
+    if start > end:
+        raise ValueError("Rango de fechas Studio G invalido: inicio posterior a fin")
     return start, end
 
 

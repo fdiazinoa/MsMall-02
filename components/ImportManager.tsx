@@ -53,6 +53,17 @@ const webservicePageParamKey = '_webservice_page_param';
 const webserviceStartPageKey = '_webservice_start_page';
 const webserviceMaxPagesKey = '_webservice_max_pages';
 const webserviceTimeoutKey = '_webservice_timeout_seconds';
+const studioGDateModeKey = '_studio_g_date_mode';
+const studioGStartDateKey = '_studio_g_fecha_inicio';
+const studioGEndDateKey = '_studio_g_fecha_fin';
+
+const studioGDateModes = [
+  { id: 'yesterday', label: 'Día anterior' },
+  { id: 'today', label: 'Hoy' },
+  { id: 'current_month', label: 'Mes actual' },
+  { id: 'last_30_days', label: 'Últimos 30 días' },
+  { id: 'custom', label: 'Rango' }
+] as const;
 
 const isWebserviceProtocol = (protocol?: ImportProtocol | string) =>
   ['WEBSERVICE', 'API'].includes(String(protocol || '').toUpperCase());
@@ -943,6 +954,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
     if (isAutomated && looksLikeFile) {
       if (!confirm(`Advertencia: Has configurado una frecuencia automática (${editingConfig.frecuencia}) pero la ruta parece ser un archivo específico (${editingConfig.ruta_remota}).\n\nPara automatización, generalmente se debe apuntar a la CARPETA donde llegarán los nuevos archivos.\n\n¿Deseas continuar de todos modos?`)) {
+        return;
+      }
+    }
+
+    if (editingConfig.protocolo === 'API' && editingConfig.constants?.[studioGDateModeKey] === 'custom') {
+      if (!editingConfig.constants?.[studioGStartDateKey] || !editingConfig.constants?.[studioGEndDateKey]) {
+        alert('Selecciona fecha inicio y fecha fin para el rango de consulta API.');
         return;
       }
     }
@@ -1998,6 +2016,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             nextConstants[webserviceMaxPagesKey] = nextConstants[webserviceMaxPagesKey] || '50';
                             nextConstants[webserviceTimeoutKey] = nextConstants[webserviceTimeoutKey] || '45';
                           }
+                          if (nextProtocol === 'API') {
+                            nextConstants[studioGDateModeKey] = nextConstants[studioGDateModeKey] || 'yesterday';
+                          }
                           setEditingConfig({
                             ...editingConfig,
                             protocolo: nextProtocol,
@@ -2146,6 +2167,63 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         value={editingConfig.ruta_remota}
                         onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
                       />
+                    </div>
+                  )}
+                  {editingConfig.protocolo === 'API' && (
+                    <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Periodo de consulta API</p>
+                        <p className="text-xs text-cyan-700 mt-1">Define qué fechas pedirá Studio G al procesar esta conexión.</p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {studioGDateModes.map((mode) => (
+                          <button
+                            key={mode.id}
+                            type="button"
+                            onClick={() => setEditingConfig({
+                              ...editingConfig,
+                              constants: {
+                                ...editingConfig.constants,
+                                [studioGDateModeKey]: mode.id
+                              }
+                            })}
+                            className={`px-3 py-2 rounded-xl border text-xs font-bold transition-all text-left ${((editingConfig.constants?.[studioGDateModeKey] || 'yesterday') === mode.id)
+                              ? 'border-cyan-500 bg-white text-cyan-700 shadow-sm'
+                              : 'border-cyan-100 bg-white/70 text-slate-500 hover:bg-white'
+                            }`}
+                          >
+                            {mode.label}
+                          </button>
+                        ))}
+                      </div>
+                      {(editingConfig.constants?.[studioGDateModeKey] || 'yesterday') === 'custom' && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                            Fecha inicio
+                            <input
+                              type="date"
+                              className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                              value={editingConfig.constants?.[studioGStartDateKey] || ''}
+                              onChange={e => setEditingConfig({
+                                ...editingConfig,
+                                constants: { ...editingConfig.constants, [studioGStartDateKey]: e.target.value }
+                              })}
+                            />
+                          </label>
+                          <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                            Fecha fin
+                            <input
+                              type="date"
+                              className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                              value={editingConfig.constants?.[studioGEndDateKey] || ''}
+                              onChange={e => setEditingConfig({
+                                ...editingConfig,
+                                constants: { ...editingConfig.constants, [studioGEndDateKey]: e.target.value }
+                              })}
+                            />
+                          </label>
+                        </div>
+                      )}
                     </div>
                   )}
                   {isWebserviceProtocol(editingConfig.protocolo) && (

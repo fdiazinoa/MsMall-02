@@ -1133,10 +1133,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     }
   };
 
-  const handleSyncNow = async (id: string, name: string) => {
+  const handleSyncNow = async (id: string, name: string, runtimeConfig?: ImportConfig) => {
     resetManualExecutionState();
     setActiveConfigId(id);
-    const config = configs.find(c => c.id === id);
+    const config = runtimeConfig || configs.find(c => c.id === id);
     if (!config) {
       alert("Configuración no encontrada.");
       return;
@@ -2446,7 +2446,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       {editingConfig.frecuencia === 'manual' && editingConfig.id && (
                         <button
                           type="button"
-                          onClick={() => handleSyncNow(editingConfig.id, editingConfig.nombre)}
+                          onClick={() => handleSyncNow(editingConfig.id, editingConfig.nombre, {
+                            ...editingConfig,
+                            password: tempPassword || editingConfig.password
+                          })}
                           className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-600 transition-all shadow-lg active:scale-95 group"
                         >
                           <Database size={18} className="text-indigo-400 group-hover:text-white transition-colors" />

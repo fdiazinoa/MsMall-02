@@ -700,14 +700,26 @@ def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config:
         val = runtime.get(key)
         if val not in (None, ""):
             base_config[key] = val
+    if "constants" in runtime and runtime.get("constants") not in (None, ""):
+        base_config["constants_config"] = runtime.get("constants") or {}
+    if "constants_config" in runtime and runtime.get("constants_config") not in (None, ""):
+        base_config["constants"] = runtime.get("constants_config") or {}
+    if "mapping" in runtime and runtime.get("mapping") not in (None, ""):
+        base_config["mapping_config"] = runtime.get("mapping") or {}
+    if "mapping_config" in runtime and runtime.get("mapping_config") not in (None, ""):
+        base_config["mapping"] = runtime.get("mapping_config") or {}
     return base_config
 
 def _normalize_import_config_payload(config_data: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(config_data or {})
     if not normalized.get("mapping"):
         normalized["mapping"] = normalized.get("mapping_config") or {}
+    if not normalized.get("mapping_config"):
+        normalized["mapping_config"] = normalized.get("mapping") or {}
     if not normalized.get("constants"):
         normalized["constants"] = normalized.get("constants_config") or {}
+    if not normalized.get("constants_config"):
+        normalized["constants_config"] = normalized.get("constants") or {}
     if not normalized.get("tipo_archivo"):
         normalized["tipo_archivo"] = normalized.get("file_type", "CSV")
     return normalized

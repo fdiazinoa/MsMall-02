@@ -36,6 +36,7 @@ from worker_importacion import (
     _append_query_param as append_webservice_query_param,
     _extract_webservice_records as extract_webservice_records,
     _fetch_webservice_json as fetch_webservice_json,
+    fetch_studio_g_sales,
     process_webservice_import,
     run_worker_async,
 )
@@ -2540,6 +2541,37 @@ def _test_remote_connection_sync(req: RemoteRequest):
         logger.error(f"Error conexión remota después de {duration:.2f}s: {e}")
         return {"status": "error", "message": f"Error ({duration:.2f}s): {str(e)}"}
 
+def _studio_g_config_from_remote_request(req: RemoteRequest) -> Dict[str, Any]:
+    return {
+        "id": "studio-g-preview",
+        "mall_id": "00000000-0000-0000-0000-000000000000",
+        "nombre": "Studio G API",
+        "sftp_protocol": "API",
+        "sftp_host": req.host,
+        "sftp_user": req.usuario,
+        "sftp_pass": req.password,
+        "sftp_path": req.ruta,
+        "constants_config": {
+            "provider": "studio_g",
+            "_studio_g_fecha_inicio": date.today().isoformat(),
+            "_studio_g_fecha_fin": date.today().isoformat(),
+        },
+    }
+
+def _studio_g_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
+    rows, _source_name = fetch_studio_g_sales(_studio_g_config_from_remote_request(req))
+    if rows:
+        return rows
+    return [{
+        "fecha": date.today().isoformat(),
+        "factura_no": "STUDIOG-MUESTRA",
+        "comprobante": "STUDIOG-MUESTRA",
+        "hora_transaccion": "12:00:00",
+        "total_bruto": 0,
+        "total_impuestos": 0,
+        "total_neto": 0,
+    }]
+
 @app.post("/api/v1/remote/test")
 async def test_remote_connection(
     req: RemoteRequest,
@@ -2901,6 +2933,11 @@ async def retry_connection_manual(
         raise HTTPException(status_code=500, detail="No se pudo ejecutar el reintento de conexión.")
 
 def _read_remote_headers_sync(req: RemoteRequest):
+    if str(req.protocolo or "").strip().upper() == "API":
+        rows = _studio_g_preview_rows(req)
+        headers = list(rows[0].keys())
+        return {"headers": headers}
+
     content = ""
     if req.protocolo == "SFTP":
         ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
@@ -3660,6 +3697,10 @@ async def analyze_remote_mapping(
             # Determine if we should read all (JSON) or sample (CSV)
             is_json = req.tipo_archivo == "JSON" or req.ruta.lower().endswith('.json')
             read_size = -1 if is_json else 32768 # Read all for JSON, 32KB for CSV (increased from 8KB)
+
+            if str(req.protocolo or "").strip().upper() == "API":
+                records = _studio_g_preview_rows(req)
+                return json.dumps(records, ensure_ascii=False)
 
             if _is_webservice_protocol(req.protocolo):
                 url = append_webservice_query_param(req.host, "page", 1)

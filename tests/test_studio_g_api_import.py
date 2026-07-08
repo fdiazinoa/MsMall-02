@@ -39,7 +39,6 @@ def test_studio_g_date_range_uses_constants_for_history():
 
     assert _studio_g_date_range(config) == ("2026-05-01", "2026-05-20")
 
-
 def test_studio_g_date_range_uses_relative_modes(monkeypatch):
     import worker_importacion
     from datetime import datetime
@@ -63,3 +62,42 @@ def test_studio_g_date_range_uses_relative_modes(monkeypatch):
 def test_studio_g_custom_date_range_requires_dates():
     with pytest.raises(ValueError):
         _studio_g_date_range({"constants_config": {"_studio_g_date_mode": "custom"}})
+
+
+def test_studio_g_preview_uses_history_before_sample(monkeypatch):
+    import main
+
+    calls = []
+    historical_row = {
+        "fecha": "2026-05-01",
+        "factura_no": "B0100000001",
+        "comprobante": "B0100000001",
+        "hora_transaccion": "13:45:10",
+        "total_bruto": 1000,
+        "total_impuestos": 180,
+        "total_neto": 1180,
+    }
+
+    def fake_fetch(config):
+        constants = config["constants_config"]
+        calls.append((constants["_studio_g_fecha_inicio"], constants["_studio_g_fecha_fin"]))
+        return ([historical_row] if len(calls) == 2 else []), "Studio G test"
+
+    monkeypatch.setattr(main, "fetch_studio_g_sales", fake_fetch)
+    monkeypatch.setattr(main, "STUDIO_G_PREVIEW_HISTORY_DAYS", 120)
+
+    rows = main._studio_g_preview_rows(
+        main.RemoteRequest(
+            protocolo="API",
+            host="https://studio.example.test",
+            usuario="user",
+            password="secret",
+            ruta="AFB",
+            tipo_archivo="JSON",
+        )
+    )
+
+    assert rows == [historical_row]
+    assert len(calls) == 2
+    assert calls[0][0] == calls[0][1]
+    assert calls[1][0] < calls[1][1]

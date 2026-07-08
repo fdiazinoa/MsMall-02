@@ -13,7 +13,11 @@ import io
 import csv
 import json
 import posixpath
-from typing import Optional
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Dict, List, Optional, Tuple
 
 # Setup Logging
 logging.basicConfig(
@@ -167,6 +171,237 @@ def connect_with_retries(connector, attempts=3, base_delay=2):
             logger.warning(f"Conexión fallida (intento {attempt}/{attempts}): {e}. Reintentando en {delay}s...")
             time.sleep(delay)
     raise last_error
+
+def _api_base_url(config: Dict[str, Any]) -> str:
+    host = str(config.get("sftp_host") or config.get("host") or "").strip()
+    if not host:
+        raise ValueError("Host/API base URL requerido para protocolo API")
+    if not re.match(r"^https?://", host, flags=re.IGNORECASE):
+        host = f"https://{host}"
+    return host.rstrip("/")
+
+def _api_json_request(
+    method: str,
+    url: str,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    body: Optional[Dict[str, Any]] = None,
+    timeout: int = 45,
+) -> Dict[str, Any]:
+    payload = None
+    request_headers = {"Accept": "application/json", **(headers or {})}
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=payload, headers=request_headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8-sig", errors="replace")
+    except urllib.error.HTTPError as exc:
+        raw_error = exc.read().decode("utf-8-sig", errors="replace")
+        try:
+            parsed_error = json.loads(raw_error)
+            message = parsed_error.get("message") or parsed_error.get("detail") or raw_error
+        except Exception:
+            message = raw_error or str(exc)
+        raise RuntimeError(f"API HTTP {exc.code}: {message}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"No se pudo conectar con API: {exc.reason}") from exc
+
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Respuesta API no es JSON valido") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Respuesta API inesperada: se esperaba objeto JSON")
+    return parsed
+
+def _studio_g_authorize(config: Dict[str, Any]) -> str:
+    client_id = str(config.get("sftp_user") or config.get("usuario") or "").strip()
+    client_secret = str(config.get("sftp_pass") or config.get("password") or "").strip()
+    if not client_id or not client_secret:
+        raise ValueError("Client ID y Client Secret requeridos para Studio G")
+
+    data = _api_json_request(
+        "POST",
+        f"{_api_base_url(config)}/authorization",
+        body={"client_id": client_id, "client_secret": client_secret},
+    )
+    token = str(data.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Studio G no devolvio access_token")
+    return token
+
+def _parse_api_date(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return normalize_date(text)
+
+def _parse_api_time(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.time().replace(microsecond=0).isoformat()
+    except ValueError:
+        pass
+    match = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b", text)
+    if not match:
+        return None
+    parts = match.group(1).split(":")
+    if len(parts) == 2:
+        return f"{int(parts[0]):02d}:{parts[1]}:00"
+    return f"{int(parts[0]):02d}:{parts[1]}:{parts[2]}"
+
+def _clean_api_number(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+def _studio_g_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
+    constants = config.get("constants_config") or config.get("constants") or {}
+    fecha_inicio = constants.get("studio_g_fecha_inicio") or constants.get("fecha_inicio") or constants.get("FechaInicio")
+    fecha_fin = constants.get("studio_g_fecha_fin") or constants.get("fecha_fin") or constants.get("FechaFin")
+    today = datetime.now().date().isoformat()
+    start = normalize_date(fecha_inicio) if fecha_inicio else today
+    end = normalize_date(fecha_fin) if fecha_fin else start
+    if not start or not end:
+        raise ValueError("Rango de fechas Studio G invalido")
+    return start, end
+
+def _map_studio_g_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str) -> Optional[Dict[str, Any]]:
+    fecha = _parse_api_date(row.get("Fecha"))
+    if not fecha:
+        return None
+
+    transaction_id = row.get("IDTransaccion")
+    ncf = str(row.get("NCF") or "").strip()
+    factura_no = ncf or (f"STUDIOG-{id_tpv}-{transaction_id}" if transaction_id not in (None, "") else "")
+    if not factura_no:
+        return None
+
+    payload = {
+        "local_id": config.get("id"),
+        "mall_id": config.get("mall_id"),
+        "fecha": fecha,
+        "factura_no": factura_no,
+        "comprobante": ncf or None,
+        "hora_transaccion": _parse_api_time(row.get("Hora") or row.get("Fecha")),
+        "total_bruto": _clean_api_number(row.get("TotalBruto")),
+        "total_impuestos": _clean_api_number(row.get("TotalImpuestos")),
+        "total_neto": _clean_api_number(row.get("TotalNeto")),
+    }
+    return {k: v for k, v in payload.items() if v not in (None, "")}
+
+def fetch_studio_g_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+    constants = config.get("constants_config") or config.get("constants") or {}
+    id_tpv = str(config.get("sftp_path") or config.get("ruta_remota") or constants.get("idTpv") or "").strip()
+    if not id_tpv or id_tpv == ".":
+        raise ValueError("idTpv requerido en Ruta Remota para Studio G")
+
+    fecha_inicio, fecha_fin = _studio_g_date_range(config)
+    token = _studio_g_authorize(config)
+    query = urllib.parse.urlencode({
+        "idTpv": id_tpv,
+        "FechaInicio": fecha_inicio,
+        "FechaFin": fecha_fin,
+    })
+    data = _api_json_request(
+        "GET",
+        f"{_api_base_url(config)}/ventas?{query}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    ventas = data.get("ventas") or []
+    if not isinstance(ventas, list):
+        raise RuntimeError("Respuesta Studio G invalida: ventas no es una lista")
+
+    rows = [
+        mapped
+        for sale in ventas
+        if isinstance(sale, dict)
+        for mapped in [_map_studio_g_sale(config, sale, id_tpv)]
+        if mapped
+    ]
+    return rows, f"Studio G {id_tpv} {fecha_inicio}..{fecha_fin}"
+
+def insert_sales_with_dedup(rows: List[Dict[str, Any]]) -> Tuple[int, int]:
+    if not rows:
+        return 0, 0
+    if not supabase:
+        raise ValueError("Supabase no configurado")
+
+    try:
+        supabase.table("ventas").upsert(rows, on_conflict="local_id,fecha,factura_no").execute()
+        return len(rows), 0
+    except Exception as exc:
+        message = str(exc).lower()
+        if "no unique" not in message and "on conflict" not in message:
+            raise
+
+    inserted = 0
+    skipped = 0
+    for row in rows:
+        existing = (
+            supabase.table("ventas")
+            .select("id")
+            .eq("local_id", row.get("local_id"))
+            .eq("fecha", row.get("fecha"))
+            .eq("factura_no", row.get("factura_no"))
+            .limit(1)
+            .execute()
+        )
+        if getattr(existing, "data", None):
+            skipped += 1
+            continue
+        supabase.table("ventas").insert(row).execute()
+        inserted += 1
+    return inserted, skipped
+
+def process_studio_g_api(config: Dict[str, Any]) -> None:
+    batch_id = str(uuid.uuid4())
+    try:
+        rows, source_name = fetch_studio_g_sales(config)
+        inserted, skipped = insert_sales_with_dedup(rows)
+        message = f"API Studio G: {inserted} ventas importadas"
+        if skipped:
+            message += f", {skipped} duplicadas omitidas"
+        if not rows:
+            message = "API Studio G: 0 ventas encontradas para el rango"
+        insert_load_log(
+            config.get("nombre", "Studio G"),
+            source_name,
+            "exito",
+            message,
+            batch_id,
+            mall_id=config.get("mall_id"),
+            local_id=config.get("id"),
+        )
+    except Exception as exc:
+        insert_load_log(
+            config.get("nombre", "Studio G"),
+            "Studio G API",
+            "error",
+            f"Fallo API Studio G: {str(exc)}",
+            batch_id,
+            mall_id=config.get("mall_id"),
+            local_id=config.get("id"),
+        )
+        raise
 
 def process_file_logic(config, filename, content):
     """
@@ -324,6 +559,10 @@ def process_local_files(config):
     MAX_FILES_PER_BATCH = 20  # Safety Cap
     
     logger.info(f"Conectando a {config['nombre']} ({protocol}) en {host}...")
+
+    if str(protocol).upper() == "API":
+        process_studio_g_api(config)
+        return
     
     if protocol == "SFTP":
         try:

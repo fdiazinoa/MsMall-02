@@ -19,6 +19,8 @@ from thefuzz import process, fuzz
 import paramiko
 import json
 import xmltodict
+import urllib.error
+import urllib.request
 from ftplib import FTP
 import stat
 from worker_importacion import run_worker_async
@@ -1789,6 +1791,33 @@ def get_ftp_client(host, port, user, password):
         raise last_error
     raise ValueError("Host remoto inválido o vacío para conexión FTP")
 
+def _api_base_url(host: str) -> str:
+    normalized = (host or "").strip()
+    if not normalized:
+        raise ValueError("URL base API requerida")
+    if not re.match(r"^https?://", normalized, flags=re.IGNORECASE):
+        normalized = f"https://{normalized}"
+    return normalized.rstrip("/")
+
+def _test_api_authorization(host: str, client_id: str, client_secret: Optional[str]) -> None:
+    if not client_id or not client_secret:
+        raise ValueError("Client ID y Client Secret requeridos para probar API")
+    payload = json.dumps({
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{_api_base_url(host)}/authorization",
+        data=payload,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=25) as response:
+        raw = response.read().decode("utf-8-sig", errors="replace")
+    data = json.loads(raw or "{}")
+    if not data.get("access_token"):
+        raise ValueError("La API no devolvió access_token")
+
 def _test_remote_connection_sync(req: RemoteRequest):
     logger.info(f"Probando conexión remota sync a {req.host}:{req.puerto} ({req.protocolo})")
     start_time = time.time()
@@ -1800,6 +1829,10 @@ def _test_remote_connection_sync(req: RemoteRequest):
         elif req.protocolo == "FTP":
             ftp = get_ftp_client(req.host, req.puerto, req.usuario, req.password)
             ftp.quit()
+        elif req.protocolo == "API":
+            _test_api_authorization(req.host, req.usuario, req.password)
+        else:
+            raise ValueError(f"Protocolo no soportado: {req.protocolo}")
         duration = time.time() - start_time
         logger.info(f"Conexión exitosa en {duration:.2f}s")
         return {"status": "success", "message": f"Conexión exitosa ({duration:.2f}s)"}

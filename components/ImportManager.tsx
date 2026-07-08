@@ -251,7 +251,7 @@ export const ImportManager: React.FC = () => {
       return;
     }
     if (editingConfig.protocolo === 'LOCAL') {
-      alert("Las conexiones guardadas aplican solo para FTP/SFTP.");
+      alert("Las conexiones guardadas aplican para FTP/SFTP/API.");
       return;
     }
     if (!editingConfig.host || !editingConfig.usuario) {
@@ -269,7 +269,7 @@ export const ImportManager: React.FC = () => {
         nombre: name,
         protocolo: editingConfig.protocolo,
         host: editingConfig.host.trim(),
-        puerto: Number(editingConfig.puerto) || (editingConfig.protocolo === 'SFTP' ? 22 : 21),
+        puerto: Number(editingConfig.puerto) || (editingConfig.protocolo === 'SFTP' ? 22 : editingConfig.protocolo === 'API' ? 443 : 21),
         usuario: editingConfig.usuario.trim(),
         password: tempPassword || editingConfig.password || '',
         ruta_base: editingConfig.ruta_remota || '.'
@@ -1088,7 +1088,7 @@ export const ImportManager: React.FC = () => {
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div className="p-3 rounded-xl border border-indigo-100 bg-indigo-50/50 space-y-2">
                       <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest">
-                        Conexiones Guardadas (FTP/SFTP)
+                        Conexiones Guardadas
                       </label>
                       <div className="flex flex-col md:flex-row gap-2">
                         <select
@@ -1133,15 +1133,16 @@ export const ImportManager: React.FC = () => {
                         onChange={e => {
                           const nextProtocol = e.target.value as ImportProtocol;
                           if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
-                          setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : 21 });
+                          setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : nextProtocol === 'API' ? 443 : 21, tipo_archivo: nextProtocol === 'API' ? 'JSON' : editingConfig.tipo_archivo });
                         }}
                       >
                         <option value="SFTP">SFTP (SSH File Transfer)</option>
                         <option value="FTP">FTP (Estándar)</option>
+                        <option value="API">API REST</option>
                         <option value="LOCAL">Directorio Local (Windows/Linux)</option>
                       </select>
                     </div>
-                    {editingConfig.protocolo !== 'LOCAL' && (
+                    {editingConfig.protocolo !== 'LOCAL' && editingConfig.protocolo !== 'API' && (
                       <div className="w-28">
                         <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Puerto</label>
                         <input
@@ -1160,18 +1161,21 @@ export const ImportManager: React.FC = () => {
                   </div>
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Host del Servidor</label>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                        {editingConfig.protocolo === 'API' ? 'URL Base API' : 'Host del Servidor'}
+                      </label>
                       <div className="relative">
                         <Globe size={18} className="absolute left-3.5 top-3 text-slate-300" />
                         <input
                           type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                          placeholder="sftp.tu-tienda.com"
+                          placeholder={editingConfig.protocolo === 'API' ? 'https://alcagora.ddns.net' : 'sftp.tu-tienda.com'}
                           value={editingConfig.host}
                           onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
                         />
                       </div>
                     </div>
                   )}
+                  {editingConfig.protocolo !== 'API' && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Tipo de Archivo</label>
                     <div className="flex gap-2">
@@ -1190,6 +1194,7 @@ export const ImportManager: React.FC = () => {
                       ))}
                     </div>
                   </div>
+                  )}
 
                   <div className="pt-4 border-t border-slate-100">
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Frecuencia de Sincronización</label>
@@ -1239,7 +1244,7 @@ export const ImportManager: React.FC = () => {
                           <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder="Nombre de usuario"
+                          placeholder={editingConfig.protocolo === 'API' ? 'Client ID' : 'Nombre de usuario'}
                             value={editingConfig.usuario}
                             onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
                           />
@@ -1248,7 +1253,7 @@ export const ImportManager: React.FC = () => {
                           <Key size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="password" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder="Contraseña o Frase de paso SSH"
+                            placeholder={editingConfig.protocolo === 'API' ? 'Client Secret' : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}
                           />
@@ -1258,9 +1263,10 @@ export const ImportManager: React.FC = () => {
                   )}
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                      {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio' : 'Ruta Remota de Archivos'}
+                      {editingConfig.protocolo === 'API' ? 'ID TPV' : editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio' : 'Ruta Remota de Archivos'}
                     </label>
                     <div className="relative">
+                      {editingConfig.protocolo !== 'API' && (
                       <button
                         type="button"
                         onClick={() => handleOpenExplorer(editingConfig.ruta_remota)}
@@ -1269,15 +1275,17 @@ export const ImportManager: React.FC = () => {
                       >
                         <FolderOpen size={18} />
                       </button>
+                      )}
                       <input
-                        type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                        placeholder={editingConfig.protocolo === 'LOCAL' ? 'Ej: C:\\Ventas' : '/home/audit/ventas_diarias/'}
+                        type="text" className={`w-full ${editingConfig.protocolo === 'API' ? 'px-4' : 'pl-11 pr-4'} py-2.5 rounded-xl border border-slate-200 outline-none`}
+                        placeholder={editingConfig.protocolo === 'API' ? 'AFB' : editingConfig.protocolo === 'LOCAL' ? 'Ej: C:\\Ventas' : '/home/audit/ventas_diarias/'}
                         value={editingConfig.ruta_remota}
                         onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
                       />
                     </div>
                   </div>
 
+                  {editingConfig.protocolo !== 'API' && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Acción Post-Procesado</label>
                     <div className="space-y-2">
@@ -1315,6 +1323,7 @@ export const ImportManager: React.FC = () => {
                       ))}
                     </div>
                   </div>
+                  )}
 
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div className="flex flex-col gap-3">
@@ -1328,7 +1337,7 @@ export const ImportManager: React.FC = () => {
                         {testingConnection ? 'Verificando red...' : 'Probar Conexión'}
                       </button>
 
-                      {editingConfig.frecuencia === 'manual' && editingConfig.id && (
+                      {editingConfig.frecuencia === 'manual' && editingConfig.id && editingConfig.protocolo !== 'API' && (
                         <button
                           type="button"
                           onClick={() => handleSyncNow(editingConfig.id, editingConfig.nombre)}

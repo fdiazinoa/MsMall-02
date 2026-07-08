@@ -1484,6 +1484,22 @@ def _clean_api_number(value: Any) -> float:
     return _parse_mapped_decimal(value, ".")
 
 
+def _studio_g_value(row: Dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in row:
+            return row.get(key)
+
+    normalized = {
+        re.sub(r"[^a-z0-9]", "", str(k).lower()): v
+        for k, v in row.items()
+    }
+    for key in keys:
+        lookup = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if lookup in normalized:
+            return normalized.get(lookup)
+    return None
+
+
 def _studio_g_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
     constants = _webservice_constants(config)
     today_date = _now_local().date()
@@ -1541,12 +1557,13 @@ def _studio_g_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
 
 
 def _map_studio_g_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str) -> Optional[Dict[str, Any]]:
-    fecha = _parse_api_date(row.get("Fecha"))
+    raw_fecha = _studio_g_value(row, "Fecha", "FECHA")
+    fecha = _parse_api_date(raw_fecha)
     if not fecha:
         return None
 
-    transaction_id = row.get("IDTransaccion")
-    ncf = str(row.get("NCF") or "").strip()
+    transaction_id = _studio_g_value(row, "IDTransaccion", "ID_TRANSACCION")
+    ncf = str(_studio_g_value(row, "NCF") or "").strip()
     factura_no = ncf or (f"STUDIOG-{id_tpv}-{transaction_id}" if transaction_id not in (None, "") else "")
     if not factura_no:
         return None
@@ -1557,10 +1574,10 @@ def _map_studio_g_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str)
         "fecha": fecha,
         "factura_no": factura_no,
         "comprobante": ncf or None,
-        "hora_transaccion": _parse_api_time(row.get("Hora") or row.get("Fecha")),
-        "total_bruto": _clean_api_number(row.get("TotalBruto")),
-        "total_impuestos": _clean_api_number(row.get("TotalImpuestos")),
-        "total_neto": _clean_api_number(row.get("TotalNeto")),
+        "hora_transaccion": _parse_api_time(_studio_g_value(row, "Hora", "HORA") or raw_fecha),
+        "total_bruto": _clean_api_number(_studio_g_value(row, "TotalBruto", "TOTALBRUTO")),
+        "total_impuestos": _clean_api_number(_studio_g_value(row, "TotalImpuestos", "TOTALIMPUESTOS")),
+        "total_neto": _clean_api_number(_studio_g_value(row, "TotalNeto", "TOTALNETO")),
     }
     return {key: value for key, value in payload.items() if value not in (None, "")}
 

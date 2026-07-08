@@ -128,3 +128,28 @@ def test_studio_g_preview_uses_history_before_sample(monkeypatch):
     assert len(calls) == 2
     assert calls[0][0] == calls[0][1]
     assert calls[1][0] < calls[1][1]
+
+
+def test_runtime_import_overrides_sync_constants_config():
+    import main
+
+    base_config = {
+        "constants_config": {"_studio_g_date_mode": "current_month"},
+        "constants": {"_studio_g_date_mode": "current_month"},
+    }
+    runtime_config = main.ImportConfigSchema(
+        protocolo="API",
+        constants={
+            "_studio_g_date_mode": "custom",
+            "_studio_g_fecha_inicio": "2026-05-01",
+            "_studio_g_fecha_fin": "2026-05-31",
+        },
+    )
+
+    merged = main._normalize_import_config_payload(
+        main._apply_runtime_import_overrides(base_config, runtime_config)
+    )
+
+    assert merged["constants"]["_studio_g_date_mode"] == "custom"
+    assert merged["constants_config"]["_studio_g_date_mode"] == "custom"
+    assert merged["constants_config"]["_studio_g_fecha_inicio"] == "2026-05-01"

@@ -29,6 +29,33 @@ def test_map_studio_g_sale_to_ventas_payload():
     }
 
 
+def test_map_studio_g_sale_accepts_uppercase_api_fields():
+    config = {"id": "local-1", "mall_id": "mall-1"}
+    row = {
+        "ID_TRANSACCION": 456,
+        "NCF": "B0100000456",
+        "FECHA": "2026-07-08T00:00:00",
+        "HORA": "2026-07-08T15:20:30",
+        "TOTALBRUTO": "2500.50",
+        "TOTALIMPUESTOS": "450.09",
+        "TOTALNETO": "2950.59",
+    }
+
+    mapped = _map_studio_g_sale(config, row, "AFB")
+
+    assert mapped == {
+        "local_id": "local-1",
+        "mall_id": "mall-1",
+        "fecha": "2026-07-08",
+        "factura_no": "B0100000456",
+        "comprobante": "B0100000456",
+        "hora_transaccion": "15:20:30",
+        "total_bruto": 2500.5,
+        "total_impuestos": 450.09,
+        "total_neto": 2950.59,
+    }
+
+
 def test_studio_g_date_range_uses_constants_for_history():
     config = {
         "constants_config": {

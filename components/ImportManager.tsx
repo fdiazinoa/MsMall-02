@@ -1090,12 +1090,60 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     }
   };
 
+  const executeWebserviceNow = async (config: ImportConfig) => {
+    const protocolLabel = config.protocolo === 'API' ? 'API' : 'Webservice';
+    setShowManualModal(false);
+    setSyncingId(config.id);
+    setExecutingFile('WEBSERVICE_API');
+    setShowProgressModal(true);
+    setProgressStep('downloading');
+    setProgressMessage(`Conectando al ${protocolLabel} configurado...`);
+    setProgressRecords(0);
+
+    try {
+      setProgressStep('inserting');
+      setProgressMessage(`Consultando ${protocolLabel} e insertando ventas en la base de datos...`);
+
+      const result = await ApiService.executeManualImport(
+        config,
+        'WEBSERVICE_API',
+        authToken
+      );
+
+      const records = Number(result?.records_processed || 0);
+      setProgressRecords(records);
+
+      if (result.status === 'success' || result.status === 'partial') {
+        setProgressStep('complete');
+        setProgressMessage(result.message || `✅ ${protocolLabel} ejecutado: ${records} ventas procesadas`);
+        await loadConfigs();
+        setTimeout(() => {
+          setShowProgressModal(false);
+        }, 3000);
+      } else {
+        setProgressStep('error');
+        setProgressMessage(result.message || `❌ Error ejecutando ${protocolLabel}`);
+      }
+    } catch (error: any) {
+      setProgressStep('error');
+      setProgressMessage(`❌ Error ejecutando ${protocolLabel}: ${error.message || error}`);
+    } finally {
+      setExecutingFile(null);
+      setSyncingId(null);
+    }
+  };
+
   const handleSyncNow = async (id: string, name: string) => {
     resetManualExecutionState();
     setActiveConfigId(id);
     const config = configs.find(c => c.id === id);
     if (!config) {
       alert("Configuración no encontrada.");
+      return;
+    }
+
+    if (isWebserviceProtocol(config.protocolo)) {
+      await executeWebserviceNow(config);
       return;
     }
 

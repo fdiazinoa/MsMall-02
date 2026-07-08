@@ -232,6 +232,7 @@ _CACHE_MAX_ITEMS = _env_int("CACHE_MAX_ITEMS", 300, min_value=50, max_value=5000
 TTL_DASHBOARD = _env_int("CACHE_TTL_DASHBOARD", 90, min_value=5, max_value=1800)
 TTL_RANKING = _env_int("CACHE_TTL_RANKING", 60, min_value=5, max_value=1800)
 TTL_HEATMAP = _env_int("CACHE_TTL_HEATMAP", 120, min_value=5, max_value=1800)
+STUDIO_G_PREVIEW_HISTORY_DAYS = _env_int("STUDIO_G_PREVIEW_HISTORY_DAYS", 120, min_value=7, max_value=730)
 
 def _cache_get(key: str):
     now = time.time()
@@ -2541,7 +2542,12 @@ def _test_remote_connection_sync(req: RemoteRequest):
         logger.error(f"Error conexión remota después de {duration:.2f}s: {e}")
         return {"status": "error", "message": f"Error ({duration:.2f}s): {str(e)}"}
 
-def _studio_g_config_from_remote_request(req: RemoteRequest) -> Dict[str, Any]:
+def _studio_g_config_from_remote_request(
+    req: RemoteRequest,
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+) -> Dict[str, Any]:
+    today = date.today().isoformat()
     return {
         "id": "studio-g-preview",
         "mall_id": "00000000-0000-0000-0000-000000000000",
@@ -2553,15 +2559,26 @@ def _studio_g_config_from_remote_request(req: RemoteRequest) -> Dict[str, Any]:
         "sftp_path": req.ruta,
         "constants_config": {
             "provider": "studio_g",
-            "_studio_g_fecha_inicio": date.today().isoformat(),
-            "_studio_g_fecha_fin": date.today().isoformat(),
+            "_studio_g_fecha_inicio": fecha_inicio or today,
+            "_studio_g_fecha_fin": fecha_fin or today,
         },
     }
 
 def _studio_g_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
-    rows, _source_name = fetch_studio_g_sales(_studio_g_config_from_remote_request(req))
+    today = date.today()
+    rows, _source_name = fetch_studio_g_sales(
+        _studio_g_config_from_remote_request(req, today.isoformat(), today.isoformat())
+    )
     if rows:
         return rows
+
+    history_start = today - timedelta(days=STUDIO_G_PREVIEW_HISTORY_DAYS)
+    rows, _source_name = fetch_studio_g_sales(
+        _studio_g_config_from_remote_request(req, history_start.isoformat(), today.isoformat())
+    )
+    if rows:
+        return rows
+
     return [{
         "fecha": date.today().isoformat(),
         "factura_no": "STUDIOG-MUESTRA",

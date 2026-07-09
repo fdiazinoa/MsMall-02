@@ -8904,8 +8904,8 @@ async def get_sales_gaps(
             # Since I am "migrating", I should probably use the filter.
             # But `locales` table has `mall_id`.
             
-            stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
-            stores = stores_resp.data or []
+            stores_resp = supabase.table('locales').select('id, nombre, rubro, activo').eq('mall_id', current_mall).execute()
+            stores = [row for row in (stores_resp.data or []) if _is_store_active(row)]
             
             global_summary = []
             

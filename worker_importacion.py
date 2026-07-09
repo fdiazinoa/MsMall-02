@@ -1637,7 +1637,7 @@ def _insert_studio_g_sales(config: Dict[str, Any], rows: List[Dict[str, Any]]) -
     return len(filtered_rows), skipped
 
 
-def process_studio_g_api(config: Dict[str, Any]) -> Dict[str, Any]:
+def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
     config = _normalize_worker_import_config(config)
     local_name = config.get("nombre") or "Studio G"
     batch_id = str(uuid.uuid4())
@@ -1649,26 +1649,31 @@ def process_studio_g_api(config: Dict[str, Any]) -> Dict[str, Any]:
             message += f", {skipped} duplicadas omitidas"
         if not rows:
             message = "API Studio G: 0 ventas encontradas para el rango"
-        insert_load_log(
-            local_name,
-            source_name,
-            "exito",
-            message,
-            batch_id,
-            mall_id=config.get("mall_id"),
-            local_id=config.get("id"),
-            canal="API",
-            records_processed=inserted,
-            error_count=0,
-            metadata={"source": "worker_studio_g_api", "records_received": len(rows), "duplicate_skipped": skipped},
-        )
-        if inserted > 0:
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                source_name,
+                "exito",
+                message,
+                batch_id,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal="API",
+                records_processed=inserted,
+                error_count=0,
+                metadata={"source": "worker_studio_g_api", "records_received": len(rows), "duplicate_skipped": skipped},
+            )
+        if inserted > 0 and write_load_log:
             run_local_risk_analysis_if_possible(config, trigger="worker_studio_g_api")
         return {
             "ok": True,
             "status": "success",
             "message": message,
             "records_processed": inserted,
+            "source_name": source_name,
+            "canal": "API",
+            "records_received": len(rows),
+            "duplicate_skipped": skipped,
             "processed_files": 1 if rows else 0,
             "failed_files": 0,
             "total_pending": len(rows),
@@ -1677,27 +1682,28 @@ def process_studio_g_api(config: Dict[str, Any]) -> Dict[str, Any]:
         }
     except Exception as exc:
         message = f"Fallo API Studio G: {sanitize_error_text(exc)}"
-        insert_load_log(
-            local_name,
-            "Studio G API",
-            "error",
-            message,
-            batch_id,
-            mall_id=config.get("mall_id"),
-            local_id=config.get("id"),
-            canal="API",
-            records_processed=0,
-            error_count=1,
-            metadata={"source": "worker_studio_g_api", "exception": sanitize_error_text(exc)},
-        )
-        return {"ok": False, "status": "error", "message": message, "records_processed": 0, "details": [{"linea": 0, "error": message}]}
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                "Studio G API",
+                "error",
+                message,
+                batch_id,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal="API",
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_studio_g_api", "exception": sanitize_error_text(exc)},
+            )
+        return {"ok": False, "status": "error", "message": message, "records_processed": 0, "source_name": "Studio G API", "canal": "API", "details": [{"linea": 0, "error": message}]}
 
 
-def process_webservice_import(config: Dict[str, Any]) -> Dict[str, Any]:
+def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
     config = _normalize_worker_import_config(config)
     constants = _webservice_constants(config)
     if str(config.get("sftp_protocol") or config.get("protocolo") or "").strip().upper() == "API" and _is_studio_g_config(config, constants):
-        return process_studio_g_api(config)
+        return process_studio_g_api(config, write_load_log=write_load_log)
 
     protocol = "WEBSERVICE"
     local_name = config.get("nombre") or "Local"
@@ -1732,16 +1738,17 @@ def process_webservice_import(config: Dict[str, Any]) -> Dict[str, Any]:
 
     if not base_url:
         message = "Webservice sin URL configurada."
-        insert_load_log(
-            local_name, "WEBSERVICE", "error", message, batch_id,
-            mall_id=config.get("mall_id"),
-            local_id=config.get("id"),
-            canal=protocol,
-            records_processed=0,
-            error_count=1,
-            metadata={"source": "worker_webservice_import", "reason": "missing_url"},
-        )
-        return {"ok": False, "message": message, "details": [{"linea": 0, "error": message}]}
+        if write_load_log:
+            insert_load_log(
+                local_name, "WEBSERVICE", "error", message, batch_id,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal=protocol,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_webservice_import", "reason": "missing_url"},
+            )
+        return {"ok": False, "status": "error", "message": message, "records_processed": 0, "source_name": "WEBSERVICE", "canal": protocol, "details": [{"linea": 0, "error": message}]}
 
     all_records: List[Dict[str, Any]] = []
     fetched_pages = 0
@@ -1765,44 +1772,51 @@ def process_webservice_import(config: Dict[str, Any]) -> Dict[str, Any]:
 
     except urllib.error.HTTPError as exc:
         message = f"Fallo HTTP Webservice: {exc.code}"
-        insert_load_log(
-            local_name, "WEBSERVICE", "error", message, batch_id,
-            mall_id=config.get("mall_id"),
-            local_id=config.get("id"),
-            canal=protocol,
-            records_processed=0,
-            error_count=1,
-            metadata={"source": "worker_webservice_import", "status_code": exc.code, "url": last_url},
-        )
-        return {"ok": False, "message": message, "details": [{"linea": 0, "error": message}]}
+        if write_load_log:
+            insert_load_log(
+                local_name, "WEBSERVICE", "error", message, batch_id,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal=protocol,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_webservice_import", "status_code": exc.code, "url": last_url},
+            )
+        return {"ok": False, "status": "error", "message": message, "records_processed": 0, "source_name": "WEBSERVICE", "canal": protocol, "details": [{"linea": 0, "error": message}]}
     except Exception as exc:
         message = f"Fallo Webservice: {sanitize_error_text(exc)}"
-        insert_load_log(
-            local_name, "WEBSERVICE", "error", message, batch_id,
-            mall_id=config.get("mall_id"),
-            local_id=config.get("id"),
-            canal=protocol,
-            records_processed=0,
-            error_count=1,
-            metadata={"source": "worker_webservice_import", "exception": sanitize_error_text(exc), "url": last_url},
-        )
-        return {"ok": False, "message": message, "details": [{"linea": 0, "error": message}]}
+        if write_load_log:
+            insert_load_log(
+                local_name, "WEBSERVICE", "error", message, batch_id,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal=protocol,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_webservice_import", "exception": sanitize_error_text(exc), "url": last_url},
+            )
+        return {"ok": False, "status": "error", "message": message, "records_processed": 0, "source_name": "WEBSERVICE", "canal": protocol, "details": [{"linea": 0, "error": message}]}
 
     if not all_records:
         message = "Webservice ejecutado sin registros nuevos."
-        insert_load_log(
-            local_name, "WEBSERVICE", "exito", message, batch_id,
-            mall_id=config.get("mall_id"),
-            local_id=config.get("id"),
-            canal=protocol,
-            records_processed=0,
-            error_count=0,
-            metadata={"source": "worker_webservice_import", "pages": fetched_pages, "reason": "empty_response"},
-        )
+        if write_load_log:
+            insert_load_log(
+                local_name, "WEBSERVICE", "exito", message, batch_id,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal=protocol,
+                records_processed=0,
+                error_count=0,
+                metadata={"source": "worker_webservice_import", "pages": fetched_pages, "reason": "empty_response"},
+            )
         return {
             "ok": True,
+            "status": "success",
             "message": message,
             "records_processed": 0,
+            "source_name": "WEBSERVICE",
+            "canal": protocol,
+            "pages": fetched_pages,
             "processed_files": 0,
             "failed_files": 0,
             "total_pending": 0,
@@ -1830,17 +1844,18 @@ def process_webservice_import(config: Dict[str, Any]) -> Dict[str, Any]:
         **(stats or {}),
     }
 
-    insert_load_log(
-        local_name, source_name, estado if insert_confirmed else "error", mensaje, batch_id, errors,
-        mall_id=config.get("mall_id"),
-        local_id=config.get("id"),
-        canal=protocol,
-        records_processed=count,
-        error_count=len(errors or []),
-        metadata=metadata,
-    )
+    if write_load_log:
+        insert_load_log(
+            local_name, source_name, estado if insert_confirmed else "error", mensaje, batch_id, errors,
+            mall_id=config.get("mall_id"),
+            local_id=config.get("id"),
+            canal=protocol,
+            records_processed=count,
+            error_count=len(errors or []),
+            metadata=metadata,
+        )
 
-    if count > 0:
+    if count > 0 and write_load_log:
         run_local_risk_analysis_if_possible(config, trigger="worker_webservice_import")
 
     return {
@@ -1848,6 +1863,10 @@ def process_webservice_import(config: Dict[str, Any]) -> Dict[str, Any]:
         "status": "partial" if estado == "parcial" else ("success" if insert_confirmed else "error"),
         "message": mensaje,
         "records_processed": count,
+        "source_name": source_name,
+        "canal": protocol,
+        "pages": fetched_pages,
+        "records_received": len(all_records),
         "processed_files": 1 if insert_confirmed else 0,
         "failed_files": 0 if insert_confirmed else 1,
         "total_pending": len(all_records),

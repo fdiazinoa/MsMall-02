@@ -37,6 +37,13 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
         return map;
     }, [heatmap]);
 
+    const hourlyHeatmapColor = (value: number) => {
+        const intensity = Math.max(0, Math.min(100, value)) / 100;
+        const lightness = 97 - intensity * 52;
+        const saturation = 70 + intensity * 18;
+        return `hsl(0 ${saturation}% ${lightness}%)`;
+    };
+
     useEffect(() => {
         const fetchStores = async () => {
             if (!currentMall?.id) {
@@ -342,18 +349,18 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                     <div className="flex items-center justify-between mb-8">
                         <div>
                             <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                                <Clock className="text-indigo-500" size={20} />
+                                <Clock className="text-red-500" size={20} />
                                 Intensidad Horaria
                             </h3>
                             <p className="text-slate-400 text-xs">Vital para planificación de seguridad y limpieza.</p>
                         </div>
                         <div className="flex items-center gap-4">
                             <div className="flex items-center gap-1.5">
-                                <div className="w-3 h-3 rounded bg-indigo-50"></div>
+                                <div className="w-3 h-3 rounded bg-red-50 border border-red-100"></div>
                                 <span className="text-[10px] font-bold text-slate-400 uppercase">Bajo</span>
                             </div>
                             <div className="flex items-center gap-1.5">
-                                <div className="w-3 h-3 rounded bg-indigo-600"></div>
+                                <div className="w-3 h-3 rounded bg-red-700"></div>
                                 <span className="text-[10px] font-bold text-slate-400 uppercase">Pico</span>
                             </div>
                         </div>
@@ -379,8 +386,8 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                                                 key={i}
                                                 className="h-8 rounded-lg transition-all hover:scale-110 cursor-pointer"
                                                 style={{
-                                                    backgroundColor: `rgba(79, 70, 229, ${val / 100})`,
-                                                    border: '1px solid rgba(79, 70, 229, 0.1)'
+                                                    backgroundColor: hourlyHeatmapColor(val),
+                                                    border: '1px solid rgba(239, 68, 68, 0.16)'
                                                 }}
                                                 title={`${day} ${10 + i * 2}:00 - Intensidad: ${Math.round(val)}%`}
                                             ></div>

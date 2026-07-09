@@ -153,3 +153,40 @@ def test_runtime_import_overrides_sync_constants_config():
     assert merged["constants"]["_studio_g_date_mode"] == "custom"
     assert merged["constants_config"]["_studio_g_date_mode"] == "custom"
     assert merged["constants_config"]["_studio_g_fecha_inicio"] == "2026-05-01"
+
+
+def test_studio_g_api_can_defer_load_log_to_manual_endpoint(monkeypatch):
+    import worker_importacion
+
+    logs = []
+    monkeypatch.setattr(
+        worker_importacion,
+        "fetch_studio_g_sales",
+        lambda config: ([{"fecha": "2026-07-01"}], "Studio G AFB 2026-07-01..2026-07-01"),
+    )
+    monkeypatch.setattr(worker_importacion, "_insert_studio_g_sales", lambda config, rows: (1, 0))
+    monkeypatch.setattr(worker_importacion, "insert_load_log", lambda *args, **kwargs: logs.append((args, kwargs)))
+    monkeypatch.setattr(worker_importacion, "run_local_risk_analysis_if_possible", lambda *args, **kwargs: None)
+
+    result = worker_importacion.process_studio_g_api(
+        {"id": "local-1", "mall_id": "mall-1", "nombre": "STUDIO G"},
+        write_load_log=False,
+    )
+
+    assert logs == []
+    assert result["status"] == "success"
+    assert result["canal"] == "API"
+    assert result["source_name"] == "Studio G AFB 2026-07-01..2026-07-01"
+    assert result["records_processed"] == 1
+
+
+def test_manual_api_webservice_endpoint_owns_monitor_log_contract():
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    main_py = (repo / "main.py").read_text(encoding="utf-8")
+
+    assert "process_webservice_import, config_data, write_load_log=False" in main_py
+    assert '"source": "manual_api_webservice_import"' in main_py
+    assert "insert_load_log(" in main_py
+    assert "trigger=\"manual_api_webservice_import\"" in main_py

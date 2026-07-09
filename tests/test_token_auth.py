@@ -190,6 +190,17 @@ def test_exporter_sync_ingest_writes_structured_load_log():
     assert logs[0]["batch_id"] == "batch-web-001"
     assert logs[0]["records_processed"] == 1
     assert logs[0]["error_count"] == 0
+    assert logs[0]["metadata"]["source"] == "exporter_sync_ingest"
+    assert logs[0]["metadata"]["origin"] == "MsExportador"
+    assert logs[0]["metadata"]["channel_family"] == "ERP_WEBSERVICE"
+
+    events = fake_supabase.tables.get("operations_events") or []
+    assert len(events) == 1
+    assert events[0]["event_type"] == "WEBSERVICE_RECEIVED"
+    assert events[0]["source"] == "MONITOR"
+    assert events[0]["mall_id"] == "mall-1"
+    assert events[0]["local_id"] == "local-1"
+    assert events[0]["payload"]["canal"] == "WebService"
 
 
 def test_exporter_token_handles_store_lookup_failure_without_500():
@@ -472,7 +483,8 @@ def test_exporter_sync_ingest_updates_existing_venta_row():
 
 
 def test_exporter_sync_ingest_returns_promotion_error_detail():
-    client, svc, store = build_test_client()
+    fake_supabase = _FakeSupabase()
+    client, svc, store = build_test_client(fake_supabase)
     store.local_codes[("mall-1", "local-1")] = "CLI-001"
     access_token = _issue_exporter_access_for_local(client, svc, store, "mall-1", "local-1")
 
@@ -502,6 +514,19 @@ def test_exporter_sync_ingest_returns_promotion_error_detail():
     assert response.status_code == 500, response.text
     assert 'Error promoviendo ventas WebService a public.ventas' in response.json()["detail"]
     assert 'factura_no' in response.json()["detail"]
+
+    logs = fake_supabase.tables.get("logs_carga") or []
+    assert len(logs) == 1
+    assert logs[0]["estado"] == "error"
+    assert logs[0]["canal"] == "WebService"
+    assert logs[0]["batch_id"] == "batch-error-1"
+    assert logs[0]["metadata"]["origin"] == "MsExportador"
+
+    events = fake_supabase.tables.get("operations_events") or []
+    assert len(events) == 1
+    assert events[0]["event_type"] == "WEBSERVICE_FAILED"
+    assert events[0]["severity"] == "HIGH"
+    assert events[0]["payload"]["metadata"]["channel_family"] == "ERP_WEBSERVICE"
 
 
 def test_exporter_webservice_config_crud_endpoints():

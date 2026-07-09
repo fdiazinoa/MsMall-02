@@ -601,6 +601,7 @@ def send_missing_days_emails_for_mall(
 
     results: List[Dict[str, Any]] = []
     cc_emails = [str(email or "").strip().lower() for email in (settings.get("cc_emails") or []) if email]
+    cc_emails = [email for email in dict.fromkeys(cc_emails) if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email)]
     send_only_with_gaps = settings.get("send_only_with_gaps") is not False
     sender = load_resend_sender_config(supabase_client)
     subject_template = settings.get("subject_template") or DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE
@@ -611,7 +612,32 @@ def send_missing_days_emails_for_mall(
         local_name = store.get("nombre") or local_id
         local_email = str(store.get("email") or "").strip().lower()
 
-        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", local_email):
+        recipient_email = local_email
+        recipient_source = "local"
+        recipient_cc_emails = cc_emails
+
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", recipient_email):
+            if cc_emails:
+                recipient_email = cc_emails[0]
+                recipient_source = "admin_fallback"
+                recipient_cc_emails = cc_emails[1:]
+            else:
+                results.append({
+                    "local_id": local_id,
+                    "local_nombre": local_name,
+                    "email": local_email or None,
+                    "status": "skipped",
+                    "missing_days": 0,
+                    "reason": "Local sin email valido de notificaciones.",
+                })
+                continue
+        else:
+            recipient_cc_emails = [email for email in cc_emails if email != recipient_email]
+
+        if recipient_source == "admin_fallback":
+            local_email = recipient_email
+
+        if not recipient_email:
             results.append({
                 "local_id": local_id,
                 "local_nombre": local_name,
@@ -677,18 +703,19 @@ def send_missing_days_emails_for_mall(
 
         try:
             resend_result = send_email(
-                local_email,
+                recipient_email,
                 subject,
                 text_body,
                 html_body,
-                cc_emails,
+                recipient_cc_emails,
                 from_email=sender["from_email"],
                 from_name=sender["from_name"],
             )
             results.append({
                 "local_id": local_id,
                 "local_nombre": local_name,
-                "email": local_email,
+                "email": recipient_email,
+                "recipient_source": recipient_source,
                 "status": "sent",
                 "missing_days": missing_count,
                 "resend_id": resend_result.get("id"),

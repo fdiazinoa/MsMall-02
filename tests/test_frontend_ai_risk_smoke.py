@@ -14,3 +14,5 @@ def test_frontend_ai_risk_uses_snapshot_contract():
     assert "alertsStatus === 'error' || alertsStatus === 'no_data'" in smart_insights
     assert "alert.display_type || String(alert.rule_code || alert.tipo_alerta || '').replace(/_/g, ' ')" in smart_insights
     assert "No hay una evaluación reciente del semáforo para este local." in smart_insights
+    assert "const hourlyHeatmapColor = (value: number)" in smart_insights
+    assert "hsl(0 ${saturation}% ${lightness}%)" in smart_insights

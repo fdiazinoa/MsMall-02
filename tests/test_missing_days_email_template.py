@@ -199,3 +199,97 @@ def test_missing_days_scheduler_sends_when_slot_is_due(monkeypatch):
     assert sent[0]["to"] == "local@example.com"
     assert "Local Demo" in sent[0]["subject"]
     assert any(payload["key"] == "MDE_SLOT:mall-1" for _table, payload in db.upserts)
+
+
+def test_missing_days_scheduler_uses_admin_email_when_local_has_no_email(monkeypatch):
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    monkeypatch.setenv("MISSING_DAYS_EMAIL_TIMEZONE", "America/Santo_Domingo")
+    sent = []
+
+    class FakeQuery:
+        def __init__(self, db, table_name):
+            self.db = db
+            self.table_name = table_name
+            self.filters = {}
+            self.upsert_payload = None
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, key, value):
+            self.filters[key] = value
+            return self
+
+        def gte(self, *_args, **_kwargs):
+            return self
+
+        def lte(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def range(self, *_args, **_kwargs):
+            return self
+
+        def maybe_single(self):
+            return self
+
+        def upsert(self, payload, **_kwargs):
+            self.upsert_payload = payload
+            return self
+
+        def execute(self):
+            if self.upsert_payload is not None:
+                self.db.upserts.append((self.table_name, self.upsert_payload))
+                return type("Response", (), {"data": [self.upsert_payload]})()
+            if self.table_name == "email_notification_settings":
+                return type("Response", (), {"data": self.db.settings})()
+            if self.table_name == "system_health":
+                return None
+            if self.table_name == "malls":
+                return type("Response", (), {"data": {"nombre": "Mall Demo"}})()
+            if self.table_name == "locales":
+                return type("Response", (), {"data": [{"id": "local-1", "nombre": "Local Sin Email", "email": ""}]})()
+            return type("Response", (), {"data": []})()
+
+    class FakeSupabase:
+        def __init__(self):
+            self.settings = [{
+                "mall_id": "mall-1",
+                "notification_type": "missing_days_audit",
+                "enabled": True,
+                "weekdays": [0],
+                "send_time": "10:00",
+                "lookback_days": 1,
+                "send_only_with_gaps": True,
+                "cc_emails": ["admin@example.com", "audit@example.com"],
+            }]
+            self.upserts = []
+
+        def table(self, table_name):
+            return FakeQuery(self, table_name)
+
+    def fake_send_email(to_email, subject, text_body, html_body, cc_emails, **kwargs):
+        sent.append({
+            "to": to_email,
+            "subject": subject,
+            "text": text_body,
+            "html": html_body,
+            "cc": cc_emails,
+            "kwargs": kwargs,
+        })
+        return {"id": "resend-1"}
+
+    db = FakeSupabase()
+    result = run_missing_days_email_scheduler(
+        db,
+        now=datetime(2026, 5, 11, 14, 1, tzinfo=timezone.utc),
+        send_email=fake_send_email,
+    )
+
+    assert result["runs"][0]["sent"] == 1
+    assert result["runs"][0]["results"][0]["recipient_source"] == "admin_fallback"
+    assert sent[0]["to"] == "admin@example.com"
+    assert sent[0]["cc"] == ["audit@example.com"]
+    assert "Local Sin Email" in sent[0]["subject"]

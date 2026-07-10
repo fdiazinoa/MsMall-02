@@ -92,6 +92,7 @@ MAX_FILES_PER_BATCH = _read_int_env("MAX_FILES_PER_BATCH", 20, minimum=1)
 OPERATIONS_AGENT_MAX_EVENTS = _read_int_env("OPERATIONS_AGENT_MAX_EVENTS", 50, minimum=1, maximum=200)
 WEBSERVICE_TIMEOUT_SECONDS = _read_int_env("WEBSERVICE_TIMEOUT_SECONDS", 45, minimum=5, maximum=180)
 WEBSERVICE_MAX_PAGES = _read_int_env("WEBSERVICE_MAX_PAGES", 50, minimum=1, maximum=500)
+DEFAULT_SPECIFIC_SCHEDULE_TIME = dt_time(hour=8, minute=0)
 
 
 def _read_bool_env(name: str, default: bool = True) -> bool:
@@ -188,9 +189,7 @@ def _schedule_due_at(local: Dict[str, Any], now: datetime) -> Optional[datetime]
         slot_start = now.replace(hour=slot_hour, minute=0, second=0, microsecond=0)
         due_at = slot_start + timedelta(minutes=_stable_offset_minutes(local))
     elif frecuencia == "hora_especifica":
-        scheduled_time = _parse_hora_especifica(local.get("hora_especifica"))
-        if not scheduled_time:
-            return None
+        scheduled_time = _parse_hora_especifica(local.get("hora_especifica")) or DEFAULT_SPECIFIC_SCHEDULE_TIME
         due_at = now.replace(
             hour=scheduled_time.hour,
             minute=scheduled_time.minute,

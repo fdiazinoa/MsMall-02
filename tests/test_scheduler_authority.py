@@ -146,6 +146,14 @@ def test_schedule_due_at_respects_specific_minute_and_last_attempt(monkeypatch):
     assert worker._schedule_due_at(local, now) is None
 
 
+def test_schedule_due_at_defaults_missing_specific_time(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    now = datetime(2026, 3, 7, 8, 35, tzinfo=timezone.utc)
+    local = {"frecuencia_cron": "hora_especifica", "hora_especifica": None}
+
+    assert worker._schedule_due_at(local, now) == datetime(2026, 3, 7, 8, 0, tzinfo=timezone.utc)
+
+
 def test_worker_specific_schedule_uses_dominican_timezone_for_utc_server(monkeypatch):
     worker = _load_worker(monkeypatch, WORKER_TIMEZONE="America/Santo_Domingo")
     local = {
@@ -435,3 +443,32 @@ def test_worker_failed_file_result_does_not_create_duplicate_system_log(monkeypa
     assert load_logs == []
     assert updates == [{"consecutive_failures": 1}]
     assert status_calls[-1] == ("local-1", "IDLE", True)
+
+
+def test_studio_g_api_failure_creates_load_log(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    load_logs = []
+
+    def _fake_fetch_studio_g_sales(_config):
+        raise OSError(113, "No route to host")
+
+    monkeypatch.setattr(worker, "fetch_studio_g_sales", _fake_fetch_studio_g_sales)
+    monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: load_logs.append((args, kwargs)))
+
+    result = worker.process_studio_g_api({
+        "id": "studio-g-local",
+        "nombre": "Studio G",
+        "mall_id": "mall-agora",
+        "sftp_protocol": "API",
+    })
+
+    assert result["ok"] is False
+    assert "Fallo API Studio G" in result["message"]
+    assert len(load_logs) == 1
+    args, kwargs = load_logs[0]
+    assert args[:4] == ("Studio G", "Studio G API", "error", result["message"])
+    assert kwargs["canal"] == "API"
+    assert kwargs["records_processed"] == 0
+    assert kwargs["error_count"] == 1
+    assert kwargs["metadata"]["source"] == "worker_studio_g_api"
+    assert "No route to host" in kwargs["metadata"]["exception"]

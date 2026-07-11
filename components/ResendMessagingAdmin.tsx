@@ -453,7 +453,7 @@ export const ResendMessagingAdmin: React.FC = () => {
             <div>
               <h3 className="font-bold text-slate-800">Programación de días faltantes</h3>
               <p className="text-xs text-slate-500">
-                Se enviará una auditoría HTML por local usando el email configurado en la ficha del local.
+                Se enviará una auditoría HTML por local usando el email del local o las copias administrativas como respaldo.
               </p>
             </div>
           </div>
@@ -533,7 +533,7 @@ export const ResendMessagingAdmin: React.FC = () => {
           </label>
 
           <div className="space-y-1.5">
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Copias administrativas</label>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Correos administrativos</label>
             <textarea
               value={ccEmails}
               onChange={(e) => setCcEmails(e.target.value)}

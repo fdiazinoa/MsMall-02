@@ -4254,16 +4254,54 @@ async def _execute_manual_endpoint_impl(
         source_filename = req.filename
 
         if _is_webservice_protocol(protocolo):
-            result = await asyncio.to_thread(process_webservice_import, config_data)
+            result = await asyncio.to_thread(process_webservice_import, config_data, write_load_log=False)
             records_processed = int(result.get("records_processed") or 0)
             status_value = str(result.get("status") or ("success" if result.get("ok") else "error"))
+            details = result.get("details") or []
+            error_count = len(details or [])
+            log_status = (
+                "parcial" if records_processed > 0 and error_count > 0
+                else "exito" if status_value in {"success", "ok"} or result.get("ok")
+                else "error"
+            )
+            log_channel = str(result.get("canal") or protocolo or "").strip().upper()
+            if log_channel not in {"API", "WEBSERVICE"}:
+                log_channel = "API" if str(protocolo or "").strip().upper() == "API" else "WEBSERVICE"
+            log_source_name = result.get("source_name") or ("Studio G API" if log_channel == "API" else "WEBSERVICE")
+            insert_load_log(
+                local_nombre,
+                log_source_name,
+                log_status,
+                result.get("message") or f"{log_channel} ejecutado.",
+                batch_id,
+                details,
+                mall_id=config_data.get("mall_id"),
+                local_id=config_data.get("id"),
+                canal=log_channel,
+                records_processed=records_processed,
+                error_count=error_count,
+                metadata={
+                    "source": "manual_api_webservice_import",
+                    "worker_source": "worker_studio_g_api" if log_channel == "API" else "worker_webservice_import",
+                    "records_received": result.get("records_received"),
+                    "duplicate_skipped": result.get("duplicate_skipped"),
+                    "pages": result.get("pages"),
+                },
+            )
+            risk_snapshot = None
+            if records_processed > 0:
+                risk_snapshot = await _run_local_risk_analysis_async(
+                    config_data.get("id"),
+                    trigger="manual_api_webservice_import",
+                )
             return _cache_and_return({
                 "status": status_value,
                 "message": result.get("message") or "Webservice ejecutado.",
                 "records_processed": records_processed,
                 "batch_id": batch_id,
-                "errors": result.get("details") or [],
+                "errors": details,
                 "renaming_error": None,
+                "risk_summary": (risk_snapshot or {}).get("summary"),
             })
 
         def _build_prefixed_name(filename: str, prefix: str) -> str:
@@ -8904,8 +8942,8 @@ async def get_sales_gaps(
             # Since I am "migrating", I should probably use the filter.
             # But `locales` table has `mall_id`.
             
-            stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
-            stores = stores_resp.data or []
+            stores_resp = supabase.table('locales').select('id, nombre, rubro, activo').eq('mall_id', current_mall).execute()
+            stores = [row for row in (stores_resp.data or []) if _is_store_active(row)]
             
             global_summary = []
             

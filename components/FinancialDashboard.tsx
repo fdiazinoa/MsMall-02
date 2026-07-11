@@ -321,13 +321,13 @@ export const FinancialDashboard: React.FC = () => {
     };
 
     return (
-        <div className="min-w-0 space-y-4 sm:space-y-4 animate-in fade-in duration-500">
-            <div className="min-w-0 bg-white p-4 sm:p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <div className="min-w-0 space-y-3 lg:h-[calc(100dvh-9rem)] xl:h-[calc(100dvh-8rem)] lg:min-h-[520px] xl:min-h-[580px] lg:overflow-y-auto lg:pr-1 animate-in fade-in duration-500">
+            <div className="min-w-0 bg-white px-4 py-3 rounded-2xl border border-slate-100 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
                 <div>
                     <h2 className="text-xl font-bold text-slate-800">Salud Financiera</h2>
-                    <p className="text-slate-500 text-sm">Análisis de OCR y proyecciones con mayor claridad operativa.</p>
+                    <p className="text-slate-500 text-sm">Análisis de OCR y proyecciones.</p>
                 </div>
-                <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
                     <div className="grid grid-cols-[auto_1fr] sm:flex sm:items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 w-full md:w-auto">
                         <Calendar size={16} className="text-slate-400" />
                         <input
@@ -364,43 +364,43 @@ export const FinancialDashboard: React.FC = () => {
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="min-w-0 bg-white p-5 sm:p-4 rounded-2xl border border-slate-100 shadow-sm relative group">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="min-w-0 bg-white px-3 py-2.5 rounded-xl border border-slate-100 shadow-sm relative group">
                     <div className="absolute top-4 right-6 text-slate-300 hover:text-indigo-500 transition-colors cursor-help">
                         <Info size={16} />
                         <div className="absolute right-0 w-64 p-3 mt-2 text-xs text-white bg-slate-800 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg top-full">
                             Fórmula: Σ(Ventas Locales) / Σ(Metros Cuadrados). Indica la eficiencia promedio de generación de ingresos por espacio físico.
                         </div>
                     </div>
-                    <div className="p-2 bg-indigo-50 text-indigo-600 w-fit rounded-xl mb-4"><DollarSign size={20} /></div>
-                    <p className="text-slate-500 text-sm font-medium">Venta Prom m² Mall</p>
-                    <h3 className="break-words text-xl font-bold text-slate-900 mt-1">{format(avgSalesM2)}</h3>
+                    <div className="p-1.5 bg-indigo-50 text-indigo-600 w-fit rounded-lg mb-2"><DollarSign size={16} /></div>
+                    <p className="text-slate-500 text-xs font-medium">Venta Prom m² Mall</p>
+                    <h3 className="break-words text-base font-bold text-slate-900 mt-0.5">{format(avgSalesM2)}</h3>
                 </div>
 
-                <div className="min-w-0 bg-white p-5 sm:p-4 rounded-2xl border border-slate-100 shadow-sm relative group">
+                <div className="min-w-0 bg-white px-3 py-2.5 rounded-xl border border-slate-100 shadow-sm relative group">
                     <div className="absolute top-4 right-6 text-slate-300 hover:text-red-500 transition-colors cursor-help">
                         <Info size={16} />
                         <div className="absolute right-0 w-64 p-3 mt-2 text-xs text-white bg-slate-800 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg top-full">
                             Fórmula OCR: (Renta Fija / Ventas) * 100. Un OCR mayor a 20% indica alto esfuerzo financiero.
                         </div>
                     </div>
-                    <div className="p-2 bg-red-50 text-red-600 w-fit rounded-xl mb-4"><AlertCircle size={20} /></div>
-                    <p className="text-slate-500 text-sm font-medium">Locales en Riesgo (OCR {'>'} 20%)</p>
-                    <h3 className="break-words text-xl font-bold text-slate-900 mt-1">{storesAtRisk} Locales</h3>
+                    <div className="p-1.5 bg-red-50 text-red-600 w-fit rounded-lg mb-2"><AlertCircle size={16} /></div>
+                    <p className="text-slate-500 text-xs font-medium">Locales en Riesgo (OCR {'>'} 20%)</p>
+                    <h3 className="break-words text-base font-bold text-slate-900 mt-0.5">{storesAtRisk} Locales</h3>
                 </div>
 
-                <div className="min-w-0 bg-white p-5 sm:p-4 rounded-2xl border border-slate-100 shadow-sm">
-                    <div className="p-2 bg-emerald-50 text-emerald-600 w-fit rounded-xl mb-4"><TrendingUp size={20} /></div>
-                    <p className="text-slate-500 text-sm font-medium">Venta Proyectada Mall</p>
-                    <h3 className="break-words text-xl font-bold text-slate-900 mt-1">{format(totalProjectedSales)}</h3>
-                    <p className="text-xs text-slate-400 mt-2">{projectionBasis}</p>
+                <div className="min-w-0 bg-white px-3 py-2.5 rounded-xl border border-slate-100 shadow-sm">
+                    <div className="p-1.5 bg-emerald-50 text-emerald-600 w-fit rounded-lg mb-2"><TrendingUp size={16} /></div>
+                    <p className="text-slate-500 text-xs font-medium">Venta Proyectada Mall</p>
+                    <h3 className="break-words text-base font-bold text-slate-900 mt-0.5">{format(totalProjectedSales)}</h3>
+                    <p className="text-[11px] text-slate-400 mt-1">{projectionBasis}</p>
                 </div>
 
-                <div className="min-w-0 bg-white p-5 sm:p-4 rounded-2xl border border-slate-100 shadow-sm">
-                    <div className="p-2 bg-amber-50 text-amber-600 w-fit rounded-xl mb-4"><Target size={20} /></div>
-                    <p className="text-slate-500 text-sm font-medium">Locales sobre Breakpoint</p>
-                    <h3 className="break-words text-xl font-bold text-slate-900 mt-1">{storesAboveBreakpoint}</h3>
-                    <p className="text-xs text-slate-400 mt-2">Con opción real de activar renta variable</p>
+                <div className="min-w-0 bg-white px-3 py-2.5 rounded-xl border border-slate-100 shadow-sm">
+                    <div className="p-1.5 bg-amber-50 text-amber-600 w-fit rounded-lg mb-2"><Target size={16} /></div>
+                    <p className="text-slate-500 text-xs font-medium">Locales sobre Breakpoint</p>
+                    <h3 className="break-words text-base font-bold text-slate-900 mt-0.5">{storesAboveBreakpoint}</h3>
+                    <p className="text-[11px] text-slate-400 mt-1">Con opción real de activar renta variable</p>
                 </div>
             </div>
 
@@ -423,35 +423,35 @@ export const FinancialDashboard: React.FC = () => {
 
             {activeFinancialPanel === 'ocr' && (
                 <div className="min-w-0 bg-white p-4 sm:p-4 rounded-2xl border border-slate-100 shadow-sm">
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
                         <div>
                             <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                                 <PieChart className="text-indigo-500" size={20} />
                                 Salud de Cartera por OCR
                             </h3>
-                            <p className="text-sm text-slate-500 mt-1">
+                            <p className="text-xs text-slate-500 mt-1">
                                 Se priorizan los locales con mayor presión financiera. Mostrar todo en un scatter deja de ser legible cuando el mall crece.
                             </p>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
                             <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">Foco</p>
                             <p className="text-sm font-semibold text-slate-700">Top {topPortfolioRows.length} de {rankedPortfolio.length} locales con ventas</p>
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
                         {healthBuckets.map((bucket) => (
-                            <div key={bucket.label} className={`rounded-2xl border px-4 py-4 ${bucket.tone}`}>
+                            <div key={bucket.label} className={`rounded-xl border px-3 py-2.5 ${bucket.tone}`}>
                                 <p className="text-[11px] font-bold uppercase tracking-[0.18em]">{bucket.label}</p>
-                                <p className="text-xl font-bold mt-2">{bucket.count}</p>
-                                <p className="text-xs mt-2 opacity-80">{bucket.helper}</p>
+                                <p className="text-lg font-bold mt-1">{bucket.count}</p>
+                                <p className="text-xs mt-1 opacity-80">{bucket.helper}</p>
                             </div>
                         ))}
                     </div>
 
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:p-4">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
                         {topPortfolioRows.length > 0 ? (
-                            <div className="h-[360px] min-w-0 sm:h-[420px]">
+                            <div className="h-[260px] min-w-0 xl:h-[300px]">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart
                                         data={[...topPortfolioRows].reverse()}
@@ -509,13 +509,13 @@ export const FinancialDashboard: React.FC = () => {
             {activeFinancialPanel === 'watchlist' && (
                 <div className="min-w-0 bg-white p-4 sm:p-4 rounded-2xl border border-slate-100 shadow-sm">
                     <h3 className="text-lg font-bold text-slate-800 mb-2">Watchlist de cartera</h3>
-                    <p className="text-sm text-slate-500 mb-6">Lista corta para seguimiento semanal. Se ordena por OCR y peso comercial.</p>
+                    <p className="text-sm text-slate-500 mb-4">Lista corta para seguimiento semanal. Se ordena por OCR y peso comercial.</p>
 
-                    <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
+                    <div className="space-y-2.5 max-h-[360px] overflow-y-auto pr-1">
                         {topPortfolioRows.map((row) => {
                             const widthPct = `${Math.min((row.ocr / Math.max(maxOcr, 1)) * 100, 100)}%`;
                             return (
-                                <div key={row.id} className={`rounded-2xl border px-4 py-4 ${row.riskMeta.panel}`}>
+                                <div key={row.id} className={`rounded-xl border px-3 py-2.5 ${row.riskMeta.panel}`}>
                                     <div className="flex items-start justify-between gap-3">
                                         <div className="min-w-0">
                                             <p className="font-semibold text-slate-800 truncate">{row.name}</p>
@@ -525,7 +525,7 @@ export const FinancialDashboard: React.FC = () => {
                                             {row.riskMeta.label}
                                         </span>
                                     </div>
-                                    <div className="mt-4 h-2.5 rounded-full bg-white/80 overflow-hidden">
+                                    <div className="mt-3 h-2 rounded-full bg-white/80 overflow-hidden">
                                         <div className="h-full rounded-full" style={{ width: widthPct, backgroundColor: row.riskMeta.color }} />
                                     </div>
                                     <div className="mt-3 flex items-center justify-between text-xs">
@@ -555,31 +555,31 @@ export const FinancialDashboard: React.FC = () => {
                             La proyección ya no replica la venta actual: estima cierre al ritmo del periodo y muestra qué tan lejos está cada local de activar variable.
                         </p>
                     </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
                         <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">Base de cálculo</p>
                         <p className="text-sm font-semibold text-slate-700">{projectionBasis}</p>
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                    <div className="rounded-2xl border border-indigo-200 bg-indigo-50/70 px-4 py-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                    <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 px-3 py-2.5">
                         <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-indigo-500">Cierre estimado mall</p>
-                        <p className="break-words text-xl font-bold text-slate-900 mt-2">{format(totalProjectedSales)}</p>
-                        <p className="text-xs text-slate-500 mt-2">Con el ritmo actual del periodo seleccionado.</p>
+                        <p className="break-words text-base font-bold text-slate-900 mt-1">{format(totalProjectedSales)}</p>
+                        <p className="text-xs text-slate-500 mt-1">Con el ritmo actual del periodo seleccionado.</p>
                     </div>
-                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-4">
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2.5">
                         <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-500">Renta variable estimada</p>
-                        <p className="break-words text-xl font-bold text-slate-900 mt-2">{format(totalProjectedVariable)}</p>
-                        <p className="text-xs text-slate-500 mt-2">Suma estimada si el mall mantiene el mismo run-rate.</p>
+                        <p className="break-words text-base font-bold text-slate-900 mt-1">{format(totalProjectedVariable)}</p>
+                        <p className="text-xs text-slate-500 mt-1">Suma estimada si el mall mantiene el mismo run-rate.</p>
                     </div>
-                    <div className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-4">
+                    <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2.5">
                         <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-500">Locales sobre breakpoint</p>
-                        <p className="break-words text-xl font-bold text-slate-900 mt-2">{storesAboveBreakpoint}</p>
-                        <p className="text-xs text-slate-500 mt-2">Locales que ya cruzan el umbral contractual proyectado.</p>
+                        <p className="break-words text-base font-bold text-slate-900 mt-1">{storesAboveBreakpoint}</p>
+                        <p className="text-xs text-slate-500 mt-1">Locales que ya cruzan el umbral contractual proyectado.</p>
                     </div>
                 </div>
 
-                <div className="-mx-4 overflow-x-auto max-h-[520px] overflow-y-auto px-4 sm:mx-0 sm:px-0">
+                <div className="-mx-4 overflow-x-auto max-h-[360px] overflow-y-auto px-4 sm:mx-0 sm:px-0">
                     <table className="w-full min-w-[760px] text-left">
                         <thead className="sticky top-0 bg-white z-10">
                             <tr className="text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">

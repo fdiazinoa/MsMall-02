@@ -1880,7 +1880,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           <h2 className="text-xl font-bold text-slate-800">Importación Automatizada</h2>
           <p className="text-slate-500 text-sm">Configure conexiones directas vía FTP/SFTP para auditoría automática.</p>
         </div>
-        <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full md:w-auto">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full md:w-auto">
           <div className="relative w-full sm:w-72">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
@@ -1888,7 +1888,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               value={connectionSearchTerm}
               onChange={(e) => setConnectionSearchTerm(e.target.value)}
               placeholder="Buscar conexión..."
-              className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm font-medium text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+              className="h-10 w-full rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-xs font-medium text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
             />
           </div>
           <div className="inline-flex items-center bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
@@ -1916,7 +1916,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
           <button
             onClick={openNewConnectionDrawer}
-            className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 active:scale-95 font-medium whitespace-nowrap"
+            className="h-10 bg-indigo-600 text-white px-4 rounded-xl flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 active:scale-95 text-xs font-bold whitespace-nowrap"
           >
             <Plus size={18} />
             Nueva Conexión
@@ -3079,7 +3079,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   <button
                     onClick={() => handleSyncNow(config.id, config.nombre)}
                     disabled={syncingId === config.id}
-                    className="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-xs font-bold hover:bg-indigo-600 transition-all flex items-center gap-2 shadow-lg shadow-slate-200 active:scale-95 disabled:opacity-50"
+                    className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-lg shadow-indigo-100 active:scale-95 disabled:opacity-50"
                   >
                     {syncingId === config.id ? <RefreshCw className="animate-spin" size={14} /> : <Play size={14} fill="white" />}
                     Ejecutar Ahora
@@ -3090,19 +3090,19 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           ))}
         </div>
       ) : (
-        <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1100px] text-left">
-              <thead>
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="max-h-[calc(100dvh-18rem)] min-h-[280px] overflow-auto">
+            <table className="w-full min-w-[980px] text-left">
+              <thead className="sticky top-0 z-10 bg-slate-50">
                 <tr className="bg-slate-50 border-b border-slate-100">
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Conexión</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Protocolo</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Acceso</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ruta Remota</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Última Ejecución</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Mapeo</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estado</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Acciones</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Conexión</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Protocolo</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Acceso</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ruta Remota</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Última Ejecución</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Mapeo</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estado</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
@@ -3112,23 +3112,23 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
                   return (
                     <tr key={config.id} className="hover:bg-indigo-50/30 transition-colors">
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className={`p-2.5 rounded-xl ${config.protocolo === 'SFTP' ? 'bg-indigo-50 text-indigo-600' : config.protocolo === 'LOCAL' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <div className={`p-2 rounded-lg ${config.protocolo === 'SFTP' ? 'bg-indigo-50 text-indigo-600' : config.protocolo === 'LOCAL' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
                             {config.protocolo === 'LOCAL' ? <FolderOpen size={16} /> : <Server size={16} />}
                           </div>
                           <div>
-                            <p className="text-sm font-bold text-slate-800">{config.nombre}</p>
+                            <p className="max-w-[190px] truncate text-sm font-bold text-slate-800">{config.nombre}</p>
                             <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">{config.tipo_archivo}</p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-5 py-4">
+                      <td className="px-3 py-2.5">
                         <span className={`inline-flex px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide ${config.protocolo === 'SFTP' ? 'bg-indigo-100 text-indigo-700' : config.protocolo === 'LOCAL' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
                           {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
                         </span>
                       </td>
-                      <td className="px-5 py-4 text-xs text-slate-600 font-medium">
+                      <td className="px-3 py-2.5 text-xs text-slate-600 font-medium">
                         {config.protocolo === 'LOCAL' ? (
                           <span className="text-slate-400">N/A</span>
                         ) : (
@@ -3138,19 +3138,19 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           </div>
                         )}
                       </td>
-                      <td className="px-5 py-4 text-xs text-slate-600 max-w-[260px]">
+                      <td className="px-3 py-2.5 text-xs text-slate-600 max-w-[210px]">
                         <span className="truncate block font-medium">{config.ruta_remota}</span>
                       </td>
-                      <td className="px-5 py-4 text-xs text-slate-600">
+                      <td className="px-3 py-2.5 text-xs text-slate-600">
                         {config.ultima_ejecucion ? new Date(config.ultima_ejecucion).toLocaleString() : 'Pendiente'}
                       </td>
-                      <td className="px-5 py-4 text-xs text-slate-600">
+                      <td className="px-3 py-2.5 text-xs text-slate-600">
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 font-bold">
                           <Database size={12} />
                           {activeMappings} campos
                         </span>
                       </td>
-                      <td className="px-5 py-4">
+                      <td className="px-3 py-2.5">
                         <div className="flex items-center gap-2">
                           <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-slate-300'}`}></span>
                           <span className={`text-[11px] font-bold uppercase ${isActive ? 'text-green-700' : 'text-slate-500'}`}>
@@ -3163,25 +3163,25 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           </div>
                         )}
                       </td>
-                      <td className="px-5 py-4 text-center">
-                        <div className="inline-flex items-center gap-2">
+                      <td className="px-3 py-2.5 text-center">
+                        <div className="inline-flex items-center gap-1.5">
                           <button
                             onClick={() => openQuickAudit(config)}
-                            className="p-2 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition-all"
+                            className="p-1.5 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition-all"
                             title="Auditoria rapida"
                           >
                             <FileSearch size={16} />
                           </button>
                           <button
                             onClick={() => openEditConnectionDrawer(config)}
-                            className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                            className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
                             title="Editar"
                           >
                             <Settings2 size={16} />
                           </button>
                           <button
                             onClick={() => handleDelete(config.id)}
-                            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
                             title="Eliminar"
                           >
                             <Trash2 size={16} />
@@ -3189,7 +3189,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           <button
                             onClick={() => handleSyncNow(config.id, config.nombre)}
                             disabled={syncingId === config.id}
-                            className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-[11px] font-bold hover:bg-indigo-700 transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+                            className="bg-indigo-600 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-bold hover:bg-indigo-700 transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
                           >
                             {syncingId === config.id ? <RefreshCw className="animate-spin" size={12} /> : <Play size={12} fill="white" />}
                             Ejecutar
@@ -3330,7 +3330,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               <button
                 type="button"
                 onClick={closeQuickAudit}
-                className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-slate-200 transition-all hover:bg-sky-600 active:scale-95"
+                className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-indigo-100 transition-all hover:bg-indigo-700 active:scale-95"
               >
                 Cerrar
               </button>

@@ -168,6 +168,7 @@ export const OperationsCenter: React.FC = () => {
   const [running, setRunning] = useState(false);
   const [workingId, setWorkingId] = useState<string | null>(null);
   const [filterSeverity, setFilterSeverity] = useState('');
+  const [activeTab, setActiveTab] = useState<'health' | 'cases'>('health');
   const [flash, setFlash] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
 
   const canOperate = Boolean(isAdmin || isTic);
@@ -411,29 +412,47 @@ export const OperationsCenter: React.FC = () => {
         </div>
       </section>
 
-      <section className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-          <div>
-            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Salud de locales</p>
-            <h3 className="mt-0.5 text-base font-black text-slate-900">Ordenado por mayor riesgo operativo</h3>
-            <p className="mt-0.5 text-xs text-slate-500">
-              {model.monitoredLocations} locales monitoreados · {model.healthyLocations} saludables · {model.activeIncidents} incidentes activos
-            </p>
-          </div>
-          <select
-            value={filterSeverity}
-            onChange={(event) => setFilterSeverity(event.target.value)}
-            className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700"
+      <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="flex overflow-x-auto border-b border-slate-200 px-3" role="tablist" aria-label="Vistas del centro operativo">
+          <button
+            type="button"
+            role="tab"
+            id="operations-health-tab"
+            aria-selected={activeTab === 'health'}
+            aria-controls="operations-health-panel"
+            onClick={() => setActiveTab('health')}
+            className={`inline-flex min-h-10 shrink-0 items-center gap-2 border-b-2 px-3 text-xs font-black transition-colors ${activeTab === 'health' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
           >
-            <option value="">Todas las prioridades</option>
-            <option value="CRITICAL">Crítico</option>
-            <option value="HIGH">Alto</option>
-            <option value="WARNING">Advertencia</option>
-            <option value="INFO">Info</option>
-          </select>
+            <Activity size={15} />
+            Salud de locales
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="operations-cases-tab"
+            aria-selected={activeTab === 'cases'}
+            aria-controls="operations-cases-panel"
+            onClick={() => setActiveTab('cases')}
+            className={`inline-flex min-h-10 shrink-0 items-center gap-2 border-b-2 px-3 text-xs font-black transition-colors ${activeTab === 'cases' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+          >
+            <AlertTriangle size={15} />
+            Casos que explican las prioridades
+            {findings.length > 0 && (
+              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-700">{findings.length}</span>
+            )}
+          </button>
         </div>
 
-        <div className="mt-2 max-h-[240px] overflow-auto">
+        {activeTab === 'health' && (
+          <div className="p-3" role="tabpanel" id="operations-health-panel" aria-labelledby="operations-health-tab">
+            <div>
+              <h3 className="text-base font-black text-slate-900">Ordenado por mayor riesgo operativo</h3>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {model.monitoredLocations} locales monitoreados · {model.healthyLocations} saludables · {model.activeIncidents} incidentes activos
+              </p>
+            </div>
+
+            <div className="mt-2 max-h-[280px] overflow-auto">
           <table className="min-w-full divide-y divide-slate-100 text-xs">
             <thead className="sticky top-0 z-10 bg-white">
               <tr className="text-left text-[10px] font-black uppercase tracking-widest text-slate-400">
@@ -466,38 +485,55 @@ export const OperationsCenter: React.FC = () => {
               <p className="font-black">No hay locales con seguimiento pendiente.</p>
             </div>
           )}
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-        <div className="mb-2">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Problemas operativos</p>
-          <h3 className="mt-0.5 text-base font-black text-slate-900">Casos que explican las prioridades</h3>
-          <p className="text-xs text-slate-500">El detalle técnico queda debajo; la lectura principal es por impacto y acción.</p>
-        </div>
-
-        {loading ? (
-          <div className="rounded-xl border border-slate-200 bg-white p-6 text-center text-slate-500">
-            <Loader2 className="mx-auto mb-2 animate-spin" />
-            Cargando salud operativa...
+            </div>
           </div>
-        ) : visibleProblems.length === 0 ? (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6 text-center">
-            <CheckCircle2 className="mx-auto mb-2 text-emerald-600" size={28} />
-            <h3 className="text-base font-black text-emerald-900">Sin problemas operativos abiertos</h3>
-            <p className="mt-1 text-xs text-emerald-700">No hay acciones pendientes para este mall.</p>
-          </div>
-        ) : (
-          <div className="max-h-[280px] space-y-2 overflow-y-auto pr-1">
-            {visibleProblems.map((finding) => (
-              <OperationalProblemCard
-                key={finding.id}
-                finding={finding}
-                onAcknowledge={handleAcknowledge}
-                onResolve={handleResolve}
-                actionDisabled={!canOperate || workingId === finding.id}
-              />
-            ))}
+        )}
+
+        {activeTab === 'cases' && (
+          <div className="p-3" role="tabpanel" id="operations-cases-panel" aria-labelledby="operations-cases-tab">
+            <div className="mb-2 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+              <div>
+                <h3 className="text-base font-black text-slate-900">Casos que explican las prioridades</h3>
+                <p className="text-xs text-slate-500">Detalle por impacto, causa y acción recomendada.</p>
+              </div>
+              <select
+                value={filterSeverity}
+                onChange={(event) => setFilterSeverity(event.target.value)}
+                aria-label="Filtrar casos por prioridad"
+                className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700"
+              >
+                <option value="">Todas las prioridades</option>
+                <option value="CRITICAL">Crítico</option>
+                <option value="HIGH">Alto</option>
+                <option value="WARNING">Advertencia</option>
+                <option value="INFO">Info</option>
+              </select>
+            </div>
+
+            {loading ? (
+              <div className="rounded-xl border border-slate-200 bg-white p-6 text-center text-slate-500">
+                <Loader2 className="mx-auto mb-2 animate-spin" />
+                Cargando salud operativa...
+              </div>
+            ) : visibleProblems.length === 0 ? (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6 text-center">
+                <CheckCircle2 className="mx-auto mb-2 text-emerald-600" size={28} />
+                <h3 className="text-base font-black text-emerald-900">Sin problemas operativos abiertos</h3>
+                <p className="mt-1 text-xs text-emerald-700">No hay acciones pendientes para este mall.</p>
+              </div>
+            ) : (
+              <div className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
+                {visibleProblems.map((finding) => (
+                  <OperationalProblemCard
+                    key={finding.id}
+                    finding={finding}
+                    onAcknowledge={handleAcknowledge}
+                    onResolve={handleResolve}
+                    actionDisabled={!canOperate || workingId === finding.id}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </section>

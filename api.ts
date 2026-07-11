@@ -61,6 +61,28 @@ const withAuthHeaders = (token?: string, headers: Record<string, string> = {}): 
   return { ...headers, Authorization: `Bearer ${token}` };
 };
 
+type InsightsContext = {
+  mallId?: string;
+  startDate?: string;
+  endDate?: string;
+  token?: string;
+};
+
+const buildInsightsQuery = (
+  params: Record<string, string | undefined>,
+  context: InsightsContext = {}
+): string => {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) searchParams.set(key, value);
+  });
+  if (context.mallId) searchParams.set('mall_id', context.mallId);
+  if (context.startDate) searchParams.set('start_date', context.startDate);
+  if (context.endDate) searchParams.set('end_date', context.endDate);
+  const query = searchParams.toString();
+  return query ? `?${query}` : '';
+};
+
 const parseErrorDetail = async (response: Response, fallbackMessage: string): Promise<string> => {
   const raw = await response.text().catch(() => '');
   const fallbackWithStatus = `${fallbackMessage} (HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''})`;
@@ -2513,12 +2535,16 @@ export const ApiService = {
   },
 
   // --- MÉTODOS DE INTELIGENCIA ARTIFICIAL ---
-  async getAIAlerts(localId?: string): Promise<{ alerts: any[], status: 'ok' | 'no_data' | 'error', summary?: any, source?: string }> {
-    const url = localId ? `${BASE_URL}/insights/alerts?local_id=${localId}` : `${BASE_URL}/insights/alerts`;
+  async getAIAlerts(localId?: string, context: InsightsContext = {}): Promise<{ alerts: any[], status: 'ok' | 'no_data' | 'error', summary?: any, source?: string }> {
     try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error("Error al obtener alertas");
-      const data = await response.json();
+      const data = await fetchJsonWithBaseFallback<any>(
+        `/insights/alerts${buildInsightsQuery({ local_id: localId }, context)}`,
+        {
+          method: 'GET',
+          headers: withAuthHeaders(context.token, { 'Accept': 'application/json' })
+        },
+        "Error al obtener alertas"
+      );
       return {
         alerts: Array.isArray(data?.alerts) ? data.alerts : [],
         status: data?.status || 'error',
@@ -2531,47 +2557,64 @@ export const ApiService = {
     }
   },
 
-  async getBenchmarking(localId: string): Promise<any> {
+  async getBenchmarking(localId: string, context: InsightsContext = {}): Promise<any> {
     try {
-      const response = await fetch(`${BASE_URL}/insights/benchmarking/${localId}`);
-      if (!response.ok) throw new Error("Error al obtener benchmarking");
-      return await response.json();
+      return await fetchJsonWithBaseFallback<any>(
+        `/insights/benchmarking/${encodeURIComponent(localId)}${buildInsightsQuery({}, context)}`,
+        {
+          method: 'GET',
+          headers: withAuthHeaders(context.token, { 'Accept': 'application/json' })
+        },
+        "Error al obtener benchmarking"
+      );
     } catch (error) {
       console.error(error);
       return null;
     }
   },
 
-  async getHeatmap(localId: string): Promise<any[]> {
+  async getHeatmap(localId: string, context: InsightsContext = {}): Promise<any[]> {
     try {
-      const response = await fetch(`${BASE_URL}/insights/heatmap/${localId}`);
-      if (!response.ok) throw new Error("Error al obtener heatmap");
-      return await response.json();
+      return await fetchJsonWithBaseFallback<any[]>(
+        `/insights/heatmap/${encodeURIComponent(localId)}${buildInsightsQuery({}, context)}`,
+        {
+          method: 'GET',
+          headers: withAuthHeaders(context.token, { 'Accept': 'application/json' })
+        },
+        "Error al obtener heatmap"
+      );
     } catch (error) {
       console.error(error);
       return [];
     }
   },
 
-  async getEfficiency(localId: string): Promise<any> {
+  async getEfficiency(localId: string, context: InsightsContext = {}): Promise<any> {
     try {
-      const response = await fetch(`${BASE_URL}/insights/efficiency/${localId}`);
-      if (!response.ok) throw new Error("Error al obtener eficiencia");
-      return await response.json();
+      return await fetchJsonWithBaseFallback<any>(
+        `/insights/efficiency/${encodeURIComponent(localId)}${buildInsightsQuery({}, context)}`,
+        {
+          method: 'GET',
+          headers: withAuthHeaders(context.token, { 'Accept': 'application/json' })
+        },
+        "Error al obtener eficiencia"
+      );
     } catch (error) {
       console.error(error);
       return null;
     }
   },
 
-  async getRanking(metric: string, mallId?: string): Promise<any[]> {
+  async getRanking(metric: string, mallId?: string, context: InsightsContext = {}): Promise<any[]> {
     try {
-      const params = new URLSearchParams();
-      params.set('metric', metric);
-      if (mallId) params.set('mall_id', mallId);
-      const response = await fetch(`${BASE_URL}/insights/ranking?${params.toString()}`);
-      if (!response.ok) throw new Error("Error al obtener ranking");
-      return await response.json();
+      return await fetchJsonWithBaseFallback<any[]>(
+        `/insights/ranking${buildInsightsQuery({ metric }, { ...context, mallId: mallId || context.mallId })}`,
+        {
+          method: 'GET',
+          headers: withAuthHeaders(context.token, { 'Accept': 'application/json' })
+        },
+        "Error al obtener ranking"
+      );
     } catch (error) {
       console.error(error);
       return [];

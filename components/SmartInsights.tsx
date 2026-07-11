@@ -14,7 +14,7 @@ import {
 import { useAuth } from '../context/AuthProvider';
 
 export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initialLocalId }) => {
-    const { currentMall } = useAuth();
+    const { currentMall, session } = useAuth();
     const [selectedLocalId, setSelectedLocalId] = useState<string>(initialLocalId || '');
     const [availableStores, setAvailableStores] = useState<any[]>([]);
     const [alerts, setAlerts] = useState<any[]>([]);
@@ -36,6 +36,18 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
         }
         return map;
     }, [heatmap]);
+    const insightsPeriod = useMemo(() => {
+        const now = new Date();
+        const startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+        const endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+        return { startDate, endDate };
+    }, []);
+    const insightsContext = useMemo(() => ({
+        mallId: currentMall?.id,
+        startDate: insightsPeriod.startDate,
+        endDate: insightsPeriod.endDate,
+        token: session?.access_token
+    }), [currentMall?.id, insightsPeriod.endDate, insightsPeriod.startDate, session?.access_token]);
 
     const hourlyHeatmapColor = (value: number) => {
         const intensity = Math.max(0, Math.min(100, value)) / 100;
@@ -54,15 +66,17 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
             }
             const stores = await ApiService.getStores(currentMall.id);
             setAvailableStores(stores);
-            if (!selectedLocalId && stores.length > 0) {
+            const selectedStoreStillVisible = stores.some(store => store.id === selectedLocalId);
+            if (stores.length > 0 && (!selectedLocalId || !selectedStoreStillVisible)) {
                 setSelectedLocalId(stores[0].id);
             }
             if (stores.length === 0) {
+                setSelectedLocalId('');
                 setLoading(false);
             }
         };
         fetchStores();
-    }, [currentMall]);
+    }, [currentMall?.id, selectedLocalId]);
 
     useEffect(() => {
         if (!selectedLocalId) {
@@ -73,10 +87,10 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
             setLoading(true);
             try {
                 const [alertsData, benchData, heatmapData, efficiencyData] = await Promise.all([
-                    ApiService.getAIAlerts(selectedLocalId),
-                    ApiService.getBenchmarking(selectedLocalId),
-                    ApiService.getHeatmap(selectedLocalId),
-                    ApiService.getEfficiency(selectedLocalId)
+                    ApiService.getAIAlerts(selectedLocalId, insightsContext),
+                    ApiService.getBenchmarking(selectedLocalId, insightsContext),
+                    ApiService.getHeatmap(selectedLocalId, insightsContext),
+                    ApiService.getEfficiency(selectedLocalId, insightsContext)
                 ]);
                 setAlerts(alertsData.alerts || []);
                 setAlertsStatus(alertsData.status);
@@ -94,14 +108,14 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
             }
         };
         loadData();
-    }, [selectedLocalId]);
+    }, [selectedLocalId, insightsContext]);
 
     const handleCardClick = async (metric: string, title: string) => {
         setShowModal(true);
         setLoadingModal(true);
         setModalConfig({ title, metric, data: [] });
         try {
-            const ranking = await ApiService.getRanking(metric, currentMall?.id);
+            const ranking = await ApiService.getRanking(metric, currentMall?.id, insightsContext);
             setModalConfig(prev => ({ ...prev, data: ranking }));
         } catch (error) {
             console.error("Error loading ranking:", error);

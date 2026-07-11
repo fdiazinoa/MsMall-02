@@ -3242,8 +3242,42 @@ async def upsert_local_custom_fields(
     )
 
 # --- AI & INSIGHTS ENDPOINTS ---
+def _apply_insights_date_filters(query: Any, start_date: Optional[str], end_date: Optional[str]) -> Any:
+    if start_date:
+        query = query.gte("fecha", start_date)
+    if end_date:
+        query = query.lte("fecha", end_date)
+    return query
+
+
+def _insights_cost_config(store: Dict[str, Any], net_sales: float) -> Tuple[float, float, float, str]:
+    renta_fija = _safe_float(store.get("renta_fija"))
+    pct_direct = _safe_float(store.get("porcentaje_variable"))
+    pct_legacy = _safe_float(store.get("porciento_renta"))
+    pct_variable = pct_direct if pct_direct > 0 else pct_legacy
+
+    if renta_fija > 0:
+        return renta_fija, renta_fija, pct_variable, "renta_fija"
+    if pct_variable > 0 and net_sales > 0:
+        return (net_sales * pct_variable) / 100, renta_fija, pct_variable, "porcentaje_variable"
+    return 0.0, renta_fija, pct_variable, "sin_configuracion"
+
+
+def _insights_risk_label(occupancy_ratio: float, cost_source: str) -> Tuple[bool, str, str]:
+    if cost_source == "sin_configuracion":
+        return False, "SIN CONFIG", "Sin renta fija o porcentaje variable configurado para evaluar OCR."
+    if occupancy_ratio < 0.15:
+        return True, "BAJO", "Operacion saludable"
+    if occupancy_ratio < 0.20:
+        return False, "MEDIO", "OCR en zona de vigilancia"
+    return False, "ALTO", "OCR alto para el periodo"
+
+
 @app.get("/api/v1/insights/alerts")
-async def get_intelligent_alerts(local_id: Optional[str] = None):
+async def get_intelligent_alerts(
+    local_id: Optional[str] = None,
+    mall_id: Optional[str] = Query(None, alias="mall_id"),
+):
     """Fetch a real antifraud snapshot for a store."""
     if not supabase or not local_id:
         return {
@@ -3262,6 +3296,31 @@ async def get_intelligent_alerts(local_id: Optional[str] = None):
             },
         }
     try:
+        if mall_id:
+            store_res = (
+                supabase.table("locales")
+                .select("id")
+                .eq("id", local_id)
+                .eq("mall_id", mall_id)
+                .limit(1)
+                .execute()
+            )
+            if not store_res.data:
+                return {
+                    "status": "no_data",
+                    "source": "none",
+                    "alerts": [],
+                    "summary": {
+                        "risk_state": "NO_DATA",
+                        "risk_label": "Sin Datos",
+                        "description": "El local no pertenece al mall seleccionado.",
+                        "last_evaluated_at": None,
+                        "has_recent_run": False,
+                        "risk_score": 0,
+                        "alerts_count": 0,
+                        "analysis_window_days": 30,
+                    },
+                }
         return await asyncio.to_thread(
             lambda: _analytics_service().get_alert_snapshot(local_id, allow_live_refresh=True)
         )
@@ -3284,16 +3343,27 @@ async def get_intelligent_alerts(local_id: Optional[str] = None):
         }
 
 @app.get("/api/v1/insights/benchmarking/{local_id}")
-async def get_benchmarking(local_id: str):
+async def get_benchmarking(
+    local_id: str,
+    mall_id: Optional[str] = Query(None, alias="mall_id"),
+    start_date: Optional[str] = Query(None, alias="start_date"),
+    end_date: Optional[str] = Query(None, alias="end_date"),
+):
     """Compare local performance vs category average based on real data."""
     if not supabase: return None
     try:
         # 1. Get Store Info
-        store_res = supabase.table("locales").select("id, nombre, rubro").eq("id", local_id).single().execute()
+        store_query = supabase.table("locales").select("id, nombre, rubro, mall_id").eq("id", local_id)
+        if mall_id:
+            store_query = store_query.eq("mall_id", mall_id)
+        store_res = store_query.single().execute()
         if not store_res.data: return None
+        effective_mall_id = mall_id or store_res.data.get("mall_id")
         
         # 2. Get Sales ATV
-        sales_res = supabase.table("ventas").select("total_bruto").eq("local_id", local_id).execute()
+        sales_query = supabase.table("ventas").select("total_bruto").eq("local_id", local_id)
+        sales_query = _apply_insights_date_filters(sales_query, start_date, end_date)
+        sales_res = sales_query.execute()
         if not sales_res.data:
             return {
                 "local_name": store_res.data['nombre'],
@@ -3308,11 +3378,17 @@ async def get_benchmarking(local_id: str):
         rubro = store_res.data.get('rubro')
         atv_category = atv_local # Default
         if rubro:
-            cat_stores = supabase.table("locales").select("id").eq("rubro", rubro).execute()
+            cat_query = supabase.table("locales").select("id").eq("rubro", rubro)
+            if effective_mall_id:
+                cat_query = cat_query.eq("mall_id", effective_mall_id)
+            cat_stores = cat_query.execute()
             cat_ids = [s['id'] for s in cat_stores.data]
-            cat_sales = supabase.table("ventas").select("total_bruto").in_("local_id", cat_ids).execute()
-            if cat_sales.data:
-                atv_category = sum(float(r['total_bruto']) for r in cat_sales.data) / len(cat_sales.data)
+            if cat_ids:
+                cat_sales_query = supabase.table("ventas").select("total_bruto").in_("local_id", cat_ids)
+                cat_sales_query = _apply_insights_date_filters(cat_sales_query, start_date, end_date)
+                cat_sales = cat_sales_query.execute()
+                if cat_sales.data:
+                    atv_category = sum(float(r['total_bruto']) for r in cat_sales.data) / len(cat_sales.data)
 
         return {
             "local_name": store_res.data['nombre'],
@@ -3321,70 +3397,111 @@ async def get_benchmarking(local_id: str):
             "status": "Líder" if atv_local > atv_category else "Promedio",
             "atv_local": round(atv_local, 2),
             "atv_category": round(atv_category, 2),
-            "atv_growth": "0%"
+            "atv_growth": "0%",
+            "sample_size": len(sales_res.data),
+            "period": {"start_date": start_date, "end_date": end_date}
         }
     except Exception as e:
         logger.error(f"Error benchmarking: {e}")
         return None
 
 @app.get("/api/v1/insights/efficiency/{local_id}")
-async def get_efficiency(local_id: str):
+async def get_efficiency(
+    local_id: str,
+    mall_id: Optional[str] = Query(None, alias="mall_id"),
+    start_date: Optional[str] = Query(None, alias="start_date"),
+    end_date: Optional[str] = Query(None, alias="end_date"),
+):
     """Calculate Real Estate Efficiency metrics from real store and sales data."""
     if not supabase: return None
     try:
         # 1. Get Store MTS
-        store_res = supabase.table("locales").select("mts, nombre, porciento_renta").eq("id", local_id).single().execute()
+        store_query = (
+            supabase.table("locales")
+            .select("mts, nombre, mall_id, renta_fija, porcentaje_variable, porciento_renta")
+            .eq("id", local_id)
+        )
+        if mall_id:
+            store_query = store_query.eq("mall_id", mall_id)
+        store_res = store_query.single().execute()
         if not store_res.data: return None
         
-        mts = float(store_res.data.get('mts') or 1.0)
+        mts = _safe_float(store_res.data.get('mts')) or 1.0
         
         # 2. Sum Sales
-        sales_res = supabase.table("ventas").select("total_neto").eq("local_id", local_id).execute()
-        total_sales = sum(float(r['total_neto']) for r in sales_res.data) if sales_res.data else 0
+        sales_query = supabase.table("ventas").select("total_neto").eq("local_id", local_id)
+        sales_query = _apply_insights_date_filters(sales_query, start_date, end_date)
+        sales_res = sales_query.execute()
+        total_sales = sum(_safe_float(r.get('total_neto')) for r in sales_res.data) if sales_res.data else 0
         
         if total_sales == 0:
             return {
                 "sales_per_m2": 0, "occupancy_cost_ratio": 0, "is_healthy": True, "risk_level": "BAJO", "message": "Sin datos"
             }
 
-        # 3. Simple Mock Renta (unless added to DB)
-        renta_fija = 2500  # Placeholder
-        gastos_comunes = 600 # Placeholder
-        
+        occupancy_cost, renta_fija, pct_variable, cost_source = _insights_cost_config(store_res.data, total_sales)
         sales_per_m2 = total_sales / mts
-        occupancy_cost_ratio = (renta_fija + gastos_comunes) / total_sales
+        occupancy_cost_ratio = occupancy_cost / total_sales if total_sales > 0 else 0
+        is_healthy, risk_level, message = _insights_risk_label(occupancy_cost_ratio, cost_source)
         
         return {
             "sales_per_m2": round(sales_per_m2, 2),
             "occupancy_cost_ratio": round(occupancy_cost_ratio * 100, 2),
-            "is_healthy": occupancy_cost_ratio < 0.15,
-            "risk_level": "BAJO" if occupancy_cost_ratio < 0.15 else "MEDIO" if occupancy_cost_ratio < 0.20 else "ALTO",
-            "message": "Operación saludable"
+            "is_healthy": is_healthy,
+            "risk_level": risk_level,
+            "message": message,
+            "renta_fija": round(renta_fija, 2),
+            "porcentaje_variable": round(pct_variable, 4),
+            "cost_source": cost_source,
+            "period": {"start_date": start_date, "end_date": end_date}
         }
     except Exception as e:
         logger.error(f"Error efficiency: {e}")
         return None
 
 @app.get("/api/v1/insights/heatmap/{local_id}")
-async def get_heatmap(local_id: str):
+async def get_heatmap(
+    local_id: str,
+    mall_id: Optional[str] = Query(None, alias="mall_id"),
+    start_date: Optional[str] = Query(None, alias="start_date"),
+    end_date: Optional[str] = Query(None, alias="end_date"),
+):
     """Generate sales intensity heatmap data from real transaction times."""
     if not supabase: return []
-    cache_key = f"insights:heatmap:{local_id}"
+    cache_key = f"insights:heatmap:{local_id}:{mall_id or 'all'}:{start_date or 'all'}:{end_date or 'all'}"
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached
+    if mall_id:
+        try:
+            store_res = (
+                supabase.table("locales")
+                .select("id")
+                .eq("id", local_id)
+                .eq("mall_id", mall_id)
+                .limit(1)
+                .execute()
+            )
+            if not store_res.data:
+                _cache_set(cache_key, [], TTL_HEATMAP)
+                return []
+        except Exception as store_err:
+            logger.warning(f"Heatmap store validation failed: {store_err}")
     try:
-        rpc_res = supabase.rpc("get_insights_heatmap", {"local_id_param": local_id}).execute()
-        if rpc_res.data:
-            result = rpc_res.data
-            _cache_set(cache_key, result, TTL_HEATMAP)
-            return result
-        _cache_set(cache_key, [], TTL_HEATMAP)
-        return []
+        if not start_date and not end_date:
+            rpc_res = supabase.rpc("get_insights_heatmap", {"local_id_param": local_id}).execute()
+            if rpc_res.data:
+                result = rpc_res.data
+                _cache_set(cache_key, result, TTL_HEATMAP)
+                return result
+            _cache_set(cache_key, [], TTL_HEATMAP)
+            return []
     except Exception as rpc_err:
         logger.warning(f"Heatmap RPC unavailable, fallback to python aggregation: {rpc_err}")
     try:
-        res = supabase.table("ventas").select("fecha, hora_transaccion").eq("local_id", local_id).limit(2000).execute()
+        heatmap_query = supabase.table("ventas").select("fecha, hora_transaccion").eq("local_id", local_id)
+        heatmap_query = _apply_insights_date_filters(heatmap_query, start_date, end_date)
+        res = heatmap_query.limit(2000).execute()
         if not res.data:
             _cache_set(cache_key, [], TTL_HEATMAP)
             return []
@@ -3418,56 +3535,65 @@ async def get_heatmap(local_id: str):
         return []
 
 @app.get("/api/v1/insights/ranking")
-async def get_ranking(metric: str, mall_id: Optional[str] = Query(None, alias="mall_id")):
+async def get_ranking(
+    metric: str,
+    mall_id: Optional[str] = Query(None, alias="mall_id"),
+    start_date: Optional[str] = Query(None, alias="start_date"),
+    end_date: Optional[str] = Query(None, alias="end_date"),
+):
     """Get ranking of all stores for a specific metric based on real database data."""
     if not supabase: return []
-    cache_key = f"insights:ranking:{metric}:{mall_id or 'all'}"
+    cache_key = f"insights:ranking:{metric}:{mall_id or 'all'}:{start_date or 'all'}:{end_date or 'all'}"
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached
     try:
-        rpc_res = supabase.rpc("get_insights_ranking", {
-            "metric_param": metric,
-            "mall_id_param": mall_id
-        }).execute()
-        if rpc_res.data:
-            # Ensure JSON-serializable primitive types
-            normalized = []
-            for row in rpc_res.data:
-                normalized.append({
-                    "id": row.get("id"),
-                    "nombre": row.get("nombre"),
-                    "valor": float(row.get("valor") or 0),
-                    "extra": row.get("extra")
-                })
-            _cache_set(cache_key, normalized, TTL_RANKING)
-            return normalized
-        _cache_set(cache_key, [], TTL_RANKING)
-        return []
+        if not start_date and not end_date:
+            rpc_res = supabase.rpc("get_insights_ranking", {
+                "metric_param": metric,
+                "mall_id_param": mall_id
+            }).execute()
+            if rpc_res.data:
+                # Ensure JSON-serializable primitive types
+                normalized = []
+                for row in rpc_res.data:
+                    normalized.append({
+                        "id": row.get("id"),
+                        "nombre": row.get("nombre"),
+                        "valor": float(row.get("valor") or 0),
+                        "extra": row.get("extra")
+                    })
+                _cache_set(cache_key, normalized, TTL_RANKING)
+                return normalized
+            _cache_set(cache_key, [], TTL_RANKING)
+            return []
     except Exception as rpc_err:
         logger.warning(f"Ranking RPC unavailable, fallback to python aggregation: {rpc_err}")
     try:
         # 1. Fetch all stores
-        query = supabase.table("locales").select("id, nombre, mts, rubro")
+        query = supabase.table("locales").select("id, nombre, mts, rubro, renta_fija, porcentaje_variable, porciento_renta")
         if mall_id:
             query = query.eq("mall_id", mall_id)
         
         stores_res = query.execute()
         if not stores_res.data: return []
+        store_ids = [s['id'] for s in stores_res.data if s.get('id')]
+        if not store_ids:
+            return []
         
         # 2. Fetch all sales
         sales_query = supabase.table("ventas").select("local_id, total_bruto, total_neto")
-        if mall_id:
-            sales_query = sales_query.eq("mall_id", mall_id)
+        sales_query = sales_query.in_("local_id", store_ids)
+        sales_query = _apply_insights_date_filters(sales_query, start_date, end_date)
         sales_res = sales_query.execute()
         
         # Aggregate
         sales_data = {} # id -> {bruto, neto, cnt}
-        for s in sales_res.data:
+        for s in (sales_res.data or []):
             lid = s['local_id']
             if lid not in sales_data: sales_data[lid] = {'bruto': 0, 'neto': 0, 'cnt': 0}
-            sales_data[lid]['bruto'] += float(s['total_bruto'])
-            sales_data[lid]['neto'] += float(s['total_neto'])
+            sales_data[lid]['bruto'] += _safe_float(s.get('total_bruto'))
+            sales_data[lid]['neto'] += _safe_float(s.get('total_neto'))
             sales_data[lid]['cnt'] += 1
             
         ranking = []
@@ -3478,14 +3604,15 @@ async def get_ranking(metric: str, mall_id: Optional[str] = Query(None, alias="m
             extra = s.get('rubro') or "General"
             
             if metric == 'sales_per_m2':
-                mts = float(s.get('mts') or 1.0)
+                mts = _safe_float(s.get('mts')) or 1.0
                 valor = stats['neto'] / mts
                 extra = f"{mts} m²"
             elif metric == 'occupancy_cost':
-                # Use a placeholder for rent until it's in DB
-                costos = 3000 
+                costos, _, _, cost_source = _insights_cost_config(s, stats['neto'])
                 valor = (costos / stats['neto'] * 100) if stats['neto'] > 0 else 0
                 extra = "Saludable" if (0 < valor < 15) else "Riesgo" if valor >= 15 else "Sin Ventas"
+                if stats['neto'] > 0 and cost_source == "sin_configuracion":
+                    extra = "Sin Config"
             
             ranking.append({
                 "id": s['id'],

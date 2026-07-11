@@ -295,10 +295,10 @@ export const ResendMessagingAdmin: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Mensajería Resend</h2>
+          <h2 className="text-xl font-bold text-slate-800">Mensajería Resend</h2>
           <p className="text-slate-500 text-sm">Dominio mercasend.net para notificaciones operativas.</p>
         </div>
         <div className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-bold ${resendConfigured ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
@@ -325,8 +325,8 @@ export const ResendMessagingAdmin: React.FC = () => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-6">
-        <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-4">
+        <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-5">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
               <Mail size={20} />
@@ -392,7 +392,7 @@ export const ResendMessagingAdmin: React.FC = () => {
           )}
         </section>
 
-        <form onSubmit={handleSendTest} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+        <form onSubmit={handleSendTest} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-4">
           <div>
             <h3 className="font-bold text-slate-800">Prueba de envío</h3>
             <p className="text-xs text-slate-500">El mensaje saldrá desde {status?.from_email || senderDraft.from_email}.</p>
@@ -444,7 +444,7 @@ export const ResendMessagingAdmin: React.FC = () => {
         </form>
       </div>
 
-      <form onSubmit={handleSaveSchedule} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
+      <form onSubmit={handleSaveSchedule} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">

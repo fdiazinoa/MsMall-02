@@ -354,8 +354,8 @@ export const StoreImportTool: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold uppercase tracking-wide text-indigo-600">
@@ -363,7 +363,7 @@ export const StoreImportTool: React.FC = () => {
               Herramientas
             </div>
             <div>
-              <h2 className="text-2xl font-bold text-slate-900">Importador de Locales</h2>
+              <h2 className="text-xl font-bold text-slate-900">Importador de Locales</h2>
               <p className="mt-1 text-sm text-slate-500">
                 Carga o actualiza locales del mall actual desde archivos CSV o TXT usando el codigo interno como llave operativa.
               </p>
@@ -442,7 +442,7 @@ export const StoreImportTool: React.FC = () => {
         </div>
       </div>
 
-      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <h3 className="text-lg font-bold text-slate-900">Mapeo de columnas</h3>
         <p className="mt-1 text-sm text-slate-500">
           Ajusta qué columna del archivo corresponde a cada campo de locales. Los campos no mapeados se omiten.
@@ -478,7 +478,7 @@ export const StoreImportTool: React.FC = () => {
         )}
       </div>
 
-      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-4">
           <div>
             <h3 className="text-lg font-bold text-slate-900">Vista previa</h3>

@@ -1852,7 +1852,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
             if (onCloseWebserviceModal) onCloseWebserviceModal();
           }}
         />
-        <div className="relative h-full w-full p-4 md:p-6 lg:p-8 flex items-center justify-center">
+        <div className="relative h-full w-full p-4 md:p-4 lg:p-4 flex items-center justify-center">
           <div className="relative w-full max-w-7xl max-h-[92vh] overflow-y-auto">
             <button
               type="button"
@@ -1874,10 +1874,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
+    <div className="space-y-4 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Importación Automatizada</h2>
+          <h2 className="text-xl font-bold text-slate-800">Importación Automatizada</h2>
           <p className="text-slate-500 text-sm">Configure conexiones directas vía FTP/SFTP para auditoría automática.</p>
         </div>
         <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full md:w-auto">
@@ -1931,7 +1931,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               className="w-full lg:w-[1120px] h-full bg-white border-l border-indigo-100 shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="bg-slate-50 border-b border-slate-100 p-6 flex justify-between items-center sticky top-0 z-10">
+              <div className="bg-slate-50 border-b border-slate-100 p-4 flex justify-between items-center sticky top-0 z-10">
             <div className="flex items-center gap-4">
               <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold ${activeStep === 1 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
                 1. Conexión
@@ -1945,9 +1945,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           </div>
 
               <div className="flex-1 overflow-y-auto">
-                <div className="p-8">
+                <div className="p-4">
             {activeStep === 1 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-5">
                   <div className="bg-indigo-50/50 p-4 rounded-2xl border border-indigo-100 mb-6">
                     <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest mb-1.5 flex items-center gap-2">
@@ -2461,7 +2461,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 </div>
               </div>
             ) : (
-              <div className="space-y-6">
+              <div className="space-y-4">
                 <div className="flex justify-between items-center mb-6">
                   <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100 flex gap-4 text-indigo-700 items-start flex-1">
                     <div className="p-2 bg-indigo-600 rounded-lg text-white">
@@ -2966,7 +2966,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       )}
 
       {loading ? (
-        <div className="py-20 text-center">
+        <div className="py-10 text-center">
           <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
           <p className="text-slate-400 font-medium">Cargando servicios de red...</p>
         </div>
@@ -2988,9 +2988,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           <p className="text-slate-400 text-sm mt-1">Ajusta la búsqueda para ver otras conexiones configuradas.</p>
         </div>
       ) : viewMode === 'cards' ? (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {filteredConfigs.map(config => (
-            <div key={config.id} className="bg-white rounded-3xl border border-slate-200 p-6 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
+            <div key={config.id} className="bg-white rounded-2xl border border-slate-200 p-4 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
               <div className={`absolute top-0 right-0 px-6 py-2 rounded-bl-3xl text-[10px] font-bold uppercase tracking-widest ${config.protocolo === 'SFTP' ? 'bg-indigo-600 text-white' : config.protocolo === 'LOCAL' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}`}>
                 {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
               </div>
@@ -3209,13 +3209,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       {auditConfig && (
         <div className="fixed inset-0 z-[105] flex items-center justify-center bg-slate-950/45 backdrop-blur-md p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-5xl max-h-[86vh] overflow-hidden rounded-[2rem] border border-white/60 bg-white/85 shadow-2xl shadow-slate-900/20 backdrop-blur-xl animate-in zoom-in-95 duration-200 flex flex-col">
-            <div className="flex items-start justify-between gap-4 border-b border-white/70 bg-white/55 px-6 py-5">
+            <div className="flex items-start justify-between gap-4 border-b border-white/70 bg-white/55 px-4 py-3">
               <div>
                 <div className="inline-flex items-center gap-2 rounded-full bg-sky-50 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-sky-700">
                   <FileSearch size={13} />
                   Auditoria rapida
                 </div>
-                <h3 className="mt-3 text-2xl font-black text-slate-900">{auditConfig.nombre}</h3>
+                <h3 className="mt-3 text-xl font-black text-slate-900">{auditConfig.nombre}</h3>
                 <p className="mt-1 text-xs font-medium text-slate-500">
                   Monitor de carga filtrado por este local. Se muestran las ultimas 30 ejecuciones.
                 </p>
@@ -3242,7 +3242,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-5">
+            <div className="flex-1 overflow-y-auto px-4 py-3">
               <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
                 <div className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-sm">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Local ID</p>
@@ -3270,12 +3270,12 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               )}
 
               {auditLoading ? (
-                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-3xl border border-white/70 bg-white/65 text-slate-500">
+                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-2xl border border-white/70 bg-white/65 text-slate-500">
                   <RefreshCw size={30} className="mb-3 animate-spin text-sky-500" />
                   <p className="text-sm font-bold">Cargando monitor del local...</p>
                 </div>
               ) : auditLogs.length === 0 ? (
-                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/65 text-center">
+                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white/65 text-center">
                   <FileSearch size={34} className="mb-3 text-slate-300" />
                   <p className="text-sm font-bold text-slate-700">Sin cargas registradas para este local.</p>
                   <p className="mt-1 max-w-md text-xs text-slate-500">
@@ -3283,7 +3283,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   </p>
                 </div>
               ) : (
-                <div className="overflow-hidden rounded-3xl border border-white/70 bg-white/80 shadow-sm">
+                <div className="overflow-hidden rounded-2xl border border-white/70 bg-white/80 shadow-sm">
                   <div className="overflow-x-auto">
                     <table className="w-full min-w-[920px] text-left">
                       <thead>
@@ -3326,7 +3326,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               )}
             </div>
 
-            <div className="flex justify-end border-t border-white/70 bg-white/55 px-6 py-4">
+            <div className="flex justify-end border-t border-white/70 bg-white/55 px-3 py-2.5">
               <button
                 type="button"
                 onClick={closeQuickAudit}
@@ -3343,7 +3343,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       {showManualModal && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-4xl bg-white rounded-[2rem] border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col max-h-[85vh]">
-	            <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-center">
+	            <div className="bg-slate-50 p-4 border-b border-slate-100 flex justify-between items-center">
               <div>
                 <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                   <Play size={20} className="text-indigo-600" fill="currentColor" />
@@ -3359,7 +3359,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 	              </button>
 	            </div>
 
-	            <div className="flex-1 overflow-y-auto p-6">
+	            <div className="flex-1 overflow-y-auto p-4">
               <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-2xl">
                 <div className="flex flex-col lg:flex-row lg:items-end gap-3">
                   <div className="flex-1">
@@ -3451,7 +3451,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               </div>
 
 	              {manualLoading ? (
-	                <div className="py-20 text-center">
+	                <div className="py-10 text-center">
 	                  <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
 	                  <p className="text-slate-500 font-medium">Buscando archivos en el servidor...</p>
                 </div>
@@ -3533,7 +3533,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   </table>
                 </div>
               ) : (
-                <div className="py-20 text-center">
+                <div className="py-10 text-center">
                   <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
                     <FileSearch size={24} className="text-slate-300" />
                   </div>
@@ -3543,7 +3543,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               )}
             </div>
 
-	            <div className="bg-slate-50 p-6 border-t border-slate-100 flex justify-end">
+	            <div className="bg-slate-50 p-4 border-t border-slate-100 flex justify-end">
 	              <button
 	                onClick={closeManualModal}
 	                className="px-6 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-600 font-bold hover:bg-slate-50 active:scale-95 transition-all text-sm"
@@ -3558,17 +3558,17 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       {/* Progress Modal */}
       {showProgressModal && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
-            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white">
+          <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 text-white">
               <h3 className="text-xl font-bold flex items-center gap-2">
                 <Database size={24} />
                 Procesando Importación
               </h3>
             </div>
 
-            <div className="p-8">
+            <div className="p-4">
               {/* Progress Steps */}
-              <div className="space-y-6">
+              <div className="space-y-4">
                 {/* Step 1: Downloading */}
                 <div className={`flex items-center gap-4 ${progressStep === 'downloading' ? 'opacity-100' : progressStep === 'processing' || progressStep === 'inserting' || progressStep === 'complete' ? 'opacity-50' : 'opacity-30'}`}>
                   <div className={`w-12 h-12 rounded-full flex items-center justify-center ${progressStep === 'downloading' ? 'bg-indigo-100 text-indigo-600' : 'bg-green-100 text-green-600'}`}>

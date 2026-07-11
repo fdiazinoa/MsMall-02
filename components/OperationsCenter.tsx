@@ -77,11 +77,11 @@ const healthTone = (health?: string) => {
 };
 
 const StatCard = ({ label, value, helper, icon: Icon, className }: { label: string; value: React.ReactNode; helper: string; icon: any; className: string }) => (
-  <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
     <div className="flex items-start justify-between gap-4">
       <div>
         <p className="text-xs font-bold uppercase tracking-widest text-slate-400">{label}</p>
-        <div className="mt-2 text-3xl font-black text-slate-900">{value}</div>
+        <div className="mt-2 text-xl font-black text-slate-900">{value}</div>
         <p className="mt-1 text-xs font-semibold text-slate-500">{helper}</p>
       </div>
       <div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${className}`}>
@@ -102,7 +102,7 @@ const OperationalProblemCard = ({
   onResolve: (finding: OperationalFinding) => void;
   actionDisabled: boolean;
 }) => (
-  <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+  <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
@@ -315,9 +315,9 @@ export const OperationsCenter: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <section className="overflow-hidden rounded-[2rem] border border-slate-200 bg-slate-950 text-white shadow-xl shadow-slate-900/10">
-        <div className="relative p-6 md:p-8">
+        <div className="relative p-4 md:p-4">
           <div className="absolute right-0 top-0 h-48 w-48 rounded-full bg-emerald-400/20 blur-3xl" />
           <div className="absolute bottom-0 left-1/3 h-36 w-36 rounded-full bg-amber-300/10 blur-3xl" />
           <div className="relative flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
@@ -326,7 +326,7 @@ export const OperationsCenter: React.FC = () => {
                 <ShieldAlert size={14} />
                 Centro de Salud Operativa
               </div>
-              <h2 className="mt-4 text-3xl font-black tracking-tight">Estado Operativo del Mall</h2>
+              <h2 className="mt-4 text-xl font-black tracking-tight">Estado Operativo del Mall</h2>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
                 Vista ejecutiva para saber qué locales tienen problemas, qué información falta, qué cargas fallaron y qué acción tomar ahora.
               </p>
@@ -362,7 +362,7 @@ export const OperationsCenter: React.FC = () => {
       </section>
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-1">
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-1">
           <p className="text-xs font-black uppercase tracking-widest text-slate-400">Resumen operativo</p>
           <h3 className="mt-2 text-xl font-black text-slate-900">Qué cambió y qué atender</h3>
           <p className="mt-4 text-sm leading-6 text-slate-700">{operationalSummary}</p>
@@ -377,7 +377,7 @@ export const OperationsCenter: React.FC = () => {
           </div>
         </div>
 
-        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="text-xs font-black uppercase tracking-widest text-slate-400">Prioridades de hoy</p>
@@ -413,7 +413,7 @@ export const OperationsCenter: React.FC = () => {
         </div>
       </section>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="text-xs font-black uppercase tracking-widest text-slate-400">Salud de locales</p>
@@ -463,7 +463,7 @@ export const OperationsCenter: React.FC = () => {
             </tbody>
           </table>
           {model.locations.length === 0 && (
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-8 text-center text-emerald-800">
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center text-emerald-800">
               <CheckCircle2 className="mx-auto mb-3 text-emerald-600" size={36} />
               <p className="font-black">No hay locales con seguimiento pendiente.</p>
             </div>
@@ -471,7 +471,7 @@ export const OperationsCenter: React.FC = () => {
         </div>
       </section>
 
-      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="mb-4">
           <p className="text-xs font-black uppercase tracking-widest text-slate-400">Problemas operativos</p>
           <h3 className="mt-2 text-lg font-black text-slate-900">Casos que explican las prioridades</h3>
@@ -479,12 +479,12 @@ export const OperationsCenter: React.FC = () => {
         </div>
 
         {loading ? (
-          <div className="rounded-3xl border border-slate-200 bg-white p-10 text-center text-slate-500">
+          <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-slate-500">
             <Loader2 className="mx-auto mb-3 animate-spin" />
             Cargando salud operativa...
           </div>
         ) : visibleProblems.length === 0 ? (
-          <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-10 text-center">
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-10 text-center">
             <CheckCircle2 className="mx-auto mb-3 text-emerald-600" size={36} />
             <h3 className="text-lg font-black text-emerald-900">Sin problemas operativos abiertos</h3>
             <p className="mt-1 text-sm text-emerald-700">No hay acciones pendientes para este mall.</p>

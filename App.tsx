@@ -125,13 +125,13 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50">
+    <div className="flex h-[100dvh] overflow-hidden bg-slate-50">
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
 
       <div className="min-h-0 min-w-0 flex-1 flex flex-col">
         <Header activeTab={activeTab} setActiveTab={setActiveTab} />
 
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5 md:px-8 lg:px-10">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4 lg:px-5">
           <div className="mx-auto w-full max-w-7xl min-w-0">
             <Suspense fallback={
               <div className="flex items-center justify-center h-64">
@@ -143,7 +143,7 @@ const App: React.FC = () => {
           </div>
         </main>
 
-        <footer className="border-t border-slate-200 py-4 px-6 text-center text-sm text-slate-500">
+        <footer className="border-t border-slate-200 py-2 px-4 text-center text-xs text-slate-500">
           &copy; MercaSend, SRL. MsMall v.20
         </footer>
       </div>

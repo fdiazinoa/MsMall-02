@@ -108,12 +108,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
       <aside className="w-56 bg-slate-900 text-white flex flex-col hidden md:flex h-screen sticky top-0">
       <div className="px-4 py-3 flex items-center gap-2">
-        <img src="/msmall-icon-192.png" alt="MSMALL" className="w-8 h-8 rounded-lg shadow-lg shadow-indigo-500/20" />
-        <h1 className="text-xl font-bold tracking-tight">MSMALL</h1>
+        <img src="/msmall-icon-192.png" alt="MSMALL" className="w-7 h-7 rounded-lg shadow-lg shadow-indigo-500/20" />
+        <h1 className="text-lg font-bold tracking-tight">MSMALL</h1>
       </div>
 
-      <nav className="flex-1 px-3 py-3 space-y-1 overflow-y-auto">
-        <div className="px-4 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">General</div>
+      <nav className="flex-1 px-3 py-2 space-y-1 overflow-y-auto text-[12px] font-semibold">
+        <div className="px-3 py-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-widest">General</div>
 
         <button
           onClick={() => setActiveTab('analytics')}
@@ -173,7 +173,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
         {(isAdmin || isTic || isAuditor) && (
           <>
-            <div className="pt-3 pb-1 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Auditoría IT</div>
+            <div className="pt-2 pb-1 px-3 text-[9px] font-bold text-slate-500 uppercase tracking-widest">Auditoría IT</div>
             <button
               onClick={() => setActiveTab('operations')}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'operations' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
@@ -197,7 +197,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
         {(isAdmin || isTic) && (
           <>
-            <div className="pt-3 pb-1 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Administración</div>
+            <div className="pt-2 pb-1 px-3 text-[9px] font-bold text-slate-500 uppercase tracking-widest">Administración</div>
 
             <button
               onClick={() => setActiveTab('stores')}
@@ -266,7 +266,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
         {(isAdmin || isTic) && (
           <>
-            <div className="pt-3 pb-1 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Herramientas</div>
+            <div className="pt-2 pb-1 px-3 text-[9px] font-bold text-slate-500 uppercase tracking-widest">Herramientas</div>
 
 
             <button
@@ -308,13 +308,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
         )}
       </nav>
 
-        <div className="px-4 py-3 border-t border-slate-800">
-          <div className="flex items-center gap-3 px-1 mb-3">
-            <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold ring-2 ring-indigo-500/20">
+        <div className="px-3 py-2.5 border-t border-slate-800">
+          <div className="flex items-center gap-2 px-1 mb-2">
+            <div className="w-7 h-7 rounded-full bg-slate-700 flex items-center justify-center text-[11px] font-bold ring-2 ring-indigo-500/20">
               {user?.nombre_completo?.substring(0, 2).toUpperCase() || 'US'}
             </div>
             <div className="overflow-hidden">
-              <p className="text-sm font-medium truncate">{user?.nombre_completo || 'Usuario'}</p>
+              <p className="text-xs font-medium truncate">{user?.nombre_completo || 'Usuario'}</p>
               <p className="text-[10px] text-indigo-400 font-bold uppercase tracking-tighter">{role || 'Sin Rol'}</p>
             </div>
           </div>

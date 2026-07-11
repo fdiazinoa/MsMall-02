@@ -42,7 +42,7 @@ const ChartModeButton = ({ active, label, onClick, children }: {
 );
 
 const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
-  <div className="min-w-0 bg-white px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow relative group">
+  <div className="min-w-0 bg-white px-3 py-2 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow relative group">
     {tooltip && (
       <div className="absolute top-2.5 right-2.5 text-slate-300 hover:text-indigo-500 transition-colors cursor-help">
         <Info size={14} />
@@ -51,9 +51,9 @@ const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
         </div>
       </div>
     )}
-    <div className="flex justify-between items-start mb-1.5">
-      <div className={`p-1.5 rounded-lg ${color} bg-opacity-10`}>
-        <Icon className={`w-4 h-4 ${color.replace('bg-', 'text-')}`} />
+    <div className="flex justify-between items-start mb-1">
+      <div className={`p-1 rounded-lg ${color} bg-opacity-10`}>
+        <Icon className={`w-3.5 h-3.5 ${color.replace('bg-', 'text-')}`} />
       </div>
       {trend && (
         <span className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-full ${trend > 0 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
@@ -62,8 +62,8 @@ const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
         </span>
       )}
     </div>
-    <p className="text-slate-500 text-[11px] font-semibold uppercase tracking-wide">{title}</p>
-    <h3 className="break-words text-base sm:text-lg font-bold text-slate-900 mt-0.5 leading-tight">{value}</h3>
+    <p className="text-slate-500 text-[10px] font-semibold uppercase tracking-wide">{title}</p>
+    <h3 className="break-words text-sm sm:text-base font-bold text-slate-900 mt-0.5 leading-tight">{value}</h3>
   </div>
 );
 
@@ -140,36 +140,41 @@ const SegmentDonutCard = ({
           Sin ventas en el periodo.
         </div>
       ) : mode === 'donut' ? (
-        <div className="relative h-[170px] xl:h-[185px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={visibleItems}
-                dataKey="value"
-                nameKey="name"
-                innerRadius="52%"
-                outerRadius="84%"
-                paddingAngle={2}
-                stroke="white"
-                strokeWidth={3}
-                onClick={(item) => selectItem(item as SegmentItem)}
-              >
-                {visibleItems.map((item, index) => (
-                  <Cell
-                    key={`tipo-cell-${item.name}`}
-                    fill={COLORS[index % COLORS.length]}
-                    className="cursor-pointer focus:outline-none"
-                  />
-                ))}
-              </Pie>
-              <Tooltip content={<SegmentTooltip format={format} total={total} />} />
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-            <span className="text-[11px] font-bold uppercase text-slate-400">Total</span>
-            <span className="text-base font-bold text-slate-800">{format(total)}</span>
+        <>
+          <div className="relative h-[150px] xl:h-[165px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={visibleItems}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius="52%"
+                  outerRadius="84%"
+                  paddingAngle={2}
+                  stroke="white"
+                  strokeWidth={3}
+                  onClick={(item) => selectItem(item as SegmentItem)}
+                >
+                  {visibleItems.map((item, index) => (
+                    <Cell
+                      key={`tipo-cell-${item.name}`}
+                      fill={COLORS[index % COLORS.length]}
+                      className="cursor-pointer focus:outline-none"
+                    />
+                  ))}
+                </Pie>
+                <Tooltip content={<SegmentTooltip format={format} total={total} />} />
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <span className="text-[10px] font-bold uppercase text-slate-400">Total</span>
+            </div>
           </div>
-        </div>
+          <div className="mt-1 rounded-lg bg-slate-50 px-3 py-1.5 text-center">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Monto total</span>
+            <p className="text-sm font-bold text-slate-800">{format(total)}</p>
+          </div>
+        </>
       ) : (
         <div className="h-[170px] xl:h-[185px]">
           <ResponsiveContainer width="100%" height="100%">

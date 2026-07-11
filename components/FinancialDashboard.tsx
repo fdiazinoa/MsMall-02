@@ -30,6 +30,14 @@ import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+type FinancialPanel = 'ocr' | 'watchlist' | 'variable';
+
+const FINANCIAL_PANELS: Array<{ id: FinancialPanel; label: string }> = [
+    { id: 'ocr', label: 'Salud de Cartera por OCR' },
+    { id: 'watchlist', label: 'Watchlist de cartera' },
+    { id: 'variable', label: 'Potencial de Recaudación Variable' },
+];
+
 const parseDateInput = (value: string): Date => new Date(`${value}T12:00:00`);
 
 const diffDaysInclusive = (start: Date, end: Date): number => {
@@ -68,6 +76,7 @@ export const FinancialDashboard: React.FC = () => {
     const [data, setData] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [isExporting, setIsExporting] = useState(false);
+    const [activeFinancialPanel, setActiveFinancialPanel] = useState<FinancialPanel>('ocr');
     const [dates, setDates] = useState<{ startDate: string, endDate: string }>(() => {
         const now = new Date();
         const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
@@ -395,7 +404,24 @@ export const FinancialDashboard: React.FC = () => {
                 </div>
             </div>
 
-            <div className="grid min-w-0 grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)] gap-4 lg:gap-4">
+            <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+                {FINANCIAL_PANELS.map((panel) => (
+                    <button
+                        key={panel.id}
+                        type="button"
+                        onClick={() => setActiveFinancialPanel(panel.id)}
+                        className={`h-10 rounded-xl px-3 text-xs font-bold transition-colors sm:px-4 ${
+                            activeFinancialPanel === panel.id
+                                ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-200'
+                                : 'bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                        }`}
+                    >
+                        {panel.label}
+                    </button>
+                ))}
+            </div>
+
+            {activeFinancialPanel === 'ocr' && (
                 <div className="min-w-0 bg-white p-4 sm:p-4 rounded-2xl border border-slate-100 shadow-sm">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
                         <div>
@@ -478,7 +504,9 @@ export const FinancialDashboard: React.FC = () => {
                         )}
                     </div>
                 </div>
+            )}
 
+            {activeFinancialPanel === 'watchlist' && (
                 <div className="min-w-0 bg-white p-4 sm:p-4 rounded-2xl border border-slate-100 shadow-sm">
                     <h3 className="text-lg font-bold text-slate-800 mb-2">Watchlist de cartera</h3>
                     <p className="text-sm text-slate-500 mb-6">Lista corta para seguimiento semanal. Se ordena por OCR y peso comercial.</p>
@@ -513,8 +541,9 @@ export const FinancialDashboard: React.FC = () => {
                         )}
                     </div>
                 </div>
-            </div>
+            )}
 
+            {activeFinancialPanel === 'variable' && (
             <div className="min-w-0 bg-white p-4 sm:p-4 rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
                 <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-6">
                     <div>
@@ -624,6 +653,7 @@ export const FinancialDashboard: React.FC = () => {
                     </p>
                 )}
             </div>
+            )}
         </div>
     );
 };

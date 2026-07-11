@@ -106,89 +106,89 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
         </div>
       )}
 
-      <aside className="w-64 bg-slate-900 text-white flex flex-col hidden md:flex h-screen sticky top-0">
-      <div className="p-6 flex items-center gap-3">
+      <aside className="w-56 bg-slate-900 text-white flex flex-col hidden md:flex h-screen sticky top-0">
+      <div className="px-4 py-3 flex items-center gap-2">
         <img src="/msmall-icon-192.png" alt="MSMALL" className="w-8 h-8 rounded-lg shadow-lg shadow-indigo-500/20" />
         <h1 className="text-xl font-bold tracking-tight">MSMALL</h1>
       </div>
 
-      <nav className="flex-1 px-4 py-6 space-y-1.5 overflow-y-auto">
+      <nav className="flex-1 px-3 py-3 space-y-1 overflow-y-auto">
         <div className="px-4 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">General</div>
 
         <button
           onClick={() => setActiveTab('analytics')}
-          className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'analytics' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'analytics' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
             }`}
         >
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83" /><path d="M22 12A10 10 0 0 0 12 2v10z" /></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83" /><path d="M22 12A10 10 0 0 0 12 2v10z" /></svg>
           Dashboard BI
         </button>
 
         <button
           onClick={() => setActiveTab('insights')}
-          className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'insights' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'insights' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
             }`}
         >
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" /><path d="M5 3v4" /><path d="M19 17v4" /><path d="M3 5h4" /><path d="M17 19h4" /></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" /><path d="M5 3v4" /><path d="M19 17v4" /><path d="M3 5h4" /><path d="M17 19h4" /></svg>
           Inteligencia IA
         </button>
 
         <button
           onClick={() => setActiveTab('financial')}
-          className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'financial' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'financial' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
             }`}
         >
-          <CreditCard className="w-5 h-5" />
+          <CreditCard className="w-4 h-4" />
           Gestión Financiera
         </button>
 
         <button
           onClick={() => setActiveTab('cube')}
-          className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'cube' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'cube' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
             }`}
         >
-          <Grid className="w-5 h-5" />
+          <Grid className="w-4 h-4" />
           Cubo de Ventas
         </button>
 
         <button
           onClick={() => setActiveTab('comparisons')}
-          className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'comparisons' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'comparisons' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
             }`}
         >
-          <BarChart3 className="w-5 h-5" />
+          <BarChart3 className="w-4 h-4" />
           Comparativas BI
         </button>
 
         {(isAdmin || isTic || isAuditor) && (
           <button
             onClick={() => setActiveTab('reports')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'reports' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
               }`}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-3 3" /></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-3 3" /></svg>
             Auditoría Ventas
           </button>
         )}
 
         {(isAdmin || isTic || isAuditor) && (
           <>
-            <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Auditoría IT</div>
+            <div className="pt-3 pb-1 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Auditoría IT</div>
             <button
               onClick={() => setActiveTab('operations')}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'operations' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'operations' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
             >
-              <ShieldAlert className="w-5 h-5" />
+              <ShieldAlert className="w-4 h-4" />
               Operations Center
             </button>
             {(isAdmin || isTic) && (
               <button
                 onClick={() => setActiveTab('monitor')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'monitor' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'monitor' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                   }`}
               >
-                <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" /></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" /></svg>
                 Monitor de Cargas
               </button>
             )}
@@ -197,23 +197,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
         {(isAdmin || isTic) && (
           <>
-            <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Administración</div>
+            <div className="pt-3 pb-1 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Administración</div>
 
             <button
               onClick={() => setActiveTab('stores')}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'stores' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'stores' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9Z" /><path d="m3 9 2.45-4.9A2 2 0 0 1 7.24 3h9.52a2 2 0 0 1 1.8 1.1L21 9" /><path d="M12 3v6" /></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9Z" /><path d="m3 9 2.45-4.9A2 2 0 0 1 7.24 3h9.52a2 2 0 0 1 1.8 1.1L21 9" /><path d="M12 3v6" /></svg>
               Mantenimiento
             </button>
 
             <button
               onClick={() => setActiveTab('store-catalogs')}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'store-catalogs' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'store-catalogs' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
             >
-              <Tag className="w-5 h-5" />
+              <Tag className="w-4 h-4" />
               Catálogos Locales
             </button>
 
@@ -221,42 +221,42 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
               <>
                 <button
                   onClick={() => setActiveTab('malls')}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'malls' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'malls' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                     }`}
                 >
-                  <StoreIcon className="w-5 h-5" />
+                  <StoreIcon className="w-4 h-4" />
                   Gestión de Malls
                 </button>
                 <button
                   onClick={() => setActiveTab('users')}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'users' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                     }`}
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                   Usuarios y Roles
                 </button>
                 <button
                   onClick={() => setActiveTab('messaging')}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'messaging' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'messaging' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                     }`}
                 >
-                  <Mail className="w-5 h-5" />
+                  <Mail className="w-4 h-4" />
                   Mensajería Resend
                 </button>
                 <button
                   onClick={() => setActiveTab('copilot')}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'copilot' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'copilot' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                     }`}
                 >
-                  <Bot className="w-5 h-5" />
+                  <Bot className="w-4 h-4" />
                   Copilot MsMall
                 </button>
                 <button
                   onClick={() => setActiveTab('security')}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'security' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'security' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                     }`}
                 >
-                  <KeyRound className="w-5 h-5" />
+                  <KeyRound className="w-4 h-4" />
                   Seguridad Tokens
                 </button>
               </>
@@ -266,51 +266,51 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
         {(isAdmin || isTic) && (
           <>
-            <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Herramientas</div>
+            <div className="pt-3 pb-1 px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Herramientas</div>
 
 
             <button
               onClick={() => setActiveTab('auto-import')}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'auto-import' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'auto-import' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12V7H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5" /><path d="M16 5l4 4-4 4" /><path d="M20 9H8a4 4 0 0 0 0 8" /></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12V7H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5" /><path d="M16 5l4 4-4 4" /><path d="M20 9H8a4 4 0 0 0 0 8" /></svg>
               Importación FTP
             </button>
 
             <button
               onClick={() => setActiveTab('erp-webservice')}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'erp-webservice' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'erp-webservice' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
             >
-              <ArrowRightLeft className="w-5 h-5" />
+              <ArrowRightLeft className="w-4 h-4" />
               ERP Webservice
             </button>
 
             <button
               onClick={() => setActiveTab('upload')}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'upload' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'upload' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" x2="12" y1="3" y2="15" /></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" x2="12" y1="3" y2="15" /></svg>
               Ingesta CSV
             </button>
 
             <button
               onClick={() => setActiveTab('store-import')}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'store-import' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${activeTab === 'store-import' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
             >
-              <StoreIcon className="w-5 h-5" />
+              <StoreIcon className="w-4 h-4" />
               Importador Locales
             </button>
           </>
         )}
       </nav>
 
-        <div className="p-6 border-t border-slate-800">
-          <div className="flex items-center gap-3 px-2 mb-4">
-            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold ring-2 ring-indigo-500/20">
+        <div className="px-4 py-3 border-t border-slate-800">
+          <div className="flex items-center gap-3 px-1 mb-3">
+            <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold ring-2 ring-indigo-500/20">
               {user?.nombre_completo?.substring(0, 2).toUpperCase() || 'US'}
             </div>
             <div className="overflow-hidden">

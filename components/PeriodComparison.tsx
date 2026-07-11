@@ -151,7 +151,7 @@ export const PeriodComparison: React.FC = () => {
 
     if (!currentMall?.id) {
         return (
-            <div className="bg-white border border-slate-200 rounded-2xl p-6 text-slate-700">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 text-slate-700">
                 No hay mall asignado o seleccionado para mostrar comparativas.
             </div>
         );
@@ -207,11 +207,11 @@ export const PeriodComparison: React.FC = () => {
     }
 
     return (
-        <div className="space-y-8 animate-in fade-in duration-500">
+        <div className="space-y-4 animate-in fade-in duration-500">
             {/* Header & Controls */}
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
-                    <h2 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">Comparativas de Rendimiento</h2>
+                    <h2 className="text-xl md:text-xl font-extrabold text-slate-900 tracking-tight">Comparativas de Rendimiento</h2>
                     <p className="text-slate-500 mt-1">Análisis profundo de crecimiento período vs período.</p>
                 </div>
 
@@ -253,15 +253,15 @@ export const PeriodComparison: React.FC = () => {
 
             {/* Hero Stats */}
             {data && (
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                    <div className="bg-indigo-600 rounded-3xl p-6 md:p-8 text-white shadow-2xl shadow-indigo-200 col-span-1 md:col-span-2 relative overflow-hidden group">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div className="bg-indigo-600 rounded-2xl p-4 md:p-4 text-white shadow-2xl shadow-indigo-200 col-span-1 md:col-span-2 relative overflow-hidden group">
                         <div className="absolute -right-10 -top-10 w-40 h-40 bg-white/10 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-700"></div>
                         <div className="relative z-10">
                             <div className="flex items-center gap-2 text-indigo-100/80 text-[10px] font-bold uppercase tracking-widest mb-4">
                                 <Activity size={14} /> Variación Ventas Brutas (Neto)
                             </div>
                             <div className="flex items-baseline gap-4">
-                                <h3 className="text-3xl md:text-5xl font-black">{(data?.variacion_neto_porc || 0).toFixed(1)}%</h3>
+                                <h3 className="text-xl md:text-5xl font-black">{(data?.variacion_neto_porc || 0).toFixed(1)}%</h3>
                                 {(data?.variacion_neto_porc || 0) >= 0 ?
                                     <TrendingUp className="text-emerald-400" size={32} /> :
                                     <TrendingDown className="text-rose-400" size={32} />
@@ -308,7 +308,7 @@ export const PeriodComparison: React.FC = () => {
             {/* Details Table */}
             {data && (
                 <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-xl overflow-hidden">
-                    <div className="p-5 md:p-8 border-b border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-3 bg-slate-50/50">
+                    <div className="p-5 md:p-4 border-b border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-3 bg-slate-50/50">
                         <div className="flex items-center gap-3">
                             <div className="p-2.5 bg-indigo-100 text-indigo-700 rounded-xl">
                                 <Filter size={18} />

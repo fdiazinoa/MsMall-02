@@ -162,7 +162,7 @@ const ModalShell: React.FC<{
   return (
     <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className={`w-full ${widthClass} bg-white rounded-2xl shadow-2xl border border-slate-200 max-h-[90vh] overflow-hidden`}>
-        <div className="px-6 py-4 border-b border-slate-200 flex items-start justify-between gap-4">
+        <div className="px-3 py-2.5 border-b border-slate-200 flex items-start justify-between gap-4">
           <div>
             <h3 className="text-lg font-bold text-slate-800">{title}</h3>
             {subtitle && <p className="text-sm text-slate-500 mt-1">{subtitle}</p>}
@@ -171,7 +171,7 @@ const ModalShell: React.FC<{
             <X size={18} />
           </button>
         </div>
-        <div className="p-6 overflow-y-auto max-h-[calc(90vh-80px)]">{children}</div>
+        <div className="p-4 overflow-y-auto max-h-[calc(90vh-80px)]">{children}</div>
       </div>
     </div>
   );
@@ -862,10 +862,10 @@ export const SecurityTokenAdmin: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Seguridad &gt; Service Accounts y Tokens</h2>
+          <h2 className="text-xl font-bold text-slate-800">Seguridad &gt; Service Accounts y Tokens</h2>
           <p className="text-slate-500 text-sm">
             Gestión central de credenciales para MsMall Web y MsExportador. Los secretos se muestran una sola vez.
           </p>
@@ -1045,7 +1045,7 @@ export const SecurityTokenAdmin: React.FC = () => {
                       <tbody className="divide-y divide-slate-100 bg-white">
                         {serviceAccounts.length === 0 ? (
                           <tr>
-                            <td colSpan={9} className="px-4 py-12 text-center text-slate-400">
+                            <td colSpan={9} className="px-4 py-8 text-center text-slate-400">
                               No hay service accounts para los filtros seleccionados.
                             </td>
                           </tr>
@@ -1141,7 +1141,7 @@ export const SecurityTokenAdmin: React.FC = () => {
                       <tbody className="divide-y divide-slate-100 bg-white">
                         {tokenRowsForDisplay.length === 0 ? (
                           <tr>
-                            <td colSpan={9} className="px-4 py-12 text-center text-slate-400">
+                            <td colSpan={9} className="px-4 py-8 text-center text-slate-400">
                               No hay tokens para los filtros seleccionados.
                             </td>
                           </tr>
@@ -1232,7 +1232,7 @@ export const SecurityTokenAdmin: React.FC = () => {
                         <tbody className="divide-y divide-slate-100 bg-white">
                           {auditLogs.length === 0 ? (
                             <tr>
-                              <td colSpan={7} className="px-4 py-12 text-center text-slate-400">
+                              <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
                                 No hay eventos de auditoría para los filtros seleccionados.
                               </td>
                             </tr>

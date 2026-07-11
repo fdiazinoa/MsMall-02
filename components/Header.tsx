@@ -170,10 +170,10 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
         </div>
       )}
 
-      <header className="bg-white border-b border-slate-200 px-3 md:px-6 py-2 sticky top-0 z-10">
+      <header className="bg-white border-b border-slate-200 px-3 py-2 lg:px-5 sticky top-0 z-10">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <h2 className="text-lg font-semibold text-slate-800 hidden md:block">Panel de Control de Auditoría</h2>
+            <h2 className="text-base font-semibold text-slate-800 hidden md:block">Panel de Control de Auditoría</h2>
 
             {malls && malls.length > 0 && (
               <div className="relative group min-w-0">
@@ -185,7 +185,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                         const selected = malls.find(m => m.id === e.target.value);
                         if (selected) setCurrentMall(selected);
                       }}
-                      className="appearance-none bg-slate-100 border border-slate-200 text-slate-700 font-medium py-1.5 pl-9 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer hover:bg-slate-200 transition-colors max-w-[200px] md:max-w-none"
+                      className="h-9 appearance-none bg-slate-100 border border-slate-200 text-slate-700 font-medium py-1.5 pl-9 pr-8 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer hover:bg-slate-200 transition-colors max-w-[200px] md:max-w-none"
                     >
                       {malls.map(mall => (
                         <option key={mall.id} value={mall.id}>{mall.nombre}</option>
@@ -195,7 +195,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                     <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-sm font-medium text-slate-600">
+                  <div className="flex h-9 items-center gap-2 px-3 bg-slate-50 border border-slate-100 rounded-lg text-xs font-medium text-slate-600">
                     <Building size={14} className="text-indigo-500" />
                     {currentMall?.nombre}
                   </div>

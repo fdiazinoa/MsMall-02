@@ -539,10 +539,10 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Mantenimiento de Locales</h2>
+          <h2 className="text-xl font-bold text-slate-800">Mantenimiento de Locales</h2>
           <p className="text-slate-500">Gestione la configuración contractual, física y los campos libres por mall.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -574,7 +574,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
       </div>
 
       {showForm && (
-        <div className="bg-white p-8 rounded-2xl border border-indigo-100 shadow-xl animate-in zoom-in-95 duration-200">
+        <div className="bg-white p-4 rounded-2xl border border-indigo-100 shadow-xl animate-in zoom-in-95 duration-200">
           <div className="flex items-center justify-between gap-4 mb-6">
             <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
               <StoreIcon className="text-indigo-600" size={20} />
@@ -585,8 +585,8 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
             </button>
           </div>
 
-          <form onSubmit={handleCreate} className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <form onSubmit={handleCreate} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-4">
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Básico</h4>
                 <div>
@@ -823,8 +823,8 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
 
       {showCustomFieldsManager && (
         <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center px-4">
-          <div className="w-full max-w-6xl max-h-[90vh] overflow-auto rounded-3xl bg-white shadow-2xl border border-slate-200">
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-6 py-4">
+          <div className="w-full max-w-6xl max-h-[90vh] overflow-auto rounded-2xl bg-white shadow-2xl border border-slate-200">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-3 py-2.5">
               <div>
                 <h3 className="text-lg font-bold text-slate-800">Configurar Campos Libres</h3>
                 <p className="text-sm text-slate-500">Defina campos dinámicos por mall y sus opciones para mantenimiento y cubo.</p>
@@ -834,7 +834,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
               </button>
             </div>
 
-            <div className="grid gap-6 p-6 lg:grid-cols-[1.1fr_1.4fr]">
+            <div className="grid gap-4 p-4 lg:grid-cols-[1.1fr_1.4fr]">
               <div className="space-y-4">
                 <h4 className="text-sm font-bold text-slate-700">Campos existentes</h4>
                 <div className="space-y-3">
@@ -916,7 +916,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                     <label className="mb-1 block text-sm font-medium text-slate-700">Orden</label>
                     <input type="number" value={fieldDraft.sort_order ?? 0} onChange={(e) => setFieldDraft((prev) => ({ ...prev, sort_order: Number(e.target.value) || 0 }))} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
                   </div>
-                  <div className="flex items-center gap-6 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  <div className="flex items-center gap-4 rounded-lg border border-slate-200 bg-white px-3 py-2">
                     <label className="flex items-center gap-2 text-sm text-slate-600">
                       <input type="checkbox" checked={fieldDraft.required !== false} onChange={(e) => setFieldDraft((prev) => ({ ...prev, required: e.target.checked }))} />
                       Requerido
@@ -989,23 +989,23 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
             </div>
           </div>
         </div>
-        <div className="overflow-x-auto">
+        <div className="max-h-[calc(100dvh-19rem)] min-h-[260px] overflow-auto">
           <table className="w-full text-left">
-            <thead className="bg-slate-50/50 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
+            <thead className="sticky top-0 z-10 bg-slate-50/95 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
               <tr>
-                <th className="px-6 py-4">Información Local</th>
-                <th className="px-6 py-4">Responsable</th>
-                <th className="px-6 py-4">Ubicación (Piso)</th>
-                <th className="px-6 py-4 text-center">Metraje (Mts²)</th>
-                <th className="px-6 py-4 text-center">Renta %</th>
-                <th className="px-6 py-4">Campos Libres</th>
-                <th className="px-6 py-4 text-right">Acciones</th>
+                <th className="px-3 py-2.5">Información Local</th>
+                <th className="px-3 py-2.5">Responsable</th>
+                <th className="px-3 py-2.5">Ubicación (Piso)</th>
+                <th className="px-3 py-2.5 text-center">Metraje (Mts²)</th>
+                <th className="px-3 py-2.5 text-center">Renta %</th>
+                <th className="px-3 py-2.5">Campos Libres</th>
+                <th className="px-3 py-2.5 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-12 text-center text-slate-400">
+                  <td colSpan={7} className="px-6 py-8 text-center text-slate-400">
                     <div className="flex flex-col items-center gap-2">
                       <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600" />
                       <span className="text-sm">Cargando datos de locales...</span>
@@ -1015,7 +1015,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
               ) : filteredStores.length > 0 ? (
                 filteredStores.map((store) => (
                   <tr key={store.id} className="hover:bg-slate-50/80 transition-colors group">
-                    <td className="px-6 py-4">
+                    <td className="px-3 py-2.5">
                       <div className="flex items-center gap-3">
                         <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg group-hover:bg-indigo-100 transition-colors">
                           <StoreIcon size={18} />
@@ -1041,7 +1041,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-3 py-2.5">
                       <div className="text-sm font-medium text-slate-700 flex items-center gap-2">
                         <User size={14} className="text-slate-400" />
                         {store.responsable}
@@ -1055,7 +1055,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         </div>
                       )}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2 text-slate-600 text-sm font-medium">
                         <MapPin size={14} className="text-indigo-400" />
                         {store.piso}
@@ -1064,18 +1064,18 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         <Building2 size={10} /> {store.mall_nombre || 'Mall Plaza'}
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-center">
+                    <td className="px-3 py-2.5 text-center">
                       <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-bold">
                         <Maximize2 size={12} className="text-slate-400" />
                         {store.mts}
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-center">
+                    <td className="px-3 py-2.5 text-center">
                       <div className="text-sm font-bold text-indigo-600">
                         {store.porciento_renta}%
                       </div>
                     </td>
-                    <td className="px-6 py-4 min-w-[220px]">
+                    <td className="px-3 py-2.5 min-w-[220px]">
                       {activeFieldDefinitions.length === 0 ? (
                         <span className="text-xs text-slate-400">Sin configuración</span>
                       ) : (
@@ -1093,7 +1093,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         </div>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-3 py-2.5 text-right">
                       <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         {store.activo !== false && store.processing_status === 'SUSPENDED_AUTH_ERROR' ? (
                           <button
@@ -1131,7 +1131,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                 ))
               ) : (
                 <tr>
-                  <td colSpan={7} className="px-6 py-20 text-center">
+                  <td colSpan={7} className="px-6 py-10 text-center">
                     <div className="flex flex-col items-center gap-3 text-slate-300">
                       <StoreIcon size={48} strokeWidth={1} />
                       <p className="text-slate-500 font-medium italic">No se encontraron locales registrados con estos criterios.</p>

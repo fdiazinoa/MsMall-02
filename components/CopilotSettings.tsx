@@ -101,7 +101,7 @@ export const CopilotSettings: React.FC = () => {
 
   if (!isAdmin) {
     return (
-      <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm">
+      <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
         <div className="flex items-center gap-3 text-slate-800">
           <ShieldCheck className="w-6 h-6 text-amber-500" />
           <h2 className="text-xl font-bold">Copilot MsMall</h2>
@@ -114,7 +114,7 @@ export const CopilotSettings: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
@@ -122,7 +122,7 @@ export const CopilotSettings: React.FC = () => {
               <Bot size={22} />
             </div>
             <div>
-              <h2 className="text-2xl font-bold text-slate-900">Copilot MsMall</h2>
+              <h2 className="text-xl font-bold text-slate-900">Copilot MsMall</h2>
               <p className="text-sm text-slate-500">Proveedor, modelo y clave privada del asistente operativo.</p>
             </div>
           </div>
@@ -147,7 +147,7 @@ export const CopilotSettings: React.FC = () => {
       )}
 
       <form onSubmit={handleSave} className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-        <div className="p-6 border-b border-slate-100">
+        <div className="p-4 border-b border-slate-100">
           <div className="flex items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-bold text-slate-900">Configuración</h3>
@@ -171,7 +171,7 @@ export const CopilotSettings: React.FC = () => {
             Cargando configuración...
           </div>
         ) : (
-          <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="space-y-2">
               <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">Proveedor</label>
               <select
@@ -232,7 +232,7 @@ export const CopilotSettings: React.FC = () => {
           </div>
         )}
 
-        <div className="px-6 py-4 border-t border-slate-100 flex justify-end">
+        <div className="px-3 py-2.5 border-t border-slate-100 flex justify-end">
           <button
             type="submit"
             disabled={loading || saving}

@@ -163,10 +163,10 @@ export const UserManagement: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Gestión de Usuarios</h2>
+          <h2 className="text-xl font-bold text-slate-800">Gestión de Usuarios</h2>
           <p className="text-slate-500 text-sm">Controle el acceso a los Malls.</p>
         </div>
         <button
@@ -207,7 +207,7 @@ export const UserManagement: React.FC = () => {
 
       {createModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-4">
             <h3 className="text-lg font-bold mb-4">Crear Nuevo Usuario</h3>
             <div className="space-y-3 mb-4">
               <input
@@ -270,7 +270,7 @@ export const UserManagement: React.FC = () => {
       {/* Assignment Modal */}
       {assignmentModalOpen && selectedUser && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-4">
             <h3 className="text-lg font-bold mb-4">Editar Usuario</h3>
             <div className="space-y-3 mb-4">
               <input
@@ -327,39 +327,39 @@ export const UserManagement: React.FC = () => {
       )}
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="max-h-[calc(100dvh-19rem)] min-h-[260px] overflow-auto">
           <table className="w-full text-left">
-            <thead className="bg-slate-50/50 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
+            <thead className="sticky top-0 z-10 bg-slate-50/95 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
               <tr>
-                <th className="px-6 py-4">Usuario</th>
-                <th className="px-6 py-4">Rol Principal</th>
-                <th className="px-6 py-4 text-center">Malls Asignados</th>
-                <th className="px-6 py-4 text-right">Acciones</th>
+                <th className="px-3 py-2.5">Usuario</th>
+                <th className="px-3 py-2.5">Rol Principal</th>
+                <th className="px-3 py-2.5 text-center">Malls Asignados</th>
+                <th className="px-3 py-2.5 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan={5} className="px-6 py-12 text-center text-slate-400 italic">Cargando usuarios...</td></tr>
+                <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-400 italic">Cargando usuarios...</td></tr>
               ) : filteredUsers.length > 0 ? filteredUsers.map(user => (
                 <tr key={user.id} className="hover:bg-slate-50 transition-colors group">
-                  <td className="px-6 py-4">
+                  <td className="px-3 py-2.5">
                     <div>
                       <div className="text-sm font-bold text-slate-800">{user.nombre || user.email}</div>
                       {user.nombre && <div className="text-xs text-slate-500">{user.email}</div>}
                       <div className="text-xs text-slate-400">ID: {user.id.slice(0, 8)}...</div>
                     </div>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-3 py-2.5">
                     <span className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs font-bold uppercase ${ROLE_STYLES[normalizeRole(user.rol)]?.color || 'bg-slate-100 text-slate-600 border-slate-100'}`}>
                       {ROLE_STYLES[normalizeRole(user.rol)]?.label || user.rol}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-center">
+                  <td className="px-3 py-2.5 text-center">
                     <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-50 text-indigo-600 font-bold border border-indigo-100">
                       {user.malls?.length || 0}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-3 py-2.5 text-right">
                     <button
                       onClick={() => openAssignmentModal(user)}
                       className="text-indigo-600 hover:text-indigo-800 text-xs font-bold flex items-center gap-1 ml-auto"
@@ -370,7 +370,7 @@ export const UserManagement: React.FC = () => {
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">
+                  <td colSpan={4} className="px-6 py-8 text-center text-slate-400 italic">
                     No se encontraron usuarios para este mall.
                   </td>
                 </tr>

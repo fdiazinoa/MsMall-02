@@ -7,7 +7,7 @@ import {
 import {
   TrendingUp, TrendingDown, DollarSign, ShoppingBag,
   CreditCard, BarChart3, Calendar, Info, X, Store, ArrowUpRight,
-  AreaChart as AreaChartIcon, LineChart as LineChartIcon, List
+  AreaChart as AreaChartIcon, LineChart as LineChartIcon, List, PieChart as PieChartIcon
 } from 'lucide-react';
 import { KPIData, DateRange, SegmentStoreDetail } from '../types';
 import { ApiService, type Store as MallStore } from '../api';
@@ -17,6 +17,8 @@ const COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
 
 type TrendChartMode = 'area' | 'line' | 'bar';
 type TopLocalesMode = 'list' | 'bar';
+type SegmentChartMode = 'donut' | 'bar';
+type RubroChartMode = 'list' | 'bar';
 
 const ChartModeButton = ({ active, label, onClick, children }: {
   active: boolean;
@@ -99,27 +101,45 @@ const SegmentDonutCard = ({
   format,
   detailMap,
   onSelect,
+  mode,
+  onModeChange,
 }: {
   title: string;
   items: SegmentItem[];
   format: (value: number) => string;
   detailMap?: Record<string, SegmentStoreDetail[]>;
   onSelect: (selection: SegmentSelection) => void;
+  mode: SegmentChartMode;
+  onModeChange: (mode: SegmentChartMode) => void;
 }) => {
   const visibleItems = (items || []).filter((item) => item.value > 0).slice(0, 5);
   const total = visibleItems.reduce((sum, item) => sum + item.value, 0);
+  const selectItem = (item: SegmentItem) => onSelect({
+    kind: 'tipo_negocio',
+    title,
+    item,
+    stores: detailMap?.[item.name] || [],
+  });
 
   return (
     <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm min-h-[250px]">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between gap-3 mb-3">
         <h4 className="font-bold text-slate-800">{title}</h4>
-        <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
+          <ChartModeButton active={mode === 'donut'} label="Ver gráfica de dona" onClick={() => onModeChange('donut')}>
+            <PieChartIcon size={16} />
+          </ChartModeButton>
+          <ChartModeButton active={mode === 'bar'} label="Ver gráfica de barras" onClick={() => onModeChange('bar')}>
+            <BarChart3 size={16} />
+          </ChartModeButton>
+        </div>
       </div>
       {visibleItems.length === 0 ? (
         <div className="h-40 flex items-center justify-center text-sm text-slate-400">
           Sin ventas en el periodo.
         </div>
-      ) : (
+      ) : mode === 'donut' ? (
         <div className="relative h-[210px] sm:h-[230px]">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
@@ -132,12 +152,7 @@ const SegmentDonutCard = ({
                 paddingAngle={2}
                 stroke="white"
                 strokeWidth={3}
-                onClick={(item) => onSelect({
-                  kind: 'tipo_negocio',
-                  title,
-                  item: item as SegmentItem,
-                  stores: detailMap?.[(item as SegmentItem).name] || [],
-                })}
+                onClick={(item) => selectItem(item as SegmentItem)}
               >
                 {visibleItems.map((item, index) => (
                   <Cell
@@ -155,6 +170,33 @@ const SegmentDonutCard = ({
             <span className="text-base font-bold text-slate-800">{format(total)}</span>
           </div>
         </div>
+      ) : (
+        <div className="h-[210px] sm:h-[230px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={visibleItems} layout="vertical" margin={{ top: 6, right: 12, left: 8, bottom: 6 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+              <XAxis type="number" hide />
+              <YAxis
+                type="category"
+                dataKey="name"
+                width={110}
+                axisLine={false}
+                tickLine={false}
+                tick={{ fill: '#64748b', fontSize: 12 }}
+              />
+              <Tooltip content={<SegmentTooltip format={format} total={total} />} />
+              <Bar dataKey="value" radius={[0, 6, 6, 0]} onClick={(item) => selectItem(item.payload as SegmentItem)}>
+                {visibleItems.map((item, index) => (
+                  <Cell
+                    key={`tipo-bar-${item.name}`}
+                    fill={COLORS[index % COLORS.length]}
+                    className="cursor-pointer focus:outline-none"
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       )}
     </div>
   );
@@ -166,28 +208,46 @@ const RubroExplorerCard = ({
   format,
   detailMap,
   onSelect,
+  mode,
+  onModeChange,
 }: {
   title: string;
   items: SegmentItem[];
   format: (value: number) => string;
   detailMap?: Record<string, SegmentStoreDetail[]>;
   onSelect: (selection: SegmentSelection) => void;
+  mode: RubroChartMode;
+  onModeChange: (mode: RubroChartMode) => void;
 }) => {
   const visibleItems = (items || []).filter((item) => item.value > 0).slice(0, 8);
   const total = visibleItems.reduce((sum, item) => sum + item.value, 0);
   const maxValue = Math.max(...visibleItems.map((item) => item.value), 0);
+  const selectItem = (item: SegmentItem) => onSelect({
+    kind: 'rubro',
+    title,
+    item,
+    stores: detailMap?.[item.name] || [],
+  });
 
   return (
     <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm min-h-[250px]">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between gap-3 mb-3">
         <h4 className="font-bold text-slate-800">{title}</h4>
-        <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
+          <ChartModeButton active={mode === 'list'} label="Ver ranking compacto" onClick={() => onModeChange('list')}>
+            <List size={16} />
+          </ChartModeButton>
+          <ChartModeButton active={mode === 'bar'} label="Ver gráfica de barras" onClick={() => onModeChange('bar')}>
+            <BarChart3 size={16} />
+          </ChartModeButton>
+        </div>
       </div>
       {visibleItems.length === 0 ? (
         <div className="h-40 flex items-center justify-center text-sm text-slate-400">
           Sin ventas en el periodo.
         </div>
-      ) : (
+      ) : mode === 'list' ? (
         <div className="space-y-2">
           {visibleItems.map((item, index) => {
             const percent = maxValue > 0 ? (item.value / maxValue) * 100 : 0;
@@ -196,13 +256,8 @@ const RubroExplorerCard = ({
               <button
                 key={`rubro-${item.name}-${index}`}
                 type="button"
-                onClick={() => onSelect({
-                  kind: 'rubro',
-                  title,
-                  item,
-                  stores: detailMap?.[item.name] || [],
-                })}
-                    className="group w-full rounded-lg border border-transparent px-2 py-2 text-left hover:border-slate-200 hover:bg-slate-50 transition-colors"
+                onClick={() => selectItem(item)}
+                className="group w-full rounded-lg border border-transparent px-2 py-2 text-left hover:border-slate-200 hover:bg-slate-50 transition-colors"
               >
                 <div className="flex items-center justify-between gap-3">
                   <span className="min-w-0 flex items-center gap-2">
@@ -229,6 +284,33 @@ const RubroExplorerCard = ({
               </button>
             );
           })}
+        </div>
+      ) : (
+        <div className="h-[250px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={visibleItems} layout="vertical" margin={{ top: 6, right: 12, left: 8, bottom: 6 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+              <XAxis type="number" hide />
+              <YAxis
+                type="category"
+                dataKey="name"
+                width={120}
+                axisLine={false}
+                tickLine={false}
+                tick={{ fill: '#64748b', fontSize: 12 }}
+              />
+              <Tooltip content={<SegmentTooltip format={format} total={total} />} />
+              <Bar dataKey="value" radius={[0, 6, 6, 0]} onClick={(item) => selectItem(item.payload as SegmentItem)}>
+                {visibleItems.map((item, index) => (
+                  <Cell
+                    key={`rubro-bar-${item.name}`}
+                    fill={COLORS[index % COLORS.length]}
+                    className="cursor-pointer focus:outline-none"
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       )}
     </div>
@@ -401,6 +483,8 @@ export const DashboardKPIs: React.FC = () => {
   const [selectedSegment, setSelectedSegment] = useState<SegmentSelection | null>(null);
   const [trendChartMode, setTrendChartMode] = useState<TrendChartMode>('area');
   const [topLocalesMode, setTopLocalesMode] = useState<TopLocalesMode>('list');
+  const [businessTypeChartMode, setBusinessTypeChartMode] = useState<SegmentChartMode>('donut');
+  const [rubroChartMode, setRubroChartMode] = useState<RubroChartMode>('list');
   const [dates, setDates] = useState<DateRange>(() => {
     const now = new Date();
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -668,6 +752,8 @@ export const DashboardKPIs: React.FC = () => {
           format={format}
           detailMap={businessTypeDetailMap}
           onSelect={setSelectedSegment}
+          mode={businessTypeChartMode}
+          onModeChange={setBusinessTypeChartMode}
         />
         <RubroExplorerCard
           title="Ventas por Rubro"
@@ -675,6 +761,8 @@ export const DashboardKPIs: React.FC = () => {
           format={format}
           detailMap={rubroDetailMap}
           onSelect={setSelectedSegment}
+          mode={rubroChartMode}
+          onModeChange={setRubroChartMode}
         />
       </div>
 

@@ -404,13 +404,13 @@ export const FinancialDashboard: React.FC = () => {
                 </div>
             </div>
 
-            <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+            <div className="flex flex-wrap gap-1.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-sm">
                 {FINANCIAL_PANELS.map((panel) => (
                     <button
                         key={panel.id}
                         type="button"
                         onClick={() => setActiveFinancialPanel(panel.id)}
-                        className={`h-10 rounded-xl px-3 text-xs font-bold transition-colors sm:px-4 ${
+                        className={`h-9 rounded-lg px-3 text-xs font-bold transition-colors ${
                             activeFinancialPanel === panel.id
                                 ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-200'
                                 : 'bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
@@ -422,36 +422,38 @@ export const FinancialDashboard: React.FC = () => {
             </div>
 
             {activeFinancialPanel === 'ocr' && (
-                <div className="min-w-0 bg-white p-4 sm:p-4 rounded-2xl border border-slate-100 shadow-sm">
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-                        <div>
-                            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                                <PieChart className="text-indigo-500" size={20} />
+                <div className="min-w-0 bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
+                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center mb-3">
+                        <div className="min-w-0">
+                            <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                                <PieChart className="text-indigo-500" size={18} />
                                 Salud de Cartera por OCR
                             </h3>
-                            <p className="text-xs text-slate-500 mt-1">
+                            <p className="text-[11px] text-slate-500 mt-0.5">
                                 Se priorizan los locales con mayor presión financiera. Mostrar todo en un scatter deja de ser legible cuando el mall crece.
                             </p>
                         </div>
-                        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">Foco</p>
-                            <p className="text-sm font-semibold text-slate-700">Top {topPortfolioRows.length} de {rankedPortfolio.length} locales con ventas</p>
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Foco</p>
+                            <p className="text-xs font-semibold text-slate-700">Top {topPortfolioRows.length} de {rankedPortfolio.length} locales</p>
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                    <div className="grid grid-cols-3 gap-2 mb-3">
                         {healthBuckets.map((bucket) => (
-                            <div key={bucket.label} className={`rounded-xl border px-3 py-2.5 ${bucket.tone}`}>
-                                <p className="text-[11px] font-bold uppercase tracking-[0.18em]">{bucket.label}</p>
-                                <p className="text-lg font-bold mt-1">{bucket.count}</p>
-                                <p className="text-xs mt-1 opacity-80">{bucket.helper}</p>
+                            <div key={bucket.label} className={`rounded-lg border px-2.5 py-2 ${bucket.tone}`}>
+                                <div className="flex items-baseline justify-between gap-2">
+                                    <p className="truncate text-[10px] font-bold uppercase tracking-wide">{bucket.label}</p>
+                                    <p className="text-base font-bold">{bucket.count}</p>
+                                </div>
+                                <p className="mt-0.5 truncate text-[10px] opacity-80">{bucket.helper}</p>
                             </div>
                         ))}
                     </div>
 
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
                         {topPortfolioRows.length > 0 ? (
-                            <div className="h-[260px] min-w-0 xl:h-[300px]">
+                            <div className="h-[220px] min-w-0 xl:h-[250px]">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart
                                         data={[...topPortfolioRows].reverse()}
@@ -507,28 +509,30 @@ export const FinancialDashboard: React.FC = () => {
             )}
 
             {activeFinancialPanel === 'watchlist' && (
-                <div className="min-w-0 bg-white p-4 sm:p-4 rounded-2xl border border-slate-100 shadow-sm">
-                    <h3 className="text-lg font-bold text-slate-800 mb-2">Watchlist de cartera</h3>
-                    <p className="text-sm text-slate-500 mb-4">Lista corta para seguimiento semanal. Se ordena por OCR y peso comercial.</p>
+                <div className="min-w-0 bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
+                    <div className="mb-3">
+                        <h3 className="text-base font-bold text-slate-800">Watchlist de cartera</h3>
+                        <p className="text-[11px] text-slate-500">Lista corta para seguimiento semanal, ordenada por OCR y peso comercial.</p>
+                    </div>
 
-                    <div className="space-y-2.5 max-h-[360px] overflow-y-auto pr-1">
+                    <div className="space-y-1.5 max-h-[300px] overflow-y-auto pr-1">
                         {topPortfolioRows.map((row) => {
                             const widthPct = `${Math.min((row.ocr / Math.max(maxOcr, 1)) * 100, 100)}%`;
                             return (
-                                <div key={row.id} className={`rounded-xl border px-3 py-2.5 ${row.riskMeta.panel}`}>
-                                    <div className="flex items-start justify-between gap-3">
+                                <div key={row.id} className={`rounded-lg border px-3 py-2 ${row.riskMeta.panel}`}>
+                                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
                                         <div className="min-w-0">
-                                            <p className="font-semibold text-slate-800 truncate">{row.name}</p>
-                                            <p className="text-xs text-slate-500 mt-1">Ventas del periodo: {format(row.venta)}</p>
+                                            <p className="truncate text-sm font-semibold text-slate-800">{row.name}</p>
+                                            <p className="mt-0.5 text-[11px] text-slate-500">Ventas: {format(row.venta)}</p>
                                         </div>
-                                        <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wide ${row.riskMeta.badge}`}>
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${row.riskMeta.badge}`}>
                                             {row.riskMeta.label}
                                         </span>
                                     </div>
-                                    <div className="mt-3 h-2 rounded-full bg-white/80 overflow-hidden">
+                                    <div className="mt-2 h-1.5 rounded-full bg-white/80 overflow-hidden">
                                         <div className="h-full rounded-full" style={{ width: widthPct, backgroundColor: row.riskMeta.color }} />
                                     </div>
-                                    <div className="mt-3 flex items-center justify-between text-xs">
+                                    <div className="mt-1.5 flex items-center justify-between text-[11px]">
                                         <span className="text-slate-500">OCR</span>
                                         <span className="font-mono font-bold text-slate-800">{row.ocr.toFixed(2)}%</span>
                                     </div>
@@ -544,51 +548,51 @@ export const FinancialDashboard: React.FC = () => {
             )}
 
             {activeFinancialPanel === 'variable' && (
-            <div className="min-w-0 bg-white p-4 sm:p-4 rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-6">
-                    <div>
-                        <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                            <TrendingUp className="text-indigo-500" size={20} />
+            <div className="min-w-0 bg-white p-3 rounded-xl border border-slate-100 shadow-sm overflow-hidden">
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center mb-3">
+                    <div className="min-w-0">
+                        <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                            <TrendingUp className="text-indigo-500" size={18} />
                             Potencial de Recaudación Variable
                         </h3>
-                        <p className="text-sm text-slate-500 mt-1">
+                        <p className="text-[11px] text-slate-500 mt-0.5">
                             La proyección ya no replica la venta actual: estima cierre al ritmo del periodo y muestra qué tan lejos está cada local de activar variable.
                         </p>
                     </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">Base de cálculo</p>
-                        <p className="text-sm font-semibold text-slate-700">{projectionBasis}</p>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Base de cálculo</p>
+                        <p className="text-xs font-semibold text-slate-700">{projectionBasis}</p>
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-                    <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 px-3 py-2.5">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-indigo-500">Cierre estimado mall</p>
-                        <p className="break-words text-base font-bold text-slate-900 mt-1">{format(totalProjectedSales)}</p>
-                        <p className="text-xs text-slate-500 mt-1">Con el ritmo actual del periodo seleccionado.</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+                    <div className="rounded-lg border border-indigo-200 bg-indigo-50/70 px-3 py-2">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-indigo-500">Cierre estimado mall</p>
+                        <p className="break-words text-sm font-bold text-slate-900 mt-0.5">{format(totalProjectedSales)}</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">Ritmo actual.</p>
                     </div>
-                    <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2.5">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-500">Renta variable estimada</p>
-                        <p className="break-words text-base font-bold text-slate-900 mt-1">{format(totalProjectedVariable)}</p>
-                        <p className="text-xs text-slate-500 mt-1">Suma estimada si el mall mantiene el mismo run-rate.</p>
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-500">Renta variable estimada</p>
+                        <p className="break-words text-sm font-bold text-slate-900 mt-0.5">{format(totalProjectedVariable)}</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">Run-rate del periodo.</p>
                     </div>
-                    <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2.5">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-500">Locales sobre breakpoint</p>
-                        <p className="break-words text-base font-bold text-slate-900 mt-1">{storesAboveBreakpoint}</p>
-                        <p className="text-xs text-slate-500 mt-1">Locales que ya cruzan el umbral contractual proyectado.</p>
+                    <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-amber-500">Locales sobre breakpoint</p>
+                        <p className="break-words text-sm font-bold text-slate-900 mt-0.5">{storesAboveBreakpoint}</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">Umbral contractual.</p>
                     </div>
                 </div>
 
-                <div className="-mx-4 overflow-x-auto max-h-[360px] overflow-y-auto px-4 sm:mx-0 sm:px-0">
+                <div className="-mx-3 overflow-x-auto max-h-[300px] overflow-y-auto px-3 sm:mx-0 sm:px-0">
                     <table className="w-full min-w-[760px] text-left">
                         <thead className="sticky top-0 bg-white z-10">
                             <tr className="text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                                <th className="pb-4">Local</th>
-                                <th className="pb-4">Venta Actual</th>
-                                <th className="pb-4">Cierre Est.</th>
-                                <th className="pb-4">Gap vs Breakpoint</th>
-                                <th className="pb-4 text-right">Renta Var. Est.</th>
-                                <th className="pb-4 text-right">Estado</th>
+                                <th className="px-2 py-2">Local</th>
+                                <th className="px-2 py-2">Venta Actual</th>
+                                <th className="px-2 py-2">Cierre Est.</th>
+                                <th className="px-2 py-2">Gap vs Breakpoint</th>
+                                <th className="px-2 py-2 text-right">Renta Var. Est.</th>
+                                <th className="px-2 py-2 text-right">Estado</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
@@ -604,36 +608,36 @@ export const FinancialDashboard: React.FC = () => {
 
                                 return (
                                     <tr key={row.id} className="text-sm hover:bg-slate-50/60 transition-colors align-top">
-                                        <td className="py-4">
+                                        <td className="px-2 py-2.5">
                                             <div className="min-w-0">
                                                 <p className="font-semibold text-slate-800">{row.name}</p>
-                                                <p className="text-xs text-slate-400 mt-1">OCR {row.ocr.toFixed(2)}% · % variable {row.pctVar.toFixed(2)}%</p>
+                                                <p className="text-[11px] text-slate-400 mt-0.5">OCR {row.ocr.toFixed(2)}% · % variable {row.pctVar.toFixed(2)}%</p>
                                             </div>
                                         </td>
-                                        <td className="py-4 text-slate-600 font-medium">{format(row.venta)}</td>
-                                        <td className="py-4">
+                                        <td className="px-2 py-2.5 text-slate-600 font-medium">{format(row.venta)}</td>
+                                        <td className="px-2 py-2.5">
                                             <p className="text-slate-800 font-semibold">{format(row.proyeccion)}</p>
-                                            <p className={`text-xs mt-1 font-semibold ${row.projectionDelta >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                            <p className={`text-[11px] mt-0.5 font-semibold ${row.projectionDelta >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                                                 {formatSignedCurrency(row.projectionDelta)} vs actual
                                             </p>
                                         </td>
-                                        <td className="py-4">
+                                        <td className="px-2 py-2.5">
                                             {row.breakpoint > 0 ? (
                                                 <div>
                                                     <p className={`font-semibold ${gapPositive ? 'text-emerald-600' : 'text-amber-700'}`}>
                                                         {formatSignedCurrency(row.breakpointGap || 0)}
                                                     </p>
-                                                    <p className="text-xs text-slate-400 mt-1">Breakpoint {format(row.breakpoint)}</p>
+                                                    <p className="text-[11px] text-slate-400 mt-0.5">Breakpoint {format(row.breakpoint)}</p>
                                                 </div>
                                             ) : (
                                                 <span className="text-slate-400 text-sm">Sin breakpoint</span>
                                             )}
                                         </td>
-                                        <td className={`py-4 text-right font-bold ${row.rentaVariable > 0 ? 'text-indigo-600' : 'text-slate-400'}`}>
+                                        <td className={`px-2 py-2.5 text-right font-bold ${row.rentaVariable > 0 ? 'text-indigo-600' : 'text-slate-400'}`}>
                                             {format(row.rentaVariable)}
                                         </td>
-                                        <td className="py-4 text-right">
-                                            <span className={`inline-flex px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wide ${statusTone}`}>
+                                        <td className="px-2 py-2.5 text-right">
+                                            <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${statusTone}`}>
                                                 {row.projectionStatus}
                                             </span>
                                         </td>

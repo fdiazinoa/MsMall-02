@@ -959,8 +959,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     }
 
     if (editingConfig.protocolo === 'API' && editingConfig.constants?.[studioGDateModeKey] === 'custom') {
-      if (!editingConfig.constants?.[studioGStartDateKey] || !editingConfig.constants?.[studioGEndDateKey]) {
+      const startDate = editingConfig.constants?.[studioGStartDateKey];
+      const endDate = editingConfig.constants?.[studioGEndDateKey];
+      if (!startDate || !endDate) {
         alert('Selecciona fecha inicio y fecha fin para el rango de consulta API.');
+        return;
+      }
+      if (startDate > endDate) {
+        alert('La fecha inicio no puede ser posterior a la fecha fin.');
         return;
       }
     }
@@ -2151,7 +2157,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           onClick={() => setEditingConfig({
                             ...editingConfig,
                             frecuencia: freq.id as any,
-                            tipo_ejecucion: freq.mode as any
+                            tipo_ejecucion: freq.mode as any,
+                            hora_especifica: freq.id === 'hora_especifica'
+                              ? (editingConfig.hora_especifica || '08:00')
+                              : editingConfig.hora_especifica
                           })}
                           className={`py-2 px-3 rounded-xl border-2 font-bold text-[11px] transition-all text-left flex items-center gap-2 ${editingConfig.frecuencia === freq.id
                             ? 'border-indigo-600 bg-indigo-50 text-indigo-600'
@@ -2252,6 +2261,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                               type="date"
                               className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
                               value={editingConfig.constants?.[studioGStartDateKey] || ''}
+                              max={editingConfig.constants?.[studioGEndDateKey] || undefined}
                               onChange={e => setEditingConfig({
                                 ...editingConfig,
                                 constants: { ...editingConfig.constants, [studioGStartDateKey]: e.target.value }
@@ -2264,6 +2274,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                               type="date"
                               className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
                               value={editingConfig.constants?.[studioGEndDateKey] || ''}
+                              min={editingConfig.constants?.[studioGStartDateKey] || undefined}
                               onChange={e => setEditingConfig({
                                 ...editingConfig,
                                 constants: { ...editingConfig.constants, [studioGEndDateKey]: e.target.value }

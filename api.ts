@@ -806,7 +806,9 @@ export const ApiService = {
       file_type: config.tipo_archivo,
       tipo_ejecucion: config.frecuencia !== 'manual' ? 'AUTOMATICO' : 'MANUAL',
       frecuencia_cron: config.frecuencia,
-      hora_especifica: config.hora_especifica || null,
+      hora_especifica: config.frecuencia === 'hora_especifica'
+        ? (config.hora_especifica || '08:00')
+        : null,
       accion_post_procesado: (config.accion_post_procesado === 'RENOMBRAR_PROCESADO' || config.accion_post_procesado === 'renombrar') ? 'RENOMBRAR_BACKUP' : (config.accion_post_procesado === 'ELIMINAR' || config.accion_post_procesado === 'eliminar' ? 'ELIMINAR' : 'NINGUNA'),
       prefijo_backup: config.prefijo_renombrado || 'PR_',
       mapping_config: config.mapping,

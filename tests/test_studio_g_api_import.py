@@ -91,6 +91,41 @@ def test_studio_g_custom_date_range_requires_dates():
         _studio_g_date_range({"constants_config": {"_studio_g_date_mode": "custom"}})
 
 
+def test_studio_g_custom_date_range_normalizes_reversed_dates():
+    config = {
+        "constants_config": {
+            "_studio_g_date_mode": "custom",
+            "_studio_g_fecha_inicio": "2026-07-12",
+            "_studio_g_fecha_fin": "2026-07-01",
+        }
+    }
+
+    assert _studio_g_date_range(config) == ("2026-07-01", "2026-07-12")
+
+
+def test_automatic_studio_g_config_routes_through_api_import(monkeypatch):
+    import worker_importacion
+
+    received = []
+    monkeypatch.setattr(
+        worker_importacion,
+        "process_webservice_import",
+        lambda config: received.append(config) or {"ok": True, "total_pending": 1},
+    )
+    config = {
+        "id": "local-1",
+        "nombre": "Studio G",
+        "sftp_protocol": "API",
+        "tipo_ejecucion": "AUTOMATICO",
+        "frecuencia_cron": "cada_hora",
+    }
+
+    result = worker_importacion.process_local_files(config)
+
+    assert result["ok"] is True
+    assert received == [config]
+
+
 def test_studio_g_preview_uses_history_before_sample(monkeypatch):
     import main
 
@@ -190,3 +225,15 @@ def test_manual_api_webservice_endpoint_owns_monitor_log_contract():
     assert '"source": "manual_api_webservice_import"' in main_py
     assert "insert_load_log(" in main_py
     assert "trigger=\"manual_api_webservice_import\"" in main_py
+
+
+def test_specific_schedule_persists_visible_default_time():
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    api_source = (repo / "api.ts").read_text(encoding="utf-8")
+    manager_source = (repo / "components" / "ImportManager.tsx").read_text(encoding="utf-8")
+
+    assert "config.frecuencia === 'hora_especifica'" in api_source
+    assert "(config.hora_especifica || '08:00')" in api_source
+    assert "freq.id === 'hora_especifica'" in manager_source

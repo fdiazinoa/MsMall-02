@@ -1551,7 +1551,14 @@ def _studio_g_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
     if not start or not end:
         raise ValueError("Rango de fechas Studio G invalido")
     if start > end:
-        raise ValueError("Rango de fechas Studio G invalido: inicio posterior a fin")
+        logger.warning(
+            "Rango Studio G invertido; normalizando %s..%s a %s..%s.",
+            start,
+            end,
+            end,
+            start,
+        )
+        start, end = end, start
     return start, end
 
 

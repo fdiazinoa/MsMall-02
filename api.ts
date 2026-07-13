@@ -791,12 +791,11 @@ export const ApiService = {
   async saveImportConfig(config: ImportConfig, mallId?: string): Promise<void> {
     if (!supabase) throw new Error("Supabase client not initialized");
 
-    if (!config.id && !mallId) {
-      throw new Error("No se puede crear la configuración sin un mall seleccionado.");
+    if (!config.id) {
+      throw new Error("Selecciona un local existente antes de guardar el importador.");
     }
 
     const dbPayload: any = {
-      nombre: config.nombre, // Ensure name is saved if it's new
       sftp_host: config.host,
       sftp_port: config.puerto,
       sftp_user: config.usuario,
@@ -816,35 +815,25 @@ export const ApiService = {
       fecha_corte_importacion: config.fecha_corte_importacion || null
     };
 
-    if (mallId) {
-      dbPayload.mall_id = mallId;
-    }
-
-    // Logic to always ensure codigo_interno is present and valid
-    let finalCodigoInterno = `IMP-${Math.floor(Math.random() * 100000)}`;
-
-    if (config.id) {
-      const { data: existing } = await supabase
-        .from('locales')
-        .select('id, codigo_interno')
-        .eq('id', config.id)
-        .maybeSingle();
-
-      if (existing && existing.codigo_interno) {
-        finalCodigoInterno = existing.codigo_interno;
-      }
-    }
-
-    // Always set the code
-    dbPayload.codigo_interno = finalCodigoInterno;
-
-    // Payload for Upsert
-    const payload = config.id ? { id: config.id, ...dbPayload } : dbPayload;
-
-    const { error } = await supabase
+    const { data: existing, error: lookupError } = await supabase
       .from('locales')
-      .upsert(payload)
-      .select();
+      .select('id, mall_id, activo')
+      .eq('id', config.id)
+      .maybeSingle();
+
+    if (lookupError) throw lookupError;
+    if (!existing) throw new Error("El local seleccionado ya no existe.");
+    if (existing.activo === false) throw new Error("No se puede configurar un importador para un local inactivo.");
+    if (mallId && String(existing.mall_id || '') !== String(mallId)) {
+      throw new Error("El local seleccionado no pertenece al mall activo.");
+    }
+
+    const { data: updated, error } = await supabase
+      .from('locales')
+      .update(dbPayload)
+      .eq('id', config.id)
+      .select('id')
+      .maybeSingle();
 
     if (error) {
       console.error("Error saving config to Supabase:", error);
@@ -852,6 +841,9 @@ export const ApiService = {
         throw new Error("La base de datos no está actualizada: Falta la columna 'hora_especifica' en la tabla 'locales'. Por favor ejecute el script SQL provisto.");
       }
       throw error;
+    }
+    if (!updated || String(updated.id) !== String(config.id)) {
+      throw new Error("Supabase no confirmó la actualización del local seleccionado.");
     }
   },
 

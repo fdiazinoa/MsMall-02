@@ -764,13 +764,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     try {
       const logs = await ApiService.getLoadLogs(currentMall.id, authToken);
       const localId = String(config.id || '');
-      const localName = String(config.nombre || '').trim().toLowerCase();
       const filteredLogs = (logs || [])
-        .filter((log) => {
-          const logLocalId = String(log.local_id || '');
-          const logLocalName = String(log.local_nombre || '').trim().toLowerCase();
-          return (localId && logLocalId === localId) || (localName && logLocalName === localName);
-        })
+        .filter((log) => localId && String(log.local_id || '') === localId)
         .slice(0, 30);
 
       setAuditLogs(filteredLogs);
@@ -941,6 +936,16 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
   const handleSave = async () => {
     // Validar mapeo mínimo
+
+    if (!editingConfig.id) {
+      alert('Selecciona el local existente al que pertenece este importador.');
+      return;
+    }
+    const selectedStore = availableStores.find((store) => String(store.id) === String(editingConfig.id));
+    if (!selectedStore) {
+      alert('El local seleccionado no está activo o no pertenece al mall actual.');
+      return;
+    }
 
     const missing = STANDARD_FIELDS.filter(f => f.required && !hasFieldMappingValue(editingConfig, f.key));
     if (missing.length > 0) {
@@ -1223,7 +1228,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       const logs = await ApiService.getLoadLogs(currentMall?.id, authToken);
       const targetLog = (logs || []).find((log: any) =>
         log?.archivo === filename &&
-        log?.local_nombre === config.nombre &&
+        String(log?.local_id || '') === String(config.id || '') &&
         (log?.estado === 'exito' || log?.estado === 'parcial')
       );
 
@@ -1993,24 +1998,26 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         }
                       }}
                     >
-                      <option value="">-- Nuevo Local (Crear al guardar) --</option>
+                      <option value="">-- Seleccionar local registrado --</option>
                       {(availableStores || []).map(s => (
                         <option key={s.id} value={s.id}>{s.nombre} ({s.codigo_interno})</option>
                       ))}
                     </select>
-                    <p className="text-[10px] text-slate-400 mt-2 italic">Recomendado: Seleccione un local ya registrado para evitar duplicados.</p>
+                    <p className="text-[10px] text-slate-400 mt-2 italic">La conexión se guarda por UUID; el nombre y el código solo ayudan a identificar el local.</p>
                   </div>
 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 flex justify-between items-center">
-                      <span>Nombre de la Fuente / Conexión</span>
+                      <span>Local vinculado</span>
                       {editingConfig.id && <span className="text-[9px] bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded">Vinculado a ID: {editingConfig.id.substring(0, 8)}...</span>}
                     </label>
                     <input
-                      type="text" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none font-medium"
-                      placeholder="Ej: Nike Store - SFTP Principal"
+                      type="text"
+                      placeholder="Selecciona un local registrado"
                       value={editingConfig.nombre}
-                      onChange={e => setEditingConfig({ ...editingConfig, nombre: e.target.value })}
+                      readOnly
+                      aria-readonly="true"
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-600 outline-none font-medium"
                     />
                   </div>
 

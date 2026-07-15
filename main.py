@@ -77,8 +77,13 @@ from services.connection_monitor_service import (
 )
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import (
+    DEFAULT_CONSOLIDATED_BODY_TEMPLATE,
+    DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE,
     DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
     DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+    MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE,
+    MISSING_DAYS_NOTIFICATION_TYPE,
+    MISSING_DAYS_NOTIFICATION_TYPES,
     build_missing_days_email_html,
     missing_days_email_period,
     run_missing_days_email_scheduler,
@@ -1392,6 +1397,7 @@ class MissingDaysEmailSettingsRequest(BaseModel):
 
 class MissingDaysSendNowRequest(BaseModel):
     mall_id: str
+    notification_type: str = "missing_days_audit"
 
 class CopilotSettingsRequest(BaseModel):
     enabled: bool = False
@@ -7251,19 +7257,37 @@ def _send_resend_email(
         raise HTTPException(status_code=500, detail="Error inesperado enviando con Resend.")
 
 
-def _default_missing_days_email_settings(mall_id: str) -> Dict[str, Any]:
+def _normalize_missing_days_notification_type(value: str) -> str:
+    notification_type = str(value or MISSING_DAYS_NOTIFICATION_TYPE).strip()
+    if notification_type not in MISSING_DAYS_NOTIFICATION_TYPES:
+        raise HTTPException(status_code=400, detail="Tipo de envio de dias faltantes invalido.")
+    return notification_type
+
+
+def _missing_days_default_templates(notification_type: str) -> tuple[str, str]:
+    if notification_type == MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE:
+        return DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE, DEFAULT_CONSOLIDATED_BODY_TEMPLATE
+    return DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE, DEFAULT_MISSING_DAYS_BODY_TEMPLATE
+
+
+def _default_missing_days_email_settings(
+    mall_id: str,
+    notification_type: str = MISSING_DAYS_NOTIFICATION_TYPE,
+) -> Dict[str, Any]:
+    notification_type = _normalize_missing_days_notification_type(notification_type)
+    subject_template, body_template = _missing_days_default_templates(notification_type)
     return {
         "id": None,
         "mall_id": mall_id,
-        "notification_type": "missing_days_audit",
+        "notification_type": notification_type,
         "enabled": False,
         "weekdays": [],
         "send_time": "08:00",
         "lookback_days": 7,
         "send_only_with_gaps": True,
         "cc_emails": [],
-        "subject_template": DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
-        "body_template": DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+        "subject_template": subject_template,
+        "body_template": body_template,
         "created_at": None,
         "updated_at": None,
     }
@@ -7316,10 +7340,19 @@ def _normalize_email_template(value: Optional[str], default: str, *, max_length:
     return template
 
 
-def _sanitize_missing_days_email_settings_row(row: Optional[Dict[str, Any]], mall_id: str) -> Dict[str, Any]:
+def _sanitize_missing_days_email_settings_row(
+    row: Optional[Dict[str, Any]],
+    mall_id: str,
+    notification_type: str = MISSING_DAYS_NOTIFICATION_TYPE,
+) -> Dict[str, Any]:
+    notification_type = _normalize_missing_days_notification_type(notification_type)
     if not row:
-        return _default_missing_days_email_settings(mall_id)
-    data = _default_missing_days_email_settings(mall_id)
+        return _default_missing_days_email_settings(mall_id, notification_type)
+    row_notification_type = _normalize_missing_days_notification_type(
+        row.get("notification_type") or notification_type
+    )
+    subject_template, body_template = _missing_days_default_templates(row_notification_type)
+    data = _default_missing_days_email_settings(mall_id, row_notification_type)
     try:
         lookback_days = int(row.get("lookback_days") or 7)
     except (TypeError, ValueError):
@@ -7328,7 +7361,7 @@ def _sanitize_missing_days_email_settings_row(row: Optional[Dict[str, Any]], mal
     data.update({
         "id": row.get("id"),
         "mall_id": row.get("mall_id") or mall_id,
-        "notification_type": row.get("notification_type") or "missing_days_audit",
+        "notification_type": row_notification_type,
         "enabled": bool(row.get("enabled")),
         "weekdays": _normalize_weekdays(row.get("weekdays") or []),
         "send_time": str(row.get("send_time") or "08:00")[:5],
@@ -7337,12 +7370,12 @@ def _sanitize_missing_days_email_settings_row(row: Optional[Dict[str, Any]], mal
         "cc_emails": _normalize_email_list(row.get("cc_emails") or [], strict=False),
         "subject_template": _normalize_email_template(
             row.get("subject_template"),
-            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+            subject_template,
             max_length=160,
         ),
         "body_template": _normalize_email_template(
             row.get("body_template"),
-            DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+            body_template,
             max_length=2000,
         ),
         "created_at": row.get("created_at"),
@@ -7367,16 +7400,20 @@ def _is_missing_email_template_columns_error(exc: Exception) -> bool:
     )
 
 
-def _load_missing_days_email_settings_row(mall_id: str) -> Dict[str, Any]:
+def _load_missing_days_email_settings_row(
+    mall_id: str,
+    notification_type: str = MISSING_DAYS_NOTIFICATION_TYPE,
+) -> Dict[str, Any]:
+    notification_type = _normalize_missing_days_notification_type(notification_type)
     res = (
         supabase.table("email_notification_settings")
         .select("*")
         .eq("mall_id", mall_id)
-        .eq("notification_type", "missing_days_audit")
+        .eq("notification_type", notification_type)
         .maybe_single()
         .execute()
     )
-    return _sanitize_missing_days_email_settings_row(res.data, mall_id)
+    return _sanitize_missing_days_email_settings_row(res.data, mall_id, notification_type)
 
 
 def _normalize_missing_days_sale_date(raw_value: Any) -> Optional[str]:
@@ -7574,13 +7611,15 @@ async def preview_missing_days_email_html(
 @app.get("/api/v1/admin/messaging/missing-days/settings")
 async def get_missing_days_email_settings(
     mall_id: str = Query(...),
+    notification_type: str = Query(MISSING_DAYS_NOTIFICATION_TYPE),
     admin_ctx: Dict[str, Any] = Depends(require_admin_access),
 ):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado.")
     _ensure_operator_can_access_mall(admin_ctx, mall_id)
+    notification_type = _normalize_missing_days_notification_type(notification_type)
     try:
-        return _load_missing_days_email_settings_row(mall_id)
+        return _load_missing_days_email_settings_row(mall_id, notification_type)
     except Exception as exc:
         if _is_missing_email_settings_table_error(exc):
             logger.warning(
@@ -7588,13 +7627,13 @@ async def get_missing_days_email_settings(
                 mall_id,
                 exc,
             )
-            return _default_missing_days_email_settings(mall_id)
+            return _default_missing_days_email_settings(mall_id, notification_type)
         logger.warning(
             "Error cargando configuracion de emails de dias faltantes; usando defaults para mall %s: %s",
             mall_id,
             exc,
         )
-        return _default_missing_days_email_settings(mall_id)
+        return _default_missing_days_email_settings(mall_id, notification_type)
 
 
 @app.put("/api/v1/admin/messaging/missing-days/settings")
@@ -7608,6 +7647,7 @@ async def save_missing_days_email_settings(
     if not mall_id:
         raise HTTPException(status_code=400, detail="mall_id es requerido.")
     _ensure_operator_can_access_mall(admin_ctx, mall_id)
+    notification_type = _normalize_missing_days_notification_type(payload.notification_type)
 
     weekdays = _normalize_weekdays(payload.weekdays)
     if payload.enabled and not weekdays:
@@ -7617,27 +7657,32 @@ async def save_missing_days_email_settings(
     if lookback_days < 1 or lookback_days > 90:
         raise HTTPException(status_code=400, detail="La ventana de auditoria debe estar entre 1 y 90 dias.")
 
+    cc_emails = _normalize_email_list(payload.cc_emails)
+    if notification_type == MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE and payload.enabled and not cc_emails:
+        raise HTTPException(status_code=400, detail="Agregue al menos un correo administrativo para activar el envio consolidado.")
+
+    subject_template, body_template = _missing_days_default_templates(notification_type)
     row = {
         "mall_id": mall_id,
-        "notification_type": "missing_days_audit",
+        "notification_type": notification_type,
         "enabled": bool(payload.enabled),
         "weekdays": weekdays,
         "send_time": _normalize_send_time(payload.send_time),
         "lookback_days": lookback_days,
         "send_only_with_gaps": bool(payload.send_only_with_gaps),
-        "cc_emails": _normalize_email_list(payload.cc_emails),
+        "cc_emails": cc_emails,
         "updated_by": admin_ctx.get("user_id"),
         "updated_at": datetime.utcnow().isoformat(),
     }
     template_fields = {
         "subject_template": _normalize_email_template(
             payload.subject_template,
-            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+            subject_template,
             max_length=160,
         ),
         "body_template": _normalize_email_template(
             payload.body_template,
-            DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
+            body_template,
             max_length=2000,
         ),
     }
@@ -7652,7 +7697,7 @@ async def save_missing_days_email_settings(
         saved = (res.data or [None])[0]
         if not saved:
             logger.info("Supabase upsert de programacion no devolvio fila; recargando mall %s", mall_id)
-        return _load_missing_days_email_settings_row(mall_id)
+        return _load_missing_days_email_settings_row(mall_id, notification_type)
     except Exception as exc:
         if _is_missing_email_template_columns_error(exc):
             logger.warning(
@@ -7665,7 +7710,7 @@ async def save_missing_days_email_settings(
                     row,
                     on_conflict="mall_id,notification_type",
                 ).execute()
-                saved = _load_missing_days_email_settings_row(mall_id)
+                saved = _load_missing_days_email_settings_row(mall_id, notification_type)
                 saved["subject_template"] = template_fields["subject_template"]
                 saved["body_template"] = template_fields["body_template"]
                 return saved
@@ -7700,17 +7745,18 @@ async def send_missing_days_email_now(
     if not mall_id:
         raise HTTPException(status_code=400, detail="mall_id es requerido.")
     _ensure_operator_can_access_mall(admin_ctx, mall_id)
+    notification_type = _normalize_missing_days_notification_type(payload.notification_type)
 
     try:
         settings_res = (
             supabase.table("email_notification_settings")
             .select("*")
             .eq("mall_id", mall_id)
-            .eq("notification_type", "missing_days_audit")
+            .eq("notification_type", notification_type)
             .maybe_single()
             .execute()
         )
-        settings = _sanitize_missing_days_email_settings_row(settings_res.data, mall_id)
+        settings = _sanitize_missing_days_email_settings_row(settings_res.data, mall_id, notification_type)
     except Exception as exc:
         if _is_missing_email_settings_table_error(exc):
             logger.warning(
@@ -7718,14 +7764,17 @@ async def send_missing_days_email_now(
                 mall_id,
                 exc,
             )
-            settings = _default_missing_days_email_settings(mall_id)
+            settings = _default_missing_days_email_settings(mall_id, notification_type)
         else:
             logger.warning(
                 "Error cargando configuracion para envio inmediato; usando defaults para mall %s: %s",
                 mall_id,
                 exc,
             )
-            settings = _default_missing_days_email_settings(mall_id)
+            settings = _default_missing_days_email_settings(mall_id, notification_type)
+
+    if notification_type == MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE and not settings.get("cc_emails"):
+        raise HTTPException(status_code=400, detail="Agregue al menos un correo administrativo antes de enviar el consolidado.")
 
     result = await asyncio.to_thread(
         send_missing_days_emails_for_mall,

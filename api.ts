@@ -2333,9 +2333,13 @@ export const ApiService = {
     );
   },
 
-  async getMissingDaysEmailSettings(mallId: string, token: string): Promise<MissingDaysEmailSettings> {
+  async getMissingDaysEmailSettings(
+    mallId: string,
+    token: string,
+    notificationType: MissingDaysEmailSettings['notification_type'] = 'missing_days_audit'
+  ): Promise<MissingDaysEmailSettings> {
     return fetchJsonWithBaseFallback<MissingDaysEmailSettings>(
-      `/admin/messaging/missing-days/settings?mall_id=${encodeURIComponent(mallId)}`,
+      `/admin/messaging/missing-days/settings?mall_id=${encodeURIComponent(mallId)}&notification_type=${encodeURIComponent(notificationType)}`,
       { headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
       "No se pudo cargar la programación de envío"
     );
@@ -2359,7 +2363,11 @@ export const ApiService = {
     );
   },
 
-  async sendMissingDaysEmailNow(mallId: string, token: string): Promise<MissingDaysSendNowResponse> {
+  async sendMissingDaysEmailNow(
+    mallId: string,
+    token: string,
+    notificationType: MissingDaysEmailSettings['notification_type'] = 'missing_days_audit'
+  ): Promise<MissingDaysSendNowResponse> {
     return fetchJsonWithBaseFallback<MissingDaysSendNowResponse>(
       '/admin/messaging/missing-days/send-now',
       {
@@ -2368,7 +2376,7 @@ export const ApiService = {
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         }),
-        body: JSON.stringify({ mall_id: mallId })
+        body: JSON.stringify({ mall_id: mallId, notification_type: notificationType })
       },
       "No se pudo ejecutar el envío inmediato"
     );

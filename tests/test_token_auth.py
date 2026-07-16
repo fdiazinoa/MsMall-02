@@ -195,6 +195,29 @@ def test_non_expiring_access_policy_survives_regeneration():
     assert "exp" not in jwt.decode(regenerated_pair["access_token"], options={"verify_signature": False})
 
 
+def test_service_account_token_cannot_be_regenerated_manually():
+    client, svc, store = build_test_client()
+    admin_access = bootstrap_manage_token(client, svc, store)
+    issued = svc._issue_pair(
+        mall_id="mall-1",
+        local_id="local-1",
+        token_type="exporter",
+        scopes=["export:write"],
+        created_by="tester",
+        service_account_id="service-account-1",
+        request=None,
+    )
+
+    regenerated = client.post(
+        f"/tokens/{issued['token_id']}/regenerate",
+        headers={"Authorization": f"Bearer {admin_access}"},
+    )
+
+    assert regenerated.status_code == 409
+    assert "se renuevan automáticamente" in regenerated.json()["detail"]
+    assert store.get_token_by_id(issued["token_id"])["status"] == "active"
+
+
 def test_exporter_sync_ingest_writes_structured_load_log():
     fake_supabase = _FakeSupabase()
     client, svc, store = build_test_client(fake_supabase)

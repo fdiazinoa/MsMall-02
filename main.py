@@ -8743,6 +8743,14 @@ async def security_regenerate_token(
 ):
     svc = _security_token_service()
     base = _security_ensure_row_access(operator_ctx, svc.store.get_token_by_id(token_id), "Token no encontrado")
+    if base.get("service_account_id"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Los tokens de Service Account se renuevan automáticamente desde MsExportador "
+                "usando client_id y client_secret."
+            ),
+        )
     svc.store.update_api_token(base["id"], {
         "status": TOKEN_REVOKED,
         "revoked_at": token_auth_utcnow().isoformat(),

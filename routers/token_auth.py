@@ -1613,6 +1613,14 @@ def create_router() -> APIRouter:
         base = svc.store.get_token_by_id(token_id)
         if not base:
             raise HTTPException(status_code=404, detail="Token no encontrado")
+        if base.get("service_account_id"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Los tokens de Service Account se renuevan automáticamente desde MsExportador "
+                    "usando client_id y client_secret."
+                ),
+            )
         svc.store.update_api_token(token_id, {"status": REVOKED, "revoked_at": utcnow().isoformat(), "revoked_by": ctx.token_id, "revoke_reason": "regenerated", "updated_at": utcnow().isoformat()})
         return svc._issue_pair(
             mall_id=base["mall_id"],

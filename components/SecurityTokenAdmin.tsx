@@ -91,8 +91,12 @@ const isNonExpiringAccessDate = (value?: string | null) => {
   return new Date(ts).getUTCFullYear() >= 9999;
 };
 
-const formatAccessExpiration = (value?: string | null) => (
-  isNonExpiringAccessDate(value) ? 'No expira' : formatIso(value)
+const tokenAccessNeverExpires = (token: SecurityApiToken) => (
+  token.access_never_expires === true || isNonExpiringAccessDate(token.access_expires_at)
+);
+
+const formatAccessExpiration = (token: SecurityApiToken) => (
+  tokenAccessNeverExpires(token) ? 'No expira' : formatIso(token.access_expires_at)
 );
 
 const truncateMiddle = (value?: string | null, left = 8, right = 6) => {
@@ -126,7 +130,7 @@ const badgeClasses = (status?: string) => {
 };
 
 const isTokenExpired = (token: SecurityApiToken) => {
-  if (isNonExpiringAccessDate(token.access_expires_at)) return false;
+  if (tokenAccessNeverExpires(token)) return false;
   const ts = new Date(token.access_expires_at).getTime();
   return Number.isFinite(ts) && ts < Date.now();
 };
@@ -1166,7 +1170,10 @@ export const SecurityTokenAdmin: React.FC = () => {
                                 </div>
                               </td>
                               <td className="px-4 py-3 text-xs text-slate-600">
-                                <div>{formatAccessExpiration(row.access_expires_at || '')}</div>
+                                <div>{formatAccessExpiration(row)}</div>
+                                <div className="text-slate-400">
+                                  {tokenAccessNeverExpires(row) ? 'Permanente' : row.service_account_id ? 'Temporal · Service Account' : 'Temporal'}
+                                </div>
                                 {row.__expired && row.status === 'active' && (
                                   <div className="text-rose-600 font-medium">Expirado</div>
                                 )}

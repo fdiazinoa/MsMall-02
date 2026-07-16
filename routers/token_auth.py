@@ -106,6 +106,21 @@ def request_explicit_never_expires(payload: BaseModel) -> bool:
     return "expires_in" in fields_set and getattr(payload, "expires_in", None) is None
 
 
+def token_access_never_expires(token: Optional[Dict[str, Any]]) -> bool:
+    if not token:
+        return False
+    if token.get("access_never_expires") is True:
+        return True
+    raw_expiration = token.get("access_expires_at")
+    if raw_expiration is None:
+        return True
+    try:
+        expiration = datetime.fromisoformat(str(raw_expiration).replace("Z", "+00:00"))
+        return expiration.year >= 9999
+    except (TypeError, ValueError):
+        return False
+
+
 def _now_ts() -> int:
     return int(time.time())
 
@@ -703,6 +718,7 @@ class TokenService:
             "scopes": scopes,
             "jti": str(uuid.uuid4()),
             "access_expires_at": access_exp.isoformat(),
+            "access_never_expires": access_never_expires,
             "refresh_token_hash": _hash_token(refresh_plain),
             "refresh_expires_at": refresh_exp.isoformat(),
             "status": ACTIVE,
@@ -829,6 +845,7 @@ class TokenService:
             created_by=current.get("created_by"),
             service_account_id=current.get("service_account_id"),
             request=request,
+            access_never_expires=token_access_never_expires(current),
         )
 
     def _decode_access(self, access_token: str) -> Dict[str, Any]:
@@ -1605,6 +1622,7 @@ def create_router() -> APIRouter:
             created_by=ctx.token_id,
             service_account_id=base.get("service_account_id"),
             request=request,
+            access_never_expires=token_access_never_expires(base),
         )
 
     @router.get("/token-audit")

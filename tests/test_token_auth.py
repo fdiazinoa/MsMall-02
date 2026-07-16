@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from fastapi import FastAPI
 import httpx
+import jwt
 
 from routers.token_auth import (
     InMemoryTokenStore,
@@ -138,6 +139,60 @@ def test_exporter_issue_use_refresh_revoke_flow():
         json={"mall_id": "mall-1", "local_id": "local-1"},
     )
     assert reused.status_code == 401
+
+
+def test_non_expiring_access_policy_survives_refresh_rotation():
+    _client, svc, store = build_test_client()
+    pair = svc._issue_pair(
+        mall_id="mall-1",
+        local_id="local-1",
+        token_type="exporter",
+        scopes=["export:write"],
+        created_by="tester",
+        service_account_id=None,
+        request=None,
+        access_never_expires=True,
+    )
+
+    original = store.get_token_by_id(pair["token_id"])
+    assert original["access_never_expires"] is True
+    assert original["access_expires_at"].startswith("9999-12-31")
+    assert "exp" not in jwt.decode(pair["access_token"], options={"verify_signature": False})
+
+    rotated_pair = svc.refresh(pair["refresh_token"], request=None)
+    rotated = store.get_token_by_id(rotated_pair["token_id"])
+    assert original["status"] == "revoked"
+    assert rotated["access_never_expires"] is True
+    assert rotated["access_expires_at"].startswith("9999-12-31")
+    assert "exp" not in jwt.decode(rotated_pair["access_token"], options={"verify_signature": False})
+
+
+def test_non_expiring_access_policy_survives_regeneration():
+    client, svc, store = build_test_client()
+    admin_access = bootstrap_manage_token(client, svc, store)
+    permanent = svc._issue_pair(
+        mall_id="mall-1",
+        local_id="local-1",
+        token_type="exporter",
+        scopes=["export:write"],
+        created_by="tester",
+        service_account_id=None,
+        request=None,
+        access_never_expires=True,
+    )
+
+    regenerated = client.post(
+        f"/tokens/{permanent['token_id']}/regenerate",
+        headers={"Authorization": f"Bearer {admin_access}"},
+    )
+
+    assert regenerated.status_code == 200, regenerated.text
+    regenerated_pair = regenerated.json()
+    replacement = store.get_token_by_id(regenerated_pair["token_id"])
+    assert store.get_token_by_id(permanent["token_id"])["status"] == "revoked"
+    assert replacement["access_never_expires"] is True
+    assert replacement["access_expires_at"].startswith("9999-12-31")
+    assert "exp" not in jwt.decode(regenerated_pair["access_token"], options={"verify_signature": False})
 
 
 def test_exporter_sync_ingest_writes_structured_load_log():

@@ -521,6 +521,7 @@ export interface SecurityApiToken {
   scopes: string[] | string;
   jti: string;
   access_expires_at?: string | null;
+  access_never_expires?: boolean;
   refresh_expires_at?: string | null;
   status: SecurityTokenStatus;
   created_by?: string | null;

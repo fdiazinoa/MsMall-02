@@ -63,6 +63,7 @@ from routers.token_auth import (
     create_router as create_token_auth_router,
     require_token_auth,
     request_explicit_never_expires as token_auth_request_explicit_never_expires,
+    token_access_never_expires as token_auth_access_never_expires,
     sanitize_exporter_webservice_config_row as sanitize_token_exporter_webservice_config_row,
     sanitize_service_account_row as sanitize_token_service_account_row,
     sanitize_token_row as sanitize_token_auth_row,
@@ -8709,6 +8710,7 @@ async def security_regenerate_token(
         created_by=operator_ctx.get("user_id"),
         service_account_id=base.get("service_account_id"),
         request=request,
+        access_never_expires=token_auth_access_never_expires(base),
     )
 
 

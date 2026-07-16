@@ -983,49 +983,57 @@ export const ApiService = {
   },
 
   async testConnection(config: Partial<ImportConfig>, password?: string, token?: string): Promise<{ success: boolean, message: string }> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      console.warn("ApiService: Disparando abort por timeout de 60s");
-      controller.abort();
-    }, 60000);
+    const requestBody = JSON.stringify({
+      protocolo: config.protocolo,
+      host: config.host?.trim(),
+      puerto: Number(config.puerto) || (config.protocolo === 'SFTP' ? 22 : ['WEBSERVICE', 'API'].includes(String(config.protocolo || '').toUpperCase()) ? 443 : 21),
+      usuario: config.usuario?.trim(),
+      password,
+      ruta: config.ruta_remota || '.'
+    });
+    const bases = getApiBaseUrls();
+    const orderedBases = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app')
+      ? [...bases].sort((left, right) => Number(left === BASE_URL) - Number(right === BASE_URL))
+      : bases;
+    let lastMessage = 'No se pudo probar la conexión remota.';
 
-    console.log("ApiService: Iniciando POST /remote/test...");
-    try {
-      const response = await fetch(`${BASE_URL}/remote/test`, {
-        method: 'POST',
-        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          protocolo: config.protocolo,
-          host: config.host?.trim(),
-          puerto: Number(config.puerto) || (config.protocolo === 'SFTP' ? 22 : ['WEBSERVICE', 'API'].includes(String(config.protocolo || '').toUpperCase()) ? 443 : 21),
-          usuario: config.usuario?.trim(),
-          password: password,
-          ruta: config.ruta_remota || '.'
-        }),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      console.log("ApiService: Respuesta recibida, status:", response.status);
-
-      const data = await response.json().catch(() => ({ detail: "Error de servidor" }));
-
-      if (!response.ok) {
-        throw new Error(data.detail || "Error al probar la conexión");
+    for (const base of orderedBases) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
+      try {
+        const response = await fetch(`${base}/remote/test`, {
+          method: 'POST',
+          headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+          body: requestBody,
+          signal: controller.signal
+        });
+        const raw = await response.text().catch(() => '');
+        let data: any = {};
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch {
+          data = {};
+        }
+        if (!response.ok) {
+          lastMessage = data.detail || data.message || `Error del servidor (HTTP ${response.status}).`;
+          if (response.status >= 500 && base !== orderedBases[orderedBases.length - 1]) continue;
+          return { success: false, message: lastMessage };
+        }
+        return {
+          success: data.status === 'success',
+          message: data.message || (data.status === 'success' ? 'Conexión exitosa' : 'La conexión remota falló sin detalle.')
+        };
+      } catch (error: any) {
+        const isTimeout = error?.name === 'AbortError' || String(error?.message || '').includes('aborted');
+        lastMessage = isTimeout
+          ? 'Tiempo de espera agotado comprobando el servidor remoto.'
+          : normalizeErrorMessage(error, 'No se pudo contactar el backend de conexiones.');
+      } finally {
+        clearTimeout(timeoutId);
       }
-
-      return {
-        success: data.status === 'success',
-        message: data.message || "Conexión exitosa"
-      };
-    } catch (error: any) {
-      clearTimeout(timeoutId);
-      console.error("ApiService: Error en testConnection:", error);
-      const isTimeout = error.name === 'AbortError' || error.message?.includes('aborted');
-      return {
-        success: false,
-        message: isTimeout ? "Error: Tiempo de espera agotado (Timeout)" : (error.message || String(error))
-      };
     }
+
+    return { success: false, message: lastMessage };
   },
 
   async exploreDirectory(path: string, protocol?: string, host?: string, port?: number, user?: string, password?: string, token?: string): Promise<{ ruta_actual: string, items: { nombre: string, ruta: string, es_dir: boolean }[] }> {

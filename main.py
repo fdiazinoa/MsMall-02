@@ -6,6 +6,7 @@ import csv
 import html
 import io
 import logging
+import socket
 import time
 import threading
 import re
@@ -2466,21 +2467,44 @@ def _candidate_hosts(host: str) -> List[str]:
 def get_sftp_client(host, port, user, password):
     last_error = None
     for candidate in _candidate_hosts(host):
+        connection = None
+        transport = None
         try:
-            transport = paramiko.Transport((candidate, int(port)))
-            transport.banner_timeout = 20
-            transport.auth_timeout = 25
+            connection = socket.create_connection((candidate, int(port)), timeout=12)
+            transport = paramiko.Transport(connection)
+            transport.banner_timeout = 12
+            transport.auth_timeout = 15
             transport.connect(username=user, password=password)
             transport.set_keepalive(30)
             sftp = paramiko.SFTPClient.from_transport(transport)
             return transport, sftp
         except Exception as e:
             last_error = e
+            if transport is not None:
+                transport.close()
+            elif connection is not None:
+                connection.close()
             logger.warning(f"SFTP connect failed for host '{candidate}': {e}")
 
     if last_error:
         raise last_error
     raise ValueError("Host remoto inválido o vacío para conexión SFTP")
+
+
+def _remote_connection_error_message(protocol: str, exc: Exception, duration: float) -> str:
+    raw_message = str(exc or "").strip()
+    normalized = raw_message.lower()
+    if str(protocol or "").strip().upper() == "SFTP":
+        if "no existing session" in normalized or "error reading ssh protocol banner" in normalized:
+            return (
+                f"SFTP no disponible ({duration:.2f}s): el puerto responde, pero el servidor no completa "
+                "la negociación SSH. Revise o reinicie el servicio SSH/SFTP y sus límites de sesiones."
+            )
+        if isinstance(exc, paramiko.AuthenticationException) or "authentication failed" in normalized:
+            return f"Autenticación SFTP rechazada ({duration:.2f}s). Verifique usuario y contraseña."
+        if isinstance(exc, (socket.timeout, TimeoutError)) or "timed out" in normalized:
+            return f"Timeout SFTP ({duration:.2f}s): el servidor no respondió durante la negociación SSH."
+    return f"Error ({duration:.2f}s): {raw_message or type(exc).__name__}"
 
 def get_ftp_client(host, port, user, password):
     last_error = None
@@ -2559,7 +2583,7 @@ def _test_remote_connection_sync(req: RemoteRequest):
     except Exception as e:
         duration = time.time() - start_time
         logger.error(f"Error conexión remota después de {duration:.2f}s: {e}")
-        return {"status": "error", "message": f"Error ({duration:.2f}s): {str(e)}"}
+        return {"status": "error", "message": _remote_connection_error_message(req.protocolo, e, duration)}
 
 def _studio_g_config_from_remote_request(
     req: RemoteRequest,

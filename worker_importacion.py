@@ -17,6 +17,7 @@ import json
 import posixpath
 import pandas as pd
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -585,7 +586,17 @@ def get_sftp_client(host, port, user, password):
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-            ssh.connect(candidate, port=int(port), username=user, password=password, timeout=10)
+            ssh.connect(
+                candidate,
+                port=int(port),
+                username=user,
+                password=password,
+                timeout=10,
+                banner_timeout=10,
+                auth_timeout=10,
+                look_for_keys=False,
+                allow_agent=False,
+            )
             transport = ssh.get_transport()
             if transport:
                 transport.set_keepalive(30)
@@ -600,6 +611,21 @@ def get_sftp_client(host, port, user, password):
     if last_error:
         raise last_error
     raise ValueError("Host remoto inválido o vacío para conexión SFTP")
+
+
+def _friendly_sftp_connection_error(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    normalized = message.lower()
+    if "no existing session" in normalized or "error reading ssh protocol banner" in normalized:
+        return (
+            "El puerto responde, pero el servidor no completa la negociación SSH. "
+            "Revise o reinicie el servicio SSH/SFTP y sus límites de sesiones."
+        )
+    if isinstance(exc, paramiko.AuthenticationException) or "authentication failed" in normalized:
+        return "Autenticación rechazada. Verifique usuario y contraseña SFTP."
+    if isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in normalized:
+        return "El servidor no respondió durante la negociación SSH/SFTP."
+    return message or type(exc).__name__
 
 def get_ftp_client(host, port, user, password):
     last_error = None
@@ -1923,7 +1949,8 @@ def process_local_files(config):
         try:
             ssh, sftp = connect_with_retries(lambda: get_sftp_client(host, port, user, password))
         except Exception as ce:
-            message = f"Fallo conexión SFTP: {str(ce)}"
+            friendly_error = _friendly_sftp_connection_error(ce)
+            message = f"Fallo conexión SFTP: {friendly_error}"
             insert_load_log(
                 config['nombre'], "N/A", "error", message,
                 mall_id=config.get("mall_id"),
@@ -1931,7 +1958,7 @@ def process_local_files(config):
                 canal=protocol,
                 records_processed=0,
                 error_count=1,
-                metadata={"source": "worker_auto_import", "connection_error": str(ce)},
+                metadata={"source": "worker_auto_import", "connection_error": friendly_error},
             )
             return _result(False, message)
 

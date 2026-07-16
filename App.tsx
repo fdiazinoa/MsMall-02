@@ -132,7 +132,7 @@ const App: React.FC = () => {
         <Header activeTab={activeTab} setActiveTab={setActiveTab} />
 
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4 lg:px-5">
-          <div className="mx-auto w-full max-w-7xl min-w-0">
+          <div className={`mx-auto w-full min-w-0 ${activeTab === 'auto-import' ? 'max-w-none' : 'max-w-7xl'}`}>
             <Suspense fallback={
               <div className="flex items-center justify-center h-64">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>

@@ -812,6 +812,10 @@ export const SecurityTokenAdmin: React.FC = () => {
 
   const handleTokenRegenerate = async (row: SecurityApiToken) => {
     if (!token) return;
+    if (row.service_account_id) {
+      notify('Los tokens de Service Account se renuevan automáticamente desde MsExportador usando client_id y client_secret.', 'error');
+      return;
+    }
     if (!window.confirm('¿Regenerar token? El token actual será revocado y se mostrará el nuevo solo una vez.')) return;
     try {
       const regenerated = await ApiService.regenerateSecurityToken(row.id, token);
@@ -1177,7 +1181,7 @@ export const SecurityTokenAdmin: React.FC = () => {
                               <td className="px-4 py-3 text-xs text-slate-600">
                                 <div>{formatAccessExpiration(row)}</div>
                                 <div className="text-slate-400">
-                                  {tokenAccessNeverExpires(row) ? 'Permanente' : row.service_account_id ? 'Temporal · Service Account' : 'Temporal'}
+                                  {tokenAccessNeverExpires(row) ? 'Permanente' : row.service_account_id ? 'Automático · Service Account' : 'Temporal'}
                                 </div>
                                 {row.__expired && row.status === 'active' && (
                                   <div className="text-rose-600 font-medium">Expirado</div>
@@ -1201,9 +1205,11 @@ export const SecurityTokenAdmin: React.FC = () => {
                                   <button type="button" onClick={() => handleTokenStatusToggle(row)} disabled={row.status === 'revoked'} className="px-2.5 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 disabled:opacity-50 text-xs">
                                     {row.status === 'active' ? 'Desactivar' : 'Activar'}
                                   </button>
-                                  <button type="button" onClick={() => handleTokenRegenerate(row)} className="px-2.5 py-1.5 rounded-lg border border-indigo-200 text-indigo-700 hover:bg-indigo-50 text-xs flex items-center gap-1">
-                                    <RotateCcw size={13} /> Regenerar
-                                  </button>
+                                  {!row.service_account_id && (
+                                    <button type="button" onClick={() => handleTokenRegenerate(row)} className="px-2.5 py-1.5 rounded-lg border border-indigo-200 text-indigo-700 hover:bg-indigo-50 text-xs flex items-center gap-1">
+                                      <RotateCcw size={13} /> Regenerar
+                                    </button>
+                                  )}
                                   <button type="button" onClick={() => handleTokenRevoke(row)} className="px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50 text-xs flex items-center gap-1">
                                     <Ban size={13} /> Revocar
                                   </button>

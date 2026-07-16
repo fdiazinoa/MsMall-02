@@ -450,7 +450,11 @@ export const SecurityTokenAdmin: React.FC = () => {
   useEffect(() => {
     if (currentMall?.id) {
       setFilters((prev) => (prev.mall_id ? prev : { ...prev, mall_id: currentMall.id }));
-      setServiceAccountForm((prev) => (prev.mall_id ? prev : { ...prev, mall_id: currentMall.id }));
+      setServiceAccountForm((prev) => ({
+        ...prev,
+        mall_id: currentMall.id,
+        local_id: prev.mall_id === currentMall.id ? prev.local_id : '',
+      }));
       setTokenForm((prev) => (prev.mall_id ? prev : { ...prev, mall_id: currentMall.id }));
     }
   }, [currentMall?.id]);
@@ -572,7 +576,7 @@ export const SecurityTokenAdmin: React.FC = () => {
     setCreateServiceAccountError(null);
     setServiceAccountForm({
       name: '',
-      mall_id: selectedMallId || '',
+      mall_id: currentMall?.id || '',
       local_id: '',
       scopes: ['export:write', 'mapping:read'],
     });
@@ -595,19 +599,19 @@ export const SecurityTokenAdmin: React.FC = () => {
   const handleCreateServiceAccount = async () => {
     if (!token) return;
     const name = serviceAccountForm.name.trim();
-    const mallId = serviceAccountForm.mall_id.trim();
+    const mallId = String(currentMall?.id || '').trim();
     const localId = serviceAccountForm.local_id.trim();
     setCreateServiceAccountError(null);
     if (!name) {
       setCreateServiceAccountError('El nombre es requerido.');
       return;
     }
-    if (!mallId || !localId) {
-      setCreateServiceAccountError('Mall y local son requeridos.');
+    if (!mallId) {
+      setCreateServiceAccountError('Seleccione un mall activo antes de crear el Service Account.');
       return;
     }
-    if (!isUuid(mallId)) {
-      setCreateServiceAccountError('Mall inválido. Selecciona un mall válido.');
+    if (!localId) {
+      setCreateServiceAccountError('Local es requerido.');
       return;
     }
     if (!isUuid(localId)) {
@@ -891,7 +895,8 @@ export const SecurityTokenAdmin: React.FC = () => {
               resetServiceAccountForm();
               setShowCreateSaModal(true);
             }}
-            className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 flex items-center gap-2"
+            className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={!currentMall?.id}
           >
             <Plus size={16} />
             Crear Service Account
@@ -1286,7 +1291,7 @@ export const SecurityTokenAdmin: React.FC = () => {
         open={showCreateSaModal}
         onClose={() => setShowCreateSaModal(false)}
         title="Crear Service Account (MsExportador)"
-        subtitle="Vinculado a un mall y un local. El client_secret se mostrará una sola vez."
+        subtitle="Vinculado al mall activo y a un local. El client_secret se mostrará una sola vez."
         widthClass="max-w-2xl"
       >
         <div className="space-y-4">
@@ -1311,23 +1316,11 @@ export const SecurityTokenAdmin: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Mall *</label>
-              <select
-                value={serviceAccountForm.mall_id}
-                onChange={(e) => {
-                  setCreateServiceAccountError(null);
-                  setStoresLoadError(null);
-                  setServiceAccountForm((prev) => ({ ...prev, mall_id: e.target.value, local_id: '' }));
-                }}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white"
-              >
-                <option value="">Selecciona un mall</option>
-                {(malls || []).map((mall: any) => (
-                  <option key={mall.id} value={mall.id}>
-                    {mall.nombre} ({truncateMiddle(mall.id, 8, 4)})
-                  </option>
-                ))}
-              </select>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Mall activo</label>
+              <div className="min-h-10 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <div className="font-medium text-slate-800">{currentMall?.nombre || 'Sin mall seleccionado'}</div>
+                {currentMall?.id && <div className="text-xs font-mono text-slate-500">{truncateMiddle(currentMall.id, 10, 6)}</div>}
+              </div>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Local *</label>
@@ -1342,7 +1335,7 @@ export const SecurityTokenAdmin: React.FC = () => {
               >
                 <option value="">
                   {!serviceAccountForm.mall_id
-                    ? 'Selecciona un mall primero'
+                    ? 'Seleccione un mall activo primero'
                     : storesLoadingMall === serviceAccountForm.mall_id
                       ? 'Cargando locales...'
                       : serviceAccountStoreOptions.length === 0

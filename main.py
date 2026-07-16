@@ -483,6 +483,26 @@ def _canonical_admin_role(raw_role: Optional[str]) -> str:
         return "auditor"
     return ""
 
+def _profile_storage_role(raw_role: Optional[str]) -> str:
+    """Maps API roles to the legacy profiles.app_role enum."""
+    canonical_role = _canonical_admin_role(raw_role)
+    if not canonical_role:
+        return ""
+    return "tic" if canonical_role == "it" else canonical_role
+
+def _sync_profile_role(user_id: str, role: str) -> None:
+    profile_role = _profile_storage_role(role)
+    if not profile_role:
+        raise ValueError("Rol de perfil inválido.")
+    try:
+        supabase.table("profiles").upsert(
+            {"id": user_id, "role": profile_role},
+            on_conflict="id"
+        ).execute()
+    except Exception as exc:
+        logger.error("No se pudo sincronizar profiles.role para %s: %s", user_id, exc)
+        raise RuntimeError("No se pudo guardar el rol principal del usuario.") from exc
+
 def _parse_auth_users_result(auth_users_result: Any) -> List[Any]:
     if auth_users_result is None:
         return []
@@ -8284,10 +8304,7 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
             raise HTTPException(status_code=500, detail="No se pudo resolver el ID del usuario.")
 
         # Keep global role in profiles for frontend role checks.
-        try:
-            supabase.table("profiles").upsert({"id": created_user_id, "role": role}, on_conflict="id").execute()
-        except Exception as p_err:
-            logger.warning(f"No se pudo upsert profiles para {created_user_id}: {p_err}")
+        _sync_profile_role(created_user_id, role)
 
         # Assign malls if requested.
         supabase.table("usuarios_malls").delete().eq("usuario_id", created_user_id).execute()
@@ -8329,10 +8346,7 @@ async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, a
             res = supabase.table("usuarios_malls").insert(inserts).execute()
             
         # Update profile/global role for consistent UI gating.
-        try:
-            supabase.table("profiles").upsert({"id": target_user_id, "role": role}, on_conflict="id").execute()
-        except Exception as p_err:
-            logger.warning(f"No se pudo upsert profiles al asignar malls: {p_err}")
+        _sync_profile_role(target_user_id, role)
 
         return {"message": "Assignments updated"}
     except HTTPException:
@@ -8400,10 +8414,7 @@ async def admin_update_user(
 
         effective_email = email_to_set or current_email
         if role_to_set:
-            try:
-                supabase.table("profiles").upsert({"id": target_user_id, "role": role_to_set}, on_conflict="id").execute()
-            except Exception as p_err:
-                logger.warning(f"No se pudo upsert profiles al actualizar usuario {target_user_id}: {p_err}")
+            _sync_profile_role(target_user_id, role_to_set)
 
             # Keep existing assignments synchronized to the new role when malls are not being replaced.
             if payload.mall_ids is None:

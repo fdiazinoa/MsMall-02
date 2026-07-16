@@ -146,9 +146,9 @@ export const UserManagement: React.FC = () => {
       );
       setAssignmentModalOpen(false);
       await loadUsers(); // Refresh to show new data
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      alert("Error actualizando usuario.");
+      alert(`Error actualizando usuario: ${e?.message || e}`);
     } finally {
       setSavingUser(false);
     }

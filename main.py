@@ -79,6 +79,7 @@ from services.connection_monitor_service import (
     RetryPolicyBlocked,
 )
 from services.load_log_service import build_load_log_payload, insert_load_log_row
+from services.ftp_transfer_service import retrieve_ftp_bytes
 from services.missing_days_email_service import (
     DEFAULT_CONSOLIDATED_BODY_TEMPLATE,
     DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE,
@@ -4138,25 +4139,6 @@ def _download_ftp_file_bytes(
             if joined not in candidates:
                 candidates.append(joined)
 
-    class _LimitedWriter:
-        def __init__(self, limit: Optional[int] = None):
-            self.bio = io.BytesIO()
-            self.limit = limit
-            self.written = 0
-
-        def write(self, data: bytes):
-            if self.limit is not None and self.written >= self.limit:
-                raise StopIteration
-            chunk = data
-            if self.limit is not None:
-                remaining = self.limit - self.written
-                if remaining <= 0:
-                    raise StopIteration
-                chunk = data[:remaining]
-            if chunk:
-                self.bio.write(chunk)
-                self.written += len(chunk)
-
     def _score_payload(data: bytes) -> Tuple[int, int, int]:
         if not data:
             return (0, 0, 0)
@@ -4177,13 +4159,12 @@ def _download_ftp_file_bytes(
 
     for candidate in candidates:
         try:
-            writer = _LimitedWriter(limit=max_bytes)
-            try:
-                ftp.retrbinary(f"RETR {candidate}", writer.write)
-            except StopIteration:
-                pass  # expected for limited reads
-
-            payload = writer.bio.getvalue()
+            payload = retrieve_ftp_bytes(
+                ftp,
+                candidate,
+                max_bytes=max_bytes,
+                logger=logger,
+            )
             score = _score_payload(payload)
             if score > best_score:
                 best_payload = payload
@@ -4191,6 +4172,11 @@ def _download_ftp_file_bytes(
                 best_score = score
             if payload:
                 logger.info(f"Descarga FTP candidata: {candidate} ({len(payload)} bytes) score={score}")
+                if candidate in exact_matches:
+                    logger.info(
+                        f"Descarga FTP seleccionada por coincidencia exacta: {candidate} bytes={len(payload)}"
+                    )
+                    return payload, posixpath.basename(candidate)
         except Exception as retr_err:
             last_error = retr_err
 

@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from services.load_log_service import build_load_log_payload, insert_load_log_row
+from services.ftp_transfer_service import retrieve_ftp_bytes
 from services.operations_agent_service import OperationsAgentWorker
 
 try:
@@ -2215,11 +2216,8 @@ def process_local_files(config):
                 logger.info(f"🔄 [{processed_count + 1}/{batch_size}] Procesando FTP: {filename}")
 
                 try:
-                    bio = io.BytesIO()
-                    ftp.retrbinary(f"RETR {filename}", bio.write)
-                    bio.seek(0)
                     content = _decode_worker_text(
-                        bio.read(),
+                        retrieve_ftp_bytes(ftp, filename, logger=logger),
                         is_json=str(filename or "").lower().endswith(".json")
                     )
                     count, errors, stats = _unpack_process_file_result(

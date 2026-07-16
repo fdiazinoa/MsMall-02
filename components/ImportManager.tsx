@@ -3108,10 +3108,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           ))}
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="max-h-[calc(100dvh-18rem)] min-h-[280px] overflow-auto">
-            <table className="w-full min-w-[980px] text-left">
-              <thead className="sticky top-0 z-10 bg-slate-50">
+        <div className="min-w-0 overflow-x-auto border-y border-slate-200 bg-white">
+            <table className="w-full min-w-[1120px] table-auto text-left">
+              <thead className="sticky top-0 z-10 bg-slate-100/95 backdrop-blur-sm">
                 <tr className="bg-slate-50 border-b border-slate-100">
                   <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Conexión</th>
                   <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Protocolo</th>
@@ -3219,7 +3218,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 })}
               </tbody>
             </table>
-          </div>
         </div>
       )}
 

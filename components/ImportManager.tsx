@@ -1198,7 +1198,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   };
 
   const maskToRegex = (rawMask: string): RegExp => {
-    const normalized = String(rawMask || '*').trim() || '*';
+    const trimmed = String(rawMask || '*').trim() || '*';
+    const normalized = (
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))
+      || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) ? trimmed.slice(1, -1).trim() || '*' : trimmed;
     const wildcardMask = normalized.replace(/%/g, '*');
     // Escape regex tokens first, then restore wildcard semantics for * and ?.
     const escaped = wildcardMask.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
@@ -1213,7 +1217,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
   const filteredBatchCandidates = useMemo(() => {
     const matcher = maskToRegex(batchMask);
-    const nonProcessed = (manualFiles || []).filter((f) => !/^(PR_|ERR_)/i.test(f.nombre));
+    const nonProcessed = (manualFiles || []).filter((f) => !/^PR_/i.test(f.nombre));
     const matched = nonProcessed.filter((f) => matcher.test(f.nombre));
     return matched.sort((a, b) => {
       const at = new Date(a.fecha).getTime();
@@ -1222,6 +1226,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       return String(a.nombre || '').localeCompare(String(b.nombre || ''));
     });
   }, [manualFiles, batchMask]);
+
+  const formatRemoteFileSize = (rawSize: number): string => {
+    const size = Number(rawSize);
+    if (!Number.isFinite(size) || size <= 0) return 'No reportado';
+    if (size < 1024) return `${Math.trunc(size)} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  };
 
   const resolveProcessedCountFromLogs = async (config: ImportConfig, filename: string): Promise<number | null> => {
     try {
@@ -3503,7 +3515,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             {new Date(file.fecha).toLocaleString()}
                           </td>
                           <td className="px-5 py-4 text-xs font-mono text-slate-500 text-right">
-                            {(file.tamano / 1024).toFixed(1)} KB
+                            {formatRemoteFileSize(file.tamano)}
                           </td>
                           <td className="px-5 py-4 text-center">
                             <div className="flex items-center justify-center gap-2">

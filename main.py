@@ -34,6 +34,7 @@ import urllib.error
 import urllib.request
 from worker_importacion import (
     WORKER_POLL_SECONDS,
+    _build_unique_marked_filename as build_unique_marked_filename,
     _append_query_param as append_webservice_query_param,
     _extract_webservice_records as extract_webservice_records,
     _fetch_webservice_json as fetch_webservice_json,
@@ -4250,6 +4251,32 @@ def _list_remote_files(config: Dict[str, Any]):
                 print(f"[DEBUG] Raw listdir output ({len(raw_list)}): {raw_list}")
             except Exception as e:
                 print(f"[DEBUG] Raw listdir falló: {e}")
+            def _resolve_sftp_file_size(filename: str, listed_size: Any) -> int:
+                try:
+                    size = max(0, int(listed_size or 0))
+                except (TypeError, ValueError):
+                    size = 0
+                if size > 0:
+                    return size
+
+                full_path = posixpath.join(ruta, filename)
+                stat_loaders = [getattr(sftp, name, None) for name in ("stat", "lstat")]
+                for stat_loader in (loader for loader in stat_loaders if callable(loader)):
+                    try:
+                        resolved_size = max(0, int(getattr(stat_loader(full_path), "st_size", 0) or 0))
+                        if resolved_size > 0:
+                            return resolved_size
+                    except Exception:
+                        continue
+                try:
+                    with sftp.open(full_path, "rb") as remote_file:
+                        resolved_size = max(0, int(getattr(remote_file.stat(), "st_size", 0) or 0))
+                        if resolved_size > 0:
+                            return resolved_size
+                except Exception:
+                    pass
+                return size
+
             for attr in sftp.listdir_attr(ruta):
                 print(f"[DEBUG] Encontrado: {attr.filename} (Dir: {stat.S_ISDIR(attr.st_mode)})")
                 if not stat.S_ISDIR(attr.st_mode):
@@ -4258,7 +4285,7 @@ def _list_remote_files(config: Dict[str, Any]):
                         files.append({
                             "nombre": attr.filename,
                             "fecha": datetime.fromtimestamp(attr.st_mtime).isoformat(),
-                            "tamano": attr.st_size
+                            "tamano": _resolve_sftp_file_size(attr.filename, attr.st_size)
                         })
                     else:
                         print(f"[DEBUG] -> Ignorado (extensión): {attr.filename}")
@@ -4462,16 +4489,8 @@ async def _execute_manual_endpoint_impl(
                 "risk_summary": (risk_snapshot or {}).get("summary"),
             })
 
-        def _build_prefixed_name(filename: str, prefix: str) -> str:
-            base_name = posixpath.basename((filename or "").strip())
-            if not base_name:
-                return base_name
-            upper_name = base_name.upper()
-            if upper_name.startswith("PR_"):
-                base_name = base_name[3:]
-            elif upper_name.startswith("ERR_"):
-                base_name = base_name[4:]
-            return f"{prefix}{base_name}"
+        def _unique_prefixed_name(filename: str, prefix: str, existing_names: List[str]) -> str:
+            return build_unique_marked_filename(filename, prefix, existing_names)
 
         def _rename_source_file(prefix: str) -> Optional[str]:
             nonlocal source_filename
@@ -4490,7 +4509,8 @@ async def _execute_manual_endpoint_impl(
                         pass
 
                     old_path = posixpath.join(target_dir, source_filename)
-                    new_name = _build_prefixed_name(source_filename, prefix)
+                    existing_names = [item.filename for item in sftp.listdir_attr(target_dir)]
+                    new_name = _unique_prefixed_name(source_filename, prefix, existing_names)
                     new_path = posixpath.join(target_dir, new_name)
                     logger.info(f"Renombrando {old_path} -> {new_path}")
                     sftp.rename(old_path, new_path)
@@ -4511,7 +4531,11 @@ async def _execute_manual_endpoint_impl(
                 try:
                     used_dir = _ftp_enter_target_dir(ftp, ruta_remota)
                     rename_source = _resolve_ftp_filename(ftp, source_filename, used_dir) or source_filename
-                    new_name = _build_prefixed_name(rename_source, prefix)
+                    try:
+                        existing_names = [posixpath.basename(str(name or "")) for name in (ftp.nlst() or [])]
+                    except Exception:
+                        existing_names = []
+                    new_name = _unique_prefixed_name(rename_source, prefix, existing_names)
                     logger.info(f"Renombrando {rename_source} -> {new_name}")
                     ftp.rename(rename_source, new_name)
                     source_filename = new_name

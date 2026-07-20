@@ -176,6 +176,12 @@ def test_missing_days_scheduler_sends_when_slot_is_due(monkeypatch):
             }]
             self.upserts = []
 
+        def rpc(self, function_name, params):
+            assert function_name == "claim_system_health_slot"
+            payload = {"key": params["p_key"], "value": params["p_slot"]}
+            self.upserts.append(("system_health_claim", payload))
+            return type("RpcQuery", (), {"execute": lambda _self: type("Response", (), {"data": True})()})()
+
         def table(self, table_name):
             return FakeQuery(self, table_name)
 
@@ -269,6 +275,12 @@ def test_missing_days_scheduler_uses_admin_email_when_local_has_no_email(monkeyp
                 "cc_emails": ["admin@example.com", "audit@example.com"],
             }]
             self.upserts = []
+
+        def rpc(self, function_name, params):
+            assert function_name == "claim_system_health_slot"
+            payload = {"key": params["p_key"], "value": params["p_slot"]}
+            self.upserts.append(("system_health_claim", payload))
+            return type("RpcQuery", (), {"execute": lambda _self: type("Response", (), {"data": True})()})()
 
         def table(self, table_name):
             return FakeQuery(self, table_name)
@@ -373,3 +385,56 @@ def test_scheduler_uses_independent_slots_for_local_and_consolidated_modes():
     assert _system_health_key(
         "mall-1", "LAST_SLOT", MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE
     ) == "MDE_SLOT:mall-1:CONSOLIDATED"
+
+
+def test_scheduler_skips_send_when_another_process_claimed_same_slot(monkeypatch):
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    monkeypatch.setenv("MISSING_DAYS_EMAIL_TIMEZONE", "America/Santo_Domingo")
+    sent = []
+
+    class FakeQuery:
+        def __init__(self, table_name):
+            self.table_name = table_name
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def maybe_single(self):
+            return self
+
+        def execute(self):
+            if self.table_name == "email_notification_settings":
+                return type("Response", (), {"data": [{
+                    "mall_id": "mall-1",
+                    "notification_type": MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE,
+                    "enabled": True,
+                    "weekdays": [0],
+                    "send_time": "10:00",
+                }]})()
+            return type("Response", (), {"data": None})()
+
+    class FakeRpc:
+        def execute(self):
+            return type("Response", (), {"data": False})()
+
+    class FakeSupabase:
+        def table(self, table_name):
+            return FakeQuery(table_name)
+
+        def rpc(self, function_name, params):
+            assert function_name == "claim_system_health_slot"
+            assert params["p_slot"] == "2026-05-11T10:00"
+            return FakeRpc()
+
+    result = run_missing_days_email_scheduler(
+        FakeSupabase(),
+        now=datetime(2026, 5, 11, 14, 1, tzinfo=timezone.utc),
+        send_email=lambda *_args, **_kwargs: sent.append(True),
+    )
+
+    assert result["executed"] is False
+    assert result["runs"][0]["reason"] == "already_claimed_for_slot"
+    assert sent == []

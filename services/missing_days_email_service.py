@@ -658,6 +658,18 @@ def _system_health_upsert(supabase_client: Any, key: str, value: str) -> None:
     }).execute()
 
 
+def _claim_system_health_slot(supabase_client: Any, key: str, slot: str) -> bool:
+    response = supabase_client.rpc(
+        "claim_system_health_slot",
+        {"p_key": key, "p_slot": slot},
+    ).execute()
+    return bool(_response_data(response, False))
+
+
+def _release_system_health_slot(supabase_client: Any, key: str, slot: str) -> None:
+    supabase_client.table("system_health").delete().eq("key", key).eq("value", slot).execute()
+
+
 def _is_email_settings_table_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return "email_notification_settings" in text and (
@@ -1004,14 +1016,41 @@ def run_missing_days_email_scheduler(
             runs.append({"mall_id": mall_id, "notification_type": notification_type, "executed": False, "reason": "already_sent_for_slot", "slot": slot})
             continue
 
-        result = send_missing_days_emails_for_mall(
-            supabase_client,
-            settings,
-            logger=logger,
-            send_email=send_email,
-            now=now,
-        )
-        _system_health_upsert(supabase_client, last_slot_key, slot)
+        try:
+            claimed = _claim_system_health_slot(supabase_client, last_slot_key, slot)
+        except Exception as exc:
+            if logger:
+                logger.error(
+                    "No se pudo reservar el ciclo de email %s para el mall %s: %s",
+                    slot,
+                    mall_id,
+                    exc,
+                )
+            runs.append({
+                "mall_id": mall_id,
+                "notification_type": notification_type,
+                "executed": False,
+                "reason": "slot_claim_failed",
+                "slot": slot,
+            })
+            continue
+
+        if not claimed:
+            runs.append({"mall_id": mall_id, "notification_type": notification_type, "executed": False, "reason": "already_claimed_for_slot", "slot": slot})
+            continue
+
+        try:
+            result = send_missing_days_emails_for_mall(
+                supabase_client,
+                settings,
+                logger=logger,
+                send_email=send_email,
+                now=now,
+            )
+        except Exception:
+            _release_system_health_slot(supabase_client, last_slot_key, slot)
+            raise
+
         _system_health_upsert(
             supabase_client,
             status_key,

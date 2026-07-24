@@ -119,6 +119,8 @@ export interface BigDataExecutiveSummary {
   forecast: BigDataForecast;
   top_categories: Array<{ category_id?: string; category_name: string; sales_net: number }>;
   categories_in_reduction: Array<{ category_id?: string; category_name: string; sales_net: number }>;
+  highlighted_stores: Array<{ local_id: string; local_name: string; sales_net: number }>;
+  stores_requiring_review: Array<{ local_id: string; local_name?: string; severity: string; reason: string }>;
   anomalies: OperationalFinding[];
   observations: Array<{ id: string; observation: string; recommendation?: string; confidence: number; created_at: string }>;
   updated_at?: string | null;
@@ -130,6 +132,8 @@ export interface OperationsCollection<T> {
   pagination: { limit: number; offset: number; count?: number | null };
   updated_at: string;
 }
+
+export type OperationsCollectionName = 'events' | 'findings' | 'anomalies' | 'observations' | 'patterns';
 
 export type UserRole = 'admin' | 'it' | 'tic' | 'auditor' | 'mall_manager';
 

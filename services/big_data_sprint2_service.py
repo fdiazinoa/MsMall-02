@@ -642,6 +642,19 @@ class BigDataSprint2Service:
                 for row in self._category_performance(mall_id, start_date, end_date)
                 if row["sales_net"] < 0
             ][:5],
+            "highlighted_stores": self._local_performance(
+                mall_id, start_date, end_date
+            )[:5],
+            "stores_requiring_review": [
+                {
+                    "local_id": finding.get("local_id"),
+                    "local_name": finding.get("local_name"),
+                    "severity": finding.get("severity"),
+                    "reason": finding.get("title"),
+                }
+                for finding in findings
+                if finding.get("local_id")
+            ][:5],
             "anomalies": findings,
             "observations": observations,
             "updated_at": max(
@@ -668,6 +681,43 @@ class BigDataSprint2Service:
             )
             item["sales_net"] += _number(row.get("sales_net"))
         return sorted(totals.values(), key=lambda item: item["sales_net"], reverse=True)
+
+    def _local_performance(
+        self, mall_id: str, start_date: date, end_date: date
+    ) -> list[dict[str, Any]]:
+        rows = self._aggregate_rows(mall_id, start_date, end_date, grain="local")
+        totals: dict[str, float] = defaultdict(float)
+        for row in rows:
+            if row.get("local_id"):
+                totals[str(row["local_id"])] += _number(row.get("sales_net"))
+        names: dict[str, str] = {}
+        if totals:
+            local_rows = (
+                self.supabase.table("locales")
+                .select("id,nombre")
+                .eq("mall_id", mall_id)
+                .in_("id", list(totals.keys())[:500])
+                .limit(500)
+                .execute()
+                .data
+                or []
+            )
+            names = {
+                str(row.get("id")): str(row.get("nombre") or "Local")
+                for row in local_rows
+            }
+        return sorted(
+            [
+                {
+                    "local_id": local_id,
+                    "local_name": names.get(local_id, "Local"),
+                    "sales_net": round(sales, 2),
+                }
+                for local_id, sales in totals.items()
+            ],
+            key=lambda item: item["sales_net"],
+            reverse=True,
+        )
 
     @staticmethod
     def _anomaly_title(anomaly_type: str) -> str:

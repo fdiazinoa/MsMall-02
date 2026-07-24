@@ -203,11 +203,15 @@ def _operational_query(
     local_id: Optional[str] = None,
     item_type: Optional[str] = None,
     source: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
 ):
     query = db.table(table).select("*", count="exact").eq("mall_id", mall_id)
-    if status:
+    if status and table in {"operational_findings", "operational_patterns"}:
         query = query.eq("status", status.upper())
-    if severity and table == "operational_findings":
+    elif status and table == "operations_events":
+        query = query.eq("processing_status", status.upper())
+    if severity and table in {"operational_findings", "operations_events"}:
         query = query.eq("severity", severity.upper())
     if local_id:
         query = query.eq("local_id", local_id)
@@ -219,7 +223,7 @@ def _operational_query(
             "operational_patterns": "pattern_type",
         }[table]
         query = query.eq(type_column, item_type)
-    if source and table == "operational_findings":
+    if source and table in {"operational_findings", "operations_events"}:
         query = query.eq("source", source)
     order_column = {
         "operational_findings": "detected_at",
@@ -227,6 +231,10 @@ def _operational_query(
         "operations_agent_observations": "created_at",
         "operational_patterns": "last_seen",
     }[table]
+    if start_date:
+        query = query.gte(order_column, start_date.isoformat())
+    if end_date:
+        query = query.lt(order_column, (end_date + timedelta(days=1)).isoformat())
     return query.order(order_column, desc=True).range(offset, offset + limit - 1).execute()
 
 
@@ -334,9 +342,14 @@ async def operations_collection(
     severity: Optional[str] = None,
     local_id: Optional[str] = None,
     item_type: Optional[str] = Query(None, alias="type"),
+    source: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     user: dict = Depends(current_user),
 ):
     _capability_context(mall_id, user, "BIG_DATA_OPERATIONS")
+    if start_date and end_date:
+        _date_range(start_date, end_date)
     tables = {
         "events": "operations_events",
         "findings": "operational_findings",
@@ -358,7 +371,9 @@ async def operations_collection(
         severity=severity,
         local_id=local_id,
         item_type=item_type,
-        source="BIG_DATA_ANOMALY" if collection == "anomalies" else None,
+        source="BIG_DATA_ANOMALY" if collection == "anomalies" else source,
+        start_date=start_date,
+        end_date=end_date,
     )
     data = response.data or []
     return {

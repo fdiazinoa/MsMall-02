@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, OperationalFinding, OperationsCollection } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -763,12 +763,21 @@ export const ApiService = {
     token: string,
     filters: { status?: string; severity?: string; local_id?: string; type?: string; limit?: number; offset?: number } = {}
   ): Promise<OperationsCollection<OperationalFinding>> {
+    return this.getOperationsItems<OperationalFinding>('findings', mallId, token, filters);
+  },
+
+  async getOperationsItems<T = any>(
+    collection: OperationsCollectionName,
+    mallId: string,
+    token: string,
+    filters: { status?: string; severity?: string; local_id?: string; type?: string; source?: string; start_date?: string; end_date?: string; limit?: number; offset?: number } = {}
+  ): Promise<OperationsCollection<T>> {
     const params = new URLSearchParams({ mall_id: mallId });
     Object.entries(filters).forEach(([key, value]) => {
       if (value !== undefined && value !== '') params.set(key, String(value));
     });
-    return fetchJsonWithBaseFallback<OperationsCollection<OperationalFinding>>(
-      `/big-data/operations/items/findings?${params.toString()}`,
+    return fetchJsonWithBaseFallback<OperationsCollection<T>>(
+      `/big-data/operations/items/${collection}?${params.toString()}`,
       { headers: withAuthHeaders(token, { Accept: 'application/json' }) },
       'No se pudieron consultar los hallazgos'
     );
@@ -790,6 +799,24 @@ export const ApiService = {
         body: JSON.stringify({ comment: comment || null })
       },
       'No se pudo actualizar el hallazgo'
+    );
+  },
+
+  async addOperationsFindingComment(
+    mallId: string,
+    findingId: string,
+    comment: string,
+    token: string
+  ): Promise<OperationalFinding> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<OperationalFinding>(
+      `/big-data/operations/findings/${encodeURIComponent(findingId)}/comments?${params.toString()}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { Accept: 'application/json', 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ comment })
+      },
+      'No se pudo registrar el comentario'
     );
   },
 

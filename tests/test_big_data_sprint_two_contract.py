@@ -53,7 +53,10 @@ def test_operations_contracts_are_real_and_paginated():
     assert "review_finding" in router
     assert "resolve_finding" in router
     assert "reopen_finding" in router
-    assert "ApiService.getOperationsFindings" in frontend
+    assert "ApiService.getOperationsItems" in frontend
+    assert "Observaciones" in frontend
+    assert "Patrones" in frontend
+    assert "addOperationsFindingComment" in frontend
     assert "mock" not in frontend.lower()
 
 
@@ -90,4 +93,3 @@ def test_no_iot_scope_was_added():
     ).lower()
     for forbidden in ("camera", "sensor", "occupancy", "heatmap"):
         assert forbidden not in changed_sources
-

@@ -2614,6 +2614,26 @@ export const ApiService = {
     }
   },
 
+  async getMallFeatureFlags(mallId: string, token: string): Promise<Array<{ feature_key: string; enabled: boolean; updated_at?: string | null }>> {
+    return fetchJsonWithBaseFallback(
+      `/malls/${encodeURIComponent(mallId)}/feature-flags`,
+      { headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      'No se pudieron cargar los módulos del mall'
+    );
+  },
+
+  async updateMallFeatureFlag(mallId: string, featureKey: string, enabled: boolean, token: string): Promise<{ feature_key: string; enabled: boolean }> {
+    return fetchJsonWithBaseFallback(
+      `/malls/${encodeURIComponent(mallId)}/feature-flags/${encodeURIComponent(featureKey)}`,
+      {
+        method: 'PUT',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+        body: JSON.stringify({ enabled })
+      },
+      'No se pudo guardar el módulo del mall'
+    );
+  },
+
   async createMall(mallData: { nombre: string, conf_locale?: string, conf_moneda?: string, metadata?: any }, token: string): Promise<any> {
     const response = await fetch(`${BASE_URL}/malls`, {
       method: 'POST',

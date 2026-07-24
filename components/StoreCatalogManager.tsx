@@ -435,10 +435,10 @@ export const StoreCatalogManager: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
             <Tag className="text-indigo-600" size={22} />
             Catalogos de Locales
           </h2>
@@ -452,7 +452,7 @@ export const StoreCatalogManager: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         {renderCatalogCard('tipo_negocio')}
         {renderCatalogCard('rubro')}
       </div>
@@ -462,11 +462,11 @@ export const StoreCatalogManager: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-slate-600">
           <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
             <div className="text-xs text-slate-400 uppercase tracking-widest mb-1">Locales cargados</div>
-            <div className="text-2xl font-bold text-slate-800">{stores.length}</div>
+            <div className="text-xl font-bold text-slate-800">{stores.length}</div>
           </div>
           <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
             <div className="text-xs text-slate-400 uppercase tracking-widest mb-1">Catalogos persistentes</div>
-            <div className="text-2xl font-bold text-slate-800">
+            <div className="text-xl font-bold text-slate-800">
               {catalogTableAvailable ? catalogOptions.length : 0}
             </div>
           </div>

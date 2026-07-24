@@ -240,9 +240,9 @@ export const SalesCube: React.FC = () => {
     })();
 
     return (
-        <div className="space-y-6 animate-in fade-in duration-500">
+        <div className="space-y-4 animate-in fade-in duration-500">
             {/* Control Bar */}
-            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-wrap gap-6 items-end">
+            <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-wrap gap-4 items-end">
                 <div>
                     {/* ... existing date inputs ... */}
                     <label className="block text-xs font-bold text-slate-400 mb-2 uppercase">Rango de Fechas</label>
@@ -402,8 +402,8 @@ export const SalesCube: React.FC = () => {
 
             {/* Matrix View */}
             {cubeData && (
-                <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden flex flex-col h-[600px]">
-                    <div className="p-6 border-b border-slate-50 flex justify-between items-center">
+                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col h-[600px]">
+                    <div className="p-4 border-b border-slate-50 flex justify-between items-center">
                         <div className="flex items-center gap-3">
                             <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg">
                                 <Archive size={20} />

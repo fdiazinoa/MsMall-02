@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 
@@ -197,11 +197,15 @@ class SensitiveOpsService:
         local_id: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        limit: int = 50,
+        limit: int = 1000,
     ) -> List[Dict[str, Any]]:
         self._require_supabase()
         ensure_operator_can_access_mall(operator_ctx, mall_id)
-        safe_limit = max(1, min(int(limit or 50), 200))
+        safe_limit = max(1, min(int(limit or 1000), 2000))
+        if not start_date and not end_date:
+            today = datetime.now().date()
+            start_date = (today - timedelta(days=4)).isoformat()
+            end_date = today.isoformat()
 
         primary_error: Optional[Exception] = None
         primary_rows: List[Dict[str, Any]] = []
@@ -343,11 +347,17 @@ class SensitiveOpsService:
         mall_id = local_row.get("mall_id")
         ensure_operator_can_access_mall(operator_ctx, mall_id)
 
-        update_res = (
+        (
             self.supabase.table("locales")
             .update({"processing_status": "IDLE", "consecutive_failures": 0})
             .eq("id", local_id)
+            .execute()
+        )
+
+        update_res = (
+            self.supabase.table("locales")
             .select("id, processing_status, consecutive_failures")
+            .eq("id", local_id)
             .single()
             .execute()
         )

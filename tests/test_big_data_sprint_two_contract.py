@@ -77,6 +77,8 @@ def test_big_data_copilot_uses_aggregates_and_has_deterministic_fallback():
     assert "_build_big_data_copilot_context" in main
     assert "BigDataSprint2Service(supabase).executive_summary" in main
     assert "_deterministic_big_data_answer" in main
+    assert '"como van las ventas"' in main
+    assert '"ventas este mes"' in main
     assert '"provider": provider' in main
     assert "big_data_aggregates" in main
 

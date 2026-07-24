@@ -5020,6 +5020,9 @@ def _is_big_data_copilot_question(message: str) -> bool:
     terms = (
         "proyeccion",
         "cierre",
+        "como van las ventas",
+        "ventas este mes",
+        "ventas del mes",
         "anomalia",
         "categoria",
         "creciendo",

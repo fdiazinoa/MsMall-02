@@ -21,6 +21,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
 
   const mobileTabs: Array<{ id: AppTab; label: string; visible: boolean }> = [
     { id: 'analytics', label: 'Dashboard BI', visible: true },
+    { id: 'big-data', label: 'Big Data', visible: true },
     { id: 'insights', label: 'Inteligencia IA', visible: true },
     { id: 'financial', label: 'Gestión Financiera', visible: true },
     { id: 'cube', label: 'Cubo de Ventas', visible: true },

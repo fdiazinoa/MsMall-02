@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -715,6 +715,31 @@ const toStorePersistenceError = (error: any): Error => {
 };
 
 export const ApiService = {
+  async getBigData<T>(path: string, mallId: string, startDate: string, endDate: string, token: string): Promise<T> {
+    const params = new URLSearchParams({ mall_id: mallId, start_date: startDate, end_date: endDate });
+    const response = await fetch(`${BASE_URL}/big-data/${path}?${params.toString()}`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || 'No se pudo consultar Big Data');
+    }
+    return response.json();
+  },
+
+  async getBigDataDashboard(mallId: string, startDate: string, endDate: string, token: string): Promise<{
+    summary: BigDataSummary; daily: { data: { period_date: string; sales_net: number; transactions: number }[] }; categories: { data: BigDataCategory[] }; ranking: { data: BigDataRanking[] }; quality: any;
+  }> {
+    const [summary, daily, categories, ranking, quality] = await Promise.all([
+      this.getBigData<BigDataSummary>('summary', mallId, startDate, endDate, token),
+      this.getBigData<{ data: { period_date: string; sales_net: number; transactions: number }[] }>('daily-evolution', mallId, startDate, endDate, token),
+      this.getBigData<{ data: BigDataCategory[] }>('categories', mallId, startDate, endDate, token),
+      this.getBigData<{ data: BigDataRanking[] }>('ranking', mallId, startDate, endDate, token),
+      this.getBigData<any>('quality', mallId, startDate, endDate, token)
+    ]);
+    return { summary, daily, categories, ranking, quality };
+  },
+
   // --- MÉTODOS DE IMPORTACIÓN AUTOMATIZADA ---
   async getImportConfigs(mallId?: string): Promise<ImportConfig[]> {
     if (!supabase) return [];

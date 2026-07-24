@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 from worker_importacion import run_worker_async
 from analytics_service import AnalyticsService
-from routers import recipes, comparisons, admin_tools
+from routers import recipes, comparisons, admin_tools, big_data
 from routers.token_auth import (
     AuthContext as TokenAuthContext,
     TOKEN_TYPE_EXPORTER,
@@ -334,6 +334,7 @@ async def diagnose_file_endpoint(file: UploadFile = File(...)):
 app.include_router(recipes.router)
 app.include_router(comparisons.router)
 app.include_router(admin_tools.router)
+app.include_router(big_data.router)
 app.include_router(create_token_auth_router())
 _api_scheduler_task = None
 

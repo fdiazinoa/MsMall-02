@@ -5,6 +5,7 @@ import { UploadForm } from './UploadForm';
 import { StoreImportTool } from './StoreImportTool';
 import { SalesReport } from './SalesReport';
 import { DashboardKPIs } from './DashboardKPIs';
+import { BigDataDashboard } from './BigDataDashboard';
 import { StoreMaintenance } from './StoreMaintenance';
 import { StoreCatalogManager } from './StoreCatalogManager';
 import { UserManagement } from './UserManagement';
@@ -29,6 +30,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab })
   switch (activeTab) {
     case 'analytics':
       return <DashboardKPIs />;
+    case 'big-data':
+      return <BigDataDashboard />;
     case 'reports':
       return <SalesReport />;
     case 'upload':

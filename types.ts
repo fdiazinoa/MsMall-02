@@ -56,6 +56,19 @@ export interface KPIData {
   ventas_por_tienda_completo?: Record<string, number>;
 }
 
+export interface BigDataSummary {
+  mall_id: string;
+  start_date: string;
+  end_date: string;
+  current: { sales_net?: number; sales_gross?: number; transactions?: number; ticket_average?: number; updated_at?: string };
+  previous: { sales_net?: number };
+  variation_percent: number;
+  updated_at?: string;
+}
+
+export interface BigDataCategory { category_id?: string; category_name: string; sales_net: number; transactions: number; share_percent: number; }
+export interface BigDataRanking { local_id: string; name: string; sales_net: number; transactions: number; ticket_average: number; }
+
 export type UserRole = 'admin' | 'it' | 'tic' | 'auditor' | 'mall_manager';
 
 export interface User {

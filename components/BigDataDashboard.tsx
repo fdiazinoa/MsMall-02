@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Activity, Calendar, Database, DollarSign, ShoppingBag, Store } from 'lucide-react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
+import { createBigDataRequestGate } from '../utils/bigDataRequestGate';
 
 const initialDates = () => {
   const now = new Date();
@@ -26,12 +27,27 @@ export const BigDataDashboard: React.FC = () => {
   const [profileLoading, setProfileLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const dashboardRequestGate = useRef(createBigDataRequestGate());
+  const profileRequestGate = useRef(createBigDataRequestGate());
 
   useEffect(() => {
+    const requestId = dashboardRequestGate.current.begin();
+    // Mall data must never remain visible while the next mall is loading.
+    // Invalidating the profile gate also ignores a profile response in flight.
+    profileRequestGate.current.begin();
+    setData(null); setProfile(null); setProfileLoading(false); setError(null); setLoading(false);
     if (!currentMall?.id || !session?.access_token) return;
     setLoading(true); setError(null);
     ApiService.getBigDataDashboard(currentMall.id, dates.start, dates.end, session.access_token)
-      .then(setData).catch((err) => setError(err.message || 'No se pudo cargar Big Data')).finally(() => setLoading(false));
+      .then((nextData) => {
+        if (dashboardRequestGate.current.isCurrent(requestId)) setData(nextData);
+      })
+      .catch((err) => {
+        if (dashboardRequestGate.current.isCurrent(requestId)) setError(err.message || 'No se pudo cargar Big Data');
+      })
+      .finally(() => {
+        if (dashboardRequestGate.current.isCurrent(requestId)) setLoading(false);
+      });
   }, [currentMall?.id, session?.access_token, dates.start, dates.end]);
 
   if (!currentMall?.id) return <div className="bg-white rounded-2xl p-6 border border-slate-200">Selecciona un mall para consultar Big Data.</div>;
@@ -41,15 +57,21 @@ export const BigDataDashboard: React.FC = () => {
   const apiUnavailable = Boolean(error && /not found|http 404/i.test(error));
   const openProfile = async (localId: string) => {
     if (!currentMall?.id || !session?.access_token) return;
+    const requestId = profileRequestGate.current.begin();
+    setProfile(null);
     setProfileLoading(true);
     try {
       const [storeProfile, benchmark] = await Promise.all([
         ApiService.getBigData<any>(`stores/${encodeURIComponent(localId)}/profile`, currentMall.id, dates.start, dates.end, session.access_token),
         ApiService.getBigData<any>(`stores/${encodeURIComponent(localId)}/category-benchmark`, currentMall.id, dates.start, dates.end, session.access_token)
       ]);
-      setProfile({ ...storeProfile, benchmark });
-    } catch (err: any) { setError(err.message || 'No se pudo cargar el perfil del local'); }
-    finally { setProfileLoading(false); }
+      if (profileRequestGate.current.isCurrent(requestId)) setProfile({ ...storeProfile, benchmark });
+    } catch (err: any) {
+      if (profileRequestGate.current.isCurrent(requestId)) setError(err.message || 'No se pudo cargar el perfil del local');
+    }
+    finally {
+      if (profileRequestGate.current.isCurrent(requestId)) setProfileLoading(false);
+    }
   };
 
   return <div className="space-y-6 animate-in fade-in duration-500">
@@ -66,8 +88,8 @@ export const BigDataDashboard: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <Metric label="Ventas netas" value={format(Number(current.sales_net || 0))} icon={DollarSign} />
         <Metric label="Variación vs. período anterior" value={`${Number(data.summary.variation_percent || 0).toFixed(1)}%`} icon={Activity} />
-        <Metric label="Transacciones" value={Number(current.transactions || 0).toLocaleString()} icon={ShoppingBag} />
-        <Metric label="Ticket promedio" value={format(Number(current.ticket_average || 0))} icon={Store} />
+        <Metric label="Registros de venta" value={Number(current.transactions || 0).toLocaleString()} icon={ShoppingBag} />
+        <Metric label="Promedio por registro" value={format(Number(current.ticket_average || 0))} icon={Store} />
       </div>
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <section className="xl:col-span-2 bg-white p-5 rounded-2xl border border-slate-100 shadow-sm"><h3 className="font-bold text-slate-800 mb-4">Evolución diaria</h3><div className="h-72"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.daily.data}><defs><linearGradient id="bigDataSales" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#6366f1" stopOpacity={.25}/><stop offset="95%" stopColor="#6366f1" stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="period_date" tick={{fontSize:11}}/><YAxis tick={{fontSize:11}}/><Tooltip formatter={(value: number) => format(value)}/><Area type="monotone" dataKey="sales_net" stroke="#6366f1" fill="url(#bigDataSales)" /></AreaChart></ResponsiveContainer></div></section>
@@ -79,6 +101,6 @@ export const BigDataDashboard: React.FC = () => {
       </div>
       <div className="text-xs text-slate-500 flex items-center gap-2"><Database size={14}/> Datos agregados; ventas del período anterior: {format(previous)}.</div>
     </>}
-    {(profile || profileLoading) && <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4"><div className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-white rounded-2xl p-6 shadow-2xl"><div className="flex justify-between gap-4"><div><h3 className="text-xl font-bold text-slate-800">{profileLoading ? 'Cargando perfil 360°...' : profile.local?.nombre}</h3><p className="text-sm text-slate-500">Rubro: {profile?.local?.rubro || 'Sin clasificar'}</p></div><button onClick={() => setProfile(null)} className="text-slate-500">Cerrar</button></div>{profile && <div className="grid grid-cols-2 gap-4 mt-5 text-sm"><div><p className="text-slate-500">Ventas del período</p><b>{format(profile.period.sales_net || 0)}</b></div><div><p className="text-slate-500">Ticket promedio</p><b>{format(profile.period.ticket_average || 0)}</b></div><div><p className="text-slate-500">Última venta</p><b>{profile.period.last_sale_received || 'Sin ventas'}</b></div><div><p className="text-slate-500">Comparación categoría</p><b>{profile.benchmark?.status === 'ok' ? `Posición ${profile.benchmark.rank} de ${profile.benchmark.comparable_stores}` : 'Datos insuficientes'}</b></div></div>}</div></div>}
+    {(profile || profileLoading) && <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4"><div className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-white rounded-2xl p-6 shadow-2xl"><div className="flex justify-between gap-4"><div><h3 className="text-xl font-bold text-slate-800">{profileLoading ? 'Cargando perfil 360°...' : profile.local?.nombre}</h3><p className="text-sm text-slate-500">Rubro: {profile?.local?.rubro || 'Sin clasificar'}</p></div><button onClick={() => setProfile(null)} className="text-slate-500">Cerrar</button></div>{profile && <div className="grid grid-cols-2 gap-4 mt-5 text-sm"><div><p className="text-slate-500">Ventas del período</p><b>{format(profile.period.sales_net || 0)}</b></div><div><p className="text-slate-500">Promedio por registro</p><b>{format(profile.period.ticket_average || 0)}</b></div><div><p className="text-slate-500">Última venta</p><b>{profile.period.last_sale_received || 'Sin ventas'}</b></div><div><p className="text-slate-500">Comparación categoría</p><b>{profile.benchmark?.status === 'ok' ? `Posición ${profile.benchmark.rank} de ${profile.benchmark.comparable_stores}` : 'Datos insuficientes'}</b></div></div>}</div></div>}
   </div>;
 };

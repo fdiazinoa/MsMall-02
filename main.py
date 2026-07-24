@@ -6698,6 +6698,16 @@ class MallUpdate(BaseModel):
     conf_moneda: Optional[str] = None
     metadata: Optional[Dict] = None
 
+BIG_DATA_FEATURE_FLAGS = {
+    "BIG_DATA_CORE",
+    "BIG_DATA_BENCHMARK",
+    "BIG_DATA_FORECAST",
+    "BIG_DATA_COPILOT",
+}
+
+class MallFeatureFlagUpdate(BaseModel):
+    enabled: bool
+
 @app.get("/api/v1/malls/all")
 async def get_all_malls(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
     """
@@ -6711,6 +6721,70 @@ async def get_all_malls(admin_ctx: Dict[str, Any] = Depends(require_admin_access
     except Exception as e:
         logger.error(f"Error fetching all malls: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/malls/{mall_id}/feature-flags")
+async def get_mall_feature_flags(
+    mall_id: str,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    """Return the feature entitlement state for one mall; admin only."""
+    try:
+        mall = supabase.table("malls").select("id").eq("id", mall_id).maybe_single().execute()
+        if not mall.data:
+            raise HTTPException(status_code=404, detail="Mall no encontrado")
+        response = (
+            supabase.table("mall_feature_flags")
+            .select("feature_key,enabled,updated_at,updated_by")
+            .eq("mall_id", mall_id)
+            .execute()
+        )
+        saved = {row.get("feature_key"): row for row in (response.data or [])}
+        return [
+            {
+                "feature_key": key,
+                "enabled": bool(saved.get(key, {}).get("enabled", False)),
+                "updated_at": saved.get(key, {}).get("updated_at"),
+                "updated_by": saved.get(key, {}).get("updated_by"),
+            }
+            for key in sorted(BIG_DATA_FEATURE_FLAGS)
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error consultando feature flags de mall {mall_id}: {e}")
+        raise HTTPException(status_code=500, detail="No se pudieron cargar los módulos del mall")
+
+@app.put("/api/v1/malls/{mall_id}/feature-flags/{feature_key}")
+async def update_mall_feature_flag(
+    mall_id: str,
+    feature_key: str,
+    payload: MallFeatureFlagUpdate,
+    admin_ctx: Dict[str, Any] = Depends(require_admin_access),
+):
+    """Enable or disable a mall entitlement from the administrator UX."""
+    normalized_key = (feature_key or "").strip().upper()
+    if normalized_key not in BIG_DATA_FEATURE_FLAGS:
+        raise HTTPException(status_code=400, detail="Feature flag no soportado")
+    try:
+        mall = supabase.table("malls").select("id").eq("id", mall_id).maybe_single().execute()
+        if not mall.data:
+            raise HTTPException(status_code=404, detail="Mall no encontrado")
+        result = supabase.table("mall_feature_flags").upsert(
+            {
+                "mall_id": mall_id,
+                "feature_key": normalized_key,
+                "enabled": payload.enabled,
+                "updated_at": datetime.utcnow().isoformat(),
+                "updated_by": admin_ctx["user_id"],
+            },
+            on_conflict="mall_id,feature_key",
+        ).execute()
+        return (result.data or [{"feature_key": normalized_key, "enabled": payload.enabled}])[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error actualizando feature flag {normalized_key} para mall {mall_id}: {e}")
+        raise HTTPException(status_code=500, detail="No se pudo guardar el módulo del mall")
 
 @app.post("/api/v1/malls")
 async def create_mall(mall: MallCreate, admin_ctx: Dict[str, Any] = Depends(require_admin_access)):

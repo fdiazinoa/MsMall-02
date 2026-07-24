@@ -9,7 +9,7 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
-  const { role, user, isAdmin, isTic, signOut, changePassword } = useAuth();
+  const { role, user, isAdmin, isTic, canAccess, signOut, changePassword } = useAuth();
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -159,7 +159,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
           Comparativas BI
         </button>
 
-        {(isAdmin || isTic) && (
+        {(isAdmin || isTic || canAccess('sales_reports')) && (
           <button
             onClick={() => setActiveTab('reports')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
@@ -170,7 +170,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
           </button>
         )}
 
-        {(isAdmin || isTic) && (
+        {(isAdmin || isTic || canAccess('monitor') || canAccess('imports')) && (
           <>
             <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Auditoría IT</div>
             <button
@@ -184,7 +184,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
           </>
         )}
 
-        {(isAdmin || isTic) && (
+        {(isAdmin || isTic || canAccess('stores') || canAccess('malls') || canAccess('users') || canAccess('roles')) && (
           <>
             <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Administración</div>
 
@@ -197,30 +197,30 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
               Mantenimiento
             </button>
 
-            {isAdmin && (
+            {(isAdmin || canAccess('malls') || canAccess('users') || canAccess('roles')) && (
               <>
-                <button
+                {(isAdmin || canAccess('malls')) && <button
                   onClick={() => setActiveTab('malls')}
                   className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'malls' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                     }`}
                 >
                   <StoreIcon className="w-5 h-5" />
                   Gestión de Malls
-                </button>
-                <button
+                </button>}
+                {(isAdmin || canAccess('users') || canAccess('roles')) && <button
                   onClick={() => setActiveTab('users')}
                   className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                     }`}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                   Usuarios y Roles
-                </button>
+                </button>}
               </>
             )}
           </>
         )}
 
-        {(isAdmin || isTic) && (
+        {(isAdmin || isTic || canAccess('imports')) && (
           <>
             <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Herramientas</div>
 

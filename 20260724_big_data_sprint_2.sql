@@ -32,6 +32,24 @@ ALTER TABLE IF EXISTS public.operational_findings
   ADD COLUMN IF NOT EXISTS resolved_by uuid,
   ADD COLUMN IF NOT EXISTS comments jsonb NOT NULL DEFAULT '[]'::jsonb;
 
+-- The anomaly detector persists actionable findings using this source.  Keep the
+-- existing Legacy origins and extend the closed list additively so a Sprint 2
+-- run cannot fail after it has calculated a valid result.
+ALTER TABLE IF EXISTS public.operational_findings
+  DROP CONSTRAINT IF EXISTS operational_findings_source_check;
+ALTER TABLE IF EXISTS public.operational_findings
+  ADD CONSTRAINT operational_findings_source_check CHECK (
+    source IN (
+      'FTP',
+      'SFTP',
+      'WEBSERVICE',
+      'WORKER',
+      'SALES_AUDIT',
+      'MISSING_DAYS',
+      'BIG_DATA_ANOMALY'
+    )
+  );
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_operational_findings_mall_fingerprint
   ON public.operational_findings(mall_id, fingerprint);
 

@@ -1,6 +1,8 @@
 -- MsMall Big Data Sprint 1. Additive only: legacy malls, locales and ventas stay intact.
 -- Deploy with all feature flags disabled. Enable BIG_DATA_CORE per mall when ready.
 
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE IF NOT EXISTS public.mall_feature_flags (
   mall_id uuid NOT NULL REFERENCES public.malls(id) ON DELETE CASCADE,
   feature_key text NOT NULL,
@@ -23,7 +25,7 @@ CREATE TABLE IF NOT EXISTS public.big_data_access_audit (
 
 -- The function is intentionally explicit about the current user. Backend service-role
 -- endpoints pass the authenticated user id, so it also works without changing legacy RLS.
-CREATE OR REPLACE FUNCTION public.validate_mall_access(current_user uuid, requested_mall_id uuid)
+CREATE OR REPLACE FUNCTION public.validate_mall_access(p_current_user uuid, requested_mall_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -33,18 +35,18 @@ DECLARE
   allowed boolean := false;
   role_name text;
 BEGIN
-  SELECT lower(coalesce(role::text, '')) INTO role_name FROM public.profiles WHERE id = current_user;
+  SELECT lower(coalesce(role::text, '')) INTO role_name FROM public.profiles WHERE id = p_current_user;
   IF role_name IN ('admin', 'administrador', 'superadmin', 'super_admin') THEN
     allowed := true;
   ELSE
     SELECT EXISTS (
       SELECT 1 FROM public.usuarios_malls um
-      WHERE um.usuario_id = current_user AND um.mall_id = requested_mall_id
+      WHERE um.usuario_id = p_current_user AND um.mall_id = requested_mall_id
     ) INTO allowed;
   END IF;
 
   INSERT INTO public.big_data_access_audit(user_id, mall_id, allowed, reason)
-  VALUES (current_user, requested_mall_id, allowed,
+  VALUES (p_current_user, requested_mall_id, allowed,
     CASE WHEN allowed THEN 'authorized' ELSE 'mall_not_assigned' END);
   RETURN allowed;
 END;
@@ -179,9 +181,17 @@ CREATE INDEX IF NOT EXISTS idx_big_data_monthly_mall_period ON public.big_data_m
 CREATE OR REPLACE FUNCTION public.enqueue_big_data_refresh()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
-  changed_mall uuid := coalesce(NEW.mall_id, OLD.mall_id);
-  changed_date date := coalesce(NEW.fecha, OLD.fecha);
+  changed_mall uuid;
+  changed_date date;
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    changed_mall := OLD.mall_id;
+    changed_date := OLD.fecha;
+  ELSE
+    changed_mall := NEW.mall_id;
+    changed_date := NEW.fecha;
+  END IF;
+
   IF changed_mall IS NOT NULL AND changed_date IS NOT NULL
      AND public.is_mall_feature_enabled(changed_mall, 'BIG_DATA_CORE') THEN
     INSERT INTO public.big_data_refresh_queue(mall_id, affected_date)
@@ -189,7 +199,10 @@ BEGIN
     ON CONFLICT (mall_id, affected_date) DO UPDATE
       SET status = 'pending', requested_at = now(), last_error = NULL;
   END IF;
-  RETURN coalesce(NEW, OLD);
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+  RETURN NEW;
 END;
 $$;
 

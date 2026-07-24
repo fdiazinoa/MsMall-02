@@ -40,7 +40,7 @@ def _date_range(start_date: date, end_date: date) -> None:
 def _authorize(mall_id: str, user: dict) -> None:
     if user["email"] in _system_admins:
         return
-    response = db.rpc("validate_mall_access", {"current_user": user["id"], "requested_mall_id": mall_id}).execute()
+    response = db.rpc("validate_mall_access", {"p_current_user": user["id"], "requested_mall_id": mall_id}).execute()
     if response.data is not True:
         raise HTTPException(403, "No tienes acceso a este mall")
 

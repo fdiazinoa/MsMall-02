@@ -717,14 +717,14 @@ const toStorePersistenceError = (error: any): Error => {
 export const ApiService = {
   async getBigData<T>(path: string, mallId: string, startDate: string, endDate: string, token: string): Promise<T> {
     const params = new URLSearchParams({ mall_id: mallId, start_date: startDate, end_date: endDate });
-    const response = await fetch(`${BASE_URL}/big-data/${path}?${params.toString()}`, {
-      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || 'No se pudo consultar Big Data');
-    }
-    return response.json();
+    // In Vercel this stays on the same-origin rewrite. A 404 from the rewrite is
+    // intentionally preserved: it means Railway still runs a backend without
+    // the Big Data router, not that the mall feature flag is disabled.
+    return fetchJsonWithBaseFallback<T>(
+      `/big-data/${path}?${params.toString()}`,
+      { headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      'No se pudo consultar Big Data'
+    );
   },
 
   async getBigDataDashboard(mallId: string, startDate: string, endDate: string, token: string): Promise<{

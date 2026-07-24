@@ -15,14 +15,14 @@ interface MetricCardProps {
 }
 
 const MetricCard: React.FC<MetricCardProps> = ({ label, value, icon, color }) => (
-    <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-        <div className="flex items-center gap-4">
-            <div className={`p-3 rounded-xl ${color}`}>
+    <div className="bg-white px-3 py-2.5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+        <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-lg ${color}`}>
                 {icon}
             </div>
             <div>
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{label}</p>
-                <p className="text-xl font-bold text-slate-800">{value}</p>
+                <p className="text-base font-bold text-slate-800 leading-tight">{value}</p>
             </div>
         </div>
     </div>
@@ -151,7 +151,7 @@ export const PeriodComparison: React.FC = () => {
 
     if (!currentMall?.id) {
         return (
-            <div className="bg-white border border-slate-200 rounded-2xl p-6 text-slate-700">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 text-slate-700">
                 No hay mall asignado o seleccionado para mostrar comparativas.
             </div>
         );
@@ -207,38 +207,38 @@ export const PeriodComparison: React.FC = () => {
     }
 
     return (
-        <div className="space-y-8 animate-in fade-in duration-500">
+        <div className="space-y-4 animate-in fade-in duration-500">
             {/* Header & Controls */}
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
-                    <h2 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">Comparativas de Rendimiento</h2>
-                    <p className="text-slate-500 mt-1">Análisis profundo de crecimiento período vs período.</p>
+                    <h2 className="text-xl md:text-xl font-extrabold text-slate-900 tracking-tight">Comparativas de Rendimiento</h2>
+                    <p className="text-slate-500 mt-0.5 text-sm">Análisis de crecimiento período vs período.</p>
                 </div>
 
                 <div className="w-full md:w-auto overflow-x-auto">
-                    <div className="flex items-center gap-3 bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm min-w-[700px] md:min-w-0">
+                    <div className="flex items-center gap-2 bg-white p-1 rounded-xl border border-slate-200 shadow-sm min-w-[560px] md:min-w-0">
                         <button
                             onClick={() => setTipo('WoW')}
-                            className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${tipo === 'WoW' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:text-slate-600'}`}
+                            className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${tipo === 'WoW' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:text-slate-600'}`}
                         >
                             Semana vs Semana (WoW)
                         </button>
                         <button
                             onClick={() => setTipo('MoM')}
-                            className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${tipo === 'MoM' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:text-slate-600'}`}
+                            className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${tipo === 'MoM' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:text-slate-600'}`}
                         >
                             Mes vs Mes (MoM)
                         </button>
                         <button
                             onClick={() => setTipo('YoY')}
-                            className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${tipo === 'YoY' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:text-slate-600'}`}
+                            className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${tipo === 'YoY' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:text-slate-600'}`}
                         >
                             Año vs Año (YoY)
                         </button>
                         <div className="w-px h-6 bg-slate-200 mx-1"></div>
                         <button
                             onClick={exportToCSV}
-                            className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all active:scale-95"
+                            className="flex items-center gap-2 px-3 py-2 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition-all active:scale-95"
                         >
                             <Download size={14} /> Exportar
                         </button>
@@ -253,21 +253,21 @@ export const PeriodComparison: React.FC = () => {
 
             {/* Hero Stats */}
             {data && (
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                    <div className="bg-indigo-600 rounded-3xl p-6 md:p-8 text-white shadow-2xl shadow-indigo-200 col-span-1 md:col-span-2 relative overflow-hidden group">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div className="bg-indigo-600 rounded-2xl p-4 text-white shadow-lg shadow-indigo-200 col-span-1 md:col-span-2 relative overflow-hidden group">
                         <div className="absolute -right-10 -top-10 w-40 h-40 bg-white/10 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-700"></div>
                         <div className="relative z-10">
                             <div className="flex items-center gap-2 text-indigo-100/80 text-[10px] font-bold uppercase tracking-widest mb-4">
                                 <Activity size={14} /> Variación Ventas Brutas (Neto)
                             </div>
-                            <div className="flex items-baseline gap-4">
-                                <h3 className="text-3xl md:text-5xl font-black">{(data?.variacion_neto_porc || 0).toFixed(1)}%</h3>
+                            <div className="flex items-baseline gap-3">
+                                <h3 className="text-3xl font-black leading-none">{(data?.variacion_neto_porc || 0).toFixed(1)}%</h3>
                                 {(data?.variacion_neto_porc || 0) >= 0 ?
                                     <TrendingUp className="text-emerald-400" size={32} /> :
                                     <TrendingDown className="text-rose-400" size={32} />
                                 }
                             </div>
-                            <p className="mt-6 text-indigo-100 text-sm leading-relaxed max-w-xs">
+                            <p className="mt-3 text-indigo-100 text-xs leading-5 max-w-md">
                                 {data.variacion_neto_porc >= 0
                                     ? "Excelente desempeño. El crecimiento refleja una tendencia positiva en el volumen de transacciones."
                                     : "Se detecta una contracción en el periodo. Se recomienda revisar el ticket promedio y rubros críticos."
@@ -307,8 +307,8 @@ export const PeriodComparison: React.FC = () => {
 
             {/* Details Table */}
             {data && (
-                <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-xl overflow-hidden">
-                    <div className="p-5 md:p-8 border-b border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-3 bg-slate-50/50">
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-3 bg-slate-50/50">
                         <div className="flex items-center gap-3">
                             <div className="p-2.5 bg-indigo-100 text-indigo-700 rounded-xl">
                                 <Filter size={18} />
@@ -320,14 +320,14 @@ export const PeriodComparison: React.FC = () => {
                         </div>
                     </div>
 
-                    <div className="overflow-x-auto">
+                    <div className="max-h-[calc(100dvh-31rem)] min-h-[220px] overflow-auto">
                         <table className="w-full min-w-[760px] text-left">
-                            <thead>
+                            <thead className="sticky top-0 z-10 bg-white">
                                 <tr className="border-b border-slate-100">
-                                    <th className="px-8 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Local</th>
-                                    <th className="px-8 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Venta Actual</th>
-                                    <th className="px-8 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Venta Anterior</th>
-                                    <th className="px-8 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Variación %</th>
+                                    <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Local</th>
+                                    <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Venta Actual</th>
+                                    <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Venta Anterior</th>
+                                    <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Variación %</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-50">
@@ -338,7 +338,7 @@ export const PeriodComparison: React.FC = () => {
 
                                     return (
                                         <tr key={item.local_id} className="hover:bg-slate-50 transition-colors group">
-                                            <td className="px-8 py-5">
+                                            <td className="px-4 py-2.5">
                                                 <div className="flex items-center gap-3">
                                                     <div className="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-[10px] font-bold text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-all">
                                                         {item.local_nombre.substring(0, 2).toUpperCase()}
@@ -349,9 +349,9 @@ export const PeriodComparison: React.FC = () => {
                                                     </div>
                                                 </div>
                                             </td>
-                                            <td className="px-8 py-5 text-sm font-semibold text-slate-700">{formatCurrency(item.out_total_neto || 0)}</td>
-                                            <td className="px-8 py-5 text-sm text-slate-400">{formatCurrency(prevItem.out_total_neto || 0)}</td>
-                                            <td className="px-8 py-5 text-right">
+                                            <td className="px-4 py-2.5 text-sm font-semibold text-slate-700">{formatCurrency(item.out_total_neto || 0)}</td>
+                                            <td className="px-4 py-2.5 text-sm text-slate-400">{formatCurrency(prevItem.out_total_neto || 0)}</td>
+                                            <td className="px-4 py-2.5 text-right">
                                                 <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold ${vPorc >= 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
                                                     {vPorc >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
                                                     {vPorc.toFixed(1)}%

@@ -92,7 +92,8 @@ const buildTemplate = (): string => {
 };
 
 export const StoreImportTool: React.FC = () => {
-  const { currentMall, isAdmin, isTic } = useAuth();
+  const { currentMall, session, isAdmin, isTic } = useAuth();
+  const authToken = session?.access_token || '';
   const canManageStores = isAdmin || isTic;
 
   const [file, setFile] = useState<File | null>(null);
@@ -214,8 +215,11 @@ export const StoreImportTool: React.FC = () => {
     const codigoInterno = mapping.codigo_interno ? String(row[mapping.codigo_interno] || '').trim() : '';
     const nombre = mapping.nombre ? String(row[mapping.nombre] || '').trim() : '';
     if (!codigoInterno || !nombre || !currentMall?.id) return null;
+    const mtsValue = mapping.mts ? parseOptionalNumber(String(row[mapping.mts] || '')) : null;
+    const porcientoRentaValue = mapping.porciento_renta ? parseOptionalNumber(String(row[mapping.porciento_renta] || '')) : null;
+    const breakpointVentaValue = mapping.breakpoint_venta ? parseOptionalNumber(String(row[mapping.breakpoint_venta] || '')) : null;
 
-    return {
+    const payload: Partial<Store> = {
       mall_id: currentMall.id,
       codigo_interno: codigoInterno,
       nombre,
@@ -223,12 +227,47 @@ export const StoreImportTool: React.FC = () => {
       contrato_no: mapping.contrato_no ? String(row[mapping.contrato_no] || '').trim() : '',
       piso: mapping.piso ? String(row[mapping.piso] || '').trim() : '',
       tipo_negocio: mapping.tipo_negocio ? String(row[mapping.tipo_negocio] || '').trim() : '',
-      mts: mapping.mts ? String(row[mapping.mts] || '').trim() : '',
-      porciento_renta: mapping.porciento_renta ? parseOptionalNumber(String(row[mapping.porciento_renta] || '')) ?? '' : '',
-      breakpoint_venta: mapping.breakpoint_venta ? parseOptionalNumber(String(row[mapping.breakpoint_venta] || '')) ?? '' : '',
       rubro: mapping.rubro ? String(row[mapping.rubro] || '').trim() : '',
       upsert_activo: mapping.upsert_activo ? parseBoolean(String(row[mapping.upsert_activo] || '')) : false,
     };
+
+    if (mtsValue !== null) (payload as any).mts = mtsValue;
+    if (porcientoRentaValue !== null) payload.porciento_renta = porcientoRentaValue;
+    if (breakpointVentaValue !== null) payload.breakpoint_venta = breakpointVentaValue;
+    if (!payload.tipo_negocio) delete (payload as any).tipo_negocio;
+    if (!payload.rubro) delete (payload as any).rubro;
+    return payload;
+  };
+
+  const normalizeCatalogValue = (value: string): string => String(value || '').trim().replace(/\s+/g, ' ');
+
+  const ensureCatalogValues = async () => {
+    if (!currentMall?.id) return;
+    const fields: Array<'tipo_negocio' | 'rubro'> = ['tipo_negocio', 'rubro'];
+    const catalogResult = await ApiService.getStoreCatalogOptions(currentMall.id);
+    const existing = new Set(
+      (catalogResult.options || []).map((option) => `${option.field_name}:${normalizeHeader(option.value)}`)
+    );
+
+    for (const field of fields) {
+      const mappedHeader = mapping[field];
+      if (!mappedHeader) continue;
+      const values = Array.from(new Set(
+        rawRows
+          .map((row) => normalizeCatalogValue(row[mappedHeader] || ''))
+          .filter(Boolean)
+      ));
+      for (const value of values) {
+        const key = `${field}:${normalizeHeader(value)}`;
+        if (existing.has(key)) continue;
+        await ApiService.createStoreCatalogOption({
+          mall_id: currentMall.id,
+          field_name: field,
+          value,
+        });
+        existing.add(key);
+      }
+    }
   };
 
   const handleImport = async () => {
@@ -238,6 +277,10 @@ export const StoreImportTool: React.FC = () => {
     }
     if (!canManageStores) {
       setStatus({ type: 'error', message: 'Solo IT o ADMIN pueden importar locales.' });
+      return;
+    }
+    if (!authToken) {
+      setStatus({ type: 'error', message: 'La sesión no tiene token válido. Vuelva a iniciar sesión e intente nuevamente.' });
       return;
     }
     if (rawRows.length === 0) {
@@ -253,7 +296,8 @@ export const StoreImportTool: React.FC = () => {
     setImportResult(null);
 
     try {
-      const existingStores = await ApiService.getStores(currentMall.id);
+      await ensureCatalogValues();
+      const existingStores = await ApiService.getStores(currentMall.id, true);
       const existingByCode = new Map(
         existingStores
           .filter((store) => String(store.codigo_interno || '').trim() !== '')
@@ -278,15 +322,20 @@ export const StoreImportTool: React.FC = () => {
 
         try {
           if (existing?.id) {
-            await ApiService.updateStore(existing.id, { ...payload, id: existing.id });
+            await ApiService.updateStore(existing.id, { ...payload, id: existing.id }, authToken);
             updated += 1;
           } else {
-            await ApiService.createStore(payload);
+            await ApiService.createStore(payload, authToken);
             created += 1;
           }
         } catch (error: any) {
           failed += 1;
-          errors.push(`Fila ${index + 1} (${payload.codigo_interno}): ${error?.message || 'error importando local'}`);
+          const rawMessage = String(error?.message || 'error importando local');
+          const friendlyMessage = rawMessage.toLowerCase().includes('codigo_interno')
+            && (rawMessage.toLowerCase().includes('duplicate') || rawMessage.toLowerCase().includes('duplic') || rawMessage.includes('23505'))
+            ? 'codigo_interno ya existe globalmente. Aplicar 20260615_locales_codigo_interno_per_mall.sql para permitir códigos por mall.'
+            : rawMessage;
+          errors.push(`Fila ${index + 1} (${payload.codigo_interno}): ${friendlyMessage}`);
         }
       }
 
@@ -305,8 +354,8 @@ export const StoreImportTool: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold uppercase tracking-wide text-indigo-600">
@@ -314,7 +363,7 @@ export const StoreImportTool: React.FC = () => {
               Herramientas
             </div>
             <div>
-              <h2 className="text-2xl font-bold text-slate-900">Importador de Locales</h2>
+              <h2 className="text-xl font-bold text-slate-900">Importador de Locales</h2>
               <p className="mt-1 text-sm text-slate-500">
                 Carga o actualiza locales del mall actual desde archivos CSV o TXT usando el codigo interno como llave operativa.
               </p>
@@ -393,7 +442,7 @@ export const StoreImportTool: React.FC = () => {
         </div>
       </div>
 
-      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <h3 className="text-lg font-bold text-slate-900">Mapeo de columnas</h3>
         <p className="mt-1 text-sm text-slate-500">
           Ajusta qué columna del archivo corresponde a cada campo de locales. Los campos no mapeados se omiten.
@@ -429,7 +478,7 @@ export const StoreImportTool: React.FC = () => {
         )}
       </div>
 
-      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-4">
           <div>
             <h3 className="text-lg font-bold text-slate-900">Vista previa</h3>

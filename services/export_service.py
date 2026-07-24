@@ -128,10 +128,10 @@ class ExportService:
             for x in range(total_days)
         }
 
-        stores_query = self.supabase.table('locales').select('id, nombre, rubro').eq('mall_id', mall_id)
+        stores_query = self.supabase.table('locales').select('id, nombre, rubro, activo').eq('mall_id', mall_id)
         if local_id:
             stores_query = stores_query.eq('id', local_id)
-        stores = stores_query.execute().data or []
+        stores = [row for row in (stores_query.execute().data or []) if row.get('activo') is not False]
         store_ids = [str(s['id']) for s in stores if s.get('id')]
 
         sales_rows: List[Dict[str, Any]] = []

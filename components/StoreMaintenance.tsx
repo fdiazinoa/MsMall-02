@@ -35,6 +35,7 @@ const emptyStore = (mallId?: string): Partial<Store> => ({
   nombre: '',
   codigo_interno: '',
   email: '',
+  email_secundario: '',
   mall_id: mallId || '',
   responsable: '',
   contrato_no: '',
@@ -286,6 +287,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
         store.nombre,
         store.codigo_interno,
         store.email,
+        store.email_secundario,
         store.responsable,
         store.tipo_negocio,
         store.rubro,
@@ -574,6 +576,20 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                     />
                     <Mail size={14} className="absolute right-3 top-3 text-slate-400" />
                   </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Email secundario de Notificaciones</label>
+                  <div className="relative">
+                    <input
+                      type="email"
+                      value={newStore.email_secundario || ''}
+                      onChange={(e) => setNewStore({ ...newStore, email_secundario: e.target.value })}
+                      className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none pr-10"
+                      placeholder="respaldo@local.com"
+                    />
+                    <Mail size={14} className="absolute right-3 top-3 text-slate-400" />
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400">Recibirá en copia los avisos automáticos del local.</p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Tipo de Negocio</label>
@@ -1001,6 +1017,11 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                       {store.email && (
                         <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5 ml-5">
                           <Mail size={10} /> {store.email}
+                        </div>
+                      )}
+                      {store.email_secundario && (
+                        <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5 ml-5">
+                          <Mail size={10} /> {store.email_secundario}
                         </div>
                       )}
                     </td>

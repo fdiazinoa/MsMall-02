@@ -16,23 +16,30 @@
 -- A) Baseline: direct aggregation query (no RPC call)
 -- ---------------------------------------------------
 EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
-WITH filtered_sales AS (
+WITH allowed_locales AS (
+  SELECT
+    l.id,
+    l.nombre
+  FROM public.locales l
+  WHERE l.mall_id = 'REPLACE_MALL_ID'::uuid
+),
+filtered_sales AS (
   SELECT
     v.local_id,
     v.fecha::date AS fecha,
     COALESCE(v.total_bruto, 0)::numeric AS total_bruto,
     COALESCE(v.total_neto, 0)::numeric AS total_neto
   FROM public.ventas v
-  WHERE v.mall_id = 'REPLACE_MALL_ID'::uuid
-    AND v.fecha >= 'REPLACE_START_DATE'::date
+  INNER JOIN allowed_locales al ON al.id = v.local_id
+  WHERE v.fecha >= 'REPLACE_START_DATE'::date
     AND v.fecha <= 'REPLACE_END_DATE'::date
 ),
 store_totals AS (
   SELECT
-    COALESCE(l.nombre, 'Desconocido') AS name,
+    al.nombre AS name,
     SUM(fs.total_bruto)::double precision AS total
   FROM filtered_sales fs
-  LEFT JOIN public.locales l ON l.id = fs.local_id
+  INNER JOIN allowed_locales al ON al.id = fs.local_id
   GROUP BY 1
 ),
 day_totals AS (

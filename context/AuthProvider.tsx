@@ -12,6 +12,7 @@ export const AuthProvider = ({ children }) => {
     const [session, setSession] = useState(null);
     const [user, setUser] = useState(null);
     const [role, setRole] = useState(null);
+    const [permissions, setPermissions] = useState({});
     // Multi-Tenant States
     const [malls, setMalls] = useState([]);
     const [currentMall, setCurrentMall] = useState(null);
@@ -56,6 +57,7 @@ export const AuthProvider = ({ children }) => {
             else {
                 setUser(null);
                 setRole(null);
+                setPermissions({});
                 setMalls([]);
                 setCurrentMall(null);
                 setLoading(false);
@@ -145,6 +147,7 @@ export const AuthProvider = ({ children }) => {
             if (effectiveRole) {
                 setRole(effectiveRole);
             }
+            if (payload?.permissions && typeof payload.permissions === 'object') setPermissions(payload.permissions);
         } catch (error) {
             // Fallbacks (profile/metadata/mall roles) still apply.
             console.warn('No se pudo resolver el rol efectivo:', error);
@@ -328,11 +331,14 @@ export const AuthProvider = ({ children }) => {
     }
     const currentEmail = (session?.user?.email || '').toLowerCase();
     const isSystemAdmin = currentEmail === SYSTEM_ADMIN_EMAIL;
+    const canAccess = (moduleKey, action = 'view') => isSystemAdmin || Boolean(permissions?.[moduleKey]?.[action]);
 
     const value = {
         session,
         user,
         role: normalizedRole || role,
+        permissions,
+        canAccess,
         malls,
         currentMall,
         loading,

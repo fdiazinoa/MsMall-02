@@ -9,6 +9,7 @@ interface MappingModalProps {
     fileHeaders: string[];
     suggestedMapping: Record<string, any>;
     currentMapping: Record<string, string>;
+    currentConstants?: Record<string, string>;
     sampleRow: Record<string, any>;
     filename: string;
 }
@@ -24,6 +25,22 @@ const SYSTEM_FIELDS: { key: string; label: string; required: boolean }[] = [
     { key: 'hora_transaccion', label: 'Hora de Transacción', required: false },
 ];
 
+const TRANSFORM_MODES = {
+    CONCAT: 'concat',
+    GENERATED_SEQUENCE: 'generated_sequence'
+} as const;
+
+const splitTransformFields = (value?: string) =>
+    String(value || '')
+        .split(',')
+        .map(part => part.trim())
+        .filter(Boolean);
+
+const fieldModeKey = (fieldKey: string) => `_${fieldKey}_mode`;
+const concatFieldsKey = (fieldKey: string) => `_${fieldKey}_concat_fields`;
+const concatSeparatorKey = (fieldKey: string) => `_${fieldKey}_concat_separator`;
+const decimalSeparatorKey = '_decimal_separator';
+
 export default function MappingModal({
     isOpen,
     onClose,
@@ -31,12 +48,13 @@ export default function MappingModal({
     fileHeaders,
     suggestedMapping,
     currentMapping,
+    currentConstants = {},
     sampleRow,
     filename
 }: MappingModalProps) {
     const [mapping, setMapping] = useState<Record<string, string>>({});
     const [constants, setConstants] = useState<Record<string, string>>({});
-    const [useConstant, setUseConstant] = useState<Record<string, boolean>>({});
+    const [fieldModes, setFieldModes] = useState<Record<string, string>>({});
     const [dateFormat, setDateFormat] = useState<string>('auto');
 
     useEffect(() => {
@@ -52,12 +70,27 @@ export default function MappingModal({
             }
         });
         setMapping(initialMapping);
-    }, [currentMapping, suggestedMapping]);
+        const initialConstants = { ...(currentConstants || {}) };
+        setConstants(initialConstants);
+        setDateFormat(initialConstants._date_format || 'auto');
+
+        const initialModes: Record<string, string> = {};
+        SYSTEM_FIELDS.forEach(field => {
+            const configuredMode = initialConstants[fieldModeKey(field.key)];
+            if (configuredMode === TRANSFORM_MODES.CONCAT) {
+                initialModes[field.key] = 'CONCAT';
+            } else if (configuredMode === TRANSFORM_MODES.GENERATED_SEQUENCE) {
+                initialModes[field.key] = 'GENERATED_SEQUENCE';
+            } else if (field.key in initialConstants) {
+                initialModes[field.key] = 'CONSTANT';
+            }
+        });
+        setFieldModes(initialModes);
+    }, [currentMapping, suggestedMapping, currentConstants]);
 
     const handleMappingChange = (systemField: string, csvHeader: string) => {
         setMapping({ ...mapping, [systemField]: csvHeader });
         if (csvHeader) {
-            setUseConstant({ ...useConstant, [systemField]: false });
             setConstants({ ...constants, [systemField]: '' });
         }
     };
@@ -66,18 +99,44 @@ export default function MappingModal({
         setConstants({ ...constants, [systemField]: value });
     };
 
-    const toggleConstant = (systemField: string) => {
-        const newUseConstant = !useConstant[systemField];
-        setUseConstant({ ...useConstant, [systemField]: newUseConstant });
-        if (newUseConstant) {
-            setMapping({ ...mapping, [systemField]: '' });
-        } else {
-            setConstants({ ...constants, [systemField]: '' });
+    const clearFieldConfig = (systemField: string) => {
+        const nextMapping = { ...mapping };
+        const nextConstants = { ...constants };
+        delete nextMapping[systemField];
+        delete nextConstants[systemField];
+        delete nextConstants[fieldModeKey(systemField)];
+        delete nextConstants[concatFieldsKey(systemField)];
+        delete nextConstants[concatSeparatorKey(systemField)];
+        return { nextMapping, nextConstants };
+    };
+
+    const getMode = (systemField: string) => fieldModes[systemField] || 'VARIABLE';
+
+    const handleModeChange = (systemField: string, mode: string) => {
+        const { nextMapping, nextConstants } = clearFieldConfig(systemField);
+        if (mode === 'CONSTANT') {
+            nextConstants[systemField] = '';
+        } else if (mode === 'CONCAT') {
+            nextConstants[fieldModeKey(systemField)] = TRANSFORM_MODES.CONCAT;
+            nextConstants[concatFieldsKey(systemField)] = systemField === 'factura_numero' ? 'local_codigo,fecha_venta,numero_registro' : '';
+            nextConstants[concatSeparatorKey(systemField)] = systemField === 'factura_numero' ? '' : '-';
+        } else if (mode === 'GENERATED_SEQUENCE') {
+            nextConstants[fieldModeKey(systemField)] = TRANSFORM_MODES.GENERATED_SEQUENCE;
         }
+
+        setMapping(nextMapping);
+        setConstants(nextConstants);
+        setFieldModes({ ...fieldModes, [systemField]: mode });
     };
 
     const validate = () => {
-        const missing = SYSTEM_FIELDS.filter(f => f.required && !mapping[f.key] && !constants[f.key]);
+        const missing = SYSTEM_FIELDS.filter(f => {
+            if (!f.required) return false;
+            const mode = getMode(f.key);
+            if (mode === 'CONCAT') return splitTransformFields(constants[concatFieldsKey(f.key)]).length === 0;
+            if (mode === 'GENERATED_SEQUENCE') return false;
+            return !mapping[f.key] && !constants[f.key];
+        });
         return missing.length === 0;
     };
 
@@ -100,7 +159,11 @@ export default function MappingModal({
         console.log("Date Format:", dateFormat);
 
         // Pass date format as part of constants for backend processing
-        const finalConstants = { ...constants, _date_format: dateFormat };
+        const finalConstants = {
+            ...constants,
+            _date_format: dateFormat,
+            [decimalSeparatorKey]: constants[decimalSeparatorKey] === ',' ? ',' : '.'
+        };
         onConfirm(cleanMapping, finalConstants);
     };
 
@@ -125,12 +188,38 @@ export default function MappingModal({
 
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-6">
+                    <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Separador decimal de montos</label>
+                        <select
+                            value={constants[decimalSeparatorKey] || '.'}
+                            onChange={(e) => setConstants({
+                                ...constants,
+                                [decimalSeparatorKey]: e.target.value
+                            })}
+                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white text-sm"
+                        >
+                            <option value=".">Punto: 1234.56</option>
+                            <option value=",">Coma: 1234,56</option>
+                        </select>
+                    </div>
+
                     <div className="space-y-4">
                         {(SYSTEM_FIELDS || []).map(field => {
                             const isRequired = field.required;
                             const suggestion = (suggestedMapping || {})[field.key];
                             const isConfident = suggestion?.is_confident;
-                            const isUsingConstant = useConstant[field.key];
+                            const mode = getMode(field.key);
+                            const isUsingConstant = mode === 'CONSTANT';
+                            const isConcat = mode === 'CONCAT';
+                            const isGeneratedSequence = mode === 'GENERATED_SEQUENCE';
+                            const concatFields = splitTransformFields(constants[concatFieldsKey(field.key)]);
+                            const transformOptions = [
+                                ...SYSTEM_FIELDS.map(item => ({ value: item.key, label: item.label })),
+                                { value: 'numero_registro', label: 'Número de registro' },
+                                ...(fileHeaders || [])
+                                    .filter(header => !SYSTEM_FIELDS.some(item => item.key === header))
+                                    .map(header => ({ value: header, label: `Columna: ${header}` }))
+                            ];
 
                             return (
                                 <div key={field.key} className="bg-gray-50 rounded-xl p-4 border border-gray-200">
@@ -148,15 +237,18 @@ export default function MappingModal({
                                                 </span>
                                             )}
                                         </div>
-                                        <button
-                                            onClick={() => toggleConstant(field.key)}
-                                            className={`text-xs px-3 py-1 rounded-lg transition-colors ${isUsingConstant
-                                                ? 'bg-blue-600 text-white'
-                                                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                                }`}
+                                        <select
+                                            value={mode}
+                                            onChange={(e) => handleModeChange(field.key, e.target.value)}
+                                            className="text-xs px-3 py-1 rounded-lg border border-gray-200 bg-white text-gray-700 outline-none"
                                         >
-                                            {isUsingConstant ? 'Usando valor fijo' : 'Usar valor fijo'}
-                                        </button>
+                                            <option value="VARIABLE">Columna CSV</option>
+                                            <option value="CONSTANT">Valor constante</option>
+                                            <option value="CONCAT">Concatenar campos</option>
+                                            {field.key === 'factura_numero' && (
+                                                <option value="GENERATED_SEQUENCE">Consecutivo Local + Fecha</option>
+                                            )}
+                                        </select>
                                     </div>
 
                                     {isUsingConstant ? (
@@ -167,6 +259,60 @@ export default function MappingModal({
                                             placeholder="Ingrese valor constante..."
                                             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                                         />
+                                    ) : isConcat ? (
+                                        <div className="space-y-3">
+                                            <div className="flex flex-col sm:flex-row gap-2">
+                                                <select
+                                                    value=""
+                                                    onChange={(e) => {
+                                                        const nextValue = e.target.value;
+                                                        if (!nextValue || concatFields.includes(nextValue)) return;
+                                                        setConstants({
+                                                            ...constants,
+                                                            [concatFieldsKey(field.key)]: [...concatFields, nextValue].join(',')
+                                                        });
+                                                    }}
+                                                    className="flex-1 px-4 py-2 border border-indigo-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white"
+                                                >
+                                                    <option value="">Agregar campo a concatenar...</option>
+                                                    {transformOptions.map(option => (
+                                                        <option key={`${field.key}-${option.value}`} value={option.value}>{option.label}</option>
+                                                    ))}
+                                                </select>
+                                                <input
+                                                    type="text"
+                                                    value={constants[concatSeparatorKey(field.key)] ?? '-'}
+                                                    onChange={(e) => setConstants({
+                                                        ...constants,
+                                                        [concatSeparatorKey(field.key)]: e.target.value
+                                                    })}
+                                                    placeholder="Separador"
+                                                    className="w-full sm:w-28 px-4 py-2 border border-indigo-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white"
+                                                />
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                {concatFields.length === 0 ? (
+                                                    <span className="text-xs text-amber-700 font-semibold">Agrega al menos un campo.</span>
+                                                ) : concatFields.map(part => (
+                                                    <button
+                                                        key={`${field.key}-${part}`}
+                                                        type="button"
+                                                        onClick={() => setConstants({
+                                                            ...constants,
+                                                            [concatFieldsKey(field.key)]: concatFields.filter(item => item !== part).join(',')
+                                                        })}
+                                                        className="px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold hover:bg-indigo-200"
+                                                    >
+                                                        {part} ×
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ) : isGeneratedSequence ? (
+                                        <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800">
+                                            <p className="font-bold">Formato generado: LOCALFECHASECUENCIA</p>
+                                            <p className="text-xs mt-1">Ejemplo: PABT01202606010034.</p>
+                                        </div>
                                     ) : (
                                         <>
                                             <select

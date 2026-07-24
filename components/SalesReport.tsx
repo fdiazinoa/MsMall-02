@@ -1,10 +1,10 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { SaleReport, DateRange, SaleDetail } from '../types';
 import { ApiService } from '../api';
 import { MissingDaysAlert } from './MissingDaysAlert';
-import { FileSpreadsheet, FileText, ChevronRight, ChevronDown, Loader2 } from 'lucide-react';
+import { FileSpreadsheet, FileText, ChevronRight, ChevronDown, Loader2, Search, X } from 'lucide-react';
 import { formatCurrency, formatNumber } from '../utils/formatters';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 import { ReporteAuditoriaTable } from './ReporteAuditoriaTable';
@@ -12,6 +12,7 @@ import { ReporteAuditoriaTable } from './ReporteAuditoriaTable';
 export const SalesReport: React.FC = () => {
   const { currentMall, session } = useAuth();
   const { format } = useFormatCurrency();
+  const DEFAULT_RAILWAY_BASE_URL = 'https://msmall-02-production.up.railway.app';
 
   const [data, setData] = useState<SaleReport[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -39,6 +40,27 @@ export const SalesReport: React.FC = () => {
   // Stores state
   const [stores, setStores] = useState<any[]>([]);
   const [selectedLocal, setSelectedLocal] = useState<string>('');
+  const [localSearchTerm, setLocalSearchTerm] = useState('');
+  const [isLocalPickerOpen, setIsLocalPickerOpen] = useState(false);
+
+  const normalizeApiRoot = (value: string): string => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return '';
+    return trimmed.replace(/\/+$/, '').replace(/\/api\/v1$/i, '').replace(/\/api$/i, '');
+  };
+
+  const getExportBaseCandidates = (): string[] => {
+    const configuredApiBase = normalizeApiRoot(import.meta.env.VITE_API_URL || '');
+    const directApiBase = normalizeApiRoot(import.meta.env.VITE_DIRECT_BACKEND_BASE_URL || '');
+    const isVercelHost = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
+
+    return Array.from(new Set([
+      configuredApiBase,
+      directApiBase,
+      ...(isVercelHost ? [DEFAULT_RAILWAY_BASE_URL] : []),
+      '' // Relative fallback via Vercel rewrite
+    ]));
+  };
 
   const fetchData = async () => {
     if (!currentMall) return;
@@ -62,7 +84,7 @@ export const SalesReport: React.FC = () => {
     setShowExportModal(true);
   };
 
-  const handleExport = async (type: 'detailed' | 'summary') => {
+  const handleExport = async (type: 'detailed' | 'summary' | 'missing_days') => {
     if (!exportFormat || !currentMall) return;
     setIsExporting(true);
     setShowExportModal(false);
@@ -87,14 +109,52 @@ export const SalesReport: React.FC = () => {
         'X-Mall-Id': currentMall.id
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
+      headers['Accept'] = exportFormat === 'excel'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/octet-stream'
+        : 'application/pdf, application/octet-stream';
 
-      const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/export/sales-report/${endpoint}?${params.toString()}`, {
-        headers
-      });
+      let blob: Blob | null = null;
+      let lastError = 'No se pudo exportar el reporte.';
 
-      if (!response.ok) throw new Error("Export failed");
+      for (const base of getExportBaseCandidates()) {
+        const exportUrl = `${base}/api/v1/export/sales-report/${endpoint}?${params.toString()}`;
+        try {
+          const response = await fetch(exportUrl, { headers });
+          if (!response.ok) {
+            lastError = `Export failed (${response.status})`;
+            continue;
+          }
 
-      const blob = await response.blob();
+          const contentType = (response.headers.get('content-type') || '').toLowerCase();
+          const candidateBlob = await response.blob();
+
+          const looksLikeExpectedFile = exportFormat === 'excel'
+            ? contentType.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') ||
+              contentType.includes('application/octet-stream')
+            : contentType.includes('application/pdf') ||
+              contentType.includes('application/octet-stream');
+
+          if (!looksLikeExpectedFile) {
+            const previewText = (await candidateBlob.text()).slice(0, 200).toLowerCase();
+            if (previewText.includes('<!doctype html') || previewText.includes('<html')) {
+              lastError = 'El servidor devolvió HTML en lugar del archivo exportable. Verifica la URL del backend/rewrite.';
+              continue;
+            }
+            if (previewText.startsWith('{')) {
+              lastError = `La API devolvió una respuesta inesperada al exportar.`;
+              continue;
+            }
+          }
+
+          blob = candidateBlob;
+          break;
+        } catch (err: any) {
+          lastError = err?.message || lastError;
+        }
+      }
+
+      if (!blob) throw new Error(lastError);
+
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -154,6 +214,31 @@ export const SalesReport: React.FC = () => {
   }, [dates, selectedLocal, currentMall]); // Refetch when dates or local changes
 
   const totalSales = data.reduce((sum, item) => sum + item.total_neto, 0);
+  const formatStoreOption = (store: any) => (
+    `${store?.nombre || 'Local sin nombre'}${store?.codigo_interno ? ` (${store.codigo_interno})` : ''}`
+  );
+  const selectedStore = useMemo(
+    () => stores.find((store) => String(store.id) === String(selectedLocal)),
+    [stores, selectedLocal]
+  );
+  const filteredStores = useMemo(() => {
+    const query = localSearchTerm.trim().toLowerCase();
+    if (!query) return stores;
+    return stores.filter((store) => {
+      return [
+        store.nombre,
+        store.codigo_interno,
+        store.rubro,
+        store.tipo_negocio,
+      ].some((value) => String(value || '').toLowerCase().includes(query));
+    });
+  }, [stores, localSearchTerm]);
+  const showNoStoreResults = localSearchTerm.trim() && filteredStores.length === 0;
+
+  useEffect(() => {
+    if (!selectedStore) return;
+    setLocalSearchTerm(formatStoreOption(selectedStore));
+  }, [selectedStore]);
 
   return (
     <div className="space-y-6 relative">
@@ -163,7 +248,7 @@ export const SalesReport: React.FC = () => {
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 transform transition-all scale-100">
             <h3 className="text-lg font-bold text-slate-800 mb-2">Seleccionar Tipo de Reporte</h3>
             <p className="text-slate-500 text-sm mb-6">
-              ¿Desea descargar un resumen consolidado o incluir el detalle de todas las facturas? {exportFormat?.toUpperCase()}
+              Elija el formato del informe a descargar usando los filtros actuales (fechas y local). {exportFormat?.toUpperCase()}
             </p>
 
             <div className="flex flex-col gap-3">
@@ -185,6 +270,17 @@ export const SalesReport: React.FC = () => {
                 <div className="text-left">
                   <span className="block font-bold text-slate-700 group-hover:text-indigo-700">Detallado</span>
                   <span className="text-xs text-slate-400">Totales + Lista de Facturas</span>
+                </div>
+                <div className="h-2 w-2 rounded-full bg-slate-300 group-hover:bg-indigo-500"></div>
+              </button>
+
+              <button
+                onClick={() => handleExport('missing_days')}
+                className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 hover:border-indigo-500 hover:bg-indigo-50 transition-colors group"
+              >
+                <div className="text-left">
+                  <span className="block font-bold text-slate-700 group-hover:text-indigo-700">Días Faltantes</span>
+                  <span className="text-xs text-slate-400">Solo brechas de ventas según fechas/local</span>
                 </div>
                 <div className="h-2 w-2 rounded-full bg-slate-300 group-hover:bg-indigo-500"></div>
               </button>
@@ -227,20 +323,82 @@ export const SalesReport: React.FC = () => {
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-1 min-w-[260px]">
             <span className="text-xs font-medium text-slate-400">Local:</span>
-            <select
-              value={selectedLocal}
-              onChange={(e) => setSelectedLocal(e.target.value)}
-              className="px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none min-w-[150px]"
-            >
-              <option value="">Todos los Locales</option>
-              {stores.map((store) => (
-                <option key={store.id} value={store.id}>
-                  {store.nombre}
-                </option>
-              ))}
-            </select>
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={localSearchTerm}
+                onChange={(e) => {
+                  setLocalSearchTerm(e.target.value);
+                  setSelectedLocal('');
+                  setIsLocalPickerOpen(true);
+                }}
+                onFocus={() => setIsLocalPickerOpen(true)}
+                onBlur={() => window.setTimeout(() => setIsLocalPickerOpen(false), 120)}
+                placeholder="Todos los Locales"
+                className="w-full rounded-lg border border-slate-200 py-2 pl-9 pr-16 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                role="combobox"
+                aria-expanded={isLocalPickerOpen}
+                aria-controls="sales-local-options"
+              />
+              <ChevronDown size={15} className="pointer-events-none absolute right-9 top-1/2 -translate-y-1/2 text-slate-400" />
+              {(localSearchTerm || selectedLocal) && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setSelectedLocal('');
+                    setLocalSearchTerm('');
+                    setIsLocalPickerOpen(false);
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  title="Ver todos los locales"
+                >
+                  <X size={14} />
+                </button>
+              )}
+              {isLocalPickerOpen && (
+                <div id="sales-local-options" role="listbox" className="absolute z-30 mt-1 max-h-64 w-full overflow-auto rounded-lg border border-slate-200 bg-white py-1 text-sm shadow-xl">
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={!selectedLocal}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setSelectedLocal('');
+                      setLocalSearchTerm('');
+                      setIsLocalPickerOpen(false);
+                    }}
+                    className={`block w-full px-3 py-2 text-left hover:bg-indigo-50 ${!selectedLocal ? 'font-semibold text-indigo-700' : 'text-slate-700'}`}
+                  >
+                    Todos los Locales
+                  </button>
+                  {showNoStoreResults ? (
+                    <div className="px-3 py-2 text-slate-400">No encontramos locales</div>
+                  ) : (
+                    filteredStores.map((store) => (
+                      <button
+                        key={store.id}
+                        type="button"
+                        role="option"
+                        aria-selected={String(store.id) === String(selectedLocal)}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setSelectedLocal(store.id);
+                          setLocalSearchTerm(formatStoreOption(store));
+                          setIsLocalPickerOpen(false);
+                        }}
+                        className={`block w-full px-3 py-2 text-left hover:bg-indigo-50 ${String(store.id) === String(selectedLocal) ? 'font-semibold text-indigo-700' : 'text-slate-700'}`}
+                      >
+                        {formatStoreOption(store)}
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           <button

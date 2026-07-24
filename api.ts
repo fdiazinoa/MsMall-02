@@ -519,6 +519,7 @@ export interface Store {
   codigo_interno: string;
   nombre: string;
   email?: string | null;
+  email_secundario?: string | null;
   rubro: string | null;
   created_at: string;
   responsable: string;
@@ -671,6 +672,13 @@ const toStoreCatalogError = (error: any, fallbackMessage: string): Error => {
   return error instanceof Error ? error : new Error(normalizeErrorMessage(error, fallbackMessage));
 };
 
+const STORE_SECONDARY_EMAIL_MIGRATION_FILE = '20260724_add_local_secondary_email.sql';
+
+const isMissingStoreSecondaryEmailColumnError = (error: any): boolean => {
+  const message = String(error?.message || error?.details || error?.hint || '').toLowerCase();
+  return error?.code === 'PGRST204' && message.includes('email_secundario');
+};
+
 const isMissingStoreEmailColumnError = (error: any): boolean => {
   const message = String(error?.message || error?.details || error?.hint || '').toLowerCase();
   return (
@@ -689,10 +697,17 @@ const normalizeStorePayload = (store: Partial<Store>): Record<string, any> => {
     const email = String(storeData.email || '').trim().toLowerCase();
     storeData.email = email || null;
   }
+  if ('email_secundario' in storeData) {
+    const secondaryEmail = String(storeData.email_secundario || '').trim().toLowerCase();
+    storeData.email_secundario = secondaryEmail || null;
+  }
   return storeData;
 };
 
 const toStorePersistenceError = (error: any): Error => {
+  if (isMissingStoreSecondaryEmailColumnError(error)) {
+    return new Error(`La base de datos no está actualizada: ejecute el script '${STORE_SECONDARY_EMAIL_MIGRATION_FILE}'.`);
+  }
   if (isMissingStoreEmailColumnError(error)) {
     return new Error("La base de datos no está actualizada: ejecute el script '20260511_add_local_email.sql'.");
   }

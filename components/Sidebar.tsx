@@ -106,14 +106,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
         </div>
       )}
 
-      <aside className="w-64 bg-slate-900 text-white flex flex-col hidden md:flex h-screen sticky top-0">
-      <div className="p-6 flex items-center gap-3">
-        <img src="/msmall-icon-192.png" alt="MSMALL" className="w-8 h-8 rounded-lg shadow-lg shadow-indigo-500/20" />
-        <h1 className="text-xl font-bold tracking-tight">MSMALL</h1>
+      <aside className="w-56 bg-slate-900 text-white flex flex-col hidden md:flex h-screen sticky top-0">
+      <div className="px-4 py-3 flex items-center gap-2">
+        <img src="/msmall-icon-192.png" alt="MSMALL" className="w-7 h-7 rounded-lg shadow-lg shadow-indigo-500/20" />
+        <h1 className="text-lg font-bold tracking-tight">MSMALL</h1>
       </div>
 
-      <nav className="flex-1 px-4 py-6 space-y-1.5 overflow-y-auto">
-        <div className="px-4 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">General</div>
+      <nav className="flex-1 px-3 py-2 space-y-1 overflow-y-auto text-[12px] font-semibold [&>button]:!rounded-lg [&>button]:!px-3 [&>button]:!py-2 [&>button>svg]:!h-4 [&>button>svg]:!w-4 [&>div]:!px-3 [&>div]:!py-1.5 [&>div]:!text-[9px]">
+        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">General</div>
 
         <button
           onClick={() => setActiveTab('analytics')}
@@ -308,13 +308,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
         )}
       </nav>
 
-        <div className="p-6 border-t border-slate-800">
-          <div className="flex items-center gap-3 px-2 mb-4">
-            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold ring-2 ring-indigo-500/20">
+        <div className="px-3 py-2.5 border-t border-slate-800">
+          <div className="flex items-center gap-2 px-1 mb-2">
+            <div className="w-7 h-7 rounded-full bg-slate-700 flex items-center justify-center text-[11px] font-bold ring-2 ring-indigo-500/20">
               {user?.nombre_completo?.substring(0, 2).toUpperCase() || 'US'}
             </div>
             <div className="overflow-hidden">
-              <p className="text-sm font-medium truncate">{user?.nombre_completo || 'Usuario'}</p>
+              <p className="text-xs font-medium truncate">{user?.nombre_completo || 'Usuario'}</p>
               <p className="text-[10px] text-indigo-400 font-bold uppercase tracking-tighter">{role || 'Sin Rol'}</p>
             </div>
           </div>

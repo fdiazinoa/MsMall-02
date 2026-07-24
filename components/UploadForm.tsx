@@ -4,14 +4,30 @@ import { useAuth } from '../context/AuthProvider';
 import Papa from 'papaparse';
 import { ArrowRight, FileSpreadsheet, AlertCircle, CheckCircle2, Upload, Info } from 'lucide-react';
 
-const REQUIRED_COLUMNS = [
-  { key: 'factura_numero', label: 'Número de Factura', index: 0 },
-  { key: 'fecha_venta', label: 'Fecha de Venta', index: 1 },
-  { key: 'local_codigo', label: 'Código de Local', index: 2 },
-  { key: 'total_bruto', label: 'Total Bruto', index: 3 },
-  { key: 'total_impuestos', label: 'Impuestos', index: 4 },
-  { key: 'total_neto', label: 'Total Neto', index: 5 },
-];
+const CSV_MAPPABLE_COLUMNS = [
+  { key: 'factura_numero', label: 'Número de Factura', index: 0, required: true },
+  { key: 'fecha_venta', label: 'Fecha de Venta', index: 1, required: true },
+  { key: 'local_codigo', label: 'Código de Local', index: 2, required: true },
+  { key: 'total_bruto', label: 'Total Bruto', index: 3, required: true },
+  { key: 'total_impuestos', label: 'Impuestos', index: 4, required: true },
+  { key: 'total_neto', label: 'Total Neto', index: 5, required: true },
+  { key: 'hora', label: 'Hora (Opcional)', index: 6, required: false },
+] as const;
+
+const REQUIRED_COLUMNS = CSV_MAPPABLE_COLUMNS.filter(col => col.required);
+
+const DATE_FORMAT_OPTIONS = [
+  { value: 'auto', label: 'Auto (detectar)' },
+  { value: 'dd/mm/yyyy', label: 'DD/MM/YYYY' },
+  { value: 'dd/mm/yy', label: 'DD/MM/YY' },
+  { value: 'mm/dd/yyyy', label: 'MM/DD/YYYY' },
+  { value: 'mm/dd/yy', label: 'MM/DD/YY' },
+  { value: 'yyyy-mm-dd', label: 'YYYY-MM-DD' },
+  { value: 'dd-mm-yyyy', label: 'DD-MM-YYYY' },
+  { value: 'dd-mm-yy', label: 'DD-MM-YY' },
+  { value: 'yyyy/mm/dd', label: 'YYYY/MM/DD' },
+  { value: 'yyyymmdd', label: 'YYYYMMDD (con/sin hora)' },
+] as const;
 
 export const UploadForm: React.FC = () => {
   const { currentMall } = useAuth();
@@ -24,8 +40,105 @@ export const UploadForm: React.FC = () => {
   // Mapping State
   const [isMappingNeeded, setIsMappingNeeded] = useState(false);
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+  const [csvHeaderLabels, setCsvHeaderLabels] = useState<Record<string, string>>({});
   const [columnMapping, setColumnMapping] = useState<Record<string, string>>({});
   const [constantValues, setConstantValues] = useState<Record<string, string>>({});
+  const [dateFormatPreference, setDateFormatPreference] = useState<(typeof DATE_FORMAT_OPTIONS)[number]['value']>('auto');
+  const [hasHeaderRow, setHasHeaderRow] = useState(true);
+  const [dataStartRow, setDataStartRow] = useState(2);
+
+  const getSyntheticColumnKey = (columnIndex: number): string => `__col_${columnIndex + 1}`;
+
+  const normalizeParsedRows = (data: any[]): string[][] => {
+    return (data || [])
+      .map((row: any) => {
+        if (Array.isArray(row)) {
+          return row.map((cell) => String(cell ?? ''));
+        }
+        if (row && typeof row === 'object') {
+          return Object.values(row).map((cell) => String(cell ?? ''));
+        }
+        return [String(row ?? '')];
+      })
+      .filter((row) => row.length > 0);
+  };
+
+  const getLayoutDefaultsDataStart = (withHeader: boolean): number => (withHeader ? 2 : 1);
+
+  const analyzeCsvLayout = (selectedFile: File, opts?: { hasHeader?: boolean; dataStartRow?: number }) => {
+    const nextHasHeader = opts?.hasHeader ?? hasHeaderRow;
+    const nextDataStartRow = Math.max(nextHasHeader ? 2 : 1, Number(opts?.dataStartRow ?? dataStartRow) || getLayoutDefaultsDataStart(nextHasHeader));
+
+    Papa.parse(selectedFile, {
+      header: false,
+      preview: Math.max(25, nextDataStartRow + 5),
+      skipEmptyLines: false,
+      complete: (results) => {
+        const rows = normalizeParsedRows(results.data as any[]);
+        if (rows.length === 0) {
+          setCsvHeaders([]);
+          setCsvHeaderLabels({});
+          setIsMappingNeeded(false);
+          setColumnMapping({});
+          return;
+        }
+
+        let headerValues: string[] = [];
+        let headerLabels: Record<string, string> = {};
+
+        if (nextHasHeader) {
+          const headerRowIndex = Math.max(0, Math.min(rows.length - 1, nextDataStartRow - 2));
+          const rawHeader = rows[headerRowIndex] || [];
+          headerValues = rawHeader.map((cell, idx) => {
+            const clean = String(cell || '').trim();
+            return clean || `col_${idx + 1}`;
+          });
+          headerLabels = Object.fromEntries(headerValues.map((h) => [h, h]));
+        } else {
+          const maxColumns = rows.reduce((max, row) => Math.max(max, row.length), 0);
+          headerValues = Array.from({ length: maxColumns }, (_, idx) => getSyntheticColumnKey(idx));
+          headerLabels = Object.fromEntries(headerValues.map((key, idx) => [key, `Columna ${idx + 1}`]));
+        }
+
+        setCsvHeaders(headerValues);
+        setCsvHeaderLabels(headerLabels);
+
+        const missingColumns = nextHasHeader
+          ? REQUIRED_COLUMNS.filter(col => !headerValues.includes(col.key))
+          : REQUIRED_COLUMNS;
+        setIsMappingNeeded(!nextHasHeader || missingColumns.length > 0);
+
+        setColumnMapping(prev => {
+          const next: Record<string, string> = {};
+          for (const req of CSV_MAPPABLE_COLUMNS) {
+            const prevValue = prev[req.key];
+            if (prevValue && (headerValues.includes(prevValue) || prevValue === 'CONSTANT')) {
+              next[req.key] = prevValue;
+              continue;
+            }
+
+            if (!nextHasHeader) {
+              const synthetic = headerValues[req.index];
+              if (synthetic) {
+                next[req.key] = synthetic;
+              }
+              continue;
+            }
+
+            const match = headerValues.find(h =>
+              h.toLowerCase().includes(req.key.split('_')[0]) || h.toLowerCase() === req.key.toLowerCase()
+            );
+            if (match) next[req.key] = match;
+          }
+          return next;
+        });
+      },
+      error: (err) => {
+        console.error("Error parsing CSV:", err);
+        setStatus({ type: 'error', message: 'Error al leer el archivo CSV.' });
+      }
+    });
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -35,36 +148,7 @@ export const UploadForm: React.FC = () => {
       setUploadProgress(0);
       setIsMappingNeeded(false);
       setConstantValues({});
-
-      // Analyze CSV headers
-      Papa.parse(selectedFile, {
-        header: true,
-        preview: 1,
-        complete: (results) => {
-          if (results.meta.fields) {
-            const headers = results.meta.fields;
-            setCsvHeaders(headers);
-
-            // Check if all required columns exist exactly
-            const missingColumns = REQUIRED_COLUMNS.filter(col => !headers.includes(col.key));
-
-            if (missingColumns.length > 0) {
-              setIsMappingNeeded(true);
-              // Auto-map if possible (fuzzy match or exact match)
-              const initialMapping: Record<string, string> = {};
-              REQUIRED_COLUMNS.forEach(req => {
-                const match = headers.find(h => h.toLowerCase().includes(req.key.split('_')[0]) || h.toLowerCase() === req.key.toLowerCase());
-                if (match) initialMapping[req.key] = match;
-              });
-              setColumnMapping(initialMapping);
-            }
-          }
-        },
-        error: (err) => {
-          console.error("Error parsing CSV:", err);
-          setStatus({ type: 'error', message: 'Error al leer el archivo CSV.' });
-        }
-      });
+      analyzeCsvLayout(selectedFile);
     }
   };
 
@@ -84,46 +168,64 @@ export const UploadForm: React.FC = () => {
   };
 
   const normalizeDate = (dateStr: string): string => {
-    if (!dateStr) return '';
-    try {
-      // Handle various formats
-      const date = new Date(dateStr);
-      if (isNaN(date.getTime())) {
-        // Try parsing DD/MM/YYYY or DD-MM-YYYY manually if standard parse fails
-        const parts = dateStr.split(/[-/]/);
-        if (parts.length === 3) {
-          // Assume DD/MM/YYYY if first part is > 12 or based on common non-US formats
-          // Simple heuristic: if year is last
-          if (parts[2].length === 4) {
-            return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-          }
-        }
-        return dateStr; // Return original if we can't parse
-      }
-      return date.toISOString().split('T')[0];
-    } catch (e) {
-      return dateStr;
+    // Preserve the original value. ApiService.ingestSales applies the selected parser
+    // deterministically to avoid browser-dependent Date parsing.
+    return String(dateStr || '').trim();
+  };
+
+  const resolveMappedValueFromRow = (
+    rowArray: string[],
+    rowObject: Record<string, string>,
+    mappedHeader: string | undefined
+  ): string => {
+    if (!mappedHeader) return '';
+    if (mappedHeader === 'CONSTANT') return '';
+    const syntheticMatch = mappedHeader.match(/^__col_(\d+)$/i);
+    if (syntheticMatch) {
+      const idx = Math.max(0, Number(syntheticMatch[1]) - 1);
+      return String(rowArray[idx] ?? '');
     }
+    return String(rowObject[mappedHeader] ?? '');
   };
 
   const processMappedFile = async (originalFile: File): Promise<File> => {
     return new Promise((resolve, reject) => {
       Papa.parse(originalFile, {
-        header: true,
+        header: false,
+        skipEmptyLines: false,
         complete: (results) => {
           try {
+            const rows = normalizeParsedRows(results.data as any[]);
+            const safeDataStartRow = Math.max(hasHeaderRow ? 2 : 1, Number(dataStartRow) || (hasHeaderRow ? 2 : 1));
+            const dataStartIndex = Math.max(0, safeDataStartRow - 1);
+            const headerRowIndex = hasHeaderRow ? Math.max(0, Math.min(rows.length - 1, safeDataStartRow - 2)) : -1;
+            const rawHeader = hasHeaderRow && headerRowIndex >= 0 ? (rows[headerRowIndex] || []) : [];
+            const sourceHeaders = hasHeaderRow
+              ? rawHeader.map((cell, idx) => String(cell || '').trim() || `col_${idx + 1}`)
+              : [];
+
+            const dataRows = rows.slice(dataStartIndex);
+
             // Transform data based on mapping
-            const transformedData = results.data.map((row: any) => {
+            const transformedData = dataRows.map((row: any) => {
+              const rowArray = Array.isArray(row) ? row.map((cell) => String(cell ?? '')) : [String(row ?? '')];
+              const rowObject: Record<string, string> = {};
+              if (hasHeaderRow) {
+                sourceHeaders.forEach((header, idx) => {
+                  rowObject[header] = String(rowArray[idx] ?? '');
+                });
+              }
+
               // Create array in specific order expected by api.ts
               // [factura, fecha, local, bruto, impuestos, neto]
-              return REQUIRED_COLUMNS.map(col => {
+              return CSV_MAPPABLE_COLUMNS.map(col => {
                 const mappedHeader = columnMapping[col.key];
                 let value = '';
 
                 if (mappedHeader === 'CONSTANT') {
                   value = constantValues[col.key] || '';
                 } else {
-                  value = row[mappedHeader] || '';
+                  value = resolveMappedValueFromRow(rowArray, rowObject, mappedHeader);
                 }
 
                 // Normalize Date if this is the date column
@@ -139,7 +241,7 @@ export const UploadForm: React.FC = () => {
             const cleanData = transformedData.filter(row => row.some(cell => cell !== ''));
 
             // Add header row expected by api.ts logic (it skips first row)
-            const headerRow = REQUIRED_COLUMNS.map(c => c.key);
+            const headerRow = CSV_MAPPABLE_COLUMNS.map(c => c.key);
 
             // Unparse to CSV string
             const csv = Papa.unparse([headerRow, ...cleanData], { header: false });
@@ -153,6 +255,23 @@ export const UploadForm: React.FC = () => {
         error: (err) => reject(err)
       });
     });
+  };
+
+  const handleHasHeaderRowChange = (checked: boolean) => {
+    setHasHeaderRow(checked);
+    const nextDataStart = checked
+      ? (dataStartRow < 2 ? 2 : dataStartRow)
+      : (dataStartRow < 1 ? 1 : dataStartRow);
+    setDataStartRow(nextDataStart);
+    if (file) analyzeCsvLayout(file, { hasHeader: checked, dataStartRow: nextDataStart });
+  };
+
+  const handleDataStartRowChange = (rawValue: string) => {
+    const parsed = Number(rawValue);
+    const min = hasHeaderRow ? 2 : 1;
+    const next = Number.isFinite(parsed) ? Math.max(min, Math.floor(parsed)) : min;
+    setDataStartRow(next);
+    if (file) analyzeCsvLayout(file, { dataStartRow: next });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -169,8 +288,10 @@ export const UploadForm: React.FC = () => {
       }
 
       let fileToUpload = file;
+      const requiresLayoutTransform = !hasHeaderRow || dataStartRow !== 2;
+      const shouldTransform = isMappingNeeded || requiresLayoutTransform;
 
-      if (isMappingNeeded) {
+      if (shouldTransform) {
         // Validate mapping
         const missingMappings = REQUIRED_COLUMNS.filter(col => {
           const mapping = columnMapping[col.key];
@@ -186,16 +307,22 @@ export const UploadForm: React.FC = () => {
         fileToUpload = await processMappedFile(file);
       }
 
-      const result = await ApiService.ingestSales(fileToUpload, apiKey, currentMall.id, (progress) => {
-        setUploadProgress(progress);
-      });
+      const result = await ApiService.ingestSales(
+        fileToUpload,
+        apiKey,
+        currentMall.id,
+        (progress) => {
+          setUploadProgress(progress);
+        },
+        dateFormatPreference
+      );
 
       setStatus({
         type: result.message.includes('Mock') ? 'info' : 'success',
         message: `¡Listo! ${result.message}. Se procesaron ${result.records_processed} registros.`
       });
 
-      if (!isMappingNeeded) {
+      if (!shouldTransform) {
         setFile(null);
         const fileInput = document.getElementById('csv-upload') as HTMLInputElement;
         if (fileInput) fileInput.value = '';
@@ -235,6 +362,56 @@ export const UploadForm: React.FC = () => {
           />
         </div>
 
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">Formato de Fecha (como importador FTP)</label>
+          <select
+            value={dateFormatPreference}
+            onChange={(e) => setDateFormatPreference(e.target.value as (typeof DATE_FORMAT_OPTIONS)[number]['value'])}
+            className="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none bg-white"
+          >
+            {DATE_FORMAT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-slate-500 mt-1">
+            Usa un formato fijo para fechas ambiguas (ej. <code>13/01/26</code>). `Auto` mantiene detección automática.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <label className="flex items-center gap-3 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={hasHeaderRow}
+                onChange={(e) => handleHasHeaderRowChange(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              El archivo tiene cabecera
+            </label>
+            <p className="text-xs text-slate-500 mt-2">
+              Igual que en FTP: si está desmarcado, podrás mapear por posición de columna.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Fila donde inicia la data</label>
+            <input
+              type="number"
+              min={hasHeaderRow ? 2 : 1}
+              step={1}
+              value={dataStartRow}
+              onChange={(e) => handleDataStartRowChange(e.target.value)}
+              className="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none"
+            />
+            <p className="text-xs text-slate-500 mt-1">
+              {hasHeaderRow
+                ? 'Si hay cabecera, se asume que está en la fila inmediatamente anterior al inicio de data.'
+                : 'Si no hay cabecera, se omiten las filas anteriores y se procesa desde esta fila.'}
+            </p>
+          </div>
+        </div>
+
         <div className={`border-2 border-dashed rounded-xl p-10 flex flex-col items-center justify-center transition-all cursor-pointer relative ${isMappingNeeded ? 'border-amber-300 bg-amber-50' : 'border-slate-300 bg-slate-50 hover:bg-slate-100'}`}>
           <input
             type="file"
@@ -246,7 +423,7 @@ export const UploadForm: React.FC = () => {
           />
           <FileSpreadsheet className={`w-12 h-12 mb-4 ${isMappingNeeded ? 'text-amber-500' : 'text-slate-400'}`} />
           <p className="text-slate-600 font-medium">{file ? file.name : 'Haz clic o arrastra un archivo CSV'}</p>
-          {!isMappingNeeded && <p className="text-slate-400 text-sm mt-1">Formato: factura, fecha, local, bruto, impuestos, neto</p>}
+          {!isMappingNeeded && <p className="text-slate-400 text-sm mt-1">Formato: factura, fecha, local, bruto, impuestos, neto (+ hora opcional)</p>}
         </div>
 
         {isMappingNeeded && (
@@ -261,7 +438,7 @@ export const UploadForm: React.FC = () => {
             </p>
 
             <div className="space-y-3">
-              {REQUIRED_COLUMNS.map((col) => (
+              {CSV_MAPPABLE_COLUMNS.map((col) => (
                 <div key={col.key} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center bg-white p-3 rounded-lg border border-amber-100">
                   <div className="font-medium text-slate-700 text-sm flex items-center gap-2">
                     <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold">
@@ -277,12 +454,12 @@ export const UploadForm: React.FC = () => {
                       value={columnMapping[col.key] || ''}
                       onChange={(e) => handleMappingChange(col.key, e.target.value)}
                       className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                      required
+                      required={col.required}
                     >
                       <option value="">-- Seleccionar Columna --</option>
                       <option value="CONSTANT" className="font-bold text-indigo-600">-- VALOR CONSTANTE --</option>
                       {csvHeaders.map(h => (
-                        <option key={h} value={h}>{h}</option>
+                        <option key={h} value={h}>{csvHeaderLabels[h] || h}</option>
                       ))}
                     </select>
                     {columnMapping[col.key] === 'CONSTANT' && (
@@ -292,7 +469,7 @@ export const UploadForm: React.FC = () => {
                         value={constantValues[col.key] || ''}
                         onChange={(e) => handleConstantChange(col.key, e.target.value)}
                         className="w-full px-3 py-2 rounded-lg border border-indigo-300 bg-indigo-50 text-sm focus:ring-2 focus:ring-indigo-500 outline-none animate-in fade-in slide-in-from-top-1"
-                        required
+                        required={col.required}
                       />
                     )}
                   </div>
@@ -330,17 +507,17 @@ export const UploadForm: React.FC = () => {
           className={`w-full py-3 rounded-xl font-semibold text-white transition-all shadow-lg ${!file || isLoading ? 'bg-slate-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 active:scale-95'
             }`}
         >
-          {isLoading ? 'Procesando...' : isMappingNeeded ? 'Transformar e Ingestar' : 'Iniciar Ingesta de Datos'}
+          {isLoading ? 'Procesando...' : (isMappingNeeded || !hasHeaderRow || dataStartRow !== 2) ? 'Transformar e Ingestar' : 'Iniciar Ingesta de Datos'}
         </button>
       </form>
 
-      {!isMappingNeeded && (
+      {!isMappingNeeded && hasHeaderRow && dataStartRow === 2 && (
         <div className="mt-8 pt-8 border-t border-slate-100">
           <h4 className="text-sm font-semibold text-slate-700 mb-4">Ejemplo del Formato Requerido:</h4>
           <div className="bg-slate-900 rounded-lg p-4 font-mono text-xs text-indigo-300 overflow-x-auto">
-            <p>factura_numero,fecha_venta,local_codigo,total_bruto,total_impuestos,total_neto</p>
-            <p>12345,2024-01-26,L001,100.00,10.00,90.00</p>
-            <p>12346,2024-01-26,L001,50.00,5.00,45.00</p>
+            <p>factura_numero,fecha_venta,local_codigo,total_bruto,total_impuestos,total_neto,hora</p>
+            <p>12345,2024-01-26,L001,100.00,10.00,90.00,13:30:00</p>
+            <p>12346,2024-01-26,L001,50.00,5.00,45.00,14:05</p>
           </div>
         </div>
       )}

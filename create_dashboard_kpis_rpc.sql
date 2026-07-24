@@ -20,23 +20,30 @@ RETURNS TABLE (
 LANGUAGE sql
 STABLE
 AS $$
-WITH filtered_sales AS (
+WITH allowed_locales AS (
+  SELECT
+    l.id,
+    l.nombre
+  FROM public.locales l
+  WHERE l.mall_id = mall_id_param
+),
+filtered_sales AS (
   SELECT
     v.local_id,
     v.fecha::date AS fecha,
     COALESCE(v.total_bruto, 0)::numeric AS total_bruto,
     COALESCE(v.total_neto, 0)::numeric AS total_neto
   FROM public.ventas v
-  WHERE v.mall_id = mall_id_param
-    AND v.fecha >= start_date_param
+  INNER JOIN allowed_locales al ON al.id = v.local_id
+  WHERE v.fecha >= start_date_param
     AND v.fecha <= end_date_param
 ),
 store_totals AS (
   SELECT
-    COALESCE(l.nombre, 'Desconocido') AS name,
+    al.nombre AS name,
     SUM(fs.total_bruto)::double precision AS total
   FROM filtered_sales fs
-  LEFT JOIN public.locales l ON l.id = fs.local_id
+  INNER JOIN allowed_locales al ON al.id = fs.local_id
   GROUP BY 1
 ),
 day_totals AS (

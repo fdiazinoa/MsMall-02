@@ -1,15 +1,16 @@
 
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthProvider';
-import { CreditCard, BarChart3, Store as StoreIcon, Grid, KeyRound } from 'lucide-react';
+import { ArrowRightLeft, Bot, CreditCard, BarChart3, Store as StoreIcon, Grid, KeyRound, Tag, Mail } from 'lucide-react';
+import { AppTab } from './appTabs';
 
 interface SidebarProps {
-  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
-  setActiveTab: (tab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons') => void;
+  activeTab: AppTab;
+  setActiveTab: (tab: AppTab) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
-  const { role, user, isAdmin, isTic, signOut, changePassword } = useAuth();
+  const { role, user, isAdmin, isTic, isAuditor, canAccess, signOut, changePassword } = useAuth();
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -107,7 +108,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
       <aside className="w-64 bg-slate-900 text-white flex flex-col hidden md:flex h-screen sticky top-0">
       <div className="p-6 flex items-center gap-3">
-        <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center font-bold shadow-lg shadow-indigo-500/20">M</div>
+        <img src="/msmall-icon-192.png" alt="MSMALL" className="w-8 h-8 rounded-lg shadow-lg shadow-indigo-500/20" />
         <h1 className="text-xl font-bold tracking-tight">MSMALL</h1>
       </div>
 
@@ -121,6 +122,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83" /><path d="M22 12A10 10 0 0 0 12 2v10z" /></svg>
           Dashboard BI
+        </button>
+
+        <button
+          onClick={() => setActiveTab('big-data')}
+          className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'big-data' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+        >
+          <BarChart3 className="w-5 h-5" />
+          Big Data
         </button>
 
         <button
@@ -159,7 +168,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
           Comparativas BI
         </button>
 
-        {(isAdmin || isTic) && (
+        {(isAdmin || isTic || isAuditor || canAccess('sales_reports')) && (
           <button
             onClick={() => setActiveTab('reports')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
@@ -170,7 +179,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
           </button>
         )}
 
-        {(isAdmin || isTic) && (
+        {(isAdmin || isTic || canAccess('monitor') || canAccess('imports')) && (
           <>
             <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Auditoría IT</div>
             <button
@@ -184,7 +193,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
           </>
         )}
 
-        {(isAdmin || isTic) && (
+        {(isAdmin || isTic || canAccess('stores') || canAccess('malls') || canAccess('users') || canAccess('roles')) && (
           <>
             <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Administración</div>
 
@@ -197,30 +206,65 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
               Mantenimiento
             </button>
 
-            {isAdmin && (
+            {(isAdmin || isTic || canAccess('stores')) && <button
+              onClick={() => setActiveTab('store-catalogs')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'store-catalogs' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
+            >
+              <Tag className="w-5 h-5" />
+              Catálogos Locales
+            </button>}
+
+            {(isAdmin || canAccess('malls') || canAccess('users') || canAccess('roles')) && (
               <>
-                <button
+                {(isAdmin || canAccess('malls')) && <button
                   onClick={() => setActiveTab('malls')}
                   className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'malls' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                     }`}
                 >
                   <StoreIcon className="w-5 h-5" />
                   Gestión de Malls
-                </button>
-                <button
+                </button>}
+                {(isAdmin || canAccess('users') || canAccess('roles')) && <button
                   onClick={() => setActiveTab('users')}
                   className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                     }`}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                   Usuarios y Roles
+                </button>}
+                {isAdmin && <>
+                <button
+                  onClick={() => setActiveTab('messaging')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'messaging' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                    }`}
+                >
+                  <Mail className="w-5 h-5" />
+                  Mensajería Resend
                 </button>
+                <button
+                  onClick={() => setActiveTab('copilot')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'copilot' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                    }`}
+                >
+                  <Bot className="w-5 h-5" />
+                  Copilot MsMall
+                </button>
+                <button
+                  onClick={() => setActiveTab('security')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'security' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                    }`}
+                >
+                  <KeyRound className="w-5 h-5" />
+                  Seguridad Tokens
+                </button>
+                </>}
               </>
             )}
           </>
         )}
 
-        {(isAdmin || isTic) && (
+        {(isAdmin || isTic || canAccess('imports')) && (
           <>
             <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Herramientas</div>
 
@@ -235,12 +279,30 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
             </button>
 
             <button
+              onClick={() => setActiveTab('erp-webservice')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'erp-webservice' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
+            >
+              <ArrowRightLeft className="w-5 h-5" />
+              ERP Webservice
+            </button>
+
+            <button
               onClick={() => setActiveTab('upload')}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'upload' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" x2="12" y1="3" y2="15" /></svg>
               Ingesta CSV
+            </button>
+
+            <button
+              onClick={() => setActiveTab('store-import')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'store-import' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
+            >
+              <StoreIcon className="w-5 h-5" />
+              Importador Locales
             </button>
           </>
         )}

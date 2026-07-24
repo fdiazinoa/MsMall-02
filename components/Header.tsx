@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthProvider';
 import { Building, ChevronDown, Activity, AlertCircle, KeyRound } from 'lucide-react';
 import { supabase } from '../api';
 
-type AppTab = 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
+type AppTab = 'upload' | 'reports' | 'analytics' | 'big-data' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
 
 interface HeaderProps {
   activeTab: AppTab;
@@ -22,6 +22,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
 
   const mobileTabs: Array<{ id: AppTab; label: string; visible: boolean }> = [
     { id: 'analytics', label: 'Dashboard BI', visible: true },
+    { id: 'big-data', label: 'Big Data', visible: true },
     { id: 'insights', label: 'Inteligencia IA', visible: true },
     { id: 'financial', label: 'Gestión Financiera', visible: true },
     { id: 'cube', label: 'Cubo de Ventas', visible: true },

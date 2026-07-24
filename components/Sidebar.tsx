@@ -4,8 +4,8 @@ import { useAuth } from '../context/AuthProvider';
 import { CreditCard, BarChart3, Store as StoreIcon, Grid, KeyRound } from 'lucide-react';
 
 interface SidebarProps {
-  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
-  setActiveTab: (tab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons') => void;
+  activeTab: 'upload' | 'reports' | 'analytics' | 'big-data' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
+  setActiveTab: (tab: 'upload' | 'reports' | 'analytics' | 'big-data' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons') => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
@@ -121,6 +121,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83" /><path d="M22 12A10 10 0 0 0 12 2v10z" /></svg>
           Dashboard BI
+        </button>
+
+        <button
+          onClick={() => setActiveTab('big-data')}
+          className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'big-data' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+        >
+          <BarChart3 className="w-5 h-5" />
+          Big Data
         </button>
 
         <button

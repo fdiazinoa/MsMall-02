@@ -14,6 +14,7 @@ import csv
 import json
 import posixpath
 from typing import Optional
+from services.big_data_analytics_service import BigDataAnalyticsService
 
 # Setup Logging
 logging.basicConfig(
@@ -739,6 +740,12 @@ async def run_worker_async():
     await update_heartbeat()
     
     try:
+        # Big Data work is queued by the database trigger and deliberately runs
+        # here, outside importer requests and independently from FTP/SFTP work.
+        analytics_result = BigDataAnalyticsService(supabase, logger).process_pending_refreshes()
+        if analytics_result["processed"] or analytics_result["failed"]:
+            logger.info("Big Data queue: %s", analytics_result)
+
         # 2. Fetch Tasks (IDLE + AUTOMATIC)
         # Note: We need to filter by IDLE to avoid double execution if previous job is running
         response = supabase.table("locales")\

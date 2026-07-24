@@ -23,7 +23,7 @@ from ftplib import FTP
 import stat
 from worker_importacion import run_worker_async
 from analytics import generate_sales_cube
-from routers import recipes, comparisons, admin_tools
+from routers import recipes, comparisons, admin_tools, big_data
 from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
 from supabase import create_client, Client
 import os
@@ -218,6 +218,7 @@ async def diagnose_file_endpoint(file: UploadFile = File(...)):
 app.include_router(recipes.router)
 app.include_router(comparisons.router)
 app.include_router(admin_tools.router)
+app.include_router(big_data.router)
 _api_scheduler_task = None
 
 async def scheduler_loop():

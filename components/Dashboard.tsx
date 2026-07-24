@@ -3,6 +3,7 @@ import React from 'react';
 import { UploadForm } from './UploadForm';
 import { SalesReport } from './SalesReport';
 import { DashboardKPIs } from './DashboardKPIs';
+import { BigDataDashboard } from './BigDataDashboard';
 import { StoreMaintenance } from './StoreMaintenance';
 import { UserManagement } from './UserManagement';
 import { ImportManager } from './ImportManager';
@@ -15,13 +16,15 @@ import { MallManager } from './MallManager';
 import { PeriodComparison } from './PeriodComparison';
 
 interface DashboardProps {
-  activeTab: 'upload' | 'reports' | 'analytics' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
+  activeTab: 'upload' | 'reports' | 'analytics' | 'big-data' | 'stores' | 'users' | 'auto-import' | 'monitor' | 'insights' | 'financial' | 'cube' | 'malls' | 'comparisons';
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ activeTab }) => {
   switch (activeTab) {
     case 'analytics':
       return <DashboardKPIs />;
+    case 'big-data':
+      return <BigDataDashboard />;
     case 'reports':
       return <SalesReport />;
     case 'upload':

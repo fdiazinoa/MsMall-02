@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, OperationalFinding, OperationsCollection } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -738,6 +738,59 @@ export const ApiService = {
       this.getBigData<any>('quality', mallId, startDate, endDate, token)
     ]);
     return { summary, daily, categories, ranking, quality };
+  },
+
+  async getBigDataForecast(mallId: string, asOf: string, token: string): Promise<BigDataForecast> {
+    const params = new URLSearchParams({ mall_id: mallId, as_of: asOf });
+    return fetchJsonWithBaseFallback<BigDataForecast>(
+      `/big-data/forecast/mall?${params.toString()}`,
+      { headers: withAuthHeaders(token, { Accept: 'application/json' }) },
+      'No se pudo consultar la proyección'
+    );
+  },
+
+  async getBigDataExecutiveSummary(mallId: string, startDate: string, endDate: string, token: string): Promise<BigDataExecutiveSummary> {
+    const params = new URLSearchParams({ mall_id: mallId, start_date: startDate, end_date: endDate });
+    return fetchJsonWithBaseFallback<BigDataExecutiveSummary>(
+      `/big-data/executive-summary?${params.toString()}`,
+      { headers: withAuthHeaders(token, { Accept: 'application/json' }) },
+      'No se pudo consultar el resumen ejecutivo'
+    );
+  },
+
+  async getOperationsFindings(
+    mallId: string,
+    token: string,
+    filters: { status?: string; severity?: string; local_id?: string; type?: string; limit?: number; offset?: number } = {}
+  ): Promise<OperationsCollection<OperationalFinding>> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') params.set(key, String(value));
+    });
+    return fetchJsonWithBaseFallback<OperationsCollection<OperationalFinding>>(
+      `/big-data/operations/items/findings?${params.toString()}`,
+      { headers: withAuthHeaders(token, { Accept: 'application/json' }) },
+      'No se pudieron consultar los hallazgos'
+    );
+  },
+
+  async updateOperationsFinding(
+    mallId: string,
+    findingId: string,
+    action: 'review' | 'resolve' | 'reopen',
+    token: string,
+    comment?: string
+  ): Promise<OperationalFinding> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<OperationalFinding>(
+      `/big-data/operations/findings/${encodeURIComponent(findingId)}/${action}?${params.toString()}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { Accept: 'application/json', 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ comment: comment || null })
+      },
+      'No se pudo actualizar el hallazgo'
+    );
   },
 
   // --- MÉTODOS DE IMPORTACIÓN AUTOMATIZADA ---

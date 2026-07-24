@@ -4,7 +4,7 @@
 
 | Capacidad | Existe | Está conectada | Decisión |
 | --- | ---: | ---: | --- |
-| Proyección | Sí, en `analytics.py` y Finanzas | Parcial | Reemplazar el cálculo aislado por un servicio explicable basado en agregados Big Data. |
+| Proyección | Sí, en `analytics.py` y Finanzas | Legacy conectada | Conservarla intacta y crear un servicio Big Data independiente sobre agregados. |
 | Evento | Sí, `operations_events` | No | Registrar hechos técnicos y comerciales normalizados desde el worker. |
 | Hallazgo | Sí, `operational_findings` | No | Fuente oficial de condiciones que requieren revisión. |
 | Observación | Sí, `operations_agent_observations` | No | Generar explicaciones determinísticas a partir de hallazgos. |
@@ -12,6 +12,20 @@
 | Alerta | Sí, `alertas_inteligentes` | Parcial, Legacy | Mantener como canal de presentación/notificación; no duplicar hallazgos. |
 | Operations Center | No en la rama | No | Crear una vista que consuma las entidades existentes y sus contratos reales. |
 | Copilot | Sí, contexto comercial Legacy | Parcial | Extender el contexto con métricas Big Data controladas por flag. |
+
+## Verificación de Operations Center en Git
+
+- `components/OperationsCenter.tsx`, `services/operations_agent_service.py` y
+  `services/operations_auditor_service.py` no están presentes en la base
+  `develop` del Sprint 2.
+- Sí aparecen en el historial de Git, entre otros, en los commits `845aa9b`,
+  `d7fba61` y `57c81f5`.
+- La navegación de `develop` tampoco registraba una pestaña operacional en
+  `components/appTabs.ts`.
+- La implementación de Sprint 2 reutiliza la estructura visual compacta que
+  continúa siendo compatible, pero no recupera las consultas directas,
+  reclamos no atómicos ni datos derivados del código anterior. La interfaz
+  nueva consume exclusivamente contratos autenticados y persistencia real.
 
 ## Fuente oficial por concepto
 

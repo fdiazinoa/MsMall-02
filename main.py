@@ -61,6 +61,7 @@ from routers.token_auth import (
 )
 from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
 from services.local_custom_fields_service import LocalCustomFieldsService
+from services.big_data_sprint2_service import BigDataSprint2Service
 from services.connection_monitor_service import (
     ConnectionMonitorService,
     RetryPolicyBlocked,
@@ -5014,6 +5015,107 @@ def _load_copilot_sales_summary(locales: List[Dict[str, Any]], lookback_days: in
     }
 
 
+def _is_big_data_copilot_question(message: str) -> bool:
+    normalized = _normalize_store_catalog_key(message)
+    terms = (
+        "proyeccion",
+        "cierre",
+        "anomalia",
+        "categoria",
+        "creciendo",
+        "caida",
+        "desempeno del mall",
+        "resumen ejecutivo",
+        "no han reportado",
+        "periodo incompleto",
+        "comparar local",
+    )
+    return any(term in normalized for term in terms)
+
+
+def _require_big_data_copilot_flags(mall_id: str) -> None:
+    for feature in ("BIG_DATA_CORE", "BIG_DATA_COPILOT"):
+        enabled = supabase.rpc(
+            "is_mall_feature_enabled",
+            {"requested_mall_id": mall_id, "requested_feature": feature},
+        ).execute().data
+        if enabled is not True:
+            raise HTTPException(
+                status_code=403,
+                detail=f"{feature} no está activado para este mall.",
+            )
+
+
+def _build_big_data_copilot_context(
+    mall_id: str, operator_ctx: Dict[str, Any]
+) -> Dict[str, Any]:
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    _require_big_data_copilot_flags(mall_id)
+    today = datetime.utcnow().date()
+    month_start = today.replace(day=1)
+    summary = BigDataSprint2Service(supabase).executive_summary(
+        mall_id, month_start, today
+    )
+    context = {
+        "generated_at_utc": datetime.utcnow().isoformat(),
+        "mall": {"id": mall_id},
+        "periodo_analizado": {
+            "inicio": month_start.isoformat(),
+            "fin": today.isoformat(),
+        },
+        "big_data": summary,
+        "restrictions": {
+            "facts_calculations_inferences_separated": True,
+            "projection_is_estimate": True,
+            "causality_not_established": True,
+            "source": "Sprint 1 aggregate tables",
+        },
+    }
+    supabase.table("operations_events").insert(
+        {
+            "mall_id": mall_id,
+            "event_type": "COPILOT_BIG_DATA_QUERY",
+            "source": "COPILOT",
+            "severity": "INFO",
+            "processing_status": "PENDING",
+            "payload": {
+                "operator_id": operator_ctx.get("user_id"),
+                "period": context["periodo_analizado"],
+                "context_version": "big-data-copilot-v1",
+            },
+        }
+    ).execute()
+    return context
+
+
+def _deterministic_big_data_answer(context: Dict[str, Any]) -> str:
+    summary = context.get("big_data") or {}
+    forecast = summary.get("forecast") or {}
+    coverage = float(summary.get("coverage") or 0)
+    if forecast.get("status") == "INSUFFICIENT_DATA":
+        projection = "No hay información suficiente para calcular una proyección confiable."
+    else:
+        projection = (
+            f"La proyección estimada de cierre es {float(forecast.get('expected_close') or 0):,.2f}, "
+            f"con rango {float(forecast.get('lower_bound') or 0):,.2f}–"
+            f"{float(forecast.get('upper_bound') or 0):,.2f} y confianza "
+            f"{forecast.get('confidence', 'LOW')}."
+        )
+    quality = (
+        "El período está incompleto; no se atribuyen causas comerciales."
+        if summary.get("general_status") == "DATA_INCOMPLETE"
+        else "La cobertura permite describir los hechos observados."
+    )
+    return (
+        f"**Resumen del período**\n"
+        f"- Hecho: venta acumulada {float(summary.get('accumulated_sales') or 0):,.2f}.\n"
+        f"- Cobertura: {coverage:.1f}%. {quality}\n"
+        f"- Estimación: {projection}\n"
+        f"- Hallazgos activos: {len(summary.get('anomalies') or [])}.\n"
+        f"- Las cifras provienen de agregados controlados; no se infiere causalidad."
+    )
+
+
 def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado.")
@@ -5803,13 +5905,17 @@ async def chat_with_copilot(
     if len(message) > 1400:
         raise HTTPException(status_code=400, detail="La pregunta es demasiado larga.")
 
+    big_data_question = _is_big_data_copilot_question(message)
     settings = _copilot_config_status()
     if not settings.get("enabled"):
         raise HTTPException(status_code=503, detail="Copilot MsMall esta desactivado.")
-    if not settings.get("api_key_configured"):
+    if not settings.get("api_key_configured") and not big_data_question:
         raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
 
-    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx)
+    context_builder = (
+        _build_big_data_copilot_context if big_data_question else _build_copilot_context
+    )
+    context = await asyncio.to_thread(context_builder, mall_id, operator_ctx)
     email_request = _parse_copilot_email_request(message)
     if email_request:
         try:
@@ -5868,19 +5974,33 @@ async def chat_with_copilot(
             "attachments": [attachment],
         }
 
-    answer = await asyncio.to_thread(
-        _call_copilot_provider,
-        settings,
-        context,
-        message,
-        payload.history or [],
-    )
+    try:
+        answer = await asyncio.to_thread(
+            _call_copilot_provider,
+            settings,
+            context,
+            message,
+            payload.history or [],
+        )
+        provider = settings["provider"]
+        model = settings["model"]
+    except HTTPException:
+        if not big_data_question:
+            raise
+        # Structured metrics remain useful when the provider is unavailable.
+        answer = _deterministic_big_data_answer(context)
+        provider = "deterministic"
+        model = "big-data-fallback-v1"
     return {
         "answer": answer,
-        "provider": settings["provider"],
-        "model": settings["model"],
+        "provider": provider,
+        "model": model,
         "context_generated_at": context.get("generated_at_utc"),
-        "sources": ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion"],
+        "sources": (
+            ["big_data_aggregates", "operational_findings", "big_data_forecast"]
+            if big_data_question
+            else ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion"]
+        ),
         "attachments": [],
     }
 
@@ -6711,6 +6831,7 @@ BIG_DATA_FEATURE_FLAGS = {
     "BIG_DATA_CORE",
     "BIG_DATA_BENCHMARK",
     "BIG_DATA_FORECAST",
+    "BIG_DATA_OPERATIONS",
     "BIG_DATA_COPILOT",
 }
 

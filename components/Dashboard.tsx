@@ -6,6 +6,7 @@ import { StoreImportTool } from './StoreImportTool';
 import { SalesReport } from './SalesReport';
 import { DashboardKPIs } from './DashboardKPIs';
 import { BigDataDashboard } from './BigDataDashboard';
+import { OperationsCenter } from './OperationsCenter';
 import { StoreMaintenance } from './StoreMaintenance';
 import { StoreCatalogManager } from './StoreCatalogManager';
 import { UserManagement } from './UserManagement';
@@ -32,6 +33,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab })
       return <DashboardKPIs />;
     case 'big-data':
       return <BigDataDashboard />;
+    case 'operations':
+      return <OperationsCenter onOpenBigData={() => setActiveTab('big-data')} />;
     case 'reports':
       return <SalesReport />;
     case 'upload':

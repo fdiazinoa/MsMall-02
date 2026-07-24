@@ -1,5 +1,5 @@
 -- MsMall Big Data Sprint 1. Additive only: legacy malls, locales and ventas stay intact.
--- Big Data Core is enabled for every mall. Optional future capabilities remain disabled.
+-- Deploy with all feature flags disabled. Enable BIG_DATA_CORE per mall when ready.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -13,36 +13,6 @@ CREATE TABLE IF NOT EXISTS public.mall_feature_flags (
   PRIMARY KEY (mall_id, feature_key),
   CONSTRAINT mall_feature_flags_key_chk CHECK (feature_key IN ('BIG_DATA_CORE', 'BIG_DATA_BENCHMARK', 'BIG_DATA_FORECAST', 'BIG_DATA_COPILOT'))
 );
-
--- The user decision for Sprint 1 is that Big Data Core is a platform-wide
--- improvement, not a separately licensed capability.
-INSERT INTO public.mall_feature_flags (mall_id, feature_key, enabled)
-SELECT id, 'BIG_DATA_CORE', true
-FROM public.malls
-ON CONFLICT (mall_id, feature_key) DO UPDATE
-SET enabled = true,
-    updated_at = now();
-
-CREATE OR REPLACE FUNCTION public.enable_big_data_core_for_new_mall()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-  INSERT INTO public.mall_feature_flags (mall_id, feature_key, enabled)
-  VALUES (NEW.id, 'BIG_DATA_CORE', true)
-  ON CONFLICT (mall_id, feature_key) DO UPDATE
-  SET enabled = true,
-      updated_at = now();
-  RETURN NEW;
-END;
-$$;
-
-DROP TRIGGER IF EXISTS trg_enable_big_data_core_for_new_mall ON public.malls;
-CREATE TRIGGER trg_enable_big_data_core_for_new_mall
-AFTER INSERT ON public.malls
-FOR EACH ROW EXECUTE FUNCTION public.enable_big_data_core_for_new_mall();
 
 CREATE TABLE IF NOT EXISTS public.big_data_access_audit (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

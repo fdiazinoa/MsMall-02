@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthProvider';
-import { Building, ChevronDown, Activity, AlertCircle, KeyRound } from 'lucide-react';
+import { Building, ChevronDown, Activity, AlertCircle } from 'lucide-react';
 import { supabase } from '../api';
 import { AppTab } from './appTabs';
 
@@ -10,14 +10,9 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
-  const { currentMall, malls, setCurrentMall, changePassword, isAdmin, isTic, isAuditor } = useAuth();
+  const { currentMall, malls, setCurrentMall, isAdmin, isTic, isAuditor } = useAuth();
   const [systemStatus, setSystemStatus] = useState<'operational' | 'down' | 'loading'>('loading');
   const [lastHeartbeat, setLastHeartbeat] = useState<string | null>(null);
-  const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [savingPassword, setSavingPassword] = useState(false);
 
   const mobileTabs: Array<{ id: AppTab; label: string; visible: boolean }> = [
     { id: 'analytics', label: 'Dashboard BI', visible: true },
@@ -40,36 +35,6 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     { id: 'copilot', label: 'Copilot MsMall', visible: isAdmin },
     { id: 'security', label: 'Seguridad Tokens', visible: isAdmin }
   ];
-
-  const resetPasswordModal = () => {
-    setShowPasswordModal(false);
-    setCurrentPassword('');
-    setNewPassword('');
-    setConfirmPassword('');
-    setSavingPassword(false);
-  };
-
-  const handlePasswordChange = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      alert('Complete todos los campos.');
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      alert('La confirmación no coincide con la nueva contraseña.');
-      return;
-    }
-
-    setSavingPassword(true);
-    try {
-      await changePassword(currentPassword, newPassword);
-      alert('Contraseña actualizada correctamente.');
-      resetPasswordModal();
-    } catch (error: any) {
-      alert(error?.message || 'No se pudo cambiar la contraseña.');
-      setSavingPassword(false);
-    }
-  };
 
   useEffect(() => {
     const checkHealth = async () => {
@@ -113,63 +78,6 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
 
   return (
     <>
-      {showPasswordModal && (
-        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-6">
-            <h3 className="text-lg font-bold text-slate-800 mb-1">Cambiar Contraseña</h3>
-            <p className="text-sm text-slate-500 mb-4">Actualiza tu acceso de forma segura.</p>
-
-            <form onSubmit={handlePasswordChange} className="space-y-3">
-              <input
-                type="password"
-                placeholder="Contraseña actual"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-slate-800"
-                autoComplete="current-password"
-                required
-              />
-              <input
-                type="password"
-                placeholder="Nueva contraseña (mínimo 8)"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-slate-800"
-                autoComplete="new-password"
-                required
-              />
-              <input
-                type="password"
-                placeholder="Confirmar nueva contraseña"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-slate-800"
-                autoComplete="new-password"
-                required
-              />
-
-              <div className="pt-2 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={resetPasswordModal}
-                  className="px-4 py-2 text-slate-600"
-                  disabled={savingPassword}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={savingPassword}
-                  className="px-4 py-2 rounded-lg bg-indigo-600 text-white disabled:opacity-50"
-                >
-                  {savingPassword ? 'Guardando...' : 'Guardar'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       <header className="bg-white border-b border-slate-200 px-3 py-2 lg:px-5 sticky top-0 z-10">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
@@ -205,14 +113,6 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
           </div>
 
           <div className="flex items-center gap-2 md:gap-4">
-            <button
-              onClick={() => setShowPasswordModal(true)}
-              className="flex items-center gap-1.5 text-xs font-bold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-full border border-slate-200 hover:bg-slate-200 transition-colors"
-            >
-              <KeyRound size={12} />
-              <span className="hidden sm:inline">Cambiar Clave</span>
-            </button>
-
             <div className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full border ${systemStatus === 'operational'
               ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
               : 'bg-red-50 border-red-200 text-red-700'

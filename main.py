@@ -79,7 +79,8 @@ from dotenv import load_dotenv
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 # Prefer Service Role Key for backend operations to bypass RLS
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY or os.getenv("SUPABASE_KEY")
 supabase: Optional[Client] = None
 
 
@@ -2252,6 +2253,14 @@ async def ingesta_ventas(
     El mall_id se detecta automáticamente del contexto del usuario autenticado.
     No es necesario enviar X-Mall-Id header - se infiere del usuario logueado.
     """
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        logger.error("La ingesta autenticada requiere SUPABASE_SERVICE_ROLE_KEY en el backend.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="La ingesta segura no está disponible. Contacta al administrador del sistema.",
+        )
+
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
     batch_id = str(uuid4())
     try:
         content_bytes = await file.read()

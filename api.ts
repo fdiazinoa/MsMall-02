@@ -1940,6 +1940,46 @@ export const ApiService = {
     apiKey: string,
     mallId: string,
     onProgress?: (progress: number) => void,
+    _dateFormatPreference: CsvDateFormatPreference = 'auto'
+  ): Promise<IngestionResponse> {
+    if (!supabase) {
+      return { status: 'error', message: 'Supabase no está configurado', records_processed: 0 };
+    }
+    if (!mallId) {
+      return { status: 'error', message: 'Debe seleccionar un mall antes de importar.', records_processed: 0 };
+    }
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      return { status: 'error', message: 'Tu sesión expiró. Inicia sesión de nuevo para importar ventas.', records_processed: 0 };
+    }
+
+    if (onProgress) onProgress(15);
+    const form = new FormData();
+    form.append('file', file, file.name);
+    const result = await fetchJsonWithBaseFallback<IngestionResponse>(
+      '/ingesta',
+      {
+        method: 'POST',
+        headers: withAuthHeaders(session.access_token, {
+          'X-Mall-Id': mallId,
+          ...(apiKey.trim() ? { 'X-API-Key': apiKey.trim() } : {}),
+        }),
+        body: form,
+      },
+      'No se pudo procesar la carga de ventas.'
+    );
+    if (onProgress) onProgress(100);
+    return result;
+  },
+
+  // Kept temporarily as reference while the server-side ingestion rollout is verified.
+  // Do not call this from UI: browser-side writes cannot safely update existing sales under RLS.
+  async ingestSalesLegacyBrowserWrite(
+    file: File,
+    apiKey: string,
+    mallId: string,
+    onProgress?: (progress: number) => void,
     dateFormatPreference: CsvDateFormatPreference = 'auto'
   ): Promise<IngestionResponse> {
     if (!supabase) {

@@ -557,6 +557,23 @@ def _is_email_settings_table_error(exc: Exception) -> bool:
     )
 
 
+def _notification_recipient_emails(store: Dict[str, Any]) -> List[str]:
+    """Return unique, valid notification addresses for a local in priority order."""
+    recipients: List[str] = []
+    for value in (store.get("email"), store.get("email_secundario")):
+        email = str(value or "").strip().lower()
+        if email and re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email) and email not in recipients:
+            recipients.append(email)
+    return recipients
+
+
+def _is_missing_secondary_email_column_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "email_secundario" in text and (
+        "does not exist" in text or "schema cache" in text or "pgrst204" in text
+    )
+
+
 def send_missing_days_emails_for_mall(
     supabase_client: Any,
     settings: Dict[str, Any],
@@ -577,13 +594,25 @@ def send_missing_days_emails_for_mall(
     except Exception:
         mall_name = "MSMALL"
 
-    stores = (
-        supabase_client.table("locales")
-        .select("id, nombre, email")
-        .eq("mall_id", mall_id)
-        .order("nombre")
-        .execute()
-    ).data or []
+    try:
+        stores = (
+            supabase_client.table("locales")
+            .select("id, nombre, email, email_secundario")
+            .eq("mall_id", mall_id)
+            .order("nombre")
+            .execute()
+        ).data or []
+    except Exception as exc:
+        # Keep current notifications working until the database migration is deployed.
+        if not _is_missing_secondary_email_column_error(exc):
+            raise
+        stores = (
+            supabase_client.table("locales")
+            .select("id, nombre, email")
+            .eq("mall_id", mall_id)
+            .order("nombre")
+            .execute()
+        ).data or []
 
     results: List[Dict[str, Any]] = []
     cc_emails = [str(email or "").strip().lower() for email in (settings.get("cc_emails") or []) if email]
@@ -595,13 +624,15 @@ def send_missing_days_emails_for_mall(
     for store in stores:
         local_id = str(store.get("id") or "")
         local_name = store.get("nombre") or local_id
-        local_email = str(store.get("email") or "").strip().lower()
+        recipient_emails = _notification_recipient_emails(store)
+        local_email = recipient_emails[0] if recipient_emails else ""
 
-        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", local_email):
+        if not local_email:
             results.append({
                 "local_id": local_id,
                 "local_nombre": local_name,
                 "email": local_email or None,
+                "emails": recipient_emails,
                 "status": "skipped",
                 "missing_days": 0,
                 "reason": "Local sin email valido de notificaciones.",
@@ -622,6 +653,7 @@ def send_missing_days_emails_for_mall(
                 "local_id": local_id,
                 "local_nombre": local_name,
                 "email": local_email,
+                "emails": recipient_emails,
                 "status": "skipped",
                 "missing_days": 0,
                 "reason": "Sin dias faltantes en el periodo.",
@@ -662,12 +694,16 @@ def send_missing_days_emails_for_mall(
         )
 
         try:
+            recipient_cc_emails = list(recipient_emails[1:])
+            for email in cc_emails:
+                if email not in recipient_emails and email not in recipient_cc_emails:
+                    recipient_cc_emails.append(email)
             resend_result = send_email(
                 local_email,
                 subject,
                 text_body,
                 html_body,
-                cc_emails,
+                recipient_cc_emails,
                 from_email=sender["from_email"],
                 from_name=sender["from_name"],
             )
@@ -675,6 +711,7 @@ def send_missing_days_emails_for_mall(
                 "local_id": local_id,
                 "local_nombre": local_name,
                 "email": local_email,
+                "emails": recipient_emails,
                 "status": "sent",
                 "missing_days": missing_count,
                 "resend_id": resend_result.get("id"),
@@ -686,6 +723,7 @@ def send_missing_days_emails_for_mall(
                 "local_id": local_id,
                 "local_nombre": local_name,
                 "email": local_email,
+                "emails": recipient_emails,
                 "status": "failed",
                 "missing_days": missing_count,
                 "reason": str(exc) or "Error enviando email.",

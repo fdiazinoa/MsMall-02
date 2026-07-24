@@ -1181,6 +1181,7 @@ class StoreSchema(BaseModel):
     codigo_interno: str
     nombre: str
     email: Optional[str] = None
+    email_secundario: Optional[str] = None
     rubro: Optional[str] = None
     created_at: str
     responsable: str
@@ -1194,7 +1195,7 @@ class StoreSchema(BaseModel):
     fecha_corte_importacion: Optional[str] = None
 
 STORE_WRITE_FIELDS = {
-    "mall_id", "codigo_interno", "nombre", "email", "rubro", "responsable",
+    "mall_id", "codigo_interno", "nombre", "email", "email_secundario", "rubro", "responsable",
     "contrato_no", "piso", "tipo_negocio", "mts", "porciento_renta",
     "upsert_activo", "renta_fija", "breakpoint_venta", "porcentaje_variable",
     "fecha_corte_importacion",
@@ -1215,6 +1216,8 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
         data["codigo_interno"] = str(data.get("codigo_interno") or "").strip()
     if data.get("email") == "":
         data["email"] = None
+    if data.get("email_secundario") == "":
+        data["email_secundario"] = None
     if "fecha_corte_importacion" in data:
         raw_cutoff = str(data.get("fecha_corte_importacion") or "").strip()
         if raw_cutoff:
@@ -2924,6 +2927,7 @@ async def get_stores():
           "codigo_interno": "l002",
           "nombre": "Adidas",
           "email": "notificaciones@adidas.example",
+          "email_secundario": "respaldo@adidas.example",
           "rubro": "Deporte",
           "created_at": "2026-01-27T15:33:02",
           "responsable": "Jose Perez",

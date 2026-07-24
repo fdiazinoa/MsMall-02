@@ -38,6 +38,7 @@ export const BigDataDashboard: React.FC = () => {
   const current = data?.summary?.current || {};
   const previous = Number(data?.summary?.previous?.sales_net || 0);
   const ranking = data?.ranking?.data || [];
+  const apiUnavailable = Boolean(error && /not found|http 404/i.test(error));
   const openProfile = async (localId: string) => {
     if (!currentMall?.id || !session?.access_token) return;
     setProfileLoading(true);
@@ -59,7 +60,7 @@ export const BigDataDashboard: React.FC = () => {
         <span className="text-slate-300">-</span><input className="text-sm" type="date" value={dates.end} onChange={e => setDates({ ...dates, end: e.target.value })} />
       </div>
     </div>
-    {error && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-800 text-sm">{error}. El módulo está desactivado por defecto; actívalo con la licencia <code>BIG_DATA_CORE</code> para este mall.</div>}
+    {error && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-800 text-sm">{error}. {apiUnavailable ? 'La API de Big Data todavía no está desplegada en el backend seleccionado; despliega esta rama en Railway antes de activar o probar el módulo.' : <>El módulo está desactivado por defecto; actívalo con la licencia <code>BIG_DATA_CORE</code> para este mall.</>}</div>}
     {loading && <div className="h-64 flex items-center justify-center"><div className="animate-spin h-9 w-9 rounded-full border-b-2 border-indigo-600" /></div>}
     {data && <>
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">

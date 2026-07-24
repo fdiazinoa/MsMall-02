@@ -1,5 +1,5 @@
 -- RBAC configurable para MsMall.
--- Mantiene los roles legacy (admin, it, auditor) como perfiles de fábrica.
+-- Mantiene Administrador, IT, Auditor y Visualizador como perfiles de fábrica.
 
 CREATE TABLE IF NOT EXISTS public.app_roles (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -44,7 +44,8 @@ INSERT INTO public.app_roles (key, nombre, descripcion, is_factory)
 VALUES
   ('admin', 'Administrador', 'Gestión completa del sistema.', true),
   ('it', 'IT', 'Operación técnica, cargas y mantenimiento.', true),
-  ('auditor', 'Auditor', 'Consulta y análisis operativo.', true)
+  ('auditor', 'Auditor', 'Consulta y análisis operativo.', true),
+  ('visualizador', 'Visualizador', 'Consulta de indicadores y reportes sin cambios operativos.', true)
 ON CONFLICT (key) DO UPDATE
 SET nombre = EXCLUDED.nombre,
     descripcion = EXCLUDED.descripcion,
@@ -77,7 +78,12 @@ WITH factory_permissions(role_key, module_key, can_view, can_create, can_update,
     ('auditor', 'monitor', true, false, false, false),
     ('auditor', 'financial', true, false, false, false),
     ('auditor', 'cube', true, false, false, false),
-    ('auditor', 'comparisons', true, false, false, false)
+    ('auditor', 'comparisons', true, false, false, false),
+    ('visualizador', 'dashboard', true, false, false, false),
+    ('visualizador', 'sales_reports', true, false, false, false),
+    ('visualizador', 'financial', true, false, false, false),
+    ('visualizador', 'cube', true, false, false, false),
+    ('visualizador', 'comparisons', true, false, false, false)
 )
 INSERT INTO public.app_role_permissions (role_id, module_key, can_view, can_create, can_update, can_delete)
 SELECT r.id, p.module_key, p.can_view, p.can_create, p.can_update, p.can_delete

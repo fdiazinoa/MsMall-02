@@ -2,19 +2,20 @@
 
 Fecha: 2026-07-24  
 Decisión: **PARTIAL_CERTIFICATION**  
-Ámbito ejecutado: Santiago Center, Blue Mall SDQ y Agora Mall SQD.
+Ámbito ejecutado: Santiago Center, Blue Mall SDQ, Agora Mall SQD, Megacentro,
+Blue Mall Punta Cana, DownTown Mall y Sambil.
 
 ## 1. Resumen ejecutivo
 
 Se completó el backfill histórico de Sprint 1, un mall a la vez y en lotes
-reanudables, para los tres perfiles requeridos. La paridad de mall, local/día,
-categoría/día y mes fue exacta en los tres. No se modificó ninguna fila fuente
-de `ventas`, no se ejecutó reconstrucción global y no se habilitó ningún flag
-de Sprint 2 fuera de Mall Demo.
+reanudables, para siete malls. La paridad de mall, local/día, categoría/día y
+mes fue exacta en los siete. No se modificó ninguna fila fuente de `ventas`, no
+se ejecutó reconstrucción global y no se habilitó ningún flag de Sprint 2
+fuera de Mall Demo.
 
 La certificación es parcial porque no se alteraron ventas reales para provocar
 una importación incremental, ni se creó trabajo de cola sintético. Por tanto,
-no hay evidencia operacional nueva de trigger + worker para estos tres malls.
+no hay evidencia operacional nueva de trigger + worker para estos siete malls.
 Ningún mall recibe estado final `PASS` hasta observar esa incrementalidad en
 una importación real autorizada.
 
@@ -122,15 +123,16 @@ agregado:
 | Blue Mall SDQ | 567 | 4,318 | 1,369 | 0 |
 | Agora Mall SQD | 329 | 18,393 | 2,184 | 0 |
 
-`BIG_DATA_CORE` quedó activo únicamente para los tres malls certificados a
-nivel histórico y Mall Demo. En Santiago, Blue y Agora,
+`BIG_DATA_CORE` quedó activo únicamente para los siete malls certificados a
+nivel histórico y Mall Demo. En Santiago, Blue SDQ, Agora, Megacentro, Blue
+Punta Cana, DownTown y Sambil,
 `BIG_DATA_FORECAST`, `BIG_DATA_OPERATIONS` y `BIG_DATA_COPILOT` están en
 `false`. Cada uno de esos flags Sprint 2 continúa habilitado en exactamente un
 mall: Mall Demo.
 
 Core expone el panel Sprint 1 para usuarios autorizados. Las rutas de resumen
 ejecutivo/proyección exigen además `BIG_DATA_FORECAST`, y Operations/Copilot
-exigen sus flags propios; por lo tanto no se expuso Sprint 2 en los tres malls
+exigen sus flags propios; por lo tanto no se expuso Sprint 2 en los siete malls
 nuevos.
 
 ## 8. Pruebas y correcciones
@@ -139,8 +141,8 @@ nuevos.
 | --- | --- |
 | `python3 -m pytest -q tests` | 117 passed; warnings de dependencias y APIs obsoletas existentes |
 | `npm run build` | PASS; warning histórico de bundle >500 kB |
-| Paridad de backfill | PASS para los tres malls en las dimensiones documentadas |
-| Repetición de lote | PASS para los tres malls |
+| Paridad de backfill | PASS para los siete malls en las dimensiones documentadas |
+| Repetición de lote | PASS para los siete malls |
 | Incrementalidad mediante venta/importación real | BLOCKED; no se modificó fuente |
 | Worker/cola de importación real | BLOCKED; no se introdujo trabajo sintético |
 
@@ -162,6 +164,28 @@ por uno, sin una reconstrucción global y sin dejar cola pendiente.
 Estas cifras no miden importaciones concurrentes, CPU, memoria ni latencia
 end-to-end y no deben interpretarse como benchmark comercial.
 
+## 9.1 Extensión controlada de cobertura
+
+La extensión se ejecutó después de los tres perfiles iniciales, siempre por
+mall y sin utilizar la cola. Los registros con fecha mayor a `2026-07-24` se
+excluyeron deliberadamente del rango histórico; permanecen intactos en
+`ventas` y requerirán su ciclo operativo normal cuando corresponda.
+
+| Mall | Rango agregado | Filas fuente incluidas | Filas futuras excluidas | Paridad mall/día, local/día, categoría/día, mes | Repetición | Flags finales |
+| --- | --- | ---: | ---: | --- | --- | --- |
+| Megacentro | 2023-01-01 a 2026-07-24 | 261,719 | 31 | PASS: 0 diferencias y 0 grupos discrepantes | PASS | Core=true; Sprint 2=false |
+| Blue Mall Punta Cana | 2017-08-16 a 2026-07-23 | 85,381 | 0 | PASS: 0 diferencias y 0 grupos discrepantes | PASS | Core=true; Sprint 2=false |
+| DownTown Mall | 2025-08-01 a 2026-07-24 | 127,140 | 2 | PASS: 0 diferencias y 0 grupos discrepantes | PASS | Core=true; Sprint 2=false |
+| Sambil | 2022-09-01 a 2026-07-24 | 537,289 | 327 | PASS: 0 diferencias y 0 grupos discrepantes | PASS | Core=true; Sprint 2=false |
+
+En DownTown el backfill se dividió en cinco tramos (2025-Q3, 2025-Q4,
+2026-Q1, 2026-Q2 y julio). En Sambil se dividió en tramos anuales/trimestrales
+para evitar una reconstrucción global. Las repeticiones conservaron el mismo
+número de filas diarias de grano mall (DownTown: 61; Sambil: 41 en el tramo
+repetido). En Blue Punta Cana la repetición del tramo inicial conservó 134
+filas mall. Megacentro ya había pasado repetición de su primer tramo antes de
+esta extensión.
+
 ## 10. Rollback
 
 1. Desactivar `BIG_DATA_CORE` sólo para el mall que deba retirarse.
@@ -178,10 +202,14 @@ end-to-end y no deben interpretarse como benchmark comercial.
 | Santiago Center | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
 | Blue Mall SDQ | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
 | Agora Mall SQD | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
+| Megacentro | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
+| Blue Mall Punta Cana | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
+| DownTown Mall | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
+| Sambil | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
 
 ## Decisión y siguiente paso
 
-**PARTIAL_CERTIFICATION.** El histórico y la paridad de los tres perfiles
+**PARTIAL_CERTIFICATION.** El histórico y la paridad de los siete malls
 quedaron demostrados, pero ninguno puede certificarse integralmente sin una
 importación incremental observada por el trigger y worker. La recomendación
 concreta para retomar Sprint 2 es esperar una importación real de cada mall

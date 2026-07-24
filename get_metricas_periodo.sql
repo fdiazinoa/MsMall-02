@@ -1,5 +1,5 @@
 -- Function to get metrics for a specific period grouped by store
-CREATE OR REPLACE FUNCTION get_metricas_periodo(
+CREATE OR REPLACE FUNCTION public.get_metricas_periodo(
     mall_id_param UUID,
     fecha_inicio_param DATE,
     fecha_fin_param DATE
@@ -13,10 +13,10 @@ RETURNS TABLE (
     transacciones BIGINT,
     ticket_promedio NUMERIC
 ) 
-LANGUAGE plpgsql SECURITY DEFINER
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
 AS $$
-BEGIN
-    RETURN QUERY
     SELECT 
         l.id as local_id,
         l.nombre as local_nombre,
@@ -28,11 +28,10 @@ BEGIN
             WHEN COUNT(v.id) > 0 THEN (SUM(v.total_neto) / COUNT(v.id))::NUMERIC 
             ELSE 0 
         END as ticket_promedio
-    FROM locales l
-    LEFT JOIN ventas v ON l.id = v.local_id 
-        AND v.fecha_venta >= fecha_inicio_param 
-        AND v.fecha_venta <= fecha_fin_param
+    FROM public.locales l
+    LEFT JOIN public.ventas v ON l.id = v.local_id
+        AND v.fecha >= fecha_inicio_param
+        AND v.fecha <= fecha_fin_param
     WHERE l.mall_id = mall_id_param
     GROUP BY l.id, l.nombre, l.rubro;
-END;
 $$;

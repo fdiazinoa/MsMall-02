@@ -241,11 +241,11 @@ export const SalesReport: React.FC = () => {
   }, [selectedStore]);
 
   return (
-    <div className="space-y-6 relative">
+    <div className="space-y-4 relative">
       {/* Export Modal */}
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 transform transition-all scale-100">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-4 transform transition-all scale-100">
             <h3 className="text-lg font-bold text-slate-800 mb-2">Seleccionar Tipo de Reporte</h3>
             <p className="text-slate-500 text-sm mb-6">
               Elija el formato del informe a descargar usando los filtros actuales (fechas y local). {exportFormat?.toUpperCase()}
@@ -297,7 +297,7 @@ export const SalesReport: React.FC = () => {
       )}
 
       {/* Filters Header */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col md:flex-row items-center justify-between gap-4">
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 flex flex-col md:flex-row items-center justify-between gap-4">
         <div>
           <h3 className="text-xl font-bold text-slate-800">Reporte de Auditoría</h3>
           <p className="text-slate-500 text-sm">Resumen de ventas por local en el periodo seleccionado.</p>
@@ -439,18 +439,18 @@ export const SalesReport: React.FC = () => {
       />
 
       {/* Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-indigo-600 rounded-2xl p-6 text-white shadow-md">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-indigo-600 rounded-2xl p-4 text-white shadow-md">
           <p className="text-indigo-100 text-sm font-medium">Ventas Totales (Neto)</p>
-          <p className="text-3xl font-bold mt-2">{format(totalSales)}</p>
+          <p className="text-xl font-bold mt-2">{format(totalSales)}</p>
         </div>
-        <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
           <p className="text-slate-400 text-sm font-medium">Locales Auditados</p>
-          <p className="text-3xl font-bold mt-2 text-slate-800">{data.length}</p>
+          <p className="text-xl font-bold mt-2 text-slate-800">{data.length}</p>
         </div>
-        <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
           <p className="text-slate-400 text-sm font-medium">Malls Reportando</p>
-          <p className="text-3xl font-bold mt-2 text-slate-800">{new Set(data.map(d => d.mall_nombre)).size}</p>
+          <p className="text-xl font-bold mt-2 text-slate-800">{new Set(data.map(d => d.mall_nombre)).size}</p>
         </div>
       </div>
 

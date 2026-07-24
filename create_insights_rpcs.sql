@@ -18,7 +18,17 @@ LANGUAGE sql
 STABLE
 AS $$
 WITH stores AS (
-  SELECT l.id, l.nombre, COALESCE(l.mts, 1)::numeric AS mts, COALESCE(l.rubro, 'General') AS rubro
+  SELECT
+    l.id,
+    l.nombre,
+    COALESCE(NULLIF(regexp_replace(COALESCE(l.mts::text, ''), '[^0-9.-]', '', 'g'), '')::numeric, 1) AS mts,
+    COALESCE(l.rubro, 'General') AS rubro,
+    COALESCE(NULLIF(regexp_replace(COALESCE(l.renta_fija::text, ''), '[^0-9.-]', '', 'g'), '')::numeric, 0) AS renta_fija,
+    COALESCE(
+      NULLIF(regexp_replace(COALESCE(NULLIF(l.porcentaje_variable, 0)::text, ''), '[^0-9.-]', '', 'g'), '')::numeric,
+      NULLIF(regexp_replace(COALESCE(l.porciento_renta::text, ''), '[^0-9.-]', '', 'g'), '')::numeric,
+      0
+    ) AS pct_variable
   FROM public.locales l
   WHERE mall_id_param IS NULL OR l.mall_id = mall_id_param
 ),
@@ -28,29 +38,49 @@ sales AS (
     COALESCE(SUM(v.total_bruto), 0)::numeric AS bruto,
     COALESCE(SUM(v.total_neto), 0)::numeric AS neto
   FROM public.ventas v
-  WHERE mall_id_param IS NULL OR v.mall_id = mall_id_param
+  INNER JOIN stores s ON s.id = v.local_id
   GROUP BY v.local_id
+),
+scored AS (
+  SELECT
+    s.id,
+    s.nombre,
+    s.mts,
+    s.rubro,
+    COALESCE(sa.neto, 0)::numeric AS neto,
+    CASE
+      WHEN s.renta_fija > 0 THEN s.renta_fija
+      WHEN s.pct_variable > 0 AND COALESCE(sa.neto, 0) > 0 THEN (COALESCE(sa.neto, 0) * s.pct_variable) / 100
+      ELSE 0
+    END AS occupancy_cost,
+    CASE
+      WHEN s.renta_fija > 0 THEN 'renta_fija'
+      WHEN s.pct_variable > 0 THEN 'porcentaje_variable'
+      ELSE 'sin_configuracion'
+    END AS cost_source
+  FROM stores s
+  LEFT JOIN sales sa ON sa.local_id = s.id
 )
 SELECT
-  s.id,
-  s.nombre,
+  sc.id,
+  sc.nombre,
   CASE
-    WHEN metric_param = 'sales_per_m2' THEN (COALESCE(sa.neto, 0) / NULLIF(s.mts, 0))::double precision
-    WHEN metric_param = 'occupancy_cost' THEN (CASE WHEN COALESCE(sa.neto, 0) > 0 THEN (3000::numeric / sa.neto) * 100 ELSE 0 END)::double precision
+    WHEN metric_param = 'sales_per_m2' THEN (sc.neto / NULLIF(sc.mts, 0))::double precision
+    WHEN metric_param = 'occupancy_cost' THEN (CASE WHEN sc.neto > 0 THEN (sc.occupancy_cost / sc.neto) * 100 ELSE 0 END)::double precision
     ELSE 0::double precision
   END AS valor,
   CASE
-    WHEN metric_param = 'sales_per_m2' THEN (s.mts::text || ' m²')
+    WHEN metric_param = 'sales_per_m2' THEN (sc.mts::text || ' m²')
     WHEN metric_param = 'occupancy_cost' THEN
       CASE
-        WHEN COALESCE(sa.neto, 0) = 0 THEN 'Sin Ventas'
-        WHEN (3000::numeric / sa.neto) * 100 < 15 THEN 'Saludable'
+        WHEN sc.neto = 0 THEN 'Sin Ventas'
+        WHEN sc.cost_source = 'sin_configuracion' THEN 'Sin Config'
+        WHEN (sc.occupancy_cost / sc.neto) * 100 < 15 THEN 'Saludable'
         ELSE 'Riesgo'
       END
-    ELSE s.rubro
+    ELSE sc.rubro
   END AS extra
-FROM stores s
-LEFT JOIN sales sa ON sa.local_id = s.id
+FROM scored sc
 ORDER BY valor DESC;
 $$;
 

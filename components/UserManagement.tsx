@@ -17,6 +17,7 @@ const ROLE_STYLES: Record<string, { label: string, color: string, icon: any }> =
   it: { label: 'IT', color: 'bg-amber-50 text-amber-700 border-amber-100', icon: ShieldAlert },
   tic: { label: 'IT', color: 'bg-amber-50 text-amber-700 border-amber-100', icon: ShieldAlert },
   auditor: { label: 'Auditor', color: 'bg-indigo-50 text-indigo-600 border-indigo-100', icon: Shield },
+  visualizador: { label: 'Visualizador', color: 'bg-slate-50 text-slate-600 border-slate-200', icon: Shield },
   mall_manager: { label: 'Gerente Mall', color: 'bg-slate-50 text-slate-600 border-slate-100', icon: ShieldAlert },
 };
 
@@ -46,6 +47,7 @@ export const UserManagement: React.FC = () => {
   const [newMallIds, setNewMallIds] = useState<string[]>([]);
   const [creatingUser, setCreatingUser] = useState(false);
   const [roles, setRoles] = useState<RoleConfig[]>([]);
+  const [rolesError, setRolesError] = useState<string | null>(null);
   const [selectedRole, setSelectedRole] = useState<RoleConfig | null>(null);
   const [savingRole, setSavingRole] = useState(false);
   const [showRoleEditor, setShowRoleEditor] = useState(false);
@@ -76,7 +78,11 @@ export const UserManagement: React.FC = () => {
     try {
       const data = await ApiService.getRoles(session.access_token);
       setRoles(data);
-    } catch (e) { console.error(e); }
+      setRolesError(null);
+    } catch (e: any) {
+      console.error(e);
+      setRolesError(e?.message || 'No se pudieron cargar los roles de fábrica.');
+    }
   };
 
   useEffect(() => {
@@ -449,6 +455,12 @@ export const UserManagement: React.FC = () => {
           </button>
         </div>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {rolesError && <div className="md:col-span-2 xl:col-span-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+            No se pudieron cargar los roles: {rolesError}. Verifica que la API y la migración RBAC estén desplegadas.
+          </div>}
+          {!rolesError && roles.length === 0 && <div className="md:col-span-2 xl:col-span-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+            Aún no hay roles configurados.
+          </div>}
           {roles.map((role) => (
             <div key={role.id} className="border border-slate-200 rounded-xl p-4">
               <div className="flex justify-between gap-3">

@@ -14,6 +14,7 @@ def test_role_permissions_migration_seeds_factory_roles_and_enables_rls():
     assert "('admin', 'Administrador'" in migration
     assert "('it', 'IT'" in migration
     assert "('auditor', 'Auditor'" in migration
+    assert "('visualizador', 'Visualizador'" in migration
 
 
 def test_api_exposes_rbac_crud_and_uses_module_permissions_for_users():

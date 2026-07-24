@@ -148,6 +148,10 @@ FACTORY_ROLE_PERMISSIONS: Dict[str, Dict[str, Dict[str, bool]]] = {
         "monitor": {"view": True}, "financial": {"view": True}, "cube": {"view": True},
         "comparisons": {"view": True},
     },
+    "visualizador": {
+        "dashboard": {"view": True}, "sales_reports": {"view": True},
+        "financial": {"view": True}, "cube": {"view": True}, "comparisons": {"view": True},
+    },
 }
 
 def _sensitive_ops_service() -> SensitiveOpsService:
@@ -409,6 +413,8 @@ def _resolve_effective_role(email: Optional[str], role_candidates: List[Optional
         return "it"
     if any(r == "auditor" for r in normalized):
         return "auditor"
+    if any(r in {"visualizador", "viewer"} for r in normalized):
+        return "visualizador"
     return "auditor"
 
 def _canonical_admin_role(raw_role: Optional[str]) -> str:
@@ -422,6 +428,8 @@ def _canonical_admin_role(raw_role: Optional[str]) -> str:
         return "it"
     if normalized == "auditor":
         return "auditor"
+    if normalized in {"visualizador", "viewer"}:
+        return "visualizador"
     return ""
 
 def _parse_auth_users_result(auth_users_result: Any) -> List[Any]:
@@ -6835,7 +6843,7 @@ async def admin_get_roles(access_ctx: Dict[str, Any] = Depends(require_module_pe
 @app.post("/api/v1/admin/roles")
 async def admin_create_role(payload: RoleRequest, access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "create"))):
     key = _validate_role_key(payload.key)
-    if key in {"admin", "it", "auditor"}:
+    if key in {"admin", "it", "auditor", "visualizador"}:
         raise HTTPException(status_code=400, detail="Los roles de fábrica ya existen y no se pueden duplicar.")
     created = supabase.table("app_roles").insert({
         "key": key, "nombre": payload.nombre.strip(), "descripcion": payload.descripcion, "is_factory": False,
@@ -6903,7 +6911,10 @@ def _resolve_role_assignment(role_id: Optional[str], legacy_role: Optional[str])
         role = supabase.table("app_roles").select("id,key").eq("key", canonical).maybe_single().execute().data
     if not role:
         raise HTTPException(status_code=400, detail="El rol seleccionado no existe. Aplica primero la migración de roles.")
-    legacy = _canonical_admin_role(role.get("key")) or "auditor"
+    # profiles.role and usuarios_malls.rol are legacy fields; custom roles keep the
+    # safe auditor fallback there while profile_role_assignments is authoritative.
+    legacy_candidate = _canonical_admin_role(role.get("key"))
+    legacy = legacy_candidate if legacy_candidate in {"admin", "it", "auditor"} else "auditor"
     return role["id"], legacy
 
 def _assign_rbac_role(user_id: str, role_id: str, assigned_by: Optional[str]) -> None:

@@ -717,27 +717,14 @@ const toStorePersistenceError = (error: any): Error => {
 export const ApiService = {
   async getBigData<T>(path: string, mallId: string, startDate: string, endDate: string, token: string): Promise<T> {
     const params = new URLSearchParams({ mall_id: mallId, start_date: startDate, end_date: endDate });
-    const baseUrls = getApiBaseUrls();
-    let lastError: Error | null = null;
-
-    for (let index = 0; index < baseUrls.length; index += 1) {
-      try {
-        const response = await fetch(`${baseUrls[index]}/big-data/${path}?${params.toString()}`, {
-          headers: withAuthHeaders(token, { 'Accept': 'application/json' })
-        });
-        if (response.ok) return response.json();
-
-        // Vercel previews can serve the frontend before their API rewrite knows a
-        // newly added backend route. Continue with the direct backend in that case.
-        if (response.status === 404 && index < baseUrls.length - 1) continue;
-        throw new Error(await parseErrorDetail(response, 'No se pudo consultar Big Data'));
-      } catch (error: any) {
-        lastError = error instanceof Error ? error : new Error('No se pudo consultar Big Data');
-        if (index < baseUrls.length - 1 && isNetworkFetchFailure(error)) continue;
-        if (index < baseUrls.length - 1 && String(error?.message || '').includes('HTTP 404')) continue;
-      }
-    }
-    throw lastError || new Error('No se pudo consultar Big Data');
+    // In Vercel this stays on the same-origin rewrite. A 404 from the rewrite is
+    // intentionally preserved: it means Railway still runs a backend without
+    // the Big Data router, not that the mall feature flag is disabled.
+    return fetchJsonWithBaseFallback<T>(
+      `/big-data/${path}?${params.toString()}`,
+      { headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
+      'No se pudo consultar Big Data'
+    );
   },
 
   async getBigDataDashboard(mallId: string, startDate: string, endDate: string, token: string): Promise<{

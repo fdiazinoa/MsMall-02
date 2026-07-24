@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Activity, Calendar, Database, DollarSign, ShoppingBag, Store } from 'lucide-react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
+import { createBigDataRequestGate } from '../utils/bigDataRequestGate';
 
 const initialDates = () => {
   const now = new Date();
@@ -26,12 +27,27 @@ export const BigDataDashboard: React.FC = () => {
   const [profileLoading, setProfileLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const dashboardRequestGate = useRef(createBigDataRequestGate());
+  const profileRequestGate = useRef(createBigDataRequestGate());
 
   useEffect(() => {
+    const requestId = dashboardRequestGate.current.begin();
+    // Mall data must never remain visible while the next mall is loading.
+    // Invalidating the profile gate also ignores a profile response in flight.
+    profileRequestGate.current.begin();
+    setData(null); setProfile(null); setProfileLoading(false); setError(null); setLoading(false);
     if (!currentMall?.id || !session?.access_token) return;
     setLoading(true); setError(null);
     ApiService.getBigDataDashboard(currentMall.id, dates.start, dates.end, session.access_token)
-      .then(setData).catch((err) => setError(err.message || 'No se pudo cargar Big Data')).finally(() => setLoading(false));
+      .then((nextData) => {
+        if (dashboardRequestGate.current.isCurrent(requestId)) setData(nextData);
+      })
+      .catch((err) => {
+        if (dashboardRequestGate.current.isCurrent(requestId)) setError(err.message || 'No se pudo cargar Big Data');
+      })
+      .finally(() => {
+        if (dashboardRequestGate.current.isCurrent(requestId)) setLoading(false);
+      });
   }, [currentMall?.id, session?.access_token, dates.start, dates.end]);
 
   if (!currentMall?.id) return <div className="bg-white rounded-2xl p-6 border border-slate-200">Selecciona un mall para consultar Big Data.</div>;
@@ -41,15 +57,21 @@ export const BigDataDashboard: React.FC = () => {
   const apiUnavailable = Boolean(error && /not found|http 404/i.test(error));
   const openProfile = async (localId: string) => {
     if (!currentMall?.id || !session?.access_token) return;
+    const requestId = profileRequestGate.current.begin();
+    setProfile(null);
     setProfileLoading(true);
     try {
       const [storeProfile, benchmark] = await Promise.all([
         ApiService.getBigData<any>(`stores/${encodeURIComponent(localId)}/profile`, currentMall.id, dates.start, dates.end, session.access_token),
         ApiService.getBigData<any>(`stores/${encodeURIComponent(localId)}/category-benchmark`, currentMall.id, dates.start, dates.end, session.access_token)
       ]);
-      setProfile({ ...storeProfile, benchmark });
-    } catch (err: any) { setError(err.message || 'No se pudo cargar el perfil del local'); }
-    finally { setProfileLoading(false); }
+      if (profileRequestGate.current.isCurrent(requestId)) setProfile({ ...storeProfile, benchmark });
+    } catch (err: any) {
+      if (profileRequestGate.current.isCurrent(requestId)) setError(err.message || 'No se pudo cargar el perfil del local');
+    }
+    finally {
+      if (profileRequestGate.current.isCurrent(requestId)) setProfileLoading(false);
+    }
   };
 
   return <div className="space-y-6 animate-in fade-in duration-500">

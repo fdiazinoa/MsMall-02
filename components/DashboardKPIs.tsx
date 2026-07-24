@@ -2,17 +2,42 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell
+  PieChart, Pie, Cell, BarChart, Bar, LineChart, Line
 } from 'recharts';
 import {
   TrendingUp, TrendingDown, DollarSign, ShoppingBag,
-  CreditCard, BarChart3, Calendar, Info, X, Store, ArrowUpRight
+  CreditCard, BarChart3, Calendar, Info, X, Store, ArrowUpRight,
+  AreaChart as AreaChartIcon, LineChart as LineChartIcon, List
 } from 'lucide-react';
 import { KPIData, DateRange, SegmentStoreDetail } from '../types';
 import { ApiService, type Store as MallStore } from '../api';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
 const COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
+
+type TrendChartMode = 'area' | 'line' | 'bar';
+type TopLocalesMode = 'list' | 'bar';
+
+const ChartModeButton = ({ active, label, onClick, children }: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) => (
+  <button
+    type="button"
+    aria-label={label}
+    title={label}
+    onClick={onClick}
+    className={`flex h-8 w-8 items-center justify-center rounded-lg border transition-colors ${
+      active
+        ? 'border-indigo-200 bg-indigo-50 text-indigo-600'
+        : 'border-slate-200 bg-white text-slate-400 hover:border-slate-300 hover:text-slate-700'
+    }`}
+  >
+    {children}
+  </button>
+);
 
 const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
   <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow relative group">
@@ -374,6 +399,8 @@ export const DashboardKPIs: React.FC = () => {
   const [stores, setStores] = useState<MallStore[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedSegment, setSelectedSegment] = useState<SegmentSelection | null>(null);
+  const [trendChartMode, setTrendChartMode] = useState<TrendChartMode>('area');
+  const [topLocalesMode, setTopLocalesMode] = useState<TopLocalesMode>('list');
   const [dates, setDates] = useState<DateRange>(() => {
     const now = new Date();
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -516,11 +543,16 @@ export const DashboardKPIs: React.FC = () => {
         <div className="lg:col-span-2 bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
           <div className="flex justify-between items-center mb-6">
             <h4 className="font-bold text-slate-800">Tendencia de Ventas Diarias</h4>
-            <div className="text-xs text-slate-400">Últimos 7 días</div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-400 mr-1">Últimos 7 días</span>
+              <ChartModeButton active={trendChartMode === 'area'} label="Ver gráfica de área" onClick={() => setTrendChartMode('area')}><AreaChartIcon size={16} /></ChartModeButton>
+              <ChartModeButton active={trendChartMode === 'line'} label="Ver gráfica de línea" onClick={() => setTrendChartMode('line')}><LineChartIcon size={16} /></ChartModeButton>
+              <ChartModeButton active={trendChartMode === 'bar'} label="Ver gráfica de barras" onClick={() => setTrendChartMode('bar')}><BarChart3 size={16} /></ChartModeButton>
+            </div>
           </div>
           <div className="h-[300px] w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={data.ventas_por_dia} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
+              {trendChartMode === 'area' ? <AreaChart data={data.ventas_por_dia} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#6366f1" stopOpacity={0.1} />
@@ -544,15 +576,27 @@ export const DashboardKPIs: React.FC = () => {
                   fillOpacity={1}
                   fill="url(#colorTotal)"
                 />
-              </AreaChart>
+              </AreaChart> : trendChartMode === 'line' ? <LineChart data={data.ventas_por_dia} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="fecha" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                <Tooltip />
+                <Line type="monotone" dataKey="total" stroke="#6366f1" strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+              </LineChart> : <BarChart data={data.ventas_por_dia} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="fecha" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                <Tooltip />
+                <Bar dataKey="total" fill="#6366f1" radius={[6, 6, 0, 0]} />
+              </BarChart>}
             </ResponsiveContainer>
           </div>
         </div>
 
         <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
-          <h4 className="font-bold text-slate-800 mb-6">Top 5 Locales</h4>
+          <div className="flex justify-between items-center gap-3 mb-6"><h4 className="font-bold text-slate-800">Top 5 Locales</h4><div className="flex items-center gap-2"><ChartModeButton active={topLocalesMode === 'list'} label="Ver ranking compacto" onClick={() => setTopLocalesMode('list')}><List size={16} /></ChartModeButton><ChartModeButton active={topLocalesMode === 'bar'} label="Ver gráfica de barras" onClick={() => setTopLocalesMode('bar')}><BarChart3 size={16} /></ChartModeButton></div></div>
           <div className="h-80 w-full overflow-y-auto pr-2">
-            <div className="space-y-4">
+            {topLocalesMode === 'list' ? <div className="space-y-4">
               {data.top_locales.map((locale, index) => {
                 const maxTotal = Math.max(...data.top_locales.map(l => l.total));
                 const percent = maxTotal > 0 ? (locale.total / maxTotal) * 100 : 0;
@@ -575,7 +619,7 @@ export const DashboardKPIs: React.FC = () => {
                   </div>
                 );
               })}
-            </div>
+            </div> : <ResponsiveContainer width="100%" height="100%"><BarChart data={data.top_locales} layout="vertical" margin={{ top: 4, right: 12, left: 8, bottom: 4 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" /><XAxis type="number" hide /><YAxis type="category" dataKey="name" width={90} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} /><Tooltip /><Bar dataKey="total" radius={[0, 6, 6, 0]}>{data.top_locales.map((_locale, index) => <Cell key={`top-locale-${index}`} fill={COLORS[index % COLORS.length]} />)}</Bar></BarChart></ResponsiveContainer>}
           </div>
         </div>
       </div>

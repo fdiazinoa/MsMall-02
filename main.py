@@ -6,7 +6,6 @@ import csv
 import html
 import io
 import logging
-import socket
 import time
 import threading
 import re
@@ -26,22 +25,11 @@ from thefuzz import process, fuzz
 import paramiko
 import json
 import xmltodict
-import urllib.error
-import urllib.request
 from ftplib import FTP
 import stat
 import urllib.error
 import urllib.request
-from worker_importacion import (
-    WORKER_POLL_SECONDS,
-    _build_unique_marked_filename as build_unique_marked_filename,
-    _append_query_param as append_webservice_query_param,
-    _extract_webservice_records as extract_webservice_records,
-    _fetch_webservice_json as fetch_webservice_json,
-    fetch_studio_g_sales,
-    process_webservice_import,
-    run_worker_async,
-)
+from worker_importacion import run_worker_async
 from analytics_service import AnalyticsService
 from routers import recipes, comparisons, admin_tools
 from routers.token_auth import (
@@ -65,7 +53,6 @@ from routers.token_auth import (
     create_router as create_token_auth_router,
     require_token_auth,
     request_explicit_never_expires as token_auth_request_explicit_never_expires,
-    token_access_never_expires as token_auth_access_never_expires,
     sanitize_exporter_webservice_config_row as sanitize_token_exporter_webservice_config_row,
     sanitize_service_account_row as sanitize_token_service_account_row,
     sanitize_token_row as sanitize_token_auth_row,
@@ -79,28 +66,11 @@ from services.connection_monitor_service import (
     RetryPolicyBlocked,
 )
 from services.load_log_service import build_load_log_payload, insert_load_log_row
-from services.ftp_transfer_service import retrieve_ftp_bytes
 from services.missing_days_email_service import (
-    DEFAULT_CONSOLIDATED_BODY_TEMPLATE,
-    DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE,
     DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
     DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
-    MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE,
-    MISSING_DAYS_NOTIFICATION_TYPE,
-    MISSING_DAYS_NOTIFICATION_TYPES,
     build_missing_days_email_html,
-    missing_days_email_period,
-    run_missing_days_email_scheduler,
     send_missing_days_emails_for_mall,
-)
-from services.operations_auditor_service import OperationsAuditorService
-from services.operations_agent_service import (
-    EVENT_LOCAL_ACTIVATED,
-    EVENT_LOCAL_DEACTIVATED,
-    EVENT_LOCAL_UPDATED,
-    OperationsAgentWorker,
-    OperationsIntelligenceService,
-    publish_operations_event,
 )
 from supabase import create_client, Client
 import os
@@ -125,16 +95,6 @@ def _parse_bool_env(name: str, default: bool = False) -> bool:
 
 def _is_api_scheduler_enabled() -> bool:
     return _parse_bool_env("ENABLE_API_SCHEDULER", default=False)
-
-def _is_email_scheduler_enabled() -> bool:
-    return _parse_bool_env("ENABLE_EMAIL_SCHEDULER", default=True)
-
-def _email_scheduler_poll_seconds() -> int:
-    try:
-        poll_seconds = int(os.getenv("EMAIL_SCHEDULER_POLL_SECONDS", "60"))
-    except (TypeError, ValueError):
-        poll_seconds = 60
-    return max(30, min(poll_seconds, 3600))
 _CORS_LOCK_V1_ORIGINS = ["https://msmall.vercel.app"]
 
 if SUPABASE_URL and SUPABASE_KEY:
@@ -170,6 +130,30 @@ COPILOT_DEFAULT_MODELS = {
 ADMIN_ROLES = {"admin", "superadmin", "super_admin", "administrador"}
 IT_ROLES = {"it", "tic"}
 
+RBAC_ACTIONS = {"view", "create", "update", "delete"}
+FACTORY_ROLE_PERMISSIONS: Dict[str, Dict[str, Dict[str, bool]]] = {
+    "admin": {module: {action: True for action in RBAC_ACTIONS} for module in (
+        "dashboard", "sales_reports", "stores", "imports", "monitor", "financial",
+        "cube", "comparisons", "malls", "users", "roles",
+    )},
+    "it": {
+        "dashboard": {"view": True}, "sales_reports": {"view": True, "create": True},
+        "stores": {"view": True, "create": True, "update": True},
+        "imports": {"view": True, "create": True, "update": True},
+        "monitor": {"view": True, "create": True, "update": True},
+        "financial": {"view": True}, "cube": {"view": True}, "comparisons": {"view": True},
+    },
+    "auditor": {
+        "dashboard": {"view": True}, "sales_reports": {"view": True},
+        "monitor": {"view": True}, "financial": {"view": True}, "cube": {"view": True},
+        "comparisons": {"view": True},
+    },
+    "visualizador": {
+        "dashboard": {"view": True}, "sales_reports": {"view": True},
+        "financial": {"view": True}, "cube": {"view": True}, "comparisons": {"view": True},
+    },
+}
+
 def _sensitive_ops_service() -> SensitiveOpsService:
     return SensitiveOpsService(supabase, logger)
 
@@ -183,18 +167,6 @@ def _connection_monitor_service() -> ConnectionMonitorService:
 
 def _analytics_service() -> AnalyticsService:
     return AnalyticsService(supabase_client=supabase, logger=logger)
-
-
-def _operations_auditor_service() -> OperationsAuditorService:
-    return OperationsAuditorService(supabase, logger)
-
-
-def _operations_agent_worker() -> OperationsAgentWorker:
-    return OperationsAgentWorker(supabase, logger)
-
-
-def _operations_intelligence_service() -> OperationsIntelligenceService:
-    return OperationsIntelligenceService(supabase, logger)
 
 
 async def _run_local_risk_analysis_async(local_id: Optional[str], trigger: str) -> Optional[Dict[str, Any]]:
@@ -241,7 +213,6 @@ _CACHE_MAX_ITEMS = _env_int("CACHE_MAX_ITEMS", 300, min_value=50, max_value=5000
 TTL_DASHBOARD = _env_int("CACHE_TTL_DASHBOARD", 90, min_value=5, max_value=1800)
 TTL_RANKING = _env_int("CACHE_TTL_RANKING", 60, min_value=5, max_value=1800)
 TTL_HEATMAP = _env_int("CACHE_TTL_HEATMAP", 120, min_value=5, max_value=1800)
-STUDIO_G_PREVIEW_HISTORY_DAYS = _env_int("STUDIO_G_PREVIEW_HISTORY_DAYS", 120, min_value=7, max_value=730)
 
 def _cache_get(key: str):
     now = time.time()
@@ -365,10 +336,9 @@ app.include_router(comparisons.router)
 app.include_router(admin_tools.router)
 app.include_router(create_token_auth_router())
 _api_scheduler_task = None
-_email_scheduler_task = None
 
 async def scheduler_loop():
-    await asyncio.sleep(min(10, WORKER_POLL_SECONDS))
+    await asyncio.sleep(10) # Initial delay
     while True:
         logger.info("[Scheduler] Iniciando ciclo de importación automática...")
         try:
@@ -376,33 +346,12 @@ async def scheduler_loop():
             await run_worker_async()
         except Exception as e:
             logger.error(f"[Scheduler] Error en ciclo: {e}")
-        logger.info("[Scheduler] Durmiendo %s segundos...", WORKER_POLL_SECONDS)
-        await asyncio.sleep(WORKER_POLL_SECONDS)
-
-async def email_scheduler_loop():
-    poll_seconds = _email_scheduler_poll_seconds()
-    await asyncio.sleep(min(15, poll_seconds))
-    while True:
-        try:
-            if not supabase:
-                logger.warning("[EmailScheduler] Supabase client unavailable; skipping scheduled messaging")
-            else:
-                result = await asyncio.to_thread(
-                    run_missing_days_email_scheduler,
-                    supabase,
-                    logger=logger,
-                )
-                if result.get("executed"):
-                    logger.info("[EmailScheduler] Scheduled missing-days email executed: %s", result.get("runs"))
-                elif result.get("reason") not in {"no_due_schedules", "no_enabled_settings"}:
-                    logger.info("[EmailScheduler] Scheduled messaging skipped: %s", result)
-        except Exception as e:
-            logger.error("[EmailScheduler] Scheduled messaging failed: %s", e)
-        await asyncio.sleep(poll_seconds)
+        logger.info("[Scheduler] Durmiendo 1 hora...")
+        await asyncio.sleep(3600)
 
 @app.on_event("startup")
 async def startup_event():
-    global _api_scheduler_task, _email_scheduler_task
+    global _api_scheduler_task
     logger.info("MSMALL API Starting up... routes loaded.")
     api_scheduler_enabled = _is_api_scheduler_enabled()
     logger.info("API scheduler enabled: %s", str(api_scheduler_enabled).lower())
@@ -410,10 +359,6 @@ async def startup_event():
         _api_scheduler_task = asyncio.create_task(scheduler_loop())
     else:
         logger.info("API embedded scheduler disabled; worker is the scheduler authority.")
-    email_scheduler_enabled = _is_email_scheduler_enabled()
-    logger.info("API email scheduler enabled: %s", str(email_scheduler_enabled).lower())
-    if email_scheduler_enabled and _email_scheduler_task is None:
-        _email_scheduler_task = asyncio.create_task(email_scheduler_loop())
 
 app.add_middleware(
     CORSMiddleware,
@@ -468,6 +413,8 @@ def _resolve_effective_role(email: Optional[str], role_candidates: List[Optional
         return "it"
     if any(r == "auditor" for r in normalized):
         return "auditor"
+    if any(r in {"visualizador", "viewer"} for r in normalized):
+        return "visualizador"
     return "auditor"
 
 def _canonical_admin_role(raw_role: Optional[str]) -> str:
@@ -481,27 +428,9 @@ def _canonical_admin_role(raw_role: Optional[str]) -> str:
         return "it"
     if normalized == "auditor":
         return "auditor"
+    if normalized in {"visualizador", "viewer"}:
+        return "visualizador"
     return ""
-
-def _profile_storage_role(raw_role: Optional[str]) -> str:
-    """Maps API roles to the legacy profiles.app_role enum."""
-    canonical_role = _canonical_admin_role(raw_role)
-    if not canonical_role:
-        return ""
-    return "tic" if canonical_role == "it" else canonical_role
-
-def _sync_profile_role(user_id: str, role: str) -> None:
-    profile_role = _profile_storage_role(role)
-    if not profile_role:
-        raise ValueError("Rol de perfil inválido.")
-    try:
-        supabase.table("profiles").upsert(
-            {"id": user_id, "role": profile_role},
-            on_conflict="id"
-        ).execute()
-    except Exception as exc:
-        logger.error("No se pudo sincronizar profiles.role para %s: %s", user_id, exc)
-        raise RuntimeError("No se pudo guardar el rol principal del usuario.") from exc
 
 def _parse_auth_users_result(auth_users_result: Any) -> List[Any]:
     if auth_users_result is None:
@@ -621,11 +550,76 @@ async def _get_access_context(user_id: str) -> Dict[str, Any]:
         logger.warning(f"No se pudo cargar roles de usuarios_malls para {user_id}: {e}")
 
     effective_role = _resolve_effective_role(email, [profile_role, metadata_role, *mall_roles])
-    return {"user_id": user_id, "email": email, "role": effective_role}
+    role_key = effective_role
+    role_name = effective_role.title()
+    permissions = FACTORY_ROLE_PERMISSIONS.get(effective_role, FACTORY_ROLE_PERMISSIONS["auditor"])
+    has_assignment = False
+
+    # The RBAC tables are intentionally optional during rollout so current users keep access
+    # until the migration is applied. Once assigned, configurable permissions are authoritative.
+    try:
+        assignment = (
+            supabase.table("profile_role_assignments")
+            .select("role_id")
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        if assignment and assignment.data and assignment.data.get("role_id"):
+            role_id = assignment.data["role_id"]
+            role_res = supabase.table("app_roles").select("id,key,nombre").eq("id", role_id).maybe_single().execute()
+            if role_res and role_res.data:
+                role_key = str(role_res.data.get("key") or effective_role)
+                role_name = str(role_res.data.get("nombre") or role_key)
+                rows = supabase.table("app_role_permissions").select(
+                    "module_key,can_view,can_create,can_update,can_delete"
+                ).eq("role_id", role_id).execute().data or []
+                permissions = {
+                    str(row["module_key"]): {
+                        "view": bool(row.get("can_view")),
+                        "create": bool(row.get("can_create")),
+                        "update": bool(row.get("can_update")),
+                        "delete": bool(row.get("can_delete")),
+                    }
+                    for row in rows
+                }
+                has_assignment = True
+    except Exception as e:
+        logger.warning("No se pudo cargar RBAC para %s: %s", user_id, e)
+
+    if _is_system_admin_email(email):
+        role_key = "admin"
+        role_name = "Administrador"
+        permissions = FACTORY_ROLE_PERMISSIONS["admin"]
+        has_assignment = False
+    return {
+        "user_id": user_id,
+        "email": email,
+        "role": role_key,
+        "role_name": role_name,
+        "legacy_role": effective_role,
+        "permissions": permissions,
+        "has_role_assignment": has_assignment,
+    }
+
+def _has_module_permission(access_ctx: Dict[str, Any], module_key: str, action: str) -> bool:
+    if action not in RBAC_ACTIONS:
+        return False
+    if _is_system_admin_email(access_ctx.get("email")):
+        return True
+    return bool((access_ctx.get("permissions") or {}).get(module_key, {}).get(action))
+
+def require_module_permission(module_key: str, action: str):
+    async def dependency(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+        access_ctx = await _get_access_context(user_id)
+        if not _has_module_permission(access_ctx, module_key, action):
+            raise HTTPException(status_code=403, detail=f"No tienes permiso para {action} en el módulo {module_key}.")
+        return access_ctx
+    return dependency
 
 async def require_admin_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
     access_ctx = await _get_access_context(user_id)
-    if access_ctx["role"] != "admin":
+    if access_ctx["legacy_role"] != "admin" and not _has_module_permission(access_ctx, "users", "update"):
         raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere rol ADMIN.")
     return access_ctx
 
@@ -729,32 +723,17 @@ def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config:
         val = runtime.get(key)
         if val not in (None, ""):
             base_config[key] = val
-    if "constants" in runtime and runtime.get("constants") not in (None, ""):
-        base_config["constants_config"] = runtime.get("constants") or {}
-    if "constants_config" in runtime and runtime.get("constants_config") not in (None, ""):
-        base_config["constants"] = runtime.get("constants_config") or {}
-    if "mapping" in runtime and runtime.get("mapping") not in (None, ""):
-        base_config["mapping_config"] = runtime.get("mapping") or {}
-    if "mapping_config" in runtime and runtime.get("mapping_config") not in (None, ""):
-        base_config["mapping"] = runtime.get("mapping_config") or {}
     return base_config
 
 def _normalize_import_config_payload(config_data: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(config_data or {})
     if not normalized.get("mapping"):
         normalized["mapping"] = normalized.get("mapping_config") or {}
-    if not normalized.get("mapping_config"):
-        normalized["mapping_config"] = normalized.get("mapping") or {}
     if not normalized.get("constants"):
         normalized["constants"] = normalized.get("constants_config") or {}
-    if not normalized.get("constants_config"):
-        normalized["constants_config"] = normalized.get("constants") or {}
     if not normalized.get("tipo_archivo"):
         normalized["tipo_archivo"] = normalized.get("file_type", "CSV")
     return normalized
-
-def _is_webservice_protocol(value: Any) -> bool:
-    return str(value or "").strip().upper() in {"WEBSERVICE", "API"}
 
 def _parse_bool_value(value: Any) -> Optional[bool]:
     if value is None:
@@ -928,10 +907,6 @@ def _normalize_text_for_csv(content: str) -> str:
     # Handle escaped newlines in a single-line payload (e.g., "\\n" literal separators).
     if "\n" not in text and text.count("\\n") >= 1:
         text = text.replace("\\n", "\n")
-    first_line = next((line for line in text.split("\n") if line.strip()), "")
-    first_line_lower = first_line.lower()
-    if "\t\t" in first_line and any(token in first_line_lower for token in ("fecha", "hora", "total", "bruto", "neto")):
-        text = re.sub(r"\t{2,}", "\t", text)
     return text
 
 def _decode_remote_text(raw_bytes: bytes, is_json: bool = False) -> str:
@@ -1215,9 +1190,6 @@ class StoreSchema(BaseModel):
     mts: str
     porciento_renta: str
     upsert_activo: bool = False
-    activo: bool = True
-    fecha_inactivacion: Optional[str] = None
-    motivo_inactivacion: Optional[str] = None
     mall_nombre: Optional[str] = "Mall Plaza"
     fecha_corte_importacion: Optional[str] = None
 
@@ -1225,12 +1197,8 @@ STORE_WRITE_FIELDS = {
     "mall_id", "codigo_interno", "nombre", "email", "rubro", "responsable",
     "contrato_no", "piso", "tipo_negocio", "mts", "porciento_renta",
     "upsert_activo", "renta_fija", "breakpoint_venta", "porcentaje_variable",
-    "fecha_corte_importacion", "activo", "fecha_inactivacion", "motivo_inactivacion",
+    "fecha_corte_importacion",
 }
-
-
-def _is_store_active(row: Dict[str, Any]) -> bool:
-    return row.get("activo") is not False
 
 
 def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1247,17 +1215,6 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
         data["codigo_interno"] = str(data.get("codigo_interno") or "").strip()
     if data.get("email") == "":
         data["email"] = None
-    for numeric_field in ("mts", "porciento_renta", "renta_fija", "breakpoint_venta", "porcentaje_variable"):
-        if numeric_field not in data:
-            continue
-        raw_value = data.get(numeric_field)
-        if raw_value in (None, ""):
-            data[numeric_field] = None
-            continue
-        try:
-            data[numeric_field] = float(str(raw_value).strip().replace(",", "."))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=f"{numeric_field} debe ser numerico")
     if "fecha_corte_importacion" in data:
         raw_cutoff = str(data.get("fecha_corte_importacion") or "").strip()
         if raw_cutoff:
@@ -1268,25 +1225,6 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
             data["fecha_corte_importacion"] = raw_cutoff
         else:
             data["fecha_corte_importacion"] = None
-    if "fecha_inactivacion" in data:
-        raw_inactivation = str(data.get("fecha_inactivacion") or "").strip()
-        if raw_inactivation:
-            try:
-                datetime.strptime(raw_inactivation, "%Y-%m-%d")
-            except ValueError:
-                raise HTTPException(status_code=400, detail="fecha_inactivacion debe tener formato YYYY-MM-DD")
-            data["fecha_inactivacion"] = raw_inactivation
-        else:
-            data["fecha_inactivacion"] = None
-    if data.get("activo") is False:
-        data["upsert_activo"] = False
-        data["tipo_ejecucion"] = "MANUAL"
-        data["processing_status"] = "IDLE"
-        if not data.get("fecha_inactivacion"):
-            data["fecha_inactivacion"] = datetime.utcnow().date().isoformat()
-    elif data.get("activo") is True:
-        data["fecha_inactivacion"] = None
-        data["motivo_inactivacion"] = None
     return data
 
 
@@ -1421,7 +1359,6 @@ class MissingDaysEmailSettingsRequest(BaseModel):
 
 class MissingDaysSendNowRequest(BaseModel):
     mall_id: str
-    notification_type: str = "missing_days_audit"
 
 class CopilotSettingsRequest(BaseModel):
     enabled: bool = False
@@ -1859,9 +1796,6 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 line_no = i + line_offset
                 record = {}
                 normalized_row = _normalize_csv_row_keys(row) if isinstance(row, dict) else {}
-                non_empty_values = [str(value or "").strip() for value in normalized_row.values() if str(value or "").strip()]
-                if non_empty_values and all(re.fullmatch(r"[-_=]+", value) for value in non_empty_values):
-                    continue
                 lowered_row = {k.lower(): v for k, v in normalized_row.items()}
                 # 1. Apply Mapping
                 for sys_field, header in effective_mapping.items():
@@ -1945,15 +1879,14 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 elif explicit_format == 'YYYY/MM/DD':
                     date_formats = ['%Y/%m/%d']
                 elif explicit_format == 'YYYY-MM-DD':
-                    date_formats = ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f', '%Y/%m/%d']
+                    date_formats = ['%Y-%m-%d', '%Y/%m/%d']
                 elif explicit_format == 'timestamp':
                     date_formats = [
                         '%Y-%m-%dT%H:%M:%S.%fZ',
                         '%Y-%m-%dT%H:%M:%S.%f',
                         '%Y-%m-%dT%H:%M:%SZ',
                         '%Y-%m-%dT%H:%M:%S',
-                        '%Y-%m-%d %H:%M:%S',
-                        '%Y-%m-%d %H:%M:%S.%f'
+                        '%Y-%m-%d %H:%M:%S'
                     ]
                 else:  # 'auto' - try all formats
                     date_formats = [
@@ -1962,7 +1895,6 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         '%Y-%m-%dT%H:%M:%SZ',     # ISO 8601 with Z (2026-02-01T14:30:00Z)
                         '%Y-%m-%dT%H:%M:%S',      # ISO 8601 with time (2026-02-01T14:30:00)
                         '%Y-%m-%d %H:%M:%S',      # SQL datetime (2026-02-01 14:30:00)
-                        '%Y-%m-%d %H:%M:%S.%f',   # SQL datetime with milliseconds (2026-02-01 14:30:00.000)
                         '%Y-%m-%d',               # ISO 8601 date only (2026-02-01)
                         '%d/%m/%Y',               # DD/MM/YYYY (Dominican/Spanish format)
                         '%d%m%Y',                 # DDmmYYYY (05012026)
@@ -2123,9 +2055,7 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 if time_col in new_r and new_r[time_col]:
                     val = str(new_r[time_col]).strip().strip("'\"")
                     if val.isdigit():
-                        if int(val) == 24:
-                            new_r[time_col] = "00:00:00"
-                        elif int(val) < 24:
+                        if int(val) < 24:
                             new_r[time_col] = f"{int(val):02d}:00:00"
                         elif len(val) in [5, 6]:
                             # HHMMSS -> HH:MM:SS
@@ -2489,44 +2419,21 @@ def _candidate_hosts(host: str) -> List[str]:
 def get_sftp_client(host, port, user, password):
     last_error = None
     for candidate in _candidate_hosts(host):
-        connection = None
-        transport = None
         try:
-            connection = socket.create_connection((candidate, int(port)), timeout=12)
-            transport = paramiko.Transport(connection)
-            transport.banner_timeout = 12
-            transport.auth_timeout = 15
+            transport = paramiko.Transport((candidate, int(port)))
+            transport.banner_timeout = 20
+            transport.auth_timeout = 25
             transport.connect(username=user, password=password)
             transport.set_keepalive(30)
             sftp = paramiko.SFTPClient.from_transport(transport)
             return transport, sftp
         except Exception as e:
             last_error = e
-            if transport is not None:
-                transport.close()
-            elif connection is not None:
-                connection.close()
             logger.warning(f"SFTP connect failed for host '{candidate}': {e}")
 
     if last_error:
         raise last_error
     raise ValueError("Host remoto inválido o vacío para conexión SFTP")
-
-
-def _remote_connection_error_message(protocol: str, exc: Exception, duration: float) -> str:
-    raw_message = str(exc or "").strip()
-    normalized = raw_message.lower()
-    if str(protocol or "").strip().upper() == "SFTP":
-        if "no existing session" in normalized or "error reading ssh protocol banner" in normalized:
-            return (
-                f"SFTP no disponible ({duration:.2f}s): el puerto responde, pero el servidor no completa "
-                "la negociación SSH. Revise o reinicie el servicio SSH/SFTP y sus límites de sesiones."
-            )
-        if isinstance(exc, paramiko.AuthenticationException) or "authentication failed" in normalized:
-            return f"Autenticación SFTP rechazada ({duration:.2f}s). Verifique usuario y contraseña."
-        if isinstance(exc, (socket.timeout, TimeoutError)) or "timed out" in normalized:
-            return f"Timeout SFTP ({duration:.2f}s): el servidor no respondió durante la negociación SSH."
-    return f"Error ({duration:.2f}s): {raw_message or type(exc).__name__}"
 
 def get_ftp_client(host, port, user, password):
     last_error = None
@@ -2544,52 +2451,10 @@ def get_ftp_client(host, port, user, password):
         raise last_error
     raise ValueError("Host remoto inválido o vacío para conexión FTP")
 
-def _api_base_url(host: str) -> str:
-    normalized = (host or "").strip()
-    if not normalized:
-        raise ValueError("URL base API requerida")
-    if not re.match(r"^https?://", normalized, flags=re.IGNORECASE):
-        normalized = f"https://{normalized}"
-    return normalized.rstrip("/")
-
-def _test_api_authorization(host: str, client_id: str, client_secret: Optional[str]) -> None:
-    if not client_id or not client_secret:
-        raise ValueError("Client ID y Client Secret requeridos para probar API")
-    payload = json.dumps({
-        "client_id": client_id,
-        "client_secret": client_secret,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        f"{_api_base_url(host)}/authorization",
-        data=payload,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=25) as response:
-        raw = response.read().decode("utf-8-sig", errors="replace")
-    data = json.loads(raw or "{}")
-    if not data.get("access_token"):
-        raise ValueError("La API no devolvió access_token")
-
 def _test_remote_connection_sync(req: RemoteRequest):
     logger.info(f"Probando conexión remota sync a {req.host}:{req.puerto} ({req.protocolo})")
     start_time = time.time()
     try:
-        if str(req.protocolo or "").strip().upper() == "API":
-            _test_api_authorization(req.host, req.usuario, req.password)
-            duration = time.time() - start_time
-            logger.info("API probada en %.2fs", duration)
-            return {"status": "success", "message": f"API autenticada correctamente ({duration:.2f}s)"}
-        if _is_webservice_protocol(req.protocolo):
-            url = append_webservice_query_param(req.host, "page", 1)
-            payload = fetch_webservice_json(url, (req.password or "").strip() or None, 30)
-            records = extract_webservice_records(payload)
-            duration = time.time() - start_time
-            logger.info("Webservice probado en %.2fs registros=%s", duration, len(records))
-            return {
-                "status": "success",
-                "message": f"Webservice respondió correctamente ({duration:.2f}s). Registros detectados: {len(records)}"
-            }
         if req.protocolo == "SFTP":
             ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
             sftp.close()
@@ -2597,62 +2462,13 @@ def _test_remote_connection_sync(req: RemoteRequest):
         elif req.protocolo == "FTP":
             ftp = get_ftp_client(req.host, req.puerto, req.usuario, req.password)
             ftp.quit()
-        else:
-            raise ValueError(f"Protocolo no soportado: {req.protocolo}")
         duration = time.time() - start_time
         logger.info(f"Conexión exitosa en {duration:.2f}s")
         return {"status": "success", "message": f"Conexión exitosa ({duration:.2f}s)"}
     except Exception as e:
         duration = time.time() - start_time
         logger.error(f"Error conexión remota después de {duration:.2f}s: {e}")
-        return {"status": "error", "message": _remote_connection_error_message(req.protocolo, e, duration)}
-
-def _studio_g_config_from_remote_request(
-    req: RemoteRequest,
-    fecha_inicio: Optional[str] = None,
-    fecha_fin: Optional[str] = None,
-) -> Dict[str, Any]:
-    today = date.today().isoformat()
-    return {
-        "id": "studio-g-preview",
-        "mall_id": "00000000-0000-0000-0000-000000000000",
-        "nombre": "Studio G API",
-        "sftp_protocol": "API",
-        "sftp_host": req.host,
-        "sftp_user": req.usuario,
-        "sftp_pass": req.password,
-        "sftp_path": req.ruta,
-        "constants_config": {
-            "provider": "studio_g",
-            "_studio_g_fecha_inicio": fecha_inicio or today,
-            "_studio_g_fecha_fin": fecha_fin or today,
-        },
-    }
-
-def _studio_g_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
-    today = date.today()
-    rows, _source_name = fetch_studio_g_sales(
-        _studio_g_config_from_remote_request(req, today.isoformat(), today.isoformat())
-    )
-    if rows:
-        return rows
-
-    history_start = today - timedelta(days=STUDIO_G_PREVIEW_HISTORY_DAYS)
-    rows, _source_name = fetch_studio_g_sales(
-        _studio_g_config_from_remote_request(req, history_start.isoformat(), today.isoformat())
-    )
-    if rows:
-        return rows
-
-    return [{
-        "fecha": date.today().isoformat(),
-        "factura_no": "STUDIOG-MUESTRA",
-        "comprobante": "STUDIOG-MUESTRA",
-        "hora_transaccion": "12:00:00",
-        "total_bruto": 0,
-        "total_impuestos": 0,
-        "total_neto": 0,
-    }]
+        return {"status": "error", "message": f"Error ({duration:.2f}s): {str(e)}"}
 
 @app.post("/api/v1/remote/test")
 async def test_remote_connection(
@@ -2833,7 +2649,7 @@ async def get_load_logs_secure(
     local_id: Optional[str] = Query(None, alias="local_id"),
     start_date: Optional[str] = Query(None, alias="start_date"),
     end_date: Optional[str] = Query(None, alias="end_date"),
-    limit: int = Query(1000, ge=1, le=2000),
+    limit: int = Query(50, ge=1, le=200),
     operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
 ):
     try:
@@ -3015,11 +2831,6 @@ async def retry_connection_manual(
         raise HTTPException(status_code=500, detail="No se pudo ejecutar el reintento de conexión.")
 
 def _read_remote_headers_sync(req: RemoteRequest):
-    if str(req.protocolo or "").strip().upper() == "API":
-        rows = _studio_g_preview_rows(req)
-        headers = list(rows[0].keys())
-        return {"headers": headers}
-
     content = ""
     if req.protocolo == "SFTP":
         ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
@@ -3145,15 +2956,6 @@ async def create_store_backend(
         if not response.data:
             raise ValueError("No se recibió el local creado desde Supabase")
         row = response.data[0]
-        publish_operations_event(
-            supabase,
-            mall_id=mall_id,
-            local_id=row.get("id"),
-            event_type=EVENT_LOCAL_UPDATED,
-            source="LOCAL_MAINTENANCE",
-            payload={"action": "created", "local": row, "updated_by": operator_ctx.get("email") or operator_ctx.get("user_id")},
-            logger=logger,
-        )
         return row
     except Exception as e:
         logger.error("Error creando local mall=%s user=%s: %s", mall_id, operator_ctx.get("user_id"), e)
@@ -3168,7 +2970,7 @@ async def update_store_backend(
 ):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado")
-    existing = supabase.table("locales").select("*").eq("id", local_id).maybe_single().execute().data
+    existing = supabase.table("locales").select("id,mall_id").eq("id", local_id).maybe_single().execute().data
     if not existing:
         raise HTTPException(status_code=404, detail="Local no encontrado")
     mall_id = str(existing.get("mall_id") or "")
@@ -3187,25 +2989,6 @@ async def update_store_backend(
         if not response.data:
             raise ValueError("No se recibió el local actualizado desde Supabase")
         row = response.data[0]
-        event_type = EVENT_LOCAL_UPDATED
-        if "activo" in data and existing.get("activo") != data.get("activo"):
-            event_type = EVENT_LOCAL_ACTIVATED if data.get("activo") is not False else EVENT_LOCAL_DEACTIVATED
-        publish_operations_event(
-            supabase,
-            mall_id=mall_id,
-            local_id=local_id,
-            event_type=event_type,
-            source="LOCAL_MAINTENANCE",
-            payload={
-                "action": "updated",
-                "changed_fields": sorted(data.keys()),
-                "previous": existing,
-                "local": row,
-                "updated_by": operator_ctx.get("email") or operator_ctx.get("user_id"),
-            },
-            severity="WARNING" if event_type == EVENT_LOCAL_DEACTIVATED else "INFO",
-            logger=logger,
-        )
         return row
     except Exception as e:
         logger.error("Error actualizando local=%s user=%s: %s", local_id, operator_ctx.get("user_id"), e)
@@ -3295,42 +3078,8 @@ async def upsert_local_custom_fields(
     )
 
 # --- AI & INSIGHTS ENDPOINTS ---
-def _apply_insights_date_filters(query: Any, start_date: Optional[str], end_date: Optional[str]) -> Any:
-    if start_date:
-        query = query.gte("fecha", start_date)
-    if end_date:
-        query = query.lte("fecha", end_date)
-    return query
-
-
-def _insights_cost_config(store: Dict[str, Any], net_sales: float) -> Tuple[float, float, float, str]:
-    renta_fija = _safe_float(store.get("renta_fija"))
-    pct_direct = _safe_float(store.get("porcentaje_variable"))
-    pct_legacy = _safe_float(store.get("porciento_renta"))
-    pct_variable = pct_direct if pct_direct > 0 else pct_legacy
-
-    if renta_fija > 0:
-        return renta_fija, renta_fija, pct_variable, "renta_fija"
-    if pct_variable > 0 and net_sales > 0:
-        return (net_sales * pct_variable) / 100, renta_fija, pct_variable, "porcentaje_variable"
-    return 0.0, renta_fija, pct_variable, "sin_configuracion"
-
-
-def _insights_risk_label(occupancy_ratio: float, cost_source: str) -> Tuple[bool, str, str]:
-    if cost_source == "sin_configuracion":
-        return False, "SIN CONFIG", "Sin renta fija o porcentaje variable configurado para evaluar OCR."
-    if occupancy_ratio < 0.15:
-        return True, "BAJO", "Operacion saludable"
-    if occupancy_ratio < 0.20:
-        return False, "MEDIO", "OCR en zona de vigilancia"
-    return False, "ALTO", "OCR alto para el periodo"
-
-
 @app.get("/api/v1/insights/alerts")
-async def get_intelligent_alerts(
-    local_id: Optional[str] = None,
-    mall_id: Optional[str] = Query(None, alias="mall_id"),
-):
+async def get_intelligent_alerts(local_id: Optional[str] = None):
     """Fetch a real antifraud snapshot for a store."""
     if not supabase or not local_id:
         return {
@@ -3349,31 +3098,6 @@ async def get_intelligent_alerts(
             },
         }
     try:
-        if mall_id:
-            store_res = (
-                supabase.table("locales")
-                .select("id")
-                .eq("id", local_id)
-                .eq("mall_id", mall_id)
-                .limit(1)
-                .execute()
-            )
-            if not store_res.data:
-                return {
-                    "status": "no_data",
-                    "source": "none",
-                    "alerts": [],
-                    "summary": {
-                        "risk_state": "NO_DATA",
-                        "risk_label": "Sin Datos",
-                        "description": "El local no pertenece al mall seleccionado.",
-                        "last_evaluated_at": None,
-                        "has_recent_run": False,
-                        "risk_score": 0,
-                        "alerts_count": 0,
-                        "analysis_window_days": 30,
-                    },
-                }
         return await asyncio.to_thread(
             lambda: _analytics_service().get_alert_snapshot(local_id, allow_live_refresh=True)
         )
@@ -3396,27 +3120,16 @@ async def get_intelligent_alerts(
         }
 
 @app.get("/api/v1/insights/benchmarking/{local_id}")
-async def get_benchmarking(
-    local_id: str,
-    mall_id: Optional[str] = Query(None, alias="mall_id"),
-    start_date: Optional[str] = Query(None, alias="start_date"),
-    end_date: Optional[str] = Query(None, alias="end_date"),
-):
+async def get_benchmarking(local_id: str):
     """Compare local performance vs category average based on real data."""
     if not supabase: return None
     try:
         # 1. Get Store Info
-        store_query = supabase.table("locales").select("id, nombre, rubro, mall_id").eq("id", local_id)
-        if mall_id:
-            store_query = store_query.eq("mall_id", mall_id)
-        store_res = store_query.single().execute()
+        store_res = supabase.table("locales").select("id, nombre, rubro").eq("id", local_id).single().execute()
         if not store_res.data: return None
-        effective_mall_id = mall_id or store_res.data.get("mall_id")
         
         # 2. Get Sales ATV
-        sales_query = supabase.table("ventas").select("total_bruto").eq("local_id", local_id)
-        sales_query = _apply_insights_date_filters(sales_query, start_date, end_date)
-        sales_res = sales_query.execute()
+        sales_res = supabase.table("ventas").select("total_bruto").eq("local_id", local_id).execute()
         if not sales_res.data:
             return {
                 "local_name": store_res.data['nombre'],
@@ -3431,17 +3144,11 @@ async def get_benchmarking(
         rubro = store_res.data.get('rubro')
         atv_category = atv_local # Default
         if rubro:
-            cat_query = supabase.table("locales").select("id").eq("rubro", rubro)
-            if effective_mall_id:
-                cat_query = cat_query.eq("mall_id", effective_mall_id)
-            cat_stores = cat_query.execute()
+            cat_stores = supabase.table("locales").select("id").eq("rubro", rubro).execute()
             cat_ids = [s['id'] for s in cat_stores.data]
-            if cat_ids:
-                cat_sales_query = supabase.table("ventas").select("total_bruto").in_("local_id", cat_ids)
-                cat_sales_query = _apply_insights_date_filters(cat_sales_query, start_date, end_date)
-                cat_sales = cat_sales_query.execute()
-                if cat_sales.data:
-                    atv_category = sum(float(r['total_bruto']) for r in cat_sales.data) / len(cat_sales.data)
+            cat_sales = supabase.table("ventas").select("total_bruto").in_("local_id", cat_ids).execute()
+            if cat_sales.data:
+                atv_category = sum(float(r['total_bruto']) for r in cat_sales.data) / len(cat_sales.data)
 
         return {
             "local_name": store_res.data['nombre'],
@@ -3450,111 +3157,70 @@ async def get_benchmarking(
             "status": "Líder" if atv_local > atv_category else "Promedio",
             "atv_local": round(atv_local, 2),
             "atv_category": round(atv_category, 2),
-            "atv_growth": "0%",
-            "sample_size": len(sales_res.data),
-            "period": {"start_date": start_date, "end_date": end_date}
+            "atv_growth": "0%"
         }
     except Exception as e:
         logger.error(f"Error benchmarking: {e}")
         return None
 
 @app.get("/api/v1/insights/efficiency/{local_id}")
-async def get_efficiency(
-    local_id: str,
-    mall_id: Optional[str] = Query(None, alias="mall_id"),
-    start_date: Optional[str] = Query(None, alias="start_date"),
-    end_date: Optional[str] = Query(None, alias="end_date"),
-):
+async def get_efficiency(local_id: str):
     """Calculate Real Estate Efficiency metrics from real store and sales data."""
     if not supabase: return None
     try:
         # 1. Get Store MTS
-        store_query = (
-            supabase.table("locales")
-            .select("mts, nombre, mall_id, renta_fija, porcentaje_variable, porciento_renta")
-            .eq("id", local_id)
-        )
-        if mall_id:
-            store_query = store_query.eq("mall_id", mall_id)
-        store_res = store_query.single().execute()
+        store_res = supabase.table("locales").select("mts, nombre, porciento_renta").eq("id", local_id).single().execute()
         if not store_res.data: return None
         
-        mts = _safe_float(store_res.data.get('mts')) or 1.0
+        mts = float(store_res.data.get('mts') or 1.0)
         
         # 2. Sum Sales
-        sales_query = supabase.table("ventas").select("total_neto").eq("local_id", local_id)
-        sales_query = _apply_insights_date_filters(sales_query, start_date, end_date)
-        sales_res = sales_query.execute()
-        total_sales = sum(_safe_float(r.get('total_neto')) for r in sales_res.data) if sales_res.data else 0
+        sales_res = supabase.table("ventas").select("total_neto").eq("local_id", local_id).execute()
+        total_sales = sum(float(r['total_neto']) for r in sales_res.data) if sales_res.data else 0
         
         if total_sales == 0:
             return {
                 "sales_per_m2": 0, "occupancy_cost_ratio": 0, "is_healthy": True, "risk_level": "BAJO", "message": "Sin datos"
             }
 
-        occupancy_cost, renta_fija, pct_variable, cost_source = _insights_cost_config(store_res.data, total_sales)
+        # 3. Simple Mock Renta (unless added to DB)
+        renta_fija = 2500  # Placeholder
+        gastos_comunes = 600 # Placeholder
+        
         sales_per_m2 = total_sales / mts
-        occupancy_cost_ratio = occupancy_cost / total_sales if total_sales > 0 else 0
-        is_healthy, risk_level, message = _insights_risk_label(occupancy_cost_ratio, cost_source)
+        occupancy_cost_ratio = (renta_fija + gastos_comunes) / total_sales
         
         return {
             "sales_per_m2": round(sales_per_m2, 2),
             "occupancy_cost_ratio": round(occupancy_cost_ratio * 100, 2),
-            "is_healthy": is_healthy,
-            "risk_level": risk_level,
-            "message": message,
-            "renta_fija": round(renta_fija, 2),
-            "porcentaje_variable": round(pct_variable, 4),
-            "cost_source": cost_source,
-            "period": {"start_date": start_date, "end_date": end_date}
+            "is_healthy": occupancy_cost_ratio < 0.15,
+            "risk_level": "BAJO" if occupancy_cost_ratio < 0.15 else "MEDIO" if occupancy_cost_ratio < 0.20 else "ALTO",
+            "message": "Operación saludable"
         }
     except Exception as e:
         logger.error(f"Error efficiency: {e}")
         return None
 
 @app.get("/api/v1/insights/heatmap/{local_id}")
-async def get_heatmap(
-    local_id: str,
-    mall_id: Optional[str] = Query(None, alias="mall_id"),
-    start_date: Optional[str] = Query(None, alias="start_date"),
-    end_date: Optional[str] = Query(None, alias="end_date"),
-):
+async def get_heatmap(local_id: str):
     """Generate sales intensity heatmap data from real transaction times."""
     if not supabase: return []
-    cache_key = f"insights:heatmap:{local_id}:{mall_id or 'all'}:{start_date or 'all'}:{end_date or 'all'}"
+    cache_key = f"insights:heatmap:{local_id}"
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached
-    if mall_id:
-        try:
-            store_res = (
-                supabase.table("locales")
-                .select("id")
-                .eq("id", local_id)
-                .eq("mall_id", mall_id)
-                .limit(1)
-                .execute()
-            )
-            if not store_res.data:
-                _cache_set(cache_key, [], TTL_HEATMAP)
-                return []
-        except Exception as store_err:
-            logger.warning(f"Heatmap store validation failed: {store_err}")
     try:
-        if not start_date and not end_date:
-            rpc_res = supabase.rpc("get_insights_heatmap", {"local_id_param": local_id}).execute()
-            if rpc_res.data:
-                result = rpc_res.data
-                _cache_set(cache_key, result, TTL_HEATMAP)
-                return result
-            _cache_set(cache_key, [], TTL_HEATMAP)
-            return []
+        rpc_res = supabase.rpc("get_insights_heatmap", {"local_id_param": local_id}).execute()
+        if rpc_res.data:
+            result = rpc_res.data
+            _cache_set(cache_key, result, TTL_HEATMAP)
+            return result
+        _cache_set(cache_key, [], TTL_HEATMAP)
+        return []
     except Exception as rpc_err:
         logger.warning(f"Heatmap RPC unavailable, fallback to python aggregation: {rpc_err}")
     try:
-        heatmap_query = supabase.table("ventas").select("fecha, hora_transaccion").eq("local_id", local_id)
-        heatmap_query = _apply_insights_date_filters(heatmap_query, start_date, end_date)
-        res = heatmap_query.limit(2000).execute()
+        res = supabase.table("ventas").select("fecha, hora_transaccion").eq("local_id", local_id).limit(2000).execute()
         if not res.data:
             _cache_set(cache_key, [], TTL_HEATMAP)
             return []
@@ -3588,65 +3254,56 @@ async def get_heatmap(
         return []
 
 @app.get("/api/v1/insights/ranking")
-async def get_ranking(
-    metric: str,
-    mall_id: Optional[str] = Query(None, alias="mall_id"),
-    start_date: Optional[str] = Query(None, alias="start_date"),
-    end_date: Optional[str] = Query(None, alias="end_date"),
-):
+async def get_ranking(metric: str, mall_id: Optional[str] = Query(None, alias="mall_id")):
     """Get ranking of all stores for a specific metric based on real database data."""
     if not supabase: return []
-    cache_key = f"insights:ranking:{metric}:{mall_id or 'all'}:{start_date or 'all'}:{end_date or 'all'}"
+    cache_key = f"insights:ranking:{metric}:{mall_id or 'all'}"
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached
     try:
-        if not start_date and not end_date:
-            rpc_res = supabase.rpc("get_insights_ranking", {
-                "metric_param": metric,
-                "mall_id_param": mall_id
-            }).execute()
-            if rpc_res.data:
-                # Ensure JSON-serializable primitive types
-                normalized = []
-                for row in rpc_res.data:
-                    normalized.append({
-                        "id": row.get("id"),
-                        "nombre": row.get("nombre"),
-                        "valor": float(row.get("valor") or 0),
-                        "extra": row.get("extra")
-                    })
-                _cache_set(cache_key, normalized, TTL_RANKING)
-                return normalized
-            _cache_set(cache_key, [], TTL_RANKING)
-            return []
+        rpc_res = supabase.rpc("get_insights_ranking", {
+            "metric_param": metric,
+            "mall_id_param": mall_id
+        }).execute()
+        if rpc_res.data:
+            # Ensure JSON-serializable primitive types
+            normalized = []
+            for row in rpc_res.data:
+                normalized.append({
+                    "id": row.get("id"),
+                    "nombre": row.get("nombre"),
+                    "valor": float(row.get("valor") or 0),
+                    "extra": row.get("extra")
+                })
+            _cache_set(cache_key, normalized, TTL_RANKING)
+            return normalized
+        _cache_set(cache_key, [], TTL_RANKING)
+        return []
     except Exception as rpc_err:
         logger.warning(f"Ranking RPC unavailable, fallback to python aggregation: {rpc_err}")
     try:
         # 1. Fetch all stores
-        query = supabase.table("locales").select("id, nombre, mts, rubro, renta_fija, porcentaje_variable, porciento_renta")
+        query = supabase.table("locales").select("id, nombre, mts, rubro")
         if mall_id:
             query = query.eq("mall_id", mall_id)
         
         stores_res = query.execute()
         if not stores_res.data: return []
-        store_ids = [s['id'] for s in stores_res.data if s.get('id')]
-        if not store_ids:
-            return []
         
         # 2. Fetch all sales
         sales_query = supabase.table("ventas").select("local_id, total_bruto, total_neto")
-        sales_query = sales_query.in_("local_id", store_ids)
-        sales_query = _apply_insights_date_filters(sales_query, start_date, end_date)
+        if mall_id:
+            sales_query = sales_query.eq("mall_id", mall_id)
         sales_res = sales_query.execute()
         
         # Aggregate
         sales_data = {} # id -> {bruto, neto, cnt}
-        for s in (sales_res.data or []):
+        for s in sales_res.data:
             lid = s['local_id']
             if lid not in sales_data: sales_data[lid] = {'bruto': 0, 'neto': 0, 'cnt': 0}
-            sales_data[lid]['bruto'] += _safe_float(s.get('total_bruto'))
-            sales_data[lid]['neto'] += _safe_float(s.get('total_neto'))
+            sales_data[lid]['bruto'] += float(s['total_bruto'])
+            sales_data[lid]['neto'] += float(s['total_neto'])
             sales_data[lid]['cnt'] += 1
             
         ranking = []
@@ -3657,15 +3314,14 @@ async def get_ranking(
             extra = s.get('rubro') or "General"
             
             if metric == 'sales_per_m2':
-                mts = _safe_float(s.get('mts')) or 1.0
+                mts = float(s.get('mts') or 1.0)
                 valor = stats['neto'] / mts
                 extra = f"{mts} m²"
             elif metric == 'occupancy_cost':
-                costos, _, _, cost_source = _insights_cost_config(s, stats['neto'])
+                # Use a placeholder for rent until it's in DB
+                costos = 3000 
                 valor = (costos / stats['neto'] * 100) if stats['neto'] > 0 else 0
                 extra = "Saludable" if (0 < valor < 15) else "Riesgo" if valor >= 15 else "Sin Ventas"
-                if stats['neto'] > 0 and cost_source == "sin_configuracion":
-                    extra = "Sin Config"
             
             ranking.append({
                 "id": s['id'],
@@ -3906,16 +3562,6 @@ async def analyze_remote_mapping(
             # Determine if we should read all (JSON) or sample (CSV)
             is_json = req.tipo_archivo == "JSON" or req.ruta.lower().endswith('.json')
             read_size = -1 if is_json else 32768 # Read all for JSON, 32KB for CSV (increased from 8KB)
-
-            if str(req.protocolo or "").strip().upper() == "API":
-                records = _studio_g_preview_rows(req)
-                return json.dumps(records, ensure_ascii=False)
-
-            if _is_webservice_protocol(req.protocolo):
-                url = append_webservice_query_param(req.host, "page", 1)
-                payload = fetch_webservice_json(url, (req.password or "").strip() or None, analysis_timeout_seconds)
-                records = extract_webservice_records(payload)
-                return json.dumps(records, ensure_ascii=False)
 
             if req.protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
@@ -4159,6 +3805,25 @@ def _download_ftp_file_bytes(
             if joined not in candidates:
                 candidates.append(joined)
 
+    class _LimitedWriter:
+        def __init__(self, limit: Optional[int] = None):
+            self.bio = io.BytesIO()
+            self.limit = limit
+            self.written = 0
+
+        def write(self, data: bytes):
+            if self.limit is not None and self.written >= self.limit:
+                raise StopIteration
+            chunk = data
+            if self.limit is not None:
+                remaining = self.limit - self.written
+                if remaining <= 0:
+                    raise StopIteration
+                chunk = data[:remaining]
+            if chunk:
+                self.bio.write(chunk)
+                self.written += len(chunk)
+
     def _score_payload(data: bytes) -> Tuple[int, int, int]:
         if not data:
             return (0, 0, 0)
@@ -4179,12 +3844,13 @@ def _download_ftp_file_bytes(
 
     for candidate in candidates:
         try:
-            payload = retrieve_ftp_bytes(
-                ftp,
-                candidate,
-                max_bytes=max_bytes,
-                logger=logger,
-            )
+            writer = _LimitedWriter(limit=max_bytes)
+            try:
+                ftp.retrbinary(f"RETR {candidate}", writer.write)
+            except StopIteration:
+                pass  # expected for limited reads
+
+            payload = writer.bio.getvalue()
             score = _score_payload(payload)
             if score > best_score:
                 best_payload = payload
@@ -4192,11 +3858,6 @@ def _download_ftp_file_bytes(
                 best_score = score
             if payload:
                 logger.info(f"Descarga FTP candidata: {candidate} ({len(payload)} bytes) score={score}")
-                if candidate in exact_matches:
-                    logger.info(
-                        f"Descarga FTP seleccionada por coincidencia exacta: {candidate} bytes={len(payload)}"
-                    )
-                    return payload, posixpath.basename(candidate)
         except Exception as retr_err:
             last_error = retr_err
 
@@ -4220,12 +3881,6 @@ def _list_remote_files(config: Dict[str, Any]):
     ruta = config.get("ruta_remota") or config.get("sftp_path", ".")
     tipo_archivo = config.get("tipo_archivo") or config.get("file_type", "CSV")
     logger.info(f"[DEBUG_AUTH] User: '{usuario}', PassLen: {len(password) if password else 0}, Host: '{host}', Port: {puerto}, Path: '{ruta}'")
-    if _is_webservice_protocol(protocolo):
-        return [{
-            "nombre": "WEBSERVICE_API",
-            "fecha": datetime.utcnow().isoformat(),
-            "tamano": 0,
-        }]
     
     # Allow all supported extensions to be listed, to prevent confusion if config doesn't match file
     # ext = ".csv" if tipo_archivo == "CSV" else ".txt" if tipo_archivo == "TXT" else ".json"
@@ -4257,32 +3912,6 @@ def _list_remote_files(config: Dict[str, Any]):
                 print(f"[DEBUG] Raw listdir output ({len(raw_list)}): {raw_list}")
             except Exception as e:
                 print(f"[DEBUG] Raw listdir falló: {e}")
-            def _resolve_sftp_file_size(filename: str, listed_size: Any) -> int:
-                try:
-                    size = max(0, int(listed_size or 0))
-                except (TypeError, ValueError):
-                    size = 0
-                if size > 0:
-                    return size
-
-                full_path = posixpath.join(ruta, filename)
-                stat_loaders = [getattr(sftp, name, None) for name in ("stat", "lstat")]
-                for stat_loader in (loader for loader in stat_loaders if callable(loader)):
-                    try:
-                        resolved_size = max(0, int(getattr(stat_loader(full_path), "st_size", 0) or 0))
-                        if resolved_size > 0:
-                            return resolved_size
-                    except Exception:
-                        continue
-                try:
-                    with sftp.open(full_path, "rb") as remote_file:
-                        resolved_size = max(0, int(getattr(remote_file.stat(), "st_size", 0) or 0))
-                        if resolved_size > 0:
-                            return resolved_size
-                except Exception:
-                    pass
-                return size
-
             for attr in sftp.listdir_attr(ruta):
                 print(f"[DEBUG] Encontrado: {attr.filename} (Dir: {stat.S_ISDIR(attr.st_mode)})")
                 if not stat.S_ISDIR(attr.st_mode):
@@ -4291,7 +3920,7 @@ def _list_remote_files(config: Dict[str, Any]):
                         files.append({
                             "nombre": attr.filename,
                             "fecha": datetime.fromtimestamp(attr.st_mtime).isoformat(),
-                            "tamano": _resolve_sftp_file_size(attr.filename, attr.st_size)
+                            "tamano": attr.st_size
                         })
                     else:
                         print(f"[DEBUG] -> Ignorado (extensión): {attr.filename}")
@@ -4444,59 +4073,16 @@ async def _execute_manual_endpoint_impl(
         protocolo = config_data.get("protocolo") or config_data.get("sftp_protocol", "SFTP")
         source_filename = req.filename
 
-        if _is_webservice_protocol(protocolo):
-            result = await asyncio.to_thread(process_webservice_import, config_data, write_load_log=False)
-            records_processed = int(result.get("records_processed") or 0)
-            status_value = str(result.get("status") or ("success" if result.get("ok") else "error"))
-            details = result.get("details") or []
-            error_count = len(details or [])
-            log_status = (
-                "parcial" if records_processed > 0 and error_count > 0
-                else "exito" if status_value in {"success", "ok"} or result.get("ok")
-                else "error"
-            )
-            log_channel = str(result.get("canal") or protocolo or "").strip().upper()
-            if log_channel not in {"API", "WEBSERVICE"}:
-                log_channel = "API" if str(protocolo or "").strip().upper() == "API" else "WEBSERVICE"
-            log_source_name = result.get("source_name") or ("Studio G API" if log_channel == "API" else "WEBSERVICE")
-            insert_load_log(
-                local_nombre,
-                log_source_name,
-                log_status,
-                result.get("message") or f"{log_channel} ejecutado.",
-                batch_id,
-                details,
-                mall_id=config_data.get("mall_id"),
-                local_id=config_data.get("id"),
-                canal=log_channel,
-                records_processed=records_processed,
-                error_count=error_count,
-                metadata={
-                    "source": "manual_api_webservice_import",
-                    "worker_source": "worker_studio_g_api" if log_channel == "API" else "worker_webservice_import",
-                    "records_received": result.get("records_received"),
-                    "duplicate_skipped": result.get("duplicate_skipped"),
-                    "pages": result.get("pages"),
-                },
-            )
-            risk_snapshot = None
-            if records_processed > 0:
-                risk_snapshot = await _run_local_risk_analysis_async(
-                    config_data.get("id"),
-                    trigger="manual_api_webservice_import",
-                )
-            return _cache_and_return({
-                "status": status_value,
-                "message": result.get("message") or "Webservice ejecutado.",
-                "records_processed": records_processed,
-                "batch_id": batch_id,
-                "errors": details,
-                "renaming_error": None,
-                "risk_summary": (risk_snapshot or {}).get("summary"),
-            })
-
-        def _unique_prefixed_name(filename: str, prefix: str, existing_names: List[str]) -> str:
-            return build_unique_marked_filename(filename, prefix, existing_names)
+        def _build_prefixed_name(filename: str, prefix: str) -> str:
+            base_name = posixpath.basename((filename or "").strip())
+            if not base_name:
+                return base_name
+            upper_name = base_name.upper()
+            if upper_name.startswith("PR_"):
+                base_name = base_name[3:]
+            elif upper_name.startswith("ERR_"):
+                base_name = base_name[4:]
+            return f"{prefix}{base_name}"
 
         def _rename_source_file(prefix: str) -> Optional[str]:
             nonlocal source_filename
@@ -4515,8 +4101,7 @@ async def _execute_manual_endpoint_impl(
                         pass
 
                     old_path = posixpath.join(target_dir, source_filename)
-                    existing_names = [item.filename for item in sftp.listdir_attr(target_dir)]
-                    new_name = _unique_prefixed_name(source_filename, prefix, existing_names)
+                    new_name = _build_prefixed_name(source_filename, prefix)
                     new_path = posixpath.join(target_dir, new_name)
                     logger.info(f"Renombrando {old_path} -> {new_path}")
                     sftp.rename(old_path, new_path)
@@ -4537,11 +4122,7 @@ async def _execute_manual_endpoint_impl(
                 try:
                     used_dir = _ftp_enter_target_dir(ftp, ruta_remota)
                     rename_source = _resolve_ftp_filename(ftp, source_filename, used_dir) or source_filename
-                    try:
-                        existing_names = [posixpath.basename(str(name or "")) for name in (ftp.nlst() or [])]
-                    except Exception:
-                        existing_names = []
-                    new_name = _unique_prefixed_name(rename_source, prefix, existing_names)
+                    new_name = _build_prefixed_name(rename_source, prefix)
                     logger.info(f"Renombrando {rename_source} -> {new_name}")
                     ftp.rename(rename_source, new_name)
                     source_filename = new_name
@@ -4783,8 +4364,8 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
             return row
 
         # 1. Fetch Locales (Store Map) - Filtered by Mall
-        stores_res = supabase.table("locales").select("id, nombre, activo").eq("mall_id", mall_id).execute()
-        stores = [row for row in (stores_res.data or []) if _is_store_active(row)]
+        stores_res = supabase.table("locales").select("id, nombre").eq("mall_id", mall_id).execute()
+        stores = stores_res.data or []
         store_map = {str(s['id']): s['nombre'] for s in stores}
         allowed_local_ids = list(store_map.keys())
 
@@ -5206,10 +4787,9 @@ def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
     preferred_columns = (
         "id,nombre,codigo_interno,email,rubro,tipo_negocio,processing_status,"
         "consecutive_failures,upsert_activo,ultima_ejecucion,resultado_ultimo,"
-        "sftp_protocol,sftp_host,frecuencia_cron,hora_especifica,activo,"
-        "fecha_inactivacion,motivo_inactivacion"
+        "sftp_protocol,sftp_host,frecuencia_cron,hora_especifica"
     )
-    fallback_columns = "id,nombre,codigo_interno,rubro,tipo_negocio,mall_id,activo"
+    fallback_columns = "id,nombre,codigo_interno,rubro,tipo_negocio,mall_id"
     try:
         response = (
             supabase.table("locales")
@@ -5219,7 +4799,7 @@ def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
             .limit(80)
             .execute()
         )
-        return [row for row in (response.data or []) if _is_store_active(row)]
+        return response.data or []
     except Exception as exc:
         logger.warning("Copilot locales preferred query failed: %s", sanitize_sensitive_ops_error(exc))
         response = (
@@ -5230,7 +4810,7 @@ def _load_copilot_locales(mall_id: str) -> List[Dict[str, Any]]:
             .limit(80)
             .execute()
         )
-        return [row for row in (response.data or []) if _is_store_active(row)]
+        return response.data or []
 
 
 def _load_copilot_missing_days(locales: List[Dict[str, Any]], lookback_days: int = 7) -> Dict[str, Any]:
@@ -5420,238 +5000,7 @@ def _load_copilot_sales_summary(locales: List[Dict[str, Any]], lookback_days: in
     }
 
 
-_COPILOT_MONTHS = {
-    "enero": 1,
-    "febrero": 2,
-    "marzo": 3,
-    "abril": 4,
-    "mayo": 5,
-    "junio": 6,
-    "julio": 7,
-    "agosto": 8,
-    "septiembre": 9,
-    "setiembre": 9,
-    "octubre": 10,
-    "noviembre": 11,
-    "diciembre": 12,
-}
-
-
-def _last_day_of_month(year: int, month: int) -> date:
-    if month == 12:
-        return date(year, month, 31)
-    return date(year, month + 1, 1) - timedelta(days=1)
-
-
-def _parse_copilot_period(message: str) -> Dict[str, str]:
-    text = _normalize_store_catalog_key(message)
-    today = datetime.utcnow().date()
-
-    iso_dates = re.findall(r"\b(20\d{2}-\d{2}-\d{2})\b", message)
-    if len(iso_dates) >= 2:
-        return {"fecha_inicio": min(iso_dates[:2]), "fecha_fin": max(iso_dates[:2]), "origen": "fechas_explicitas"}
-    if len(iso_dates) == 1:
-        return {"fecha_inicio": iso_dates[0], "fecha_fin": iso_dates[0], "origen": "fecha_explicita"}
-
-    slash_dates = re.findall(r"\b(\d{1,2})/(\d{1,2})/(20\d{2})\b", message)
-    if len(slash_dates) >= 2:
-        parsed = [
-            date(int(year), int(month), int(day)).isoformat()
-            for day, month, year in slash_dates[:2]
-        ]
-        return {"fecha_inicio": min(parsed), "fecha_fin": max(parsed), "origen": "fechas_explicitas"}
-    if len(slash_dates) == 1:
-        day, month, year = slash_dates[0]
-        parsed = date(int(year), int(month), int(day)).isoformat()
-        return {"fecha_inicio": parsed, "fecha_fin": parsed, "origen": "fecha_explicita"}
-
-    year_match = re.search(r"\b(20\d{2})\b", text)
-    year = int(year_match.group(1)) if year_match else today.year
-    mentioned_months = [
-        (month_name, month_number)
-        for month_name, month_number in _COPILOT_MONTHS.items()
-        if month_name in text
-    ]
-    if mentioned_months:
-        month_numbers = [month_number for _, month_number in mentioned_months]
-        start_month = min(month_numbers)
-        end_month = max(month_numbers)
-        start = date(year, start_month, 1)
-        end = _last_day_of_month(year, end_month)
-        origin = "mes_" + "_".join(name for name, _ in mentioned_months)
-        return {"fecha_inicio": start.isoformat(), "fecha_fin": end.isoformat(), "origen": origin}
-
-    start = today - timedelta(days=29)
-    return {"fecha_inicio": start.isoformat(), "fecha_fin": today.isoformat(), "origen": "ultimos_30_dias"}
-
-
-def _should_build_copilot_diagnostics(message: str) -> bool:
-    text = _normalize_store_catalog_key(message)
-    terms = [
-        "diagnost", "conciliar", "cubo", "monitor", "carga", "importacion",
-        "importar", "faltante", "brecha", "no aparece", "no se ve", "dias",
-    ]
-    return any(term in text for term in terms)
-
-
-def _find_copilot_target_locales(message: str, locales: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    text = _normalize_store_catalog_key(message)
-    matches = []
-    for local in locales:
-        name = _normalize_store_catalog_key(local.get("nombre"))
-        code = _normalize_store_catalog_key(local.get("codigo_interno"))
-        if (name and name in text) or (code and re.search(rf"\b{re.escape(code)}\b", text)):
-            matches.append(local)
-    if matches:
-        return matches[:4]
-
-    choices = {
-        str(local.get("nombre") or ""): local
-        for local in locales
-        if local.get("nombre")
-    }
-    if not choices:
-        return []
-    fuzzy = process.extract(text, list(choices.keys()), scorer=fuzz.partial_ratio, limit=4)
-    return [choices[name] for name, score in fuzzy if score >= 88]
-
-
-def _extract_file_date_from_name(filename: Any) -> Optional[str]:
-    text = str(filename or "")
-    matches = re.findall(r"(?<!\d)(\d{8})(?!\d)", text)
-    for raw in reversed(matches):
-        for fmt in ("%d%m%Y", "%Y%m%d"):
-            try:
-                return datetime.strptime(raw, fmt).date().isoformat()
-            except ValueError:
-                continue
-    return None
-
-
-def _aggregate_sales_by_local_date(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
-    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
-    for row in rows:
-        local_id = str(row.get("local_id") or "")
-        sale_date = _normalize_missing_days_sale_date(row.get("fecha")) or str(row.get("fecha") or "")
-        if not local_id or not sale_date:
-            continue
-        day = grouped.setdefault(local_id, {}).setdefault(sale_date, {
-            "fecha": sale_date,
-            "registros": 0,
-            "total_bruto": 0.0,
-            "total_neto": 0.0,
-        })
-        day["registros"] += 1
-        day["total_bruto"] += _safe_float(row.get("total_bruto"))
-        day["total_neto"] += _safe_float(row.get("total_neto"))
-    return grouped
-
-
-def _load_copilot_sales_load_diagnostics(
-    mall_id: str,
-    locales: List[Dict[str, Any]],
-    message: str,
-) -> Dict[str, Any]:
-    period = _parse_copilot_period(message)
-    target_locales = _find_copilot_target_locales(message, locales)
-    if not _should_build_copilot_diagnostics(message) and not target_locales:
-        return {"status": "omitido", "motivo": "consulta_general"}
-
-    selected = target_locales or locales[:8]
-    local_ids = [str(row.get("id")) for row in selected if row.get("id")]
-    if not local_ids:
-        return {"status": "sin_locales", "periodo": period, "locales": []}
-
-    sales_rows: List[Dict[str, Any]] = []
-    try:
-        for page in range(6):
-            chunk = (
-                supabase.table("ventas")
-                .select("local_id,fecha,total_bruto,total_neto,factura_no,mall_id")
-                .in_("local_id", local_ids)
-                .gte("fecha", period["fecha_inicio"])
-                .lte("fecha", period["fecha_fin"])
-                .order("fecha")
-                .range(page * 1000, (page + 1) * 1000 - 1)
-                .execute()
-            ).data or []
-            sales_rows.extend(chunk)
-            if len(chunk) < 1000:
-                break
-    except Exception as exc:
-        logger.warning("Copilot sales/load diagnostic sales query failed: %s", sanitize_sensitive_ops_error(exc))
-        return {"status": "no_disponible", "periodo": period, "error": "No se pudieron consultar ventas para diagnostico."}
-
-    logs: List[Dict[str, Any]] = []
-    try:
-        logs = (
-            supabase.table("logs_carga")
-            .select("*")
-            .eq("mall_id", mall_id)
-            .in_("local_id", local_ids)
-            .order("fecha_hora", desc=True)
-            .limit(80)
-            .execute()
-        ).data or []
-    except Exception as exc:
-        logger.warning("Copilot sales/load diagnostic logs query failed: %s", sanitize_sensitive_ops_error(exc))
-
-    sales_by_local = _aggregate_sales_by_local_date(sales_rows)
-    expected_dates = [
-        (datetime.strptime(period["fecha_inicio"], "%Y-%m-%d").date() + timedelta(days=offset)).isoformat()
-        for offset in range(
-            (datetime.strptime(period["fecha_fin"], "%Y-%m-%d").date() - datetime.strptime(period["fecha_inicio"], "%Y-%m-%d").date()).days + 1
-        )
-    ]
-    logs_by_local: Dict[str, List[Dict[str, Any]]] = {}
-    for log in logs:
-        local_id = str(log.get("local_id") or "")
-        file_date = _extract_file_date_from_name(log.get("archivo"))
-        compact = _compact_copilot_log(log)
-        compact["fecha_detectada_archivo"] = file_date
-        compact["archivo_en_periodo_consultado"] = (
-            bool(file_date)
-            and period["fecha_inicio"] <= file_date <= period["fecha_fin"]
-        )
-        logs_by_local.setdefault(local_id, []).append(compact)
-
-    diagnostics = []
-    for local in selected:
-        local_id = str(local.get("id") or "")
-        days = sales_by_local.get(local_id, {})
-        missing = [item for item in expected_dates if item not in days]
-        recent_logs = logs_by_local.get(local_id, [])[:12]
-        diagnostics.append({
-            "local_id": local_id,
-            "local": local.get("nombre"),
-            "codigo": local.get("codigo_interno"),
-            "dias_con_ventas": len(days),
-            "registros_ventas": sum(int(day.get("registros") or 0) for day in days.values()),
-            "total_bruto": round(sum(float(day.get("total_bruto") or 0) for day in days.values()), 2),
-            "total_neto": round(sum(float(day.get("total_neto") or 0) for day in days.values()), 2),
-            "ventas_por_fecha": sorted(days.values(), key=lambda item: item["fecha"])[:45],
-            "dias_faltantes": missing[:90],
-            "logs_recientes": recent_logs,
-            "logs_con_fecha_archivo_fuera_periodo": [
-                log for log in recent_logs
-                if log.get("fecha_detectada_archivo") and not log.get("archivo_en_periodo_consultado")
-            ][:8],
-        })
-
-    return {
-        "status": "ok",
-        "periodo": period,
-        "locales_analizados": len(diagnostics),
-        "diagnosticos": diagnostics,
-        "guia_uso": [
-            "Usa ventas_por_fecha para responder que dias si estan en el cubo.",
-            "Usa dias_faltantes para responder que dias faltan en el periodo.",
-            "Usa logs_recientes y fecha_detectada_archivo para explicar cargas exitosas fuera del periodo consultado.",
-        ],
-    }
-
-
-def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any], message: str = "") -> Dict[str, Any]:
+def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado.")
     _ensure_operator_can_access_mall(operator_ctx, mall_id)
@@ -5718,12 +5067,6 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any], message: 
 
     missing_days = _load_copilot_missing_days(locales)
     sales_summary = _load_copilot_sales_summary(locales)
-    try:
-        operations_auditor = _operations_intelligence_service().build_copilot_context(mall_id)
-    except Exception as exc:
-        logger.warning("Copilot operations auditor query failed: %s", sanitize_sensitive_ops_error(exc))
-        operations_auditor = {"health": "NO_DISPONIBLE", "open_findings": [], "summary": {"total_open": 0}}
-    sales_load_diagnostics = _load_copilot_sales_load_diagnostics(mall_id, locales, message)
 
     return {
         "generated_at_utc": datetime.utcnow().isoformat(),
@@ -5744,10 +5087,8 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any], message: 
             "logs_recientes": [_compact_copilot_log(row) for row in logs[:15]],
         },
         "monitor_conexiones": connection_monitor,
-        "operations_auditor": operations_auditor,
         "dias_informacion": missing_days,
         "ventas_recientes": sales_summary,
-        "diagnostico_carga_ventas": sales_load_diagnostics,
     }
 
 
@@ -5762,18 +5103,6 @@ def _normalize_copilot_report_format(message: str) -> Optional[str]:
 
 def _normalize_copilot_report_type(message: str) -> Optional[str]:
     text = _normalize_store_catalog_key(message)
-    if any(term in text for term in ["operations auditor", "operations center", "estado operativo", "hallazgo", "hallazgos", "algo raro", "alerta operativa", "auditor operativo"]):
-        return "operations_auditor"
-    gross_income_terms = ["ingreso bruto", "ingresos brutos", "venta bruta", "ventas brutas", "total bruto", "gross income", "gross sales"]
-    if any(term in text for term in ["diagnost", "conciliar", "cubo", "no aparece", "no se ve"]) and any(term in text for term in ["monitor", "carga", "importacion", "venta", "ventas"]):
-        return "diagnostico_carga_ventas"
-    if any(term in text for term in ["faltante", "dias", "brecha"]) and (
-        any(month in text for month in _COPILOT_MONTHS)
-        or re.search(r"\b(20\d{2}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/20\d{2})\b", message)
-    ):
-        return "diagnostico_carga_ventas"
-    if any(term in text for term in gross_income_terms):
-        return "ingresos_brutos_local"
     if any(term in text for term in ["venta", "sales", "facturacion", "ingreso"]):
         return "ventas"
     if any(term in text for term in ["faltante", "dias", "brecha", "informacion"]):
@@ -5795,250 +5124,7 @@ def _parse_copilot_report_request(message: str) -> Optional[Dict[str, str]]:
     }
 
 
-def _has_copilot_report_type(message: str) -> bool:
-    text = _normalize_store_catalog_key(message)
-    terms = [
-        "venta", "ventas", "ingreso", "ingresos", "bruto", "brutos",
-        "dia faltante", "dias faltantes", "faltante", "faltantes",
-        "importacion", "importaciones", "carga", "cargas", "fallida", "fallidas",
-        "salud", "operativo", "operativa", "operations", "hallazgo", "hallazgos",
-        "local", "locales", "tienda", "tiendas",
-    ]
-    return any(term in text for term in terms)
-
-
-def _has_copilot_period(message: str) -> bool:
-    text = _normalize_store_catalog_key(message)
-    if re.search(r"\b20\d{2}-\d{2}-\d{2}\b", message):
-        return True
-    if re.search(r"\b\d{1,2}/\d{1,2}/20\d{2}\b", message):
-        return True
-    period_terms = [
-        "hoy", "ayer", "manana", "mañana", "semana", "mes", "ano", "año",
-        "reciente", "recientes", "ultimo", "ultimos", "ultima", "ultimas",
-        "actual", "periodo", "rango",
-    ]
-    if any(term in text for term in period_terms):
-        return True
-    return any(month_name in text for month_name in _COPILOT_MONTHS)
-
-
-def _has_copilot_local_reference(message: str) -> bool:
-    text = _normalize_store_catalog_key(message)
-    if any(term in text for term in ["local", "tienda", "todos", "todas", "mall"]):
-        return True
-    weak_terms = [
-        "skecher", "skechers", "sportline", "aldo", "waikiki", "victoria",
-        "santo domingo", "calvin", "taco", "zara", "nike", "adidas",
-    ]
-    return any(term in text for term in weak_terms)
-
-
-def _build_copilot_clarification_answer(title: str, bullets: List[str], options: List[str]) -> str:
-    option_lines = [f"- {index}. {option}" for index, option in enumerate(options, start=1)]
-    return "\n".join([
-        f"**{title}**",
-        *[f"- {item}" for item in bullets],
-        *option_lines,
-    ])
-
-
-def _copilot_clarification_response(
-    settings: Dict[str, Any],
-    *,
-    title: str,
-    bullets: List[str],
-    options: List[str],
-    intent: str,
-    missing_fields: List[str],
-) -> Dict[str, Any]:
-    return {
-        "answer": _build_copilot_clarification_answer(title, bullets, options),
-        "provider": settings["provider"],
-        "model": settings["model"],
-        "context_generated_at": None,
-        "sources": [],
-        "attachments": [],
-        "email_actions": [],
-        "clarification": {
-            "required": True,
-            "intent": intent,
-            "missing_fields": missing_fields,
-            "options": options,
-        },
-    }
-
-
-def _analyze_copilot_clarification_need(
-    message: str,
-    intent_message: str,
-    history: List[CopilotChatMessage],
-) -> Optional[Dict[str, Any]]:
-    text = _normalize_store_catalog_key(message)
-    intent_text = _normalize_store_catalog_key(intent_message)
-    email_terms = ["correo", "email", "mail", "enviar", "mandar", "envialo", "enviarlo", "enviame", "mándalo", "mandalo"]
-    report_terms = ["reporte", "listado", "exporta", "exportar", "genera", "generar", "excel", "xlsx", "pdf", "descarga", "archivo"]
-    followup_terms = ["eso", "esto", "lo anterior", "el anterior", "envialo", "enviarlo", "mandalo", "mandarlo"]
-    wants_email = any(term in text for term in email_terms)
-    wants_report = bool(_normalize_copilot_report_format(message)) or any(term in text for term in report_terms)
-    has_history = any(str(item.content or "").strip() for item in history or [])
-
-    if any(term in text for term in followup_terms) and intent_message == message and not has_history:
-        return {
-            "intent": "referencia_anterior",
-            "missing_fields": ["referencia"],
-            "title": "Necesito saber a qué te refieres",
-            "bullets": ["No tengo una solicitud anterior clara para reutilizar."],
-            "options": [
-                "Ventas por local",
-                "Días faltantes",
-                "Estado operativo",
-                "Importaciones fallidas",
-            ],
-        }
-
-    if wants_email:
-        recipients = _normalize_email_list(re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", message), strict=False)
-        if not recipients:
-            return {
-                "intent": "enviar_email",
-                "missing_fields": ["destinatarios"],
-                "title": "Falta el destinatario",
-                "bullets": ["Puedo preparar el reporte en HTML y adjunto si aplica.", "Indícame a qué correo debo enviarlo."],
-                "options": [
-                    "Enviar a operaciones@empresa.com",
-                    "Enviar a varios correos separados por coma",
-                    "Solo preparar el reporte sin enviarlo",
-                ],
-            }
-        if not _has_copilot_report_type(intent_message):
-            return {
-                "intent": "enviar_email",
-                "missing_fields": ["tipo_reporte"],
-                "title": "Necesito confirmar qué reporte enviar",
-                "bullets": ["Tengo los destinatarios, pero falta el contenido del correo."],
-                "options": [
-                    "Resumen operativo",
-                    "Ventas por local",
-                    "Días faltantes",
-                    "Importaciones fallidas",
-                ],
-            }
-
-    if wants_report and not _has_copilot_report_type(intent_message):
-        return {
-            "intent": "generar_reporte",
-            "missing_fields": ["tipo_reporte"],
-            "title": "Necesito confirmar el tipo de reporte",
-            "bullets": ["Para no generar el archivo equivocado, dime qué información quieres."],
-            "options": [
-                "Ventas por local",
-                "Ingresos brutos por local",
-                "Días faltantes",
-                "Salud operativa",
-            ],
-        }
-
-    report_type = _normalize_copilot_report_type(intent_message)
-    needs_period = report_type in {"ventas", "ingresos_brutos_local", "dias_faltantes"}
-    if (wants_report or wants_email) and needs_period and not _has_copilot_period(intent_message):
-        return {
-            "intent": "periodo_reporte",
-            "missing_fields": ["periodo"],
-            "title": "Necesito confirmar el período",
-            "bullets": ["El reporte solicitado depende de fechas y no quiero asumir un rango incorrecto."],
-            "options": [
-                "Hoy",
-                "Este mes",
-                "Mes anterior",
-                "Rango específico: 01/06/2026 al 30/06/2026",
-            ],
-        }
-
-    diagnostic_terms = ["por que", "porque", "no aparece", "no se ve", "diagnostico", "diagnóstico", "cubo", "monitor"]
-    if any(term in intent_text for term in diagnostic_terms) and not _has_copilot_local_reference(intent_message):
-        return {
-            "intent": "diagnostico_local",
-            "missing_fields": ["local"],
-            "title": "Necesito saber qué local revisar",
-            "bullets": ["El diagnóstico compara ventas, monitor y archivos por local."],
-            "options": [
-                "Revisar Skechers",
-                "Revisar Sportline",
-                "Revisar todos los locales con problemas",
-            ],
-        }
-
-    if len(text.split()) <= 3 and not any(term in text for term in ["hoy", "estado", "salud"]):
-        return {
-            "intent": "comando_ambiguo",
-            "missing_fields": ["intencion"],
-            "title": "Necesito un poco más de detalle",
-            "bullets": ["Tu comando es muy corto y podría referirse a varias acciones."],
-            "options": [
-                "Qué debo revisar hoy",
-                "Días faltantes por local",
-                "Ventas por local",
-                "Importaciones fallidas",
-            ],
-        }
-
-    return None
-
-
-def _latest_copilot_intent_message(message: str, history: List[CopilotChatMessage]) -> str:
-    text = _normalize_store_catalog_key(message)
-    followup_terms = [
-        "envialo", "enviarlo", "mandalo", "mandarlo", "por mail", "por correo", "por email",
-        "eso", "esto", "lo anterior", "el anterior", "mismo", "misma", "igual", "tambien", "también",
-        "ahora", "solo", "solamente", "agregale", "agrégale", "incluye", "quitale", "quítale",
-        "en pdf", "en excel", "xlsx", "html", "con junio", "con mayo", "mes anterior", "este mes",
-    ]
-    is_followup = any(term in text for term in followup_terms)
-    if not is_followup:
-        return message
-
-    for item in reversed(history or []):
-        role = str(item.role or "").strip().lower()
-        content = str(item.content or "").strip()
-        if role != "user" or not content:
-            continue
-        normalized = _normalize_store_catalog_key(content)
-        if any(term in normalized for term in ["envialo", "enviarlo", "mandalo", "mandarlo", "por mail", "por correo", "por email"]):
-            continue
-        return content
-    return message
-
-
-def _resolve_copilot_conversation_intent(message: str, history: List[CopilotChatMessage]) -> str:
-    base_message = _latest_copilot_intent_message(message, history)
-    if base_message == message:
-        return message
-
-    text = _normalize_store_catalog_key(message)
-    modifier_terms = [
-        "eso", "esto", "lo anterior", "el anterior", "mismo", "misma", "igual", "tambien", "también",
-        "ahora", "solo", "solamente", "agregale", "agrégale", "incluye", "quitale", "quítale",
-        "pdf", "excel", "xlsx", "html", "mayo", "junio", "julio", "agosto", "septiembre",
-        "octubre", "noviembre", "diciembre", "enero", "febrero", "marzo", "abril",
-        "hoy", "ayer", "este mes", "mes anterior", "rango", "local", "skecher", "skechers", "sportline",
-    ]
-    should_compose = any(term in text for term in modifier_terms)
-    if not should_compose:
-        return base_message
-
-    clean_message = re.sub(
-        r"\b(eso|esto|lo anterior|el anterior|mismo|misma|igual)\b",
-        "",
-        message,
-        flags=re.IGNORECASE,
-    ).strip(" .,")
-    if not clean_message:
-        return base_message
-    return f"{base_message}. Ajuste solicitado: {clean_message}"
-
-
-def _parse_copilot_email_request(message: str, intent_message: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _parse_copilot_email_request(message: str) -> Optional[Dict[str, Any]]:
     text = _normalize_store_catalog_key(message)
     if not any(term in text for term in ["correo", "email", "mail", "enviar", "mandar", "envialo", "enviarlo", "enviame"]):
         return None
@@ -6051,27 +5137,12 @@ def _parse_copilot_email_request(message: str, intent_message: Optional[str] = N
         wants_html = True
         wants_xlsx = True
 
-    body_note = None
-    note_match = re.search(
-        r"(?:escribe|pon|incluye|agrega)\s+en\s+el\s+cuerpo(?:\s+del\s+(?:mail|correo|email))?\s+que\s+(.+)$",
-        message,
-        flags=re.IGNORECASE,
-    )
-    if note_match:
-        raw_note = note_match.group(1).strip(" .")
-        normalized_note = _normalize_store_catalog_key(raw_note)
-        if "copilot" in normalized_note and "msmall" in normalized_note and ("eres" in normalized_note or "asistente" in normalized_note):
-            body_note = "Hola, reciban un cordial saludo. Soy el Copilot de MsMall y comparto este diagnostico operativo para apoyar la revision de la informacion solicitada."
-        else:
-            body_note = _truncate_text(raw_note, 500)
-
     attachment_format = "pdf" if wants_pdf else "xlsx" if wants_xlsx else None
     return {
         "recipients": recipients,
-        "report_type": _normalize_copilot_report_type(intent_message or message) or "locales",
+        "report_type": _normalize_copilot_report_type(message) or "locales",
         "include_html": True,
         "attachment_format": attachment_format,
-        "body_note": body_note,
     }
 
 
@@ -6113,32 +5184,6 @@ def _copilot_report_definition(report_type: str, context: Dict[str, Any]) -> Dic
             "generated_at": generated_at,
         }
 
-    if report_type == "ingresos_brutos_local":
-        sales = context.get("ventas_recientes") or {}
-        rows = sales.get("locales") or sales.get("top_locales") or []
-        return {
-            "title": "Ingresos brutos por local",
-            "subtitle": f"{mall_name} | {sales.get('fecha_inicio', '')} al {sales.get('fecha_fin', '')}",
-            "filename_base": "msmall_ingresos_brutos_por_local",
-            "sources": ["ventas_recientes"],
-            "headers": ["Local", "Ingreso Bruto", "Transacciones", "Ticket Promedio Bruto"],
-            "rows": [
-                [
-                    row.get("local") or row.get("name"),
-                    _report_value(row.get("total_bruto") or row.get("total") or 0),
-                    row.get("transacciones") or 0,
-                    _report_value((row.get("total_bruto") or row.get("total") or 0) / max(1, int(row.get("transacciones") or 0))),
-                ]
-                for row in rows
-            ],
-            "summary": [
-                ["Ingreso Bruto Total", _report_value(sales.get("ventas_totales_bruto") or 0)],
-                ["Transacciones", sales.get("transacciones") or 0],
-                ["Ticket Promedio Bruto", _report_value(sales.get("ticket_promedio") or 0)],
-            ],
-            "generated_at": generated_at,
-        }
-
     if report_type == "dias_faltantes":
         missing = context.get("dias_informacion") or {}
         rows = missing.get("top_brechas") or []
@@ -6161,40 +5206,6 @@ def _copilot_report_definition(report_type: str, context: Dict[str, Any]) -> Dic
                 ["Locales con brechas", missing.get("locales_con_brechas") or 0],
                 ["Locales completos", missing.get("locales_completos") or 0],
                 ["Dias esperados por local", missing.get("dias_esperados_por_local") or 0],
-            ],
-            "generated_at": generated_at,
-        }
-
-    if report_type == "operations_auditor":
-        auditor = context.get("operations_auditor") or {}
-        summary = auditor.get("summary") or {}
-        rows = auditor.get("open_findings") or []
-        return {
-            "title": "Hallazgos operativos",
-            "subtitle": f"{mall_name} | Estado {auditor.get('health') or 'NO_DISPONIBLE'}",
-            "filename_base": "msmall_hallazgos_operativos",
-            "sources": ["operations_auditor"],
-            "headers": ["Severidad", "Local", "Tipo", "Fuente", "Titulo", "Causa probable", "Recomendacion", "Confianza"],
-            "rows": [
-                [
-                    row.get("severity"),
-                    row.get("local"),
-                    row.get("type"),
-                    row.get("source"),
-                    row.get("title"),
-                    row.get("root_cause"),
-                    row.get("recommendation"),
-                    _report_value(row.get("confidence") or 0),
-                ]
-                for row in rows
-            ],
-            "summary": [
-                ["Estado", auditor.get("health") or "NO_DISPONIBLE"],
-                ["Abiertos", summary.get("total_open") or 0],
-                ["Criticos", summary.get("critical") or 0],
-                ["Altos", summary.get("high") or 0],
-                ["Advertencias", summary.get("warning") or 0],
-                ["Locales afectados", summary.get("affected_locals") or 0],
             ],
             "generated_at": generated_at,
         }
@@ -6222,52 +5233,6 @@ def _copilot_report_definition(report_type: str, context: Dict[str, Any]) -> Dic
                 for row in rows
             ],
             "summary": [[key, value] for key, value in (monitor.get("conteo_por_estado") or {}).items()],
-            "generated_at": generated_at,
-        }
-
-    if report_type == "diagnostico_carga_ventas":
-        diagnostic = context.get("diagnostico_carga_ventas") or {}
-        period = diagnostic.get("periodo") or {}
-        rows = []
-        for item in diagnostic.get("diagnosticos") or []:
-            ventas_dates = ", ".join(row.get("fecha") or "" for row in (item.get("ventas_por_fecha") or [])[:12])
-            missing_dates = ", ".join(item.get("dias_faltantes") or [])
-            out_of_period_files = ", ".join(
-                f"{log.get('archivo')} -> {log.get('fecha_detectada_archivo')}"
-                for log in (item.get("logs_con_fecha_archivo_fuera_periodo") or [])[:6]
-                if log.get("archivo")
-            )
-            rows.append([
-                item.get("local"),
-                item.get("codigo"),
-                item.get("dias_con_ventas") or 0,
-                item.get("registros_ventas") or 0,
-                _report_value(item.get("total_bruto") or 0),
-                _report_value(item.get("total_neto") or 0),
-                ventas_dates,
-                missing_dates,
-                out_of_period_files,
-            ])
-        return {
-            "title": "Diagnostico de carga vs ventas",
-            "subtitle": f"{mall_name} | {period.get('fecha_inicio', '')} al {period.get('fecha_fin', '')}",
-            "filename_base": "msmall_diagnostico_carga_ventas",
-            "sources": ["diagnostico_carga_ventas"],
-            "layout": "diagnostico_carga_ventas",
-            "diagnostics": diagnostic.get("diagnosticos") or [],
-            "period": period,
-            "headers": [
-                "Local", "Codigo", "Dias con ventas", "Registros ventas",
-                "Total Bruto", "Total Neto", "Fechas con ventas",
-                "Dias faltantes", "Archivos fuera del periodo",
-            ],
-            "rows": rows,
-            "summary": [
-                ["Estado", diagnostic.get("status") or ""],
-                ["Periodo inicio", period.get("fecha_inicio") or ""],
-                ["Periodo fin", period.get("fecha_fin") or ""],
-                ["Locales analizados", diagnostic.get("locales_analizados") or 0],
-            ],
             "generated_at": generated_at,
         }
 
@@ -6404,143 +5369,7 @@ def _build_copilot_pdf(definition: Dict[str, Any]) -> bytes:
     return output.getvalue()
 
 
-def _build_copilot_diagnostic_html(definition: Dict[str, Any], note_html: str) -> str:
-    def _fmt_money(value: Any) -> str:
-        try:
-            return f"${float(value or 0):,.2f}"
-        except Exception:
-            return "$0.00"
-
-    def _date_label(value: Any) -> str:
-        text = str(value or "")
-        try:
-            return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
-        except Exception:
-            return text
-
-    def _chips(values: List[str], empty_text: str) -> str:
-        if not values:
-            return f'<span style="color:#64748b">{html.escape(empty_text)}</span>'
-        return "".join(
-            "<span style=\"display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;"
-            "border-radius:999px;padding:5px 9px;margin:3px;font-size:12px;color:#334155\">"
-            f"{html.escape(_date_label(value))}</span>"
-            for value in values
-        )
-
-    summary_map = {str(label): value for label, value in (definition.get("summary") or [])}
-    period = definition.get("period") or {}
-    diagnostics = definition.get("diagnostics") or []
-    local_cards = ""
-    for item in diagnostics:
-        sales_dates = [row.get("fecha") for row in (item.get("ventas_por_fecha") or []) if row.get("fecha")]
-        missing_dates = list(item.get("dias_faltantes") or [])
-        outside_logs = item.get("logs_con_fecha_archivo_fuera_periodo") or []
-        outside_rows = ""
-        for log in outside_logs[:8]:
-            outside_rows += (
-                "<tr>"
-                f"<td>{html.escape(str(log.get('archivo') or ''))}</td>"
-                f"<td>{html.escape(_date_label(log.get('fecha_detectada_archivo')))}</td>"
-                f"<td>{html.escape(str(log.get('records_processed') or 0))}</td>"
-                "</tr>"
-            )
-        if not outside_rows:
-            outside_rows = '<tr><td colspan="3" style="color:#64748b">Sin archivos fuera del periodo en los logs recientes.</td></tr>'
-
-        local_cards += f"""
-        <div style="border:1px solid #e2e8f0;border-radius:16px;margin-top:18px;overflow:hidden">
-          <div style="background:#f8fafc;padding:16px 18px;border-bottom:1px solid #e2e8f0">
-            <h2 style="margin:0;font-size:17px;color:#0f172a">{html.escape(str(item.get('local') or 'Local'))}</h2>
-            <p style="margin:4px 0 0;color:#64748b;font-size:12px">Codigo: {html.escape(str(item.get('codigo') or ''))}</p>
-          </div>
-          <div style="padding:16px 18px">
-            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
-              <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:10px 12px;min-width:125px">
-                <div style="font-size:11px;color:#475569;text-transform:uppercase">Dias con ventas</div>
-                <strong style="font-size:18px;color:#1e3a8a">{html.escape(str(item.get('dias_con_ventas') or 0))}</strong>
-              </div>
-              <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:10px 12px;min-width:125px">
-                <div style="font-size:11px;color:#475569;text-transform:uppercase">Dias faltantes</div>
-                <strong style="font-size:18px;color:#991b1b">{len(missing_dates)}</strong>
-              </div>
-              <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:125px">
-                <div style="font-size:11px;color:#475569;text-transform:uppercase">Registros</div>
-                <strong style="font-size:18px;color:#0f172a">{html.escape(str(item.get('registros_ventas') or 0))}</strong>
-              </div>
-              <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:145px">
-                <div style="font-size:11px;color:#475569;text-transform:uppercase">Total neto</div>
-                <strong style="font-size:18px;color:#0f172a">{html.escape(_fmt_money(item.get('total_neto')))}</strong>
-              </div>
-            </div>
-
-            <h3 style="font-size:14px;margin:14px 0 8px;color:#0f172a">Fechas con ventas registradas</h3>
-            <div style="line-height:2">{_chips(sales_dates, 'Sin ventas registradas en el periodo.')}</div>
-
-            <h3 style="font-size:14px;margin:18px 0 8px;color:#0f172a">Dias faltantes</h3>
-            <div style="line-height:2">{_chips(missing_dates, 'Sin dias faltantes en el periodo.')}</div>
-
-            <h3 style="font-size:14px;margin:18px 0 8px;color:#0f172a">Archivos recientes fuera del periodo consultado</h3>
-            <table style="width:100%;border-collapse:collapse;font-size:12px">
-              <thead><tr style="background:#f1f5f9"><th>Archivo</th><th>Fecha detectada</th><th>Registros</th></tr></thead>
-              <tbody>{outside_rows}</tbody>
-            </table>
-          </div>
-        </div>
-        """
-
-    if not local_cards:
-        local_cards = '<div style="padding:16px;border:1px solid #e2e8f0;border-radius:12px;color:#64748b">Sin datos disponibles para el diagnostico.</div>'
-
-    return f"""
-    <div style="font-family:Arial,sans-serif;color:#0f172a;background:#f8fafc;padding:24px">
-      <div style="max-width:920px;margin:auto;background:white;border:1px solid #e2e8f0;border-radius:18px;overflow:hidden">
-        <div style="background:#111827;color:white;padding:20px 24px">
-          <h1 style="margin:0;font-size:20px">{html.escape(str(definition.get('title') or 'Reporte MsMall'))}</h1>
-          <p style="margin:6px 0 0;color:#cbd5e1">{html.escape(str(definition.get('subtitle') or ''))}</p>
-        </div>
-        <div style="padding:22px 24px">
-          <p style="margin:0 0 16px;color:#64748b;font-size:13px">Generado: {html.escape(str(definition.get('generated_at') or datetime.utcnow().isoformat()))}</p>
-          {note_html}
-          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
-            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
-              <div style="font-size:11px;color:#475569;text-transform:uppercase">Periodo inicio</div>
-              <strong>{html.escape(_date_label(period.get('fecha_inicio') or summary_map.get('Periodo inicio')))}</strong>
-            </div>
-            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
-              <div style="font-size:11px;color:#475569;text-transform:uppercase">Periodo fin</div>
-              <strong>{html.escape(_date_label(period.get('fecha_fin') or summary_map.get('Periodo fin')))}</strong>
-            </div>
-            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;min-width:150px">
-              <div style="font-size:11px;color:#475569;text-transform:uppercase">Locales analizados</div>
-              <strong>{html.escape(str(summary_map.get('Locales analizados') or len(diagnostics)))}</strong>
-            </div>
-          </div>
-          {local_cards}
-          <p style="margin-top:20px;color:#94a3b8;font-size:12px">Enviado por Copilot MsMall. Fuente: {html.escape(', '.join(definition.get('sources') or []))}</p>
-        </div>
-      </div>
-    </div>
-    <style>
-      th, td {{ border-bottom:1px solid #e2e8f0; padding:9px 10px; text-align:left; vertical-align:top; }}
-      th {{ color:#475569; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
-    </style>
-    """
-
-
 def _build_copilot_report_html(definition: Dict[str, Any]) -> str:
-    body_note = str(definition.get("body_note") or "").strip()
-    if not body_note:
-        body_note = "Hola, reciban un cordial saludo. Soy el Copilot de MsMall y comparto este reporte operativo para apoyar la revision de la informacion solicitada."
-    note_html = (
-        "<div style=\"background:#ecfdf5;border:1px solid #bbf7d0;color:#065f46;"
-        "padding:12px 14px;border-radius:12px;margin-bottom:18px\">"
-        f"{html.escape(body_note)}</div>"
-        if body_note else ""
-    )
-    if definition.get("layout") == "diagnostico_carga_ventas":
-        return _build_copilot_diagnostic_html(definition, note_html)
-
     summary_rows = "".join(
         f"<tr><td>{html.escape(str(label))}</td><td><strong>{html.escape(str(_report_value(value)))}</strong></td></tr>"
         for label, value in (definition.get("summary") or [])
@@ -6562,7 +5391,6 @@ def _build_copilot_report_html(definition: Dict[str, Any]) -> str:
         </div>
         <div style="padding:22px 24px">
           <p style="margin:0 0 16px;color:#64748b;font-size:13px">Generado: {html.escape(str(definition.get('generated_at') or datetime.utcnow().isoformat()))}</p>
-          {note_html}
           {f'<h2 style="font-size:15px">Resumen</h2><table style="width:100%;border-collapse:collapse;margin-bottom:20px">{summary_rows}</table>' if summary_rows else ''}
           <h2 style="font-size:15px">Detalle</h2>
           <div style="overflow-x:auto">
@@ -6644,8 +5472,6 @@ def _build_copilot_email_draft(email_request: Dict[str, Any], context: Dict[str,
         raise HTTPException(status_code=400, detail="Indica al menos un correo destinatario para enviar el reporte.")
 
     definition = _copilot_report_definition(email_request["report_type"], context)
-    if email_request.get("body_note"):
-        definition["body_note"] = email_request["body_note"]
     html_body = _build_copilot_report_html(definition)
     subject = f"{definition['title']} - MsMall"
     attachments = []
@@ -6667,14 +5493,7 @@ def _build_copilot_email_draft(email_request: Dict[str, Any], context: Dict[str,
         "recipients": recipients,
         "subject": subject,
         "html_body": html_body,
-        "text": "\n".join(
-            item for item in [
-                str(email_request.get("body_note") or ""),
-                definition["title"],
-                definition.get("subtitle") or "",
-            ]
-            if item
-        ),
+        "text": f"{definition['title']}\n{definition.get('subtitle') or ''}",
         "attachments": attachments,
         "report_type": email_request["report_type"],
         "row_count": len(definition.get("rows") or []),
@@ -6713,130 +5532,6 @@ def _generate_copilot_report_attachment(report_request: Dict[str, str], context:
         "row_count": len(definition.get("rows") or []),
     })
     return attachment
-
-
-@app.get("/api/v1/operations/findings")
-async def list_operational_findings(
-    mall_id: str = Query(...),
-    status: Optional[str] = Query("OPEN"),
-    severity: Optional[str] = Query(None),
-    source: Optional[str] = Query(None),
-    local_id: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=300),
-    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
-):
-    _ensure_operator_can_access_mall(operator_ctx, mall_id)
-    try:
-        return await asyncio.to_thread(
-            _operations_auditor_service().list_findings,
-            mall_id,
-            status,
-            severity,
-            source,
-            local_id,
-            limit,
-        )
-    except Exception as exc:
-        logger.error("Error listando hallazgos operativos: %s", sanitize_sensitive_ops_error(exc))
-        raise HTTPException(status_code=500, detail="No se pudieron cargar los hallazgos operativos.")
-
-
-@app.get("/api/v1/operations/findings/{finding_id}")
-async def get_operational_finding(
-    finding_id: str,
-    mall_id: str = Query(...),
-    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
-):
-    _ensure_operator_can_access_mall(operator_ctx, mall_id)
-    finding = await asyncio.to_thread(_operations_auditor_service().get_finding, mall_id, finding_id)
-    if not finding:
-        raise HTTPException(status_code=404, detail="Hallazgo operativo no encontrado.")
-    return finding
-
-
-@app.post("/api/v1/operations/findings/{finding_id}/acknowledge")
-async def acknowledge_operational_finding(
-    finding_id: str,
-    mall_id: str = Query(...),
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
-):
-    _ensure_operator_can_access_mall(operator_ctx, mall_id)
-    operator = operator_ctx.get("email") or operator_ctx.get("user_id") or "operador"
-    try:
-        return await asyncio.to_thread(
-            _operations_auditor_service().acknowledge_finding,
-            mall_id,
-            finding_id,
-            operator,
-        )
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Hallazgo operativo no encontrado.")
-
-
-@app.post("/api/v1/operations/findings/{finding_id}/resolve")
-async def resolve_operational_finding(
-    finding_id: str,
-    mall_id: str = Query(...),
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
-):
-    _ensure_operator_can_access_mall(operator_ctx, mall_id)
-    operator = operator_ctx.get("email") or operator_ctx.get("user_id") or "operador"
-    try:
-        return await asyncio.to_thread(
-            _operations_auditor_service().resolve_finding,
-            mall_id,
-            finding_id,
-            operator,
-        )
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Hallazgo operativo no encontrado.")
-
-
-@app.post("/api/v1/operations/auditor/run")
-async def run_operations_auditor(
-    mall_id: str = Query(...),
-    lookback_days: int = Query(7, ge=1, le=45),
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
-):
-    _ensure_operator_can_access_mall(operator_ctx, mall_id)
-    operator = operator_ctx.get("email") or operator_ctx.get("user_id") or "operador"
-    try:
-        return await asyncio.to_thread(
-            _operations_auditor_service().run_audit,
-            mall_id,
-            operator,
-            lookback_days,
-        )
-    except Exception as exc:
-        logger.error("Error ejecutando Operations Auditor: %s", sanitize_sensitive_ops_error(exc))
-        raise HTTPException(status_code=500, detail="No se pudo ejecutar Operations Auditor.")
-
-
-@app.post("/api/v1/operations/agent/process")
-async def process_operations_agent_events(
-    limit: int = Query(50, ge=1, le=200),
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
-):
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Supabase no configurado.")
-    try:
-        return await asyncio.to_thread(_operations_agent_worker().process_pending_events, limit)
-    except Exception as exc:
-        logger.error("Error procesando eventos de Operations Agent: %s", sanitize_sensitive_ops_error(exc))
-        raise HTTPException(status_code=500, detail="No se pudieron procesar los eventos operativos.")
-
-
-@app.get("/api/v1/operations/intelligence")
-async def get_operations_intelligence(
-    mall_id: str = Query(...),
-    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
-):
-    _ensure_operator_can_access_mall(operator_ctx, mall_id)
-    try:
-        return await asyncio.to_thread(_operations_intelligence_service().build_copilot_context, mall_id)
-    except Exception as exc:
-        logger.error("Error cargando inteligencia operativa: %s", sanitize_sensitive_ops_error(exc))
-        raise HTTPException(status_code=500, detail="No se pudo cargar la inteligencia operativa.")
 
 
 @app.get("/api/v1/copilot/download/{download_id}")
@@ -6903,11 +5598,7 @@ def _copilot_system_prompt() -> str:
     return (
         "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
         "Responde en español, de forma breve y accionable. Usa solamente el contexto JSON del sistema: "
-        "Operations Auditor, observations, patterns, operational_digest, ventas recientes, monitor de carga, monitor de conexiones, locales, dias de informacion y diagnostico_carga_ventas. "
-        "Cuando exista operations_auditor.open_findings, recent_observations, patterns u operational_digest, consultalos primero y explica el impacto operativo antes del detalle tecnico. "
-        "Usa semaforo VERDE/AMARILLO/ROJO si el usuario pide estado general. "
-        "Cuando el usuario pregunte por diferencias entre cubo, monitor e importaciones, prioriza diagnostico_carga_ventas: "
-        "explica dias con ventas, dias faltantes, logs recientes y fechas detectadas en archivos. "
+        "ventas recientes, monitor de carga, monitor de conexiones, locales y dias de informacion. "
         "Si el contexto no contiene un dato solicitado, dilo claramente y sugiere donde revisarlo. "
         "No inventes cifras, locales, fechas ni estados. Cuando sea util, menciona la fuente del dato. "
         "Formato obligatorio: usa un titulo corto en negrita, luego lineas separadas con bullets. "
@@ -7104,20 +5795,8 @@ async def chat_with_copilot(
     if not settings.get("api_key_configured"):
         raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
 
-    intent_message = _resolve_copilot_conversation_intent(message, payload.history or [])
-    clarification = _analyze_copilot_clarification_need(message, intent_message, payload.history or [])
-    if clarification:
-        return _copilot_clarification_response(
-            settings,
-            title=clarification["title"],
-            bullets=clarification["bullets"],
-            options=clarification["options"],
-            intent=clarification["intent"],
-            missing_fields=clarification["missing_fields"],
-        )
-
-    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx, intent_message)
-    email_request = _parse_copilot_email_request(message, intent_message)
+    context = await asyncio.to_thread(_build_copilot_context, mall_id, operator_ctx)
+    email_request = _parse_copilot_email_request(message)
     if email_request:
         try:
             email_draft = await asyncio.to_thread(_build_copilot_email_draft, email_request, context, mall_id, operator_ctx)
@@ -7157,7 +5836,7 @@ async def chat_with_copilot(
             "email_actions": [email_draft],
         }
 
-    report_request = _parse_copilot_report_request(intent_message)
+    report_request = _parse_copilot_report_request(message)
     if report_request:
         attachment = await asyncio.to_thread(_generate_copilot_report_attachment, report_request, context)
         return {
@@ -7187,7 +5866,7 @@ async def chat_with_copilot(
         "provider": settings["provider"],
         "model": settings["model"],
         "context_generated_at": context.get("generated_at_utc"),
-        "sources": ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion", "diagnostico_carga_ventas"],
+        "sources": ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion"],
         "attachments": [],
     }
 
@@ -7312,37 +5991,19 @@ def _send_resend_email(
         raise HTTPException(status_code=500, detail="Error inesperado enviando con Resend.")
 
 
-def _normalize_missing_days_notification_type(value: str) -> str:
-    notification_type = str(value or MISSING_DAYS_NOTIFICATION_TYPE).strip()
-    if notification_type not in MISSING_DAYS_NOTIFICATION_TYPES:
-        raise HTTPException(status_code=400, detail="Tipo de envio de dias faltantes invalido.")
-    return notification_type
-
-
-def _missing_days_default_templates(notification_type: str) -> tuple[str, str]:
-    if notification_type == MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE:
-        return DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE, DEFAULT_CONSOLIDATED_BODY_TEMPLATE
-    return DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE, DEFAULT_MISSING_DAYS_BODY_TEMPLATE
-
-
-def _default_missing_days_email_settings(
-    mall_id: str,
-    notification_type: str = MISSING_DAYS_NOTIFICATION_TYPE,
-) -> Dict[str, Any]:
-    notification_type = _normalize_missing_days_notification_type(notification_type)
-    subject_template, body_template = _missing_days_default_templates(notification_type)
+def _default_missing_days_email_settings(mall_id: str) -> Dict[str, Any]:
     return {
         "id": None,
         "mall_id": mall_id,
-        "notification_type": notification_type,
+        "notification_type": "missing_days_audit",
         "enabled": False,
         "weekdays": [],
         "send_time": "08:00",
         "lookback_days": 7,
         "send_only_with_gaps": True,
         "cc_emails": [],
-        "subject_template": subject_template,
-        "body_template": body_template,
+        "subject_template": DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
+        "body_template": DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
         "created_at": None,
         "updated_at": None,
     }
@@ -7395,19 +6056,10 @@ def _normalize_email_template(value: Optional[str], default: str, *, max_length:
     return template
 
 
-def _sanitize_missing_days_email_settings_row(
-    row: Optional[Dict[str, Any]],
-    mall_id: str,
-    notification_type: str = MISSING_DAYS_NOTIFICATION_TYPE,
-) -> Dict[str, Any]:
-    notification_type = _normalize_missing_days_notification_type(notification_type)
+def _sanitize_missing_days_email_settings_row(row: Optional[Dict[str, Any]], mall_id: str) -> Dict[str, Any]:
     if not row:
-        return _default_missing_days_email_settings(mall_id, notification_type)
-    row_notification_type = _normalize_missing_days_notification_type(
-        row.get("notification_type") or notification_type
-    )
-    subject_template, body_template = _missing_days_default_templates(row_notification_type)
-    data = _default_missing_days_email_settings(mall_id, row_notification_type)
+        return _default_missing_days_email_settings(mall_id)
+    data = _default_missing_days_email_settings(mall_id)
     try:
         lookback_days = int(row.get("lookback_days") or 7)
     except (TypeError, ValueError):
@@ -7416,7 +6068,7 @@ def _sanitize_missing_days_email_settings_row(
     data.update({
         "id": row.get("id"),
         "mall_id": row.get("mall_id") or mall_id,
-        "notification_type": row_notification_type,
+        "notification_type": row.get("notification_type") or "missing_days_audit",
         "enabled": bool(row.get("enabled")),
         "weekdays": _normalize_weekdays(row.get("weekdays") or []),
         "send_time": str(row.get("send_time") or "08:00")[:5],
@@ -7425,12 +6077,12 @@ def _sanitize_missing_days_email_settings_row(
         "cc_emails": _normalize_email_list(row.get("cc_emails") or [], strict=False),
         "subject_template": _normalize_email_template(
             row.get("subject_template"),
-            subject_template,
+            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
             max_length=160,
         ),
         "body_template": _normalize_email_template(
             row.get("body_template"),
-            body_template,
+            DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
             max_length=2000,
         ),
         "created_at": row.get("created_at"),
@@ -7444,31 +6096,6 @@ def _is_missing_email_settings_table_error(exc: Exception) -> bool:
     return "email_notification_settings" in text and (
         "does not exist" in text or "schema cache" in text or "pgrst205" in text
     )
-
-
-def _is_missing_email_template_columns_error(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return "email_notification_settings" in text and (
-        "subject_template" in text or "body_template" in text
-    ) and (
-        "schema cache" in text or "could not find" in text or "pgrst204" in text
-    )
-
-
-def _load_missing_days_email_settings_row(
-    mall_id: str,
-    notification_type: str = MISSING_DAYS_NOTIFICATION_TYPE,
-) -> Dict[str, Any]:
-    notification_type = _normalize_missing_days_notification_type(notification_type)
-    res = (
-        supabase.table("email_notification_settings")
-        .select("*")
-        .eq("mall_id", mall_id)
-        .eq("notification_type", notification_type)
-        .maybe_single()
-        .execute()
-    )
-    return _sanitize_missing_days_email_settings_row(res.data, mall_id, notification_type)
 
 
 def _normalize_missing_days_sale_date(raw_value: Any) -> Optional[str]:
@@ -7666,15 +6293,21 @@ async def preview_missing_days_email_html(
 @app.get("/api/v1/admin/messaging/missing-days/settings")
 async def get_missing_days_email_settings(
     mall_id: str = Query(...),
-    notification_type: str = Query(MISSING_DAYS_NOTIFICATION_TYPE),
     admin_ctx: Dict[str, Any] = Depends(require_admin_access),
 ):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado.")
     _ensure_operator_can_access_mall(admin_ctx, mall_id)
-    notification_type = _normalize_missing_days_notification_type(notification_type)
     try:
-        return _load_missing_days_email_settings_row(mall_id, notification_type)
+        res = (
+            supabase.table("email_notification_settings")
+            .select("*")
+            .eq("mall_id", mall_id)
+            .eq("notification_type", "missing_days_audit")
+            .maybe_single()
+            .execute()
+        )
+        return _sanitize_missing_days_email_settings_row(res.data, mall_id)
     except Exception as exc:
         if _is_missing_email_settings_table_error(exc):
             logger.warning(
@@ -7682,13 +6315,13 @@ async def get_missing_days_email_settings(
                 mall_id,
                 exc,
             )
-            return _default_missing_days_email_settings(mall_id, notification_type)
+            return _default_missing_days_email_settings(mall_id)
         logger.warning(
             "Error cargando configuracion de emails de dias faltantes; usando defaults para mall %s: %s",
             mall_id,
             exc,
         )
-        return _default_missing_days_email_settings(mall_id, notification_type)
+        return _default_missing_days_email_settings(mall_id)
 
 
 @app.put("/api/v1/admin/messaging/missing-days/settings")
@@ -7702,7 +6335,6 @@ async def save_missing_days_email_settings(
     if not mall_id:
         raise HTTPException(status_code=400, detail="mall_id es requerido.")
     _ensure_operator_can_access_mall(admin_ctx, mall_id)
-    notification_type = _normalize_missing_days_notification_type(payload.notification_type)
 
     weekdays = _normalize_weekdays(payload.weekdays)
     if payload.enabled and not weekdays:
@@ -7712,71 +6344,38 @@ async def save_missing_days_email_settings(
     if lookback_days < 1 or lookback_days > 90:
         raise HTTPException(status_code=400, detail="La ventana de auditoria debe estar entre 1 y 90 dias.")
 
-    cc_emails = _normalize_email_list(payload.cc_emails)
-    if notification_type == MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE and payload.enabled and not cc_emails:
-        raise HTTPException(status_code=400, detail="Agregue al menos un correo administrativo para activar el envio consolidado.")
-
-    subject_template, body_template = _missing_days_default_templates(notification_type)
     row = {
         "mall_id": mall_id,
-        "notification_type": notification_type,
+        "notification_type": "missing_days_audit",
         "enabled": bool(payload.enabled),
         "weekdays": weekdays,
         "send_time": _normalize_send_time(payload.send_time),
         "lookback_days": lookback_days,
         "send_only_with_gaps": bool(payload.send_only_with_gaps),
-        "cc_emails": cc_emails,
-        "updated_by": admin_ctx.get("user_id"),
-        "updated_at": datetime.utcnow().isoformat(),
-    }
-    template_fields = {
+        "cc_emails": _normalize_email_list(payload.cc_emails),
         "subject_template": _normalize_email_template(
             payload.subject_template,
-            subject_template,
+            DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE,
             max_length=160,
         ),
         "body_template": _normalize_email_template(
             payload.body_template,
-            body_template,
+            DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
             max_length=2000,
         ),
+        "updated_by": admin_ctx.get("user_id"),
+        "updated_at": datetime.utcnow().isoformat(),
     }
-    row_with_templates = {**row, **template_fields}
 
     try:
         res = (
             supabase.table("email_notification_settings")
-            .upsert(row_with_templates, on_conflict="mall_id,notification_type")
+            .upsert(row, on_conflict="mall_id,notification_type")
             .execute()
         )
-        saved = (res.data or [None])[0]
-        if not saved:
-            logger.info("Supabase upsert de programacion no devolvio fila; recargando mall %s", mall_id)
-        return _load_missing_days_email_settings_row(mall_id, notification_type)
+        saved = (res.data or [row])[0]
+        return _sanitize_missing_days_email_settings_row(saved, mall_id)
     except Exception as exc:
-        if _is_missing_email_template_columns_error(exc):
-            logger.warning(
-                "Columnas de plantilla de email no disponibles; guardando solo programacion para mall %s: %s",
-                mall_id,
-                exc,
-            )
-            try:
-                supabase.table("email_notification_settings").upsert(
-                    row,
-                    on_conflict="mall_id,notification_type",
-                ).execute()
-                saved = _load_missing_days_email_settings_row(mall_id, notification_type)
-                saved["subject_template"] = template_fields["subject_template"]
-                saved["body_template"] = template_fields["body_template"]
-                return saved
-            except Exception as fallback_exc:
-                if _is_missing_email_settings_table_error(fallback_exc):
-                    raise HTTPException(
-                        status_code=503,
-                        detail="La base de datos no está actualizada: ejecute el script 20260511_email_notification_settings.sql.",
-                    )
-                logger.error("Error guardando programacion sin plantillas: %s", fallback_exc)
-                raise HTTPException(status_code=500, detail="No se pudo guardar la programacion de envio.")
         if _is_missing_email_settings_table_error(exc):
             raise HTTPException(
                 status_code=503,
@@ -7800,18 +6399,17 @@ async def send_missing_days_email_now(
     if not mall_id:
         raise HTTPException(status_code=400, detail="mall_id es requerido.")
     _ensure_operator_can_access_mall(admin_ctx, mall_id)
-    notification_type = _normalize_missing_days_notification_type(payload.notification_type)
 
     try:
         settings_res = (
             supabase.table("email_notification_settings")
             .select("*")
             .eq("mall_id", mall_id)
-            .eq("notification_type", notification_type)
+            .eq("notification_type", "missing_days_audit")
             .maybe_single()
             .execute()
         )
-        settings = _sanitize_missing_days_email_settings_row(settings_res.data, mall_id, notification_type)
+        settings = _sanitize_missing_days_email_settings_row(settings_res.data, mall_id)
     except Exception as exc:
         if _is_missing_email_settings_table_error(exc):
             logger.warning(
@@ -7819,17 +6417,14 @@ async def send_missing_days_email_now(
                 mall_id,
                 exc,
             )
-            settings = _default_missing_days_email_settings(mall_id, notification_type)
+            settings = _default_missing_days_email_settings(mall_id)
         else:
             logger.warning(
                 "Error cargando configuracion para envio inmediato; usando defaults para mall %s: %s",
                 mall_id,
                 exc,
             )
-            settings = _default_missing_days_email_settings(mall_id, notification_type)
-
-    if notification_type == MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE and not settings.get("cc_emails"):
-        raise HTTPException(status_code=400, detail="Agregue al menos un correo administrativo antes de enviar el consolidado.")
+            settings = _default_missing_days_email_settings(mall_id)
 
     result = await asyncio.to_thread(
         send_missing_days_emails_for_mall,
@@ -7876,8 +6471,8 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
         return cached
 
     try:
-        stores_res = supabase.table("locales").select("id, nombre, rubro, tipo_negocio, activo").eq("mall_id", mall_id).execute()
-        stores = [row for row in (stores_res.data or []) if _is_store_active(row)]
+        stores_res = supabase.table("locales").select("id, nombre, rubro, tipo_negocio").eq("mall_id", mall_id).execute()
+        stores = stores_res.data or []
         store_map = {str(s['id']): s for s in stores if s.get('id')}
         allowed_local_ids = list(store_map.keys())
         empty_result = {
@@ -8177,21 +6772,158 @@ async def delete_mall(mall_id: str, admin_ctx: Dict[str, Any] = Depends(require_
 class UserMallAssignment(BaseModel):
     mall_ids: List[str]
     rol: str = 'auditor'
+    role_id: Optional[str] = None
 
 class AdminCreateUserRequest(BaseModel):
     email: str
     password: str
     rol: str = 'auditor'
+    role_id: Optional[str] = None
     mall_ids: List[str] = []
 
 class AdminUpdateUserRequest(BaseModel):
     email: Optional[str] = None
     nombre: Optional[str] = None
     rol: Optional[str] = None
+    role_id: Optional[str] = None
     mall_ids: Optional[List[str]] = None
 
+class RolePermissionRequest(BaseModel):
+    module_key: str
+    can_view: bool = False
+    can_create: bool = False
+    can_update: bool = False
+    can_delete: bool = False
+
+class RoleRequest(BaseModel):
+    key: str
+    nombre: str
+    descripcion: Optional[str] = None
+    permissions: List[RolePermissionRequest] = []
+
+def _validate_role_key(value: str) -> str:
+    key = _normalize_role(value)
+    if not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", key):
+        raise HTTPException(status_code=400, detail="El identificador del rol sólo admite letras, números y guion bajo.")
+    return key
+
+def _role_permissions_payload(role_id: str, permissions: List[RolePermissionRequest]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    seen = set()
+    for permission in permissions:
+        module_key = _validate_role_key(permission.module_key)
+        if module_key in seen:
+            raise HTTPException(status_code=400, detail=f"El módulo {module_key} está repetido.")
+        seen.add(module_key)
+        can_create = bool(permission.can_create)
+        can_update = bool(permission.can_update)
+        can_delete = bool(permission.can_delete)
+        rows.append({
+            "role_id": role_id,
+            "module_key": module_key,
+            "can_view": bool(permission.can_view or can_create or can_update or can_delete),
+            "can_create": can_create,
+            "can_update": can_update,
+            "can_delete": can_delete,
+        })
+    return rows
+
+async def _list_roles_with_permissions() -> List[Dict[str, Any]]:
+    roles = supabase.table("app_roles").select("id,key,nombre,descripcion,is_factory,created_at,updated_at").order("nombre").execute().data or []
+    permissions = supabase.table("app_role_permissions").select("role_id,module_key,can_view,can_create,can_update,can_delete").execute().data or []
+    by_role: Dict[str, List[Dict[str, Any]]] = {}
+    for permission in permissions:
+        by_role.setdefault(permission["role_id"], []).append(permission)
+    return [{**role, "permissions": by_role.get(role["id"], [])} for role in roles]
+
+@app.get("/api/v1/admin/roles")
+async def admin_get_roles(access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "view"))):
+    return await _list_roles_with_permissions()
+
+@app.post("/api/v1/admin/roles")
+async def admin_create_role(payload: RoleRequest, access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "create"))):
+    key = _validate_role_key(payload.key)
+    if key in {"admin", "it", "auditor", "visualizador"}:
+        raise HTTPException(status_code=400, detail="Los roles de fábrica ya existen y no se pueden duplicar.")
+    created = supabase.table("app_roles").insert({
+        "key": key, "nombre": payload.nombre.strip(), "descripcion": payload.descripcion, "is_factory": False,
+    }).execute().data or []
+    if not created:
+        raise HTTPException(status_code=400, detail="No se pudo crear el rol.")
+    rows = _role_permissions_payload(created[0]["id"], payload.permissions)
+    if rows:
+        supabase.table("app_role_permissions").insert(rows).execute()
+    return {"id": created[0]["id"], "message": "Rol creado correctamente."}
+
+@app.put("/api/v1/admin/roles/{role_id}")
+async def admin_update_role(role_id: str, payload: RoleRequest, access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "update"))):
+    role = supabase.table("app_roles").select("id,key,is_factory").eq("id", role_id).maybe_single().execute().data
+    if not role:
+        raise HTTPException(status_code=404, detail="Rol no encontrado.")
+    key = _validate_role_key(payload.key)
+    if role.get("is_factory") and key != role.get("key"):
+        raise HTTPException(status_code=400, detail="No se puede cambiar el identificador de un rol de fábrica.")
+    supabase.table("app_roles").update({
+        "key": key, "nombre": payload.nombre.strip(), "descripcion": payload.descripcion, "updated_at": datetime.utcnow().isoformat(),
+    }).eq("id", role_id).execute()
+    supabase.table("app_role_permissions").delete().eq("role_id", role_id).execute()
+    rows = _role_permissions_payload(role_id, payload.permissions)
+    if rows:
+        supabase.table("app_role_permissions").insert(rows).execute()
+    return {"message": "Permisos del rol actualizados."}
+
+@app.delete("/api/v1/admin/roles/{role_id}")
+async def admin_delete_role(role_id: str, access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "delete"))):
+    role = supabase.table("app_roles").select("is_factory").eq("id", role_id).maybe_single().execute().data
+    if not role:
+        raise HTTPException(status_code=404, detail="Rol no encontrado.")
+    if role.get("is_factory"):
+        raise HTTPException(status_code=400, detail="Los roles de fábrica no se eliminan; puedes ajustar o restaurar sus permisos.")
+    assigned = supabase.table("profile_role_assignments").select("user_id").eq("role_id", role_id).limit(1).execute().data or []
+    if assigned:
+        raise HTTPException(status_code=400, detail="No puedes eliminar un rol que tiene usuarios asignados.")
+    supabase.table("app_roles").delete().eq("id", role_id).execute()
+    return {"message": "Rol eliminado correctamente."}
+
+@app.post("/api/v1/admin/roles/{role_id}/restore-factory")
+async def admin_restore_factory_role(role_id: str, access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "update"))):
+    role = supabase.table("app_roles").select("id,key,is_factory").eq("id", role_id).maybe_single().execute().data
+    if not role or not role.get("is_factory") or role.get("key") not in FACTORY_ROLE_PERMISSIONS:
+        raise HTTPException(status_code=400, detail="Sólo los roles de fábrica pueden restaurarse.")
+    permissions = FACTORY_ROLE_PERMISSIONS[role["key"]]
+    supabase.table("app_role_permissions").delete().eq("role_id", role_id).execute()
+    rows = [
+        {"role_id": role_id, "module_key": module, "can_view": bool(actions.get("view")),
+         "can_create": bool(actions.get("create")), "can_update": bool(actions.get("update")), "can_delete": bool(actions.get("delete"))}
+        for module, actions in permissions.items()
+    ]
+    if rows:
+        supabase.table("app_role_permissions").insert(rows).execute()
+    return {"message": "Permisos de fábrica restaurados."}
+
+def _resolve_role_assignment(role_id: Optional[str], legacy_role: Optional[str]) -> Tuple[Optional[str], str]:
+    """Returns the RBAC role id plus the compatible legacy role stored in existing tables."""
+    role = None
+    if role_id:
+        role = supabase.table("app_roles").select("id,key").eq("id", role_id).maybe_single().execute().data
+    else:
+        canonical = _canonical_admin_role(legacy_role) or "auditor"
+        role = supabase.table("app_roles").select("id,key").eq("key", canonical).maybe_single().execute().data
+    if not role:
+        raise HTTPException(status_code=400, detail="El rol seleccionado no existe. Aplica primero la migración de roles.")
+    # profiles.role and usuarios_malls.rol are legacy fields; custom roles keep the
+    # safe auditor fallback there while profile_role_assignments is authoritative.
+    legacy_candidate = _canonical_admin_role(role.get("key"))
+    legacy = legacy_candidate if legacy_candidate in {"admin", "it", "auditor"} else "auditor"
+    return role["id"], legacy
+
+def _assign_rbac_role(user_id: str, role_id: str, assigned_by: Optional[str]) -> None:
+    supabase.table("profile_role_assignments").upsert({
+        "user_id": user_id, "role_id": role_id, "assigned_by": assigned_by, "assigned_at": datetime.utcnow().isoformat(),
+    }, on_conflict="user_id").execute()
+
 @app.get("/api/v1/admin/users")
-async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_module_permission("users", "view"))):
     """
     List all users and their assigned malls. Requires ADMIN role.
     """
@@ -8236,7 +6968,18 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_acce
             for p in profiles:
                 profile_role_map[p["id"]] = p.get("role")
             
-        # 4. Merge
+        # 4. Resolve configurable role assignments in one query.
+        rbac_role_map: Dict[str, Dict[str, Any]] = {}
+        if user_ids:
+            role_links = supabase.table("profile_role_assignments").select("user_id,role_id").in_("user_id", user_ids).execute().data or []
+            role_ids = [link["role_id"] for link in role_links if link.get("role_id")]
+            roles_by_id = {}
+            if role_ids:
+                role_rows = supabase.table("app_roles").select("id,key,nombre").in_("id", role_ids).execute().data or []
+                roles_by_id = {row["id"]: row for row in role_rows}
+            rbac_role_map = {link["user_id"]: roles_by_id[link["role_id"]] for link in role_links if link.get("role_id") in roles_by_id}
+
+        # 5. Merge
         result = []
         for u in users_list:
             u['malls'] = assign_map.get(u['id'], [])
@@ -8244,7 +6987,10 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_acce
                 u.get("email"),
                 [profile_role_map.get(u["id"]), *(u.get("_role_candidates") or [])]
             )
-            u['rol'] = effective_role
+            assigned_role = rbac_role_map.get(u["id"])
+            u['rol'] = assigned_role.get("key") if assigned_role else effective_role
+            u['role_id'] = assigned_role.get("id") if assigned_role else None
+            u['role_name'] = assigned_role.get("nombre") if assigned_role else effective_role.title()
             u.pop("_role_candidates", None)
             result.append(u)
             
@@ -8255,15 +7001,13 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_acce
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/admin/users")
-async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str, Any] = Depends(require_module_permission("users", "create"))):
     """
     Create a new auth user and optionally assign malls.
     Requires ADMIN role.
     """
     try:
-        role = _canonical_admin_role(payload.rol)
-        if not role:
-            raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
+        role_id, role = _resolve_role_assignment(payload.role_id, payload.rol)
 
         email = (payload.email or "").strip().lower()
         if not email:
@@ -8304,7 +7048,12 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
             raise HTTPException(status_code=500, detail="No se pudo resolver el ID del usuario.")
 
         # Keep global role in profiles for frontend role checks.
-        _sync_profile_role(created_user_id, role)
+        try:
+            supabase.table("profiles").upsert({"id": created_user_id, "role": role}, on_conflict="id").execute()
+        except Exception as p_err:
+            logger.warning(f"No se pudo upsert profiles para {created_user_id}: {p_err}")
+
+        _assign_rbac_role(created_user_id, role_id, admin_ctx.get("user_id"))
 
         # Assign malls if requested.
         supabase.table("usuarios_malls").delete().eq("usuario_id", created_user_id).execute()
@@ -8316,6 +7065,7 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
             "id": created_user_id,
             "email": email,
             "rol": role,
+            "role_id": role_id,
             "mall_ids": payload.mall_ids,
             "message": "Usuario ya existía; rol y asignaciones actualizados" if user_previously_existed else "Usuario creado correctamente"
         }
@@ -8326,14 +7076,13 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/admin/users/{target_user_id}/malls")
-async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, admin_ctx: Dict[str, Any] = Depends(require_module_permission("users", "update"))):
     """
     Assign a list of malls to a user.
     """
     try:
-        role = _canonical_admin_role(payload.rol)
-        if not role:
-            raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
+        role_id, role = _resolve_role_assignment(payload.role_id, payload.rol)
+        _assign_rbac_role(target_user_id, role_id, admin_ctx.get("user_id"))
 
         # Transaction? (Not supported natively in HTTP API, do sequentially)
         
@@ -8346,7 +7095,10 @@ async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, a
             res = supabase.table("usuarios_malls").insert(inserts).execute()
             
         # Update profile/global role for consistent UI gating.
-        _sync_profile_role(target_user_id, role)
+        try:
+            supabase.table("profiles").upsert({"id": target_user_id, "role": role}, on_conflict="id").execute()
+        except Exception as p_err:
+            logger.warning(f"No se pudo upsert profiles al asignar malls: {p_err}")
 
         return {"message": "Assignments updated"}
     except HTTPException:
@@ -8359,7 +7111,7 @@ async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, a
 async def admin_update_user(
     target_user_id: str,
     payload: AdminUpdateUserRequest,
-    admin_ctx: Dict[str, Any] = Depends(require_admin_access)
+    admin_ctx: Dict[str, Any] = Depends(require_module_permission("users", "update"))
 ):
     """
     Updates editable user profile fields (email/nombre), role and optional mall assignments.
@@ -8376,10 +7128,9 @@ async def admin_update_user(
             current_metadata = {}
 
         role_to_set: Optional[str] = None
-        if payload.rol is not None:
-            role_to_set = _canonical_admin_role(payload.rol)
-            if not role_to_set:
-                raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
+        role_assignment_id: Optional[str] = None
+        if payload.role_id is not None or payload.rol is not None:
+            role_assignment_id, role_to_set = _resolve_role_assignment(payload.role_id, payload.rol)
 
         email_to_set: Optional[str] = None
         if payload.email is not None:
@@ -8414,7 +7165,12 @@ async def admin_update_user(
 
         effective_email = email_to_set or current_email
         if role_to_set:
-            _sync_profile_role(target_user_id, role_to_set)
+            try:
+                supabase.table("profiles").upsert({"id": target_user_id, "role": role_to_set}, on_conflict="id").execute()
+            except Exception as p_err:
+                logger.warning(f"No se pudo upsert profiles al actualizar usuario {target_user_id}: {p_err}")
+
+            _assign_rbac_role(target_user_id, role_assignment_id, admin_ctx.get("user_id"))
 
             # Keep existing assignments synchronized to the new role when malls are not being replaced.
             if payload.mall_ids is None:
@@ -8461,6 +7217,7 @@ async def admin_update_user(
                 effective_email,
                 [updated_metadata.get("rol"), updated_metadata.get("role")]
             ),
+            "role_id": role_assignment_id,
             "message": "Usuario actualizado correctamente."
         }
     except HTTPException:
@@ -8740,14 +7497,6 @@ async def security_regenerate_token(
 ):
     svc = _security_token_service()
     base = _security_ensure_row_access(operator_ctx, svc.store.get_token_by_id(token_id), "Token no encontrado")
-    if base.get("service_account_id"):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Los tokens de Service Account se renuevan automáticamente desde MsExportador "
-                "usando client_id y client_secret."
-            ),
-        )
     svc.store.update_api_token(base["id"], {
         "status": TOKEN_REVOKED,
         "revoked_at": token_auth_utcnow().isoformat(),
@@ -8763,7 +7512,6 @@ async def security_regenerate_token(
         created_by=operator_ctx.get("user_id"),
         service_account_id=base.get("service_account_id"),
         request=request,
-        access_never_expires=token_auth_access_never_expires(base),
     )
 
 
@@ -9173,8 +7921,8 @@ async def get_sales_gaps(
             # Since I am "migrating", I should probably use the filter.
             # But `locales` table has `mall_id`.
             
-            stores_resp = supabase.table('locales').select('id, nombre, rubro, activo').eq('mall_id', current_mall).execute()
-            stores = [row for row in (stores_resp.data or []) if _is_store_active(row)]
+            stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
+            stores = stores_resp.data or []
             
             global_summary = []
             

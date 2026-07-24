@@ -173,9 +173,9 @@ export default function MappingModal({
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999] p-4">
             <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
                 {/* Header */}
-                <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-4 flex justify-between items-center">
+                <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-6 flex justify-between items-center">
                     <div>
-                        <h2 className="text-xl font-bold">Configurar Mapeo de Campos</h2>
+                        <h2 className="text-2xl font-bold">Configurar Mapeo de Campos</h2>
                         <p className="text-indigo-100 text-sm mt-1">Archivo: {filename}</p>
                     </div>
                     <button
@@ -187,7 +187,7 @@ export default function MappingModal({
                 </div>
 
                 {/* Content */}
-                <div className="flex-1 overflow-y-auto p-4">
+                <div className="flex-1 overflow-y-auto p-6">
                     <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
                         <label className="block text-xs font-semibold text-slate-600 mb-1">Separador decimal de montos</label>
                         <select
@@ -381,7 +381,7 @@ export default function MappingModal({
                 </div>
 
                 {/* Footer */}
-                <div className="bg-gray-50 p-4 flex justify-end gap-3 border-t border-gray-200">
+                <div className="bg-gray-50 p-6 flex justify-end gap-3 border-t border-gray-200">
                     <button
                         onClick={onClose}
                         className="px-6 py-2.5 border border-gray-300 rounded-xl text-gray-700 hover:bg-gray-100 transition-colors font-medium"

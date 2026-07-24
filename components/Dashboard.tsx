@@ -19,7 +19,6 @@ import { PeriodComparison } from './PeriodComparison';
 import { ResendMessagingAdmin } from './ResendMessagingAdmin';
 import { SecurityTokenAdmin } from './SecurityTokenAdmin';
 import { CopilotSettings } from './CopilotSettings';
-import { OperationsCenter } from './OperationsCenter';
 
 interface DashboardProps {
   activeTab: AppTab;
@@ -62,8 +61,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab })
       return <PeriodComparison />;
     case 'messaging':
       return <ResendMessagingAdmin />;
-    case 'operations':
-      return <OperationsCenter />;
     case 'copilot':
       return <CopilotSettings />;
     default:

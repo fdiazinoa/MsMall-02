@@ -132,10 +132,6 @@ const CopilotAttachmentCard: React.FC<{ attachment: CopilotAttachment }> = ({ at
   );
 };
 
-const getCopilotEmailActions = (value: { email_actions?: CopilotEmailAction[]; emailActions?: CopilotEmailAction[] }) => (
-  value.email_actions || value.emailActions || []
-);
-
 const CopilotEmailActionCard: React.FC<{
   action: CopilotEmailAction;
   sending: boolean;
@@ -231,15 +227,7 @@ export const CopilotWidget: React.FC = () => {
 
     try {
       const response = await ApiService.sendCopilotMessage(mallId, question, messages, token);
-      setMessages([
-        ...nextMessages,
-        {
-          role: 'assistant',
-          content: response.answer,
-          attachments: response.attachments || [],
-          email_actions: getCopilotEmailActions(response),
-        }
-      ]);
+      setMessages([...nextMessages, { role: 'assistant', content: response.answer, attachments: response.attachments || [], email_actions: response.email_actions || [] }]);
       if (!status) {
         setStatus({
           enabled: true,
@@ -384,7 +372,7 @@ export const CopilotWidget: React.FC = () => {
                     {message.role === 'assistant' && (message.attachments || []).map((attachment) => (
                       <CopilotAttachmentCard key={attachment.id} attachment={attachment} />
                     ))}
-                    {message.role === 'assistant' && getCopilotEmailActions(message).map((action) => (
+                    {message.role === 'assistant' && (message.email_actions || []).map((action) => (
                       <CopilotEmailActionCard
                         key={action.id}
                         action={action}

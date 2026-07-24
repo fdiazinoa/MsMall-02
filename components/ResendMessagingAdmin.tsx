@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Building2, CalendarDays, CheckCircle2, Clock, Loader2, Mail, Save, Send, ShieldCheck, Store } from 'lucide-react';
+import { AlertTriangle, CalendarDays, CheckCircle2, Clock, Loader2, Mail, Save, Send, ShieldCheck } from 'lucide-react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import { MissingDaysEmailSettings, ResendMessagingStatus, ResendSenderConfigPayload } from '../types';
@@ -9,9 +9,6 @@ const DEFAULT_SUBJECT_TEMPLATE = 'Auditoria de dias faltantes: {local_name} ({mi
 const DEFAULT_BODY_TEMPLATE = `Hola {local_name},
 
 Detectamos {missing_count} dias sin ventas registradas para el periodo {fecha_inicio} al {fecha_fin}. Favor revisar la carga de informacion en MSMALL.`;
-const DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE = 'Auditoria consolidada: {mall_name} ({locals_count} locales con faltantes)';
-const DEFAULT_CONSOLIDATED_BODY_TEMPLATE = 'Se detectaron {total_missing_days} dias sin ventas en {locals_count} locales del mall {mall_name}, para el periodo {fecha_inicio} al {fecha_fin}.';
-type ScheduleMode = MissingDaysEmailSettings['notification_type'];
 const WEEKDAY_OPTIONS = [
   { id: 0, label: 'Lun' },
   { id: 1, label: 'Mar' },
@@ -22,52 +19,25 @@ const WEEKDAY_OPTIONS = [
   { id: 6, label: 'Dom' },
 ];
 
-const defaultSchedule = (mallId = '', notificationType: ScheduleMode = 'missing_days_audit'): MissingDaysEmailSettings => ({
+const defaultSchedule = (mallId = ''): MissingDaysEmailSettings => ({
   mall_id: mallId,
-  notification_type: notificationType,
+  notification_type: 'missing_days_audit',
   enabled: false,
   weekdays: [],
   send_time: '08:00',
   lookback_days: 7,
   send_only_with_gaps: true,
   cc_emails: [],
-  subject_template: notificationType === 'missing_days_audit_consolidated' ? DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE : DEFAULT_SUBJECT_TEMPLATE,
-  body_template: notificationType === 'missing_days_audit_consolidated' ? DEFAULT_CONSOLIDATED_BODY_TEMPLATE : DEFAULT_BODY_TEMPLATE,
+  subject_template: DEFAULT_SUBJECT_TEMPLATE,
+  body_template: DEFAULT_BODY_TEMPLATE,
 });
-
-const normalizeSchedule = (
-  mallId: string,
-  saved?: Partial<MissingDaysEmailSettings> | null,
-  fallback?: Partial<MissingDaysEmailSettings>
-): MissingDaysEmailSettings => {
-  const notificationType = saved?.notification_type || fallback?.notification_type || 'missing_days_audit';
-  const defaults = defaultSchedule(mallId, notificationType);
-  return ({
-  ...defaults,
-  ...(fallback || {}),
-  ...(saved || {}),
-  mall_id: saved?.mall_id || fallback?.mall_id || mallId,
-  weekdays: saved?.weekdays || fallback?.weekdays || [],
-  send_time: saved?.send_time || fallback?.send_time || '08:00',
-  subject_template: saved?.subject_template || fallback?.subject_template || defaults.subject_template,
-  body_template: saved?.body_template || fallback?.body_template || defaults.body_template,
-  cc_emails: saved?.cc_emails || fallback?.cc_emails || [],
-  });
-};
 
 export const ResendMessagingAdmin: React.FC = () => {
   const { session, isAdmin, user, currentMall } = useAuth();
   const token = session?.access_token || '';
   const [status, setStatus] = useState<ResendMessagingStatus | null>(null);
-  const [activeScheduleMode, setActiveScheduleMode] = useState<ScheduleMode>('missing_days_audit');
-  const [schedules, setSchedules] = useState<Record<ScheduleMode, MissingDaysEmailSettings>>({
-    missing_days_audit: defaultSchedule(),
-    missing_days_audit_consolidated: defaultSchedule('', 'missing_days_audit_consolidated'),
-  });
-  const [ccEmailsByMode, setCcEmailsByMode] = useState<Record<ScheduleMode, string>>({
-    missing_days_audit: '',
-    missing_days_audit_consolidated: '',
-  });
+  const [schedule, setSchedule] = useState<MissingDaysEmailSettings>(defaultSchedule());
+  const [ccEmails, setCcEmails] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingSender, setSavingSender] = useState(false);
@@ -83,17 +53,6 @@ export const ResendMessagingAdmin: React.FC = () => {
     from_email: 'notificaciones@mercasend.net',
     from_name: 'MercaSend Notificaciones',
   });
-  const schedule = schedules[activeScheduleMode];
-  const ccEmails = ccEmailsByMode[activeScheduleMode];
-  const setSchedule = (updater: React.SetStateAction<MissingDaysEmailSettings>) => {
-    setSchedules((prev) => ({
-      ...prev,
-      [activeScheduleMode]: typeof updater === 'function' ? updater(prev[activeScheduleMode]) : updater,
-    }));
-  };
-  const setCcEmails = (value: string) => {
-    setCcEmailsByMode((prev) => ({ ...prev, [activeScheduleMode]: value }));
-  };
 
   useEffect(() => {
     let cancelled = false;
@@ -103,21 +62,15 @@ export const ResendMessagingAdmin: React.FC = () => {
       if (!token) {
         setLoading(false);
         setStatus(null);
-        setSchedules({
-          missing_days_audit: defaultSchedule(mallId),
-          missing_days_audit_consolidated: defaultSchedule(mallId, 'missing_days_audit_consolidated'),
-        });
-        setCcEmailsByMode({ missing_days_audit: '', missing_days_audit_consolidated: '' });
+        setSchedule(defaultSchedule(mallId));
+        setCcEmails('');
         return;
       }
       setLoading(true);
       setError(null);
       setScheduleError(null);
-      setSchedules({
-        missing_days_audit: defaultSchedule(mallId),
-        missing_days_audit_consolidated: defaultSchedule(mallId, 'missing_days_audit_consolidated'),
-      });
-      setCcEmailsByMode({ missing_days_audit: '', missing_days_audit_consolidated: '' });
+      setSchedule(defaultSchedule(mallId));
+      setCcEmails('');
 
       const statusPromise = ApiService.getResendMessagingStatus(token)
         .then((statusData) => {
@@ -137,24 +90,22 @@ export const ResendMessagingAdmin: React.FC = () => {
         });
 
       const schedulePromise = mallId
-        ? Promise.all([
-          ApiService.getMissingDaysEmailSettings(mallId, token, 'missing_days_audit'),
-          ApiService.getMissingDaysEmailSettings(mallId, token, 'missing_days_audit_consolidated'),
-        ])
-          .then(([localSchedule, consolidatedSchedule]) => {
-            if (!cancelled && localSchedule.mall_id === mallId && consolidatedSchedule.mall_id === mallId) {
-              setSchedules({
-                missing_days_audit: normalizeSchedule(mallId, localSchedule),
-                missing_days_audit_consolidated: normalizeSchedule(mallId, consolidatedSchedule),
+        ? ApiService.getMissingDaysEmailSettings(mallId, token)
+          .then((scheduleData) => {
+            if (!cancelled && scheduleData.mall_id === mallId) {
+              setSchedule({
+                ...defaultSchedule(mallId),
+                ...scheduleData,
+                subject_template: scheduleData.subject_template || DEFAULT_SUBJECT_TEMPLATE,
+                body_template: scheduleData.body_template || DEFAULT_BODY_TEMPLATE,
               });
-              setCcEmailsByMode({
-                missing_days_audit: (localSchedule.cc_emails || []).join('\n'),
-                missing_days_audit_consolidated: (consolidatedSchedule.cc_emails || []).join('\n'),
-              });
+              setCcEmails((scheduleData.cc_emails || []).join('\n'));
             }
           })
           .catch((e: any) => {
             if (!cancelled) {
+              setSchedule(defaultSchedule(mallId));
+              setCcEmails('');
               setScheduleError(e?.message || 'No se pudo cargar la programación de envío.');
             }
           })
@@ -269,19 +220,21 @@ export const ResendMessagingAdmin: React.FC = () => {
       setFlash({ kind: 'error', message: 'Seleccione al menos un día de envío.' });
       return;
     }
-    const payload = buildSchedulePayload();
-    if (schedule.notification_type === 'missing_days_audit_consolidated' && schedule.enabled && payload.cc_emails.length === 0) {
-      setFlash({ kind: 'error', message: 'Agregue al menos un correo administrativo para activar el consolidado.' });
-      return;
-    }
 
     setSavingSchedule(true);
     setFlash(null);
     try {
-      const saved = await ApiService.saveMissingDaysEmailSettings(payload, token);
-      const normalized = normalizeSchedule(currentMall.id, saved, payload);
-      setSchedule(normalized);
-      setCcEmails((normalized.cc_emails || []).join('\n'));
+      const saved = await ApiService.saveMissingDaysEmailSettings(
+        buildSchedulePayload(),
+        token
+      );
+      setSchedule({
+        ...defaultSchedule(currentMall.id),
+        ...saved,
+        subject_template: saved.subject_template || DEFAULT_SUBJECT_TEMPLATE,
+        body_template: saved.body_template || DEFAULT_BODY_TEMPLATE,
+      });
+      setCcEmails((saved.cc_emails || []).join('\n'));
       setScheduleError(null);
       setFlash({ kind: 'success', message: 'Programación de auditoría guardada.' });
     } catch (e: any) {
@@ -304,22 +257,21 @@ export const ResendMessagingAdmin: React.FC = () => {
       setFlash({ kind: 'error', message: 'Seleccione al menos un día de envío o desactive el automático.' });
       return;
     }
-    const payload = buildSchedulePayload();
-    if (schedule.notification_type === 'missing_days_audit_consolidated' && payload.cc_emails.length === 0) {
-      setFlash({ kind: 'error', message: 'Agregue al menos un correo administrativo antes de enviar el consolidado.' });
-      return;
-    }
 
     setSendingNow(true);
     setFlash(null);
     try {
-      const saved = await ApiService.saveMissingDaysEmailSettings(payload, token);
-      const normalized = normalizeSchedule(currentMall.id, saved, payload);
-      setSchedule(normalized);
-      setCcEmails((normalized.cc_emails || []).join('\n'));
+      const saved = await ApiService.saveMissingDaysEmailSettings(buildSchedulePayload(), token);
+      setSchedule({
+        ...defaultSchedule(currentMall.id),
+        ...saved,
+        subject_template: saved.subject_template || DEFAULT_SUBJECT_TEMPLATE,
+        body_template: saved.body_template || DEFAULT_BODY_TEMPLATE,
+      });
+      setCcEmails((saved.cc_emails || []).join('\n'));
       setScheduleError(null);
 
-      const result = await ApiService.sendMissingDaysEmailNow(currentMall.id, token, schedule.notification_type);
+      const result = await ApiService.sendMissingDaysEmailNow(currentMall.id, token);
       const kind = result.failed > 0 ? 'error' : 'success';
       setFlash({
         kind,
@@ -341,10 +293,10 @@ export const ResendMessagingAdmin: React.FC = () => {
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-xl font-bold text-slate-800">Mensajería Resend</h2>
+          <h2 className="text-2xl font-bold text-slate-800">Mensajería Resend</h2>
           <p className="text-slate-500 text-sm">Dominio mercasend.net para notificaciones operativas.</p>
         </div>
         <div className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-bold ${resendConfigured ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
@@ -371,8 +323,8 @@ export const ResendMessagingAdmin: React.FC = () => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-4">
-        <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-5">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-6">
+        <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
               <Mail size={20} />
@@ -438,7 +390,7 @@ export const ResendMessagingAdmin: React.FC = () => {
           )}
         </section>
 
-        <form onSubmit={handleSendTest} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-4">
+        <form onSubmit={handleSendTest} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
           <div>
             <h3 className="font-bold text-slate-800">Prueba de envío</h3>
             <p className="text-xs text-slate-500">El mensaje saldrá desde {status?.from_email || senderDraft.from_email}.</p>
@@ -490,30 +442,7 @@ export const ResendMessagingAdmin: React.FC = () => {
         </form>
       </div>
 
-      <form onSubmit={handleSaveSchedule} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-5">
-        <div className="inline-flex w-full sm:w-auto rounded-lg border border-slate-200 bg-slate-50 p-1" role="tablist" aria-label="Modalidad de envío">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeScheduleMode === 'missing_days_audit'}
-            onClick={() => setActiveScheduleMode('missing_days_audit')}
-            className={`inline-flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-bold transition-colors ${activeScheduleMode === 'missing_days_audit' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
-          >
-            <Store size={16} />
-            Por local
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeScheduleMode === 'missing_days_audit_consolidated'}
-            onClick={() => setActiveScheduleMode('missing_days_audit_consolidated')}
-            className={`inline-flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-bold transition-colors ${activeScheduleMode === 'missing_days_audit_consolidated' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
-          >
-            <Building2 size={16} />
-            Consolidar locales
-          </button>
-        </div>
-
+      <form onSubmit={handleSaveSchedule} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
@@ -522,9 +451,7 @@ export const ResendMessagingAdmin: React.FC = () => {
             <div>
               <h3 className="font-bold text-slate-800">Programación de días faltantes</h3>
               <p className="text-xs text-slate-500">
-                {activeScheduleMode === 'missing_days_audit_consolidated'
-                  ? 'Se enviará un solo correo por mall exclusivamente a los correos administrativos configurados aquí.'
-                  : 'Se enviará una auditoría HTML por local usando el email del local o las copias administrativas como respaldo.'}
+                Se enviará una auditoría HTML por local usando el email configurado en la ficha del local.
               </p>
             </div>
           </div>
@@ -535,7 +462,7 @@ export const ResendMessagingAdmin: React.FC = () => {
               checked={schedule.enabled}
               onChange={(e) => setSchedule((prev) => ({ ...prev, enabled: e.target.checked }))}
             />
-            {activeScheduleMode === 'missing_days_audit_consolidated' ? 'Consolidar locales automáticamente' : 'Envío automático activo'}
+            Envío automático activo
           </label>
         </div>
 
@@ -604,16 +531,13 @@ export const ResendMessagingAdmin: React.FC = () => {
           </label>
 
           <div className="space-y-1.5">
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Correos administrativos</label>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Copias administrativas</label>
             <textarea
               value={ccEmails}
               onChange={(e) => setCcEmails(e.target.value)}
               className="min-h-20 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
               placeholder="correo1@empresa.com&#10;correo2@empresa.com"
             />
-            {activeScheduleMode === 'missing_days_audit_consolidated' && (
-              <p className="text-xs text-slate-500">El primer correo será el destinatario y los demás recibirán copia. No se usarán correos de locales.</p>
-            )}
           </div>
         </div>
 
@@ -621,10 +545,7 @@ export const ResendMessagingAdmin: React.FC = () => {
           <div>
             <h4 className="font-bold text-slate-800">Plantilla del correo</h4>
             <p className="text-xs text-slate-500">
-              Variables disponibles: {'{mall_name}'}, {'{fecha_inicio}'}, {'{fecha_fin}'}, {'{report_url}'}
-              {activeScheduleMode === 'missing_days_audit_consolidated'
-                ? <>, {'{locals_count}'}, {'{total_missing_days}'}.</>
-                : <>, {'{local_name}'}, {'{missing_count}'}.</>}
+              Variables disponibles: {'{mall_name}'}, {'{local_name}'}, {'{fecha_inicio}'}, {'{fecha_fin}'}, {'{missing_count}'}, {'{report_url}'}.
             </p>
           </div>
 

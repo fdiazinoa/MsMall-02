@@ -38,7 +38,6 @@ TOKEN_TYPE_EXPORTER = "exporter"
 ACTIVE = "active"
 DISABLED = "disabled"
 REVOKED = "revoked"
-NON_EXPIRING_ACCESS_EXPIRES_AT = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 
 
 def utcnow() -> datetime:
@@ -104,21 +103,6 @@ def request_explicit_never_expires(payload: BaseModel) -> bool:
     if fields_set is None:
         fields_set = getattr(payload, "__fields_set__", set())
     return "expires_in" in fields_set and getattr(payload, "expires_in", None) is None
-
-
-def token_access_never_expires(token: Optional[Dict[str, Any]]) -> bool:
-    if not token:
-        return False
-    if token.get("access_never_expires") is True:
-        return True
-    raw_expiration = token.get("access_expires_at")
-    if raw_expiration is None:
-        return True
-    try:
-        expiration = datetime.fromisoformat(str(raw_expiration).replace("Z", "+00:00"))
-        return expiration.year >= 9999
-    except (TypeError, ValueError):
-        return False
 
 
 def _now_ts() -> int:
@@ -708,7 +692,7 @@ class TokenService:
         access_ttl = self.config.access_ttl(token_type)
         if access_ttl_seconds is not None and int(access_ttl_seconds) > 0:
             access_ttl = timedelta(seconds=int(access_ttl_seconds))
-        access_exp = NON_EXPIRING_ACCESS_EXPIRES_AT if access_never_expires else now + access_ttl
+        access_exp = None if access_never_expires else now + access_ttl
         refresh_exp = now + self.config.refresh_ttl(token_type)
         refresh_plain = secrets.token_urlsafe(48)
         token_row = self.store.create_api_token({
@@ -717,8 +701,7 @@ class TokenService:
             "token_type": token_type,
             "scopes": scopes,
             "jti": str(uuid.uuid4()),
-            "access_expires_at": access_exp.isoformat(),
-            "access_never_expires": access_never_expires,
+            "access_expires_at": access_exp.isoformat() if access_exp else None,
             "refresh_token_hash": _hash_token(refresh_plain),
             "refresh_expires_at": refresh_exp.isoformat(),
             "status": ACTIVE,
@@ -734,12 +717,7 @@ class TokenService:
             "revoke_reason": None,
         })
         access_token = self._issue_jwt(
-            token_id=token_row["id"],
-            mall_id=mall_id,
-            local_id=local_id,
-            token_type=token_type,
-            scopes=scopes,
-            access_exp=None if access_never_expires else access_exp,
+            token_id=token_row["id"], mall_id=mall_id, local_id=local_id, token_type=token_type, scopes=scopes, access_exp=access_exp
         )
         self._audit(event_type="issued", token=token_row, request=request)
         return {
@@ -845,7 +823,6 @@ class TokenService:
             created_by=current.get("created_by"),
             service_account_id=current.get("service_account_id"),
             request=request,
-            access_never_expires=token_access_never_expires(current),
         )
 
     def _decode_access(self, access_token: str) -> Dict[str, Any]:
@@ -1209,8 +1186,6 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
             error_count=error_count,
             metadata={
                 "source": "exporter_sync_ingest",
-                "origin": "MsExportador",
-                "channel_family": "ERP_WEBSERVICE",
                 "granularity": granularity,
                 "probe": bool(meta.get("probe")),
                 "contract_type": _as_str_or_none(meta.get("contract_type")),
@@ -1385,8 +1360,6 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
                 error_count=1,
                 metadata={
                     "source": "exporter_sync_ingest",
-                    "origin": "MsExportador",
-                    "channel_family": "ERP_WEBSERVICE",
                     "granularity": granularity,
                     "detail": str(exc.detail),
                     "status_code": exc.status_code,
@@ -1407,8 +1380,6 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
                 error_count=1,
                 metadata={
                     "source": "exporter_sync_ingest",
-                    "origin": "MsExportador",
-                    "channel_family": "ERP_WEBSERVICE",
                     "granularity": granularity,
                     "detail": str(exc),
                 },
@@ -1613,14 +1584,6 @@ def create_router() -> APIRouter:
         base = svc.store.get_token_by_id(token_id)
         if not base:
             raise HTTPException(status_code=404, detail="Token no encontrado")
-        if base.get("service_account_id"):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Los tokens de Service Account se renuevan automáticamente desde MsExportador "
-                    "usando client_id y client_secret."
-                ),
-            )
         svc.store.update_api_token(token_id, {"status": REVOKED, "revoked_at": utcnow().isoformat(), "revoked_by": ctx.token_id, "revoke_reason": "regenerated", "updated_at": utcnow().isoformat()})
         return svc._issue_pair(
             mall_id=base["mall_id"],
@@ -1630,7 +1593,6 @@ def create_router() -> APIRouter:
             created_by=ctx.token_id,
             service_account_id=base.get("service_account_id"),
             request=request,
-            access_never_expires=token_access_never_expires(base),
         )
 
     @router.get("/token-audit")

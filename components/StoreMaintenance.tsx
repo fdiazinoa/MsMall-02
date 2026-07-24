@@ -15,7 +15,7 @@ import {
 } from '../utils/storeCatalog';
 import {
   Store as StoreIcon, Plus, Search, Building2,
-  User, FileText, MapPin, Tag, Maximize2, Percent, X, Settings2, Layers3, Mail, Power, RotateCcw
+  User, FileText, MapPin, Tag, Maximize2, Percent, X, Settings2, Layers3, Mail
 } from 'lucide-react';
 import { SalesPurge } from './SalesPurge';
 
@@ -47,9 +47,6 @@ const emptyStore = (mallId?: string): Partial<Store> => ({
   porcentaje_variable: '',
   rubro: '',
   upsert_activo: false,
-  activo: true,
-  fecha_inactivacion: null,
-  motivo_inactivacion: null,
   fecha_corte_importacion: '',
 });
 
@@ -246,7 +243,6 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   const [savingStore, setSavingStore] = useState(false);
   const [savingFieldDefinition, setSavingFieldDefinition] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'active' | 'inactive' | 'all'>('active');
   const [newStore, setNewStore] = useState<Partial<Store>>(emptyStore());
   const [customFieldDefinitions, setCustomFieldDefinitions] = useState<LocalCustomFieldDefinition[]>([]);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, FieldValueState>>({});
@@ -284,11 +280,8 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
 
   const filteredStores = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
+    if (!query) return stores;
     return stores.filter((store) => {
-      const isActive = store.activo !== false;
-      if (statusFilter === 'active' && !isActive) return false;
-      if (statusFilter === 'inactive' && isActive) return false;
-      if (!query) return true;
       return [
         store.nombre,
         store.codigo_interno,
@@ -298,13 +291,13 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
         store.rubro,
       ].some((value) => String(value || '').toLowerCase().includes(query));
     });
-  }, [stores, searchTerm, statusFilter]);
+  }, [stores, searchTerm]);
 
   const loadStores = async () => {
     if (!currentMall?.id) return;
     setLoading(true);
     try {
-      const data = await ApiService.getStores(currentMall.id, true);
+      const data = await ApiService.getStores(currentMall.id);
       setStores(data);
     } catch (e) {
       console.error(e);
@@ -397,8 +390,6 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
     const storeToSave = {
       ...newStore,
       mall_id: currentMall.id,
-      mts: parseOptionalNumber(newStore.mts),
-      porciento_renta: parseOptionalNumber(newStore.porciento_renta),
       renta_fija: parseOptionalNumber(newStore.renta_fija),
       breakpoint_venta: parseOptionalNumber(newStore.breakpoint_venta),
       porcentaje_variable: parseOptionalNumber(newStore.porcentaje_variable),
@@ -430,40 +421,14 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
     }
   };
 
-  const handleDeactivate = async (store: Store) => {
-    const today = new Date().toISOString().split('T')[0];
-    const motivo = prompt(
-      `Motivo de inactivación para "${store.nombre}".\nEsto apagará automáticamente el Importador FTP del local.`,
-      store.motivo_inactivacion || 'Salida del mall'
-    );
-    if (motivo === null) return;
-    if (!confirm(`¿Inactivar "${store.nombre}" desde hoy (${today})?\nEl local no aparecerá en listados operativos ni estadísticas futuras y su importador FTP quedará apagado.`)) return;
+  const handleDelete = async (id: string, nombre: string) => {
+    if (!confirm(`¿Está seguro de que desea eliminar el local "${nombre}"?\nEsta acción no se puede deshacer.`)) return;
     try {
-      await ApiService.updateStore(store.id, {
-        activo: false,
-        fecha_inactivacion: today,
-        motivo_inactivacion: motivo.trim() || 'Salida del mall',
-        upsert_activo: false,
-      }, authToken);
-      await loadStores();
+      await ApiService.deleteStore(id, authToken);
+      loadStores();
     } catch (e: any) {
       console.error(e);
-      alert("Error al inactivar: " + (e.message || e));
-    }
-  };
-
-  const handleReactivateStore = async (store: Store) => {
-    if (!confirm(`¿Reactivar "${store.nombre}"?\nEl Importador FTP no se encenderá automáticamente; podrás activarlo manualmente si aplica.`)) return;
-    try {
-      await ApiService.updateStore(store.id, {
-        activo: true,
-        fecha_inactivacion: null,
-        motivo_inactivacion: null,
-      }, authToken);
-      await loadStores();
-    } catch (e: any) {
-      console.error(e);
-      alert("Error al reactivar: " + (e.message || e));
+      alert("Error al eliminar: " + (e.message || e));
     }
   };
 
@@ -539,10 +504,10 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-xl font-bold text-slate-800">Mantenimiento de Locales</h2>
+          <h2 className="text-2xl font-bold text-slate-800">Mantenimiento de Locales</h2>
           <p className="text-slate-500">Gestione la configuración contractual, física y los campos libres por mall.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -574,7 +539,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
       </div>
 
       {showForm && (
-        <div className="bg-white p-4 rounded-2xl border border-indigo-100 shadow-xl animate-in zoom-in-95 duration-200">
+        <div className="bg-white p-8 rounded-2xl border border-indigo-100 shadow-xl animate-in zoom-in-95 duration-200">
           <div className="flex items-center justify-between gap-4 mb-6">
             <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
               <StoreIcon className="text-indigo-600" size={20} />
@@ -585,8 +550,8 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
             </button>
           </div>
 
-          <form onSubmit={handleCreate} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <form onSubmit={handleCreate} className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="space-y-4">
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Básico</h4>
                 <div>
@@ -716,12 +681,12 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                 <div className="pt-2">
                   <label className="flex items-center gap-3 cursor-pointer group">
                     <div className="relative">
-                      <input type="checkbox" checked={!!newStore.upsert_activo} disabled={newStore.activo === false} onChange={(e) => setNewStore({ ...newStore, upsert_activo: e.target.checked })} className="sr-only peer" />
+                      <input type="checkbox" checked={!!newStore.upsert_activo} onChange={(e) => setNewStore({ ...newStore, upsert_activo: e.target.checked })} className="sr-only peer" />
                       <div className="w-10 h-5 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600" />
                     </div>
                     <span className="text-sm font-medium text-slate-700 group-hover:text-indigo-600 transition-colors">Activar Sobrescritura (Upsert)</span>
                   </label>
-                  <p className="text-[10px] text-slate-400 mt-1 ml-13">{newStore.activo === false ? 'Local inactivo: el importador permanece apagado.' : 'Permite corregir facturas del mismo día sobrescribiendo datos existentes.'}</p>
+                  <p className="text-[10px] text-slate-400 mt-1 ml-13">Permite corregir facturas del mismo día sobrescribiendo datos existentes.</p>
                 </div>
               </div>
             </div>
@@ -823,8 +788,8 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
 
       {showCustomFieldsManager && (
         <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center px-4">
-          <div className="w-full max-w-6xl max-h-[90vh] overflow-auto rounded-2xl bg-white shadow-2xl border border-slate-200">
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-3 py-2.5">
+          <div className="w-full max-w-6xl max-h-[90vh] overflow-auto rounded-3xl bg-white shadow-2xl border border-slate-200">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-6 py-4">
               <div>
                 <h3 className="text-lg font-bold text-slate-800">Configurar Campos Libres</h3>
                 <p className="text-sm text-slate-500">Defina campos dinámicos por mall y sus opciones para mantenimiento y cubo.</p>
@@ -834,7 +799,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
               </button>
             </div>
 
-            <div className="grid gap-4 p-4 lg:grid-cols-[1.1fr_1.4fr]">
+            <div className="grid gap-6 p-6 lg:grid-cols-[1.1fr_1.4fr]">
               <div className="space-y-4">
                 <h4 className="text-sm font-bold text-slate-700">Campos existentes</h4>
                 <div className="space-y-3">
@@ -916,7 +881,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                     <label className="mb-1 block text-sm font-medium text-slate-700">Orden</label>
                     <input type="number" value={fieldDraft.sort_order ?? 0} onChange={(e) => setFieldDraft((prev) => ({ ...prev, sort_order: Number(e.target.value) || 0 }))} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
                   </div>
-                  <div className="flex items-center gap-4 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  <div className="flex items-center gap-6 rounded-lg border border-slate-200 bg-white px-3 py-2">
                     <label className="flex items-center gap-2 text-sm text-slate-600">
                       <input type="checkbox" checked={fieldDraft.required !== false} onChange={(e) => setFieldDraft((prev) => ({ ...prev, required: e.target.checked }))} />
                       Requerido
@@ -974,38 +939,27 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
               className="bg-transparent border-none outline-none text-sm w-full"
             />
           </div>
-          <div className="flex items-center gap-3">
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as 'active' | 'inactive' | 'all')}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="active">Activos</option>
-              <option value="inactive">Inactivos</option>
-              <option value="all">Todos</option>
-            </select>
-            <div className="text-xs text-slate-400 font-medium">
-              Mostrando {filteredStores.length} de {stores.length} locales registrados
-            </div>
+          <div className="text-xs text-slate-400 font-medium">
+            Mostrando {filteredStores.length} de {stores.length} locales registrados
           </div>
         </div>
-        <div className="max-h-[calc(100dvh-19rem)] min-h-[260px] overflow-auto">
+        <div className="overflow-x-auto">
           <table className="w-full text-left">
-            <thead className="sticky top-0 z-10 bg-slate-50/95 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
+            <thead className="bg-slate-50/50 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
               <tr>
-                <th className="px-3 py-2.5">Información Local</th>
-                <th className="px-3 py-2.5">Responsable</th>
-                <th className="px-3 py-2.5">Ubicación (Piso)</th>
-                <th className="px-3 py-2.5 text-center">Metraje (Mts²)</th>
-                <th className="px-3 py-2.5 text-center">Renta %</th>
-                <th className="px-3 py-2.5">Campos Libres</th>
-                <th className="px-3 py-2.5 text-right">Acciones</th>
+                <th className="px-6 py-4">Información Local</th>
+                <th className="px-6 py-4">Responsable</th>
+                <th className="px-6 py-4">Ubicación (Piso)</th>
+                <th className="px-6 py-4 text-center">Metraje (Mts²)</th>
+                <th className="px-6 py-4 text-center">Renta %</th>
+                <th className="px-6 py-4">Campos Libres</th>
+                <th className="px-6 py-4 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-slate-400">
+                  <td colSpan={7} className="px-6 py-12 text-center text-slate-400">
                     <div className="flex flex-col items-center gap-2">
                       <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600" />
                       <span className="text-sm">Cargando datos de locales...</span>
@@ -1015,7 +969,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
               ) : filteredStores.length > 0 ? (
                 filteredStores.map((store) => (
                   <tr key={store.id} className="hover:bg-slate-50/80 transition-colors group">
-                    <td className="px-3 py-2.5">
+                    <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
                         <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg group-hover:bg-indigo-100 transition-colors">
                           <StoreIcon size={18} />
@@ -1023,11 +977,6 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         <div>
                           <div className="font-bold text-slate-800 text-sm leading-none mb-1 flex items-center gap-2">
                             {store.nombre}
-                            {store.activo === false && (
-                              <span className="px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[9px] uppercase font-extrabold tracking-wider border border-slate-200">
-                                Inactivo
-                              </span>
-                            )}
                             {store.processing_status === 'SUSPENDED_AUTH_ERROR' && (
                               <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-600 text-[9px] uppercase font-extrabold tracking-wider border border-red-200">
                                 Suspendido
@@ -1041,7 +990,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         </div>
                       </div>
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-6 py-4">
                       <div className="text-sm font-medium text-slate-700 flex items-center gap-2">
                         <User size={14} className="text-slate-400" />
                         {store.responsable}
@@ -1055,7 +1004,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         </div>
                       )}
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-6 py-4">
                       <div className="flex items-center gap-2 text-slate-600 text-sm font-medium">
                         <MapPin size={14} className="text-indigo-400" />
                         {store.piso}
@@ -1064,18 +1013,18 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         <Building2 size={10} /> {store.mall_nombre || 'Mall Plaza'}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-center">
+                    <td className="px-6 py-4 text-center">
                       <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-bold">
                         <Maximize2 size={12} className="text-slate-400" />
                         {store.mts}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-center">
+                    <td className="px-6 py-4 text-center">
                       <div className="text-sm font-bold text-indigo-600">
                         {store.porciento_renta}%
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 min-w-[220px]">
+                    <td className="px-6 py-4 min-w-[220px]">
                       {activeFieldDefinitions.length === 0 ? (
                         <span className="text-xs text-slate-400">Sin configuración</span>
                       ) : (
@@ -1093,9 +1042,9 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         </div>
                       )}
                     </td>
-                    <td className="px-3 py-2.5 text-right">
+                    <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {store.activo !== false && store.processing_status === 'SUSPENDED_AUTH_ERROR' ? (
+                        {store.processing_status === 'SUSPENDED_AUTH_ERROR' ? (
                           <button
                             onClick={async () => {
                               if (confirm('¿Reactivar este local? Se restablecerá el contador de fallos.')) {
@@ -1114,15 +1063,9 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                             <button onClick={() => handleEdit(store)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all" title="Editar">
                               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></svg>
                             </button>
-                            {store.activo === false ? (
-                              <button onClick={() => handleReactivateStore(store)} className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all" title="Reactivar local">
-                                <RotateCcw size={16} />
-                              </button>
-                            ) : (
-                              <button onClick={() => handleDeactivate(store)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all" title="Inactivar local">
-                                <Power size={16} />
-                              </button>
-                            )}
+                            <button onClick={() => handleDelete(store.id, store.nombre)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all" title="Eliminar">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /><line x1="10" x2="10" y1="11" y2="17" /><line x1="14" x2="14" y1="11" y2="17" /></svg>
+                            </button>
                           </>
                         )}
                       </div>
@@ -1131,7 +1074,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                 ))
               ) : (
                 <tr>
-                  <td colSpan={7} className="px-6 py-10 text-center">
+                  <td colSpan={7} className="px-6 py-20 text-center">
                     <div className="flex flex-col items-center gap-3 text-slate-300">
                       <StoreIcon size={48} strokeWidth={1} />
                       <p className="text-slate-500 font-medium italic">No se encontraron locales registrados con estos criterios.</p>

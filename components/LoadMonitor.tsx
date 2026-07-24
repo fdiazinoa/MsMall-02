@@ -10,14 +10,17 @@ import {
 } from '../utils/loadLogMessages';
 import {
   AlertCircle,
+  Building2,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock,
   FileText,
+  Hash,
   RefreshCw,
   Search,
   Store,
+  Waypoints,
   XCircle,
 } from 'lucide-react';
 
@@ -25,13 +28,13 @@ type MonitorStatusFilter = 'all' | 'exito' | 'parcial' | 'error';
 const LOAD_MONITOR_PAGE_SIZE = 20;
 
 const StatCard = ({ title, count, icon: Icon, color, bgColor }: any) => (
-  <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
+  <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
     <div className={`p-3 rounded-xl ${bgColor} ${color}`}>
       <Icon size={24} />
     </div>
     <div>
       <p className="text-slate-500 text-sm font-medium">{title}</p>
-      <h3 className="text-xl font-bold text-slate-900">{count}</h3>
+      <h3 className="text-2xl font-bold text-slate-900">{count}</h3>
     </div>
   </div>
 );
@@ -57,7 +60,7 @@ const formatDateTime = (value?: string | null): string => {
   return parsed ? parsed.toLocaleString() : 'Sin fecha';
 };
 
-const truncateMiddle = (value?: string | null, left = 8, right = 6): string => {
+const truncateMiddle = (value?: string | null, left = 10, right = 6): string => {
   const text = String(value || '').trim();
   if (!text) return '—';
   if (text.length <= left + right + 3) return text;
@@ -68,9 +71,20 @@ const getErrorCount = getLoadLogErrorCount;
 const getProcessedCount = getLoadLogProcessedCount;
 const getNormalizedStatus = getLoadLogStatus;
 
-const getDisplayChannel = (log: LoadLogEntry | null): string | null => {
+const getDisplayChannel = (log: LoadLogEntry | null): string => {
   const raw = String(log?.canal || log?.metadata?.canal || '').trim();
-  return raw || null;
+  if (!raw) return 'Sin canal';
+  return raw;
+};
+
+const getDisplayMallName = (log: LoadLogEntry | null, currentMall: any): string => {
+  if (!log) return 'Mall desconocido';
+  const direct = String(log.mall_nombre || '').trim();
+  if (direct) return direct;
+  if (currentMall?.id && (!log.mall_id || log.mall_id === currentMall.id)) {
+    return currentMall.nombre || 'Mall actual';
+  }
+  return truncateMiddle(log.mall_id || '', 8, 4);
 };
 
 const getDisplayLocalName = (log: LoadLogEntry | null): string => {
@@ -83,6 +97,7 @@ const getDisplayLocalName = (log: LoadLogEntry | null): string => {
 const getDisplayFileName = (log: LoadLogEntry | null): string => {
   const archivo = String(log?.archivo || '').trim();
   if (archivo && archivo.toUpperCase() !== 'N/A') return archivo;
+  if (log?.batch_id) return `Batch ${log.batch_id}`;
   return 'Sin archivo';
 };
 
@@ -93,7 +108,7 @@ const getReadableMessage = (log: LoadLogEntry | null): string => {
 const getStatusBadge = (log: LoadLogEntry) => {
   const status = getNormalizedStatus(log);
   if (status === 'exito') {
-    return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-green-50 text-green-700 text-xs font-bold"><CheckCircle2 size={12} /> Éxito</span>;
+    return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-green-50 text-green-700 text-xs font-bold"><CheckCircle2 size={12} /> Exito</span>;
   }
   if (status === 'parcial') {
     return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 text-xs font-bold"><AlertCircle size={12} /> Parcial</span>;
@@ -176,8 +191,9 @@ export const LoadMonitor: React.FC = () => {
 
     const rawFiltered = logs.filter((log) => {
       const searchHaystack = [
+        getDisplayMallName(log, currentMall),
         getDisplayLocalName(log),
-        getDisplayChannel(log) || '',
+        getDisplayChannel(log),
         getDisplayFileName(log),
         log.batch_id || '',
         getReadableMessage(log),
@@ -215,7 +231,7 @@ export const LoadMonitor: React.FC = () => {
     }
 
     return result;
-  }, [logs, searchTerm, dateRange, statusFilter]);
+  }, [logs, searchTerm, dateRange, statusFilter, currentMall]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -239,22 +255,12 @@ export const LoadMonitor: React.FC = () => {
   const isExecutionFailure = selectedLogStatus === 'error' && !hasLineErrors;
   const selectedOperationalMessage = describeLoadLog(selectedLog);
 
-  const selectedSummaryItems = [
-    { label: 'Estado Final', value: getStatusBadge(selectedLog as LoadLogEntry) },
-    { label: 'Local', value: getDisplayLocalName(selectedLog), subtle: selectedLog?.local_id || undefined },
-    { label: 'Registros Procesados', value: `${getProcessedCount(selectedLog)} registros` },
-    { label: 'Errores', value: `${getErrorCount(selectedLog)} errores` },
-    { label: 'Fecha y Hora', value: formatDateTime(selectedLog?.fecha_hora) },
-    ...(selectedLog?.batch_id ? [{ label: 'Batch ID', value: selectedLog.batch_id, subtle: selectedLog.batch_id }] : []),
-    ...(getDisplayChannel(selectedLog) ? [{ label: 'Vía de Carga', value: getDisplayChannel(selectedLog) as string }] : []),
-  ];
-
   return (
-    <div className="space-y-4 animate-in fade-in duration-500">
+    <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex justify-between items-center">
         <div>
-          <h2 className="text-xl font-bold text-slate-800">Monitor de Cargas (TIC)</h2>
-          <p className="text-slate-500">Auditoría en tiempo real de la ingesta de datos. Por defecto muestra hasta los últimos 5 días.</p>
+          <h2 className="text-2xl font-bold text-slate-800">Monitor de Cargas (TIC)</h2>
+          <p className="text-slate-500">Auditoria en tiempo real de la ingesta de datos.</p>
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -273,10 +279,10 @@ export const LoadMonitor: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard title="Cargas Exitosas" count={stats.exito} icon={CheckCircle2} color="text-green-600" bgColor="bg-green-50" />
-        <StatCard title="Cargas con Errores" count={stats.parcial + stats.error} icon={AlertCircle} color="text-amber-600" bgColor="bg-amber-50" />
-        <StatCard title="Cargas últimos 5 días" count={stats.total} icon={FileText} color="text-indigo-600" bgColor="bg-indigo-50" />
+        <StatCard title="Cargas Parciales" count={stats.parcial} icon={AlertCircle} color="text-amber-600" bgColor="bg-amber-50" />
+        <StatCard title="Cargas Fallidas" count={stats.error} icon={XCircle} color="text-red-600" bgColor="bg-red-50" />
         <StatCard title="Ultima Actualizacion" count={new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} icon={Clock} color="text-slate-600" bgColor="bg-slate-50" />
       </div>
 
@@ -285,7 +291,7 @@ export const LoadMonitor: React.FC = () => {
           <Search size={18} className="text-slate-400" />
           <input
             type="text"
-            placeholder="Buscar por local, archivo o batch..."
+            placeholder="Buscar por mall, local, via, archivo o batch..."
             className="bg-transparent border-none outline-none text-sm w-full"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
@@ -316,7 +322,7 @@ export const LoadMonitor: React.FC = () => {
             onChange={(e) => setStatusFilter(e.target.value as MonitorStatusFilter)}
           >
             <option value="all">Todos los Estados</option>
-            <option value="exito">Solo Éxito</option>
+            <option value="exito">Solo Exito</option>
             <option value="parcial">Solo Parcial</option>
             <option value="error">Solo Fallidos</option>
           </select>
@@ -324,32 +330,34 @@ export const LoadMonitor: React.FC = () => {
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="max-h-[calc(100dvh-19rem)] min-h-[260px] overflow-auto">
-          <table className="w-full text-left">
-            <thead className="sticky top-0 z-10 bg-slate-50/95 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left min-w-[1200px]">
+            <thead className="bg-slate-50/50 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
               <tr>
-                <th className="px-3 py-2.5">Fecha / Hora</th>
-                <th className="px-3 py-2.5">Local</th>
-                <th className="px-3 py-2.5">Archivo</th>
-                <th className="px-3 py-2.5">Estado</th>
-                <th className="px-3 py-2.5">Mensaje</th>
-                <th className="px-3 py-2.5 text-right">Accion</th>
+                <th className="px-6 py-4">Fecha / Hora</th>
+                <th className="px-6 py-4">Mall / Local</th>
+                <th className="px-6 py-4">Via</th>
+                <th className="px-6 py-4">Archivo / Batch</th>
+                <th className="px-6 py-4">Estado</th>
+                <th className="px-6 py-4">Registros</th>
+                <th className="px-6 py-4">Mensaje</th>
+                <th className="px-6 py-4 text-right">Accion</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading && logs.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-10 text-center">
+                  <td colSpan={8} className="px-6 py-20 text-center">
                     <div className="flex flex-col items-center gap-2">
                       <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-                      <span className="text-slate-500 text-sm">Cargando logs de auditoría...</span>
+                      <span className="text-slate-500 text-sm">Cargando logs de auditoria...</span>
                     </div>
                   </td>
                 </tr>
               ) : filteredLogs.length > 0 ? (
                 paginatedLogs.map((log) => (
                   <tr key={String(log.id)} className="hover:bg-slate-50/80 transition-colors group">
-                    <td className="px-3 py-2.5 whitespace-nowrap">
+                    <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-slate-700">{formatDate(log.fecha_hora)}</div>
                       <div className="text-[10px] text-slate-400">
                         {safeDate(log.fecha_hora)?.toLocaleTimeString() || 'Sin hora'}
@@ -360,33 +368,45 @@ export const LoadMonitor: React.FC = () => {
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5">
-                      <div className="flex items-center gap-2 text-sm font-bold text-slate-800">
-                        <Store size={14} className="text-slate-400" />
-                        {getDisplayLocalName(log)}
+                    <td className="px-6 py-4">
+                      <div className="flex items-start gap-3">
+                        <Building2 size={15} className="text-slate-400 mt-0.5" />
+                        <div>
+                          <div className="text-sm font-bold text-slate-800">{getDisplayMallName(log, currentMall)}</div>
+                          <div className="text-xs text-slate-500 flex items-center gap-1.5 mt-1">
+                            <Store size={12} />
+                            <span>{getDisplayLocalName(log)}</span>
+                          </div>
+                        </div>
                       </div>
                     </td>
-                    <td className="px-3 py-2.5">
-                      <div className="text-sm text-slate-700">{getDisplayFileName(log)}</div>
-                      <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-slate-500">
-                        {getDisplayChannel(log) && (
-                          <span className="inline-flex items-center rounded-full bg-slate-100 text-slate-700 px-2 py-0.5 font-semibold">
-                            {getDisplayChannel(log)}
-                          </span>
-                        )}
-                        {log.batch_id && <span>Batch: {truncateMiddle(log.batch_id, 8, 6)}</span>}
+                    <td className="px-6 py-4">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-semibold">
+                        <Waypoints size={12} />
+                        {getDisplayChannel(log)}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="text-sm font-medium text-slate-700">{getDisplayFileName(log)}</div>
+                      <div className="text-xs text-slate-500 flex items-center gap-1.5 mt-1">
+                        <Hash size={12} />
+                        <span>{log.batch_id ? truncateMiddle(log.batch_id, 8, 6) : 'Sin batch_id'}</span>
                       </div>
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-6 py-4">
                       {getStatusBadge(log)}
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-6 py-4">
+                      <div className="text-sm font-bold text-slate-800">{getProcessedCount(log)} registros</div>
+                      <div className="text-xs text-slate-500">{getErrorCount(log)} errores</div>
+                    </td>
+                    <td className="px-6 py-4">
                       <div className="max-w-sm" title={getReadableMessage(log)}>
                         <div className="text-xs font-bold text-slate-700">{describeLoadLog(log).title}</div>
                         <div className="text-xs text-slate-500 line-clamp-2">{describeLoadLog(log).summary}</div>
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-right">
+                    <td className="px-6 py-4 text-right">
                       <button
                         onClick={() => setSelectedLog(log)}
                         className="text-xs font-bold text-indigo-600 hover:text-indigo-800 underline"
@@ -398,7 +418,7 @@ export const LoadMonitor: React.FC = () => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={6} className="px-6 py-10 text-center text-slate-400 italic">
+                  <td colSpan={8} className="px-6 py-20 text-center text-slate-400 italic">
                     No se encontraron registros de carga.
                   </td>
                 </tr>
@@ -440,11 +460,13 @@ export const LoadMonitor: React.FC = () => {
 
       {selectedLog && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-4xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
               <div>
                 <h3 className="text-xl font-bold text-slate-800">Detalle de Carga</h3>
-                <p className="text-sm text-slate-500">{getDisplayFileName(selectedLog)} - {getDisplayLocalName(selectedLog)}</p>
+                <p className="text-sm text-slate-500">
+                  {getDisplayFileName(selectedLog)} · {getDisplayLocalName(selectedLog)}
+                </p>
               </div>
               <button
                 onClick={() => setSelectedLog(null)}
@@ -454,11 +476,17 @@ export const LoadMonitor: React.FC = () => {
               </button>
             </div>
 
-            <div className="p-4 overflow-y-auto flex-1 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {selectedSummaryItems.map((item) => (
-                  <SummaryTile key={item.label} label={item.label} value={item.value} subtle={item.subtle} />
-                ))}
+            <div className="p-6 overflow-y-auto flex-1 space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                <SummaryTile label="Estado Final" value={getStatusBadge(selectedLog)} />
+                <SummaryTile label="Mall" value={getDisplayMallName(selectedLog, currentMall)} subtle={selectedLog.mall_id || undefined} />
+                <SummaryTile label="Local" value={getDisplayLocalName(selectedLog)} subtle={selectedLog.local_id || undefined} />
+                <SummaryTile label="Via de Carga" value={getDisplayChannel(selectedLog)} />
+                <SummaryTile label="Archivo" value={getDisplayFileName(selectedLog)} />
+                <SummaryTile label="Batch ID" value={selectedLog.batch_id || 'No aplica'} subtle={selectedLog.batch_id || undefined} />
+                <SummaryTile label="Registros Procesados" value={`${getProcessedCount(selectedLog)} registros`} />
+                <SummaryTile label="Errores" value={`${getErrorCount(selectedLog)} errores`} />
+                <SummaryTile label="Fecha y Hora" value={formatDateTime(selectedLog.fecha_hora)} />
               </div>
 
               <div className="p-5 rounded-2xl bg-indigo-50 border border-indigo-100">
@@ -483,10 +511,10 @@ export const LoadMonitor: React.FC = () => {
                 <h4 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-2">
                   <AlertCircle size={16} className={isExecutionFailure ? 'text-red-500' : 'text-amber-500'} />
                   {hasLineErrors
-                    ? `Resultado de Validación (${selectedLogErrors.length} errores)`
+                    ? `Resultado de Validacion (${selectedLogErrors.length} errores)`
                     : isExecutionFailure
                       ? selectedOperationalMessage.title
-                      : 'Resultado de Validación'}
+                      : 'Resultado de Validacion'}
                 </h4>
 
                 {hasLineErrors ? (
@@ -510,15 +538,15 @@ export const LoadMonitor: React.FC = () => {
                     </p>
                   </div>
                 ) : (
-                  <div className="p-4 text-center bg-green-50 rounded-2xl border border-green-100">
+                  <div className="p-8 text-center bg-green-50 rounded-2xl border border-green-100">
                     <CheckCircle2 size={32} className="text-green-500 mx-auto mb-2" />
-                    <p className="text-sm text-green-700 font-medium">No se encontraron errores en las líneas del archivo.</p>
+                    <p className="text-sm text-green-700 font-medium">No se encontraron errores en la validacion del archivo o batch.</p>
                   </div>
                 )}
               </div>
             </div>
 
-            <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex justify-end">
+            <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex justify-end">
               <button
                 onClick={() => setSelectedLog(null)}
                 className="px-6 py-2 rounded-xl bg-slate-800 text-white font-bold hover:bg-slate-900 transition-all active:scale-95"

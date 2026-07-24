@@ -48,25 +48,6 @@ const decimalSeparatorKey = '_decimal_separator';
 const movingWindowModeKey = '_moving_window_mode';
 const removeSpecialCharsKey = '_remove_special_chars';
 const specialCharsToRemoveKey = '_special_chars_to_remove';
-const webserviceDataPathKey = '_webservice_data_path';
-const webservicePageParamKey = '_webservice_page_param';
-const webserviceStartPageKey = '_webservice_start_page';
-const webserviceMaxPagesKey = '_webservice_max_pages';
-const webserviceTimeoutKey = '_webservice_timeout_seconds';
-const studioGDateModeKey = '_studio_g_date_mode';
-const studioGStartDateKey = '_studio_g_fecha_inicio';
-const studioGEndDateKey = '_studio_g_fecha_fin';
-
-const studioGDateModes = [
-  { id: 'yesterday', label: 'Día anterior' },
-  { id: 'today', label: 'Hoy' },
-  { id: 'current_month', label: 'Mes actual' },
-  { id: 'last_30_days', label: 'Últimos 30 días' },
-  { id: 'custom', label: 'Rango' }
-] as const;
-
-const isWebserviceProtocol = (protocol?: ImportProtocol | string) =>
-  ['WEBSERVICE', 'API'].includes(String(protocol || '').toUpperCase());
 
 const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
   const mode = config.constants?.[fieldModeKey(fieldKey)];
@@ -764,8 +745,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     try {
       const logs = await ApiService.getLoadLogs(currentMall.id, authToken);
       const localId = String(config.id || '');
+      const localName = String(config.nombre || '').trim().toLowerCase();
       const filteredLogs = (logs || [])
-        .filter((log) => localId && String(log.local_id || '') === localId)
+        .filter((log) => {
+          const logLocalId = String(log.local_id || '');
+          const logLocalName = String(log.local_nombre || '').trim().toLowerCase();
+          return (localId && logLocalId === localId) || (localName && logLocalName === localName);
+        })
         .slice(0, 30);
 
       setAuditLogs(filteredLogs);
@@ -817,49 +803,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     } finally {
       console.log("Finalizando estado de prueba.");
       setTestingConnection(false);
-    }
-  };
-
-  const handleAnalyzeWebserviceFields = async () => {
-    if (!isWebserviceProtocol(editingConfig.protocolo)) return;
-    if (!editingConfig.host) {
-      alert("Completa el endpoint del Webservice antes de leer campos.");
-      return;
-    }
-
-    setFetchingHeaders(true);
-    try {
-      const analysis = await ApiService.analyzeRemoteMapping(
-        { ...editingConfig, tipo_archivo: 'JSON' },
-        tempPassword || editingConfig.password,
-        undefined,
-        authToken
-      );
-      const headers = analysis.csv_headers || analysis.headers || [];
-      const suggested = analysis.suggested_mapping || {};
-      const suggestedMapping = Object.entries(suggested).reduce((acc, [field, value]: [string, any]) => {
-        const header = value?.csv_header || value;
-        if (header) acc[field] = String(header);
-        return acc;
-      }, {} as Record<string, string>);
-
-      setRemoteHeaders(headers);
-      setEditingConfig(prev => ({
-        ...prev,
-        mapping: { ...(prev.mapping || {}), ...suggestedMapping }
-      }));
-      setSelectedFilePreview({
-        filename: 'WEBSERVICE_API',
-        lines: Object.entries(analysis.sample_row || {}).map(([key, value]) => `${key}: ${String(value ?? '')}`),
-        analysisType: 'JSON',
-        detectedDelimiter: null,
-        detectedHasHeader: true
-      });
-      alert(`Campos detectados: ${headers.length}`);
-    } catch (error: any) {
-      alert(`No se pudieron leer los campos del Webservice: ${error.message || error}`);
-    } finally {
-      setFetchingHeaders(false);
     }
   };
 
@@ -937,16 +880,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const handleSave = async () => {
     // Validar mapeo mínimo
 
-    if (!editingConfig.id) {
-      alert('Selecciona el local existente al que pertenece este importador.');
-      return;
-    }
-    const selectedStore = availableStores.find((store) => String(store.id) === String(editingConfig.id));
-    if (!selectedStore) {
-      alert('El local seleccionado no está activo o no pertenece al mall actual.');
-      return;
-    }
-
     const missing = STANDARD_FIELDS.filter(f => f.required && !hasFieldMappingValue(editingConfig, f.key));
     if (missing.length > 0) {
       alert(`Faltan campos obligatorios en el mapeo: ${missing.map(m => m.label).join(', ')}`);
@@ -959,19 +892,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
     if (isAutomated && looksLikeFile) {
       if (!confirm(`Advertencia: Has configurado una frecuencia automática (${editingConfig.frecuencia}) pero la ruta parece ser un archivo específico (${editingConfig.ruta_remota}).\n\nPara automatización, generalmente se debe apuntar a la CARPETA donde llegarán los nuevos archivos.\n\n¿Deseas continuar de todos modos?`)) {
-        return;
-      }
-    }
-
-    if (editingConfig.protocolo === 'API' && editingConfig.constants?.[studioGDateModeKey] === 'custom') {
-      const startDate = editingConfig.constants?.[studioGStartDateKey];
-      const endDate = editingConfig.constants?.[studioGEndDateKey];
-      if (!startDate || !endDate) {
-        alert('Selecciona fecha inicio y fecha fin para el rango de consulta API.');
-        return;
-      }
-      if (startDate > endDate) {
-        alert('La fecha inicio no puede ser posterior a la fecha fin.');
         return;
       }
     }
@@ -1101,60 +1021,12 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     }
   };
 
-  const executeWebserviceNow = async (config: ImportConfig) => {
-    const protocolLabel = config.protocolo === 'API' ? 'API' : 'Webservice';
-    setShowManualModal(false);
-    setSyncingId(config.id);
-    setExecutingFile('WEBSERVICE_API');
-    setShowProgressModal(true);
-    setProgressStep('downloading');
-    setProgressMessage(`Conectando al ${protocolLabel} configurado...`);
-    setProgressRecords(0);
-
-    try {
-      setProgressStep('inserting');
-      setProgressMessage(`Consultando ${protocolLabel} e insertando ventas en la base de datos...`);
-
-      const result = await ApiService.executeManualImport(
-        config,
-        'WEBSERVICE_API',
-        authToken
-      );
-
-      const records = Number(result?.records_processed || 0);
-      setProgressRecords(records);
-
-      if (result.status === 'success' || result.status === 'partial') {
-        setProgressStep('complete');
-        setProgressMessage(result.message || `✅ ${protocolLabel} ejecutado: ${records} ventas procesadas`);
-        await loadConfigs();
-        setTimeout(() => {
-          setShowProgressModal(false);
-        }, 3000);
-      } else {
-        setProgressStep('error');
-        setProgressMessage(result.message || `❌ Error ejecutando ${protocolLabel}`);
-      }
-    } catch (error: any) {
-      setProgressStep('error');
-      setProgressMessage(`❌ Error ejecutando ${protocolLabel}: ${error.message || error}`);
-    } finally {
-      setExecutingFile(null);
-      setSyncingId(null);
-    }
-  };
-
-  const handleSyncNow = async (id: string, name: string, runtimeConfig?: ImportConfig) => {
+  const handleSyncNow = async (id: string, name: string) => {
     resetManualExecutionState();
     setActiveConfigId(id);
-    const config = runtimeConfig || configs.find(c => c.id === id);
+    const config = configs.find(c => c.id === id);
     if (!config) {
       alert("Configuración no encontrada.");
-      return;
-    }
-
-    if (isWebserviceProtocol(config.protocolo)) {
-      await executeWebserviceNow(config);
       return;
     }
 
@@ -1198,11 +1070,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   };
 
   const maskToRegex = (rawMask: string): RegExp => {
-    const trimmed = String(rawMask || '*').trim() || '*';
-    const normalized = (
-      (trimmed.startsWith('"') && trimmed.endsWith('"'))
-      || (trimmed.startsWith("'") && trimmed.endsWith("'"))
-    ) ? trimmed.slice(1, -1).trim() || '*' : trimmed;
+    const normalized = String(rawMask || '*').trim() || '*';
     const wildcardMask = normalized.replace(/%/g, '*');
     // Escape regex tokens first, then restore wildcard semantics for * and ?.
     const escaped = wildcardMask.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
@@ -1217,7 +1085,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
   const filteredBatchCandidates = useMemo(() => {
     const matcher = maskToRegex(batchMask);
-    const nonProcessed = (manualFiles || []).filter((f) => !/^PR_/i.test(f.nombre));
+    const nonProcessed = (manualFiles || []).filter((f) => !/^(PR_|ERR_)/i.test(f.nombre));
     const matched = nonProcessed.filter((f) => matcher.test(f.nombre));
     return matched.sort((a, b) => {
       const at = new Date(a.fecha).getTime();
@@ -1227,20 +1095,12 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     });
   }, [manualFiles, batchMask]);
 
-  const formatRemoteFileSize = (rawSize: number): string => {
-    const size = Number(rawSize);
-    if (!Number.isFinite(size) || size <= 0) return 'No reportado';
-    if (size < 1024) return `${Math.trunc(size)} B`;
-    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
   const resolveProcessedCountFromLogs = async (config: ImportConfig, filename: string): Promise<number | null> => {
     try {
       const logs = await ApiService.getLoadLogs(currentMall?.id, authToken);
       const targetLog = (logs || []).find((log: any) =>
         log?.archivo === filename &&
-        String(log?.local_id || '') === String(config.id || '') &&
+        log?.local_nombre === config.nombre &&
         (log?.estado === 'exito' || log?.estado === 'parcial')
       );
 
@@ -1296,14 +1156,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     if (!config) return;
     const targetFile = (manualFiles || []).find((file) => file.nombre === filename);
     const isLargeRemoteFile = Number(targetFile?.tamano || 0) >= 15 * 1024 * 1024;
-    const isWebservice = isWebserviceProtocol(config.protocolo);
     const analysisTimeoutMs = (isLargeRemoteFile || filename.toLowerCase().endsWith('.json')) ? 420000 : 180000;
     const mappingReady = hasRequiredMapping(config);
 
     setExecutingFile(filename);
     setShowProgressModal(true);
     setProgressStep('downloading');
-    setProgressMessage(isWebservice ? 'Conectando al Webservice...' : `Conectando al servidor y descargando ${filename}...`);
+    setProgressMessage(`Conectando al servidor y descargando ${filename}...`);
     setProgressRecords(0);
 
     try {
@@ -1316,14 +1175,12 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
             ? 'Analizando estructura del archivo grande. La primera carga puede tardar varios minutos...'
             : 'Analizando estructura del archivo...'
         );
-        const analysis = isWebservice
-          ? await ApiService.analyzeRemoteMapping(config, config.password, undefined, authToken)
-          : await ApiService.analyzeSingleFile(
-            config,
-            filename,
-            authToken,
-            { timeoutMs: analysisTimeoutMs }
-          );
+        const analysis = await ApiService.analyzeSingleFile(
+          config,
+          filename,
+          authToken,
+          { timeoutMs: analysisTimeoutMs }
+        );
 
         if (!hasDataRowsInAnalysis(analysis)) {
           const previewLines = Array.isArray(analysis?.raw_preview_lines)
@@ -1372,9 +1229,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       console.log("Mapeo completo, procesando directamente");
       setProgressStep('inserting');
       setProgressMessage(
-        isWebservice
-          ? 'Consultando Webservice e insertando ventas en la base de datos...'
-          : isLargeRemoteFile
+        isLargeRemoteFile
           ? 'Procesando archivo grande e insertando registros. Esto puede tardar varios minutos...'
           : 'Procesando e insertando registros en la base de datos...'
       );
@@ -1875,7 +1730,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
             if (onCloseWebserviceModal) onCloseWebserviceModal();
           }}
         />
-        <div className="relative h-full w-full p-4 md:p-4 lg:p-4 flex items-center justify-center">
+        <div className="relative h-full w-full p-4 md:p-6 lg:p-8 flex items-center justify-center">
           <div className="relative w-full max-w-7xl max-h-[92vh] overflow-y-auto">
             <button
               type="button"
@@ -1897,13 +1752,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in duration-500">
+    <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-xl font-bold text-slate-800">Importación Automatizada</h2>
+          <h2 className="text-2xl font-bold text-slate-800">Importación Automatizada</h2>
           <p className="text-slate-500 text-sm">Configure conexiones directas vía FTP/SFTP para auditoría automática.</p>
         </div>
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full md:w-auto">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full md:w-auto">
           <div className="relative w-full sm:w-72">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
@@ -1911,7 +1766,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               value={connectionSearchTerm}
               onChange={(e) => setConnectionSearchTerm(e.target.value)}
               placeholder="Buscar conexión..."
-              className="h-10 w-full rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-xs font-medium text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+              className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm font-medium text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
             />
           </div>
           <div className="inline-flex items-center bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
@@ -1939,7 +1794,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
           <button
             onClick={openNewConnectionDrawer}
-            className="h-10 bg-indigo-600 text-white px-4 rounded-xl flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 active:scale-95 text-xs font-bold whitespace-nowrap"
+            className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 active:scale-95 font-medium whitespace-nowrap"
           >
             <Plus size={18} />
             Nueva Conexión
@@ -1954,7 +1809,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               className="w-full lg:w-[1120px] h-full bg-white border-l border-indigo-100 shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="bg-slate-50 border-b border-slate-100 p-4 flex justify-between items-center sticky top-0 z-10">
+              <div className="bg-slate-50 border-b border-slate-100 p-6 flex justify-between items-center sticky top-0 z-10">
             <div className="flex items-center gap-4">
               <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold ${activeStep === 1 ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
                 1. Conexión
@@ -1968,9 +1823,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           </div>
 
               <div className="flex-1 overflow-y-auto">
-                <div className="p-4">
+                <div className="p-8">
             {activeStep === 1 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="space-y-5">
                   <div className="bg-indigo-50/50 p-4 rounded-2xl border border-indigo-100 mb-6">
                     <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest mb-1.5 flex items-center gap-2">
@@ -2010,30 +1865,28 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         }
                       }}
                     >
-                      <option value="">-- Seleccionar local registrado --</option>
+                      <option value="">-- Nuevo Local (Crear al guardar) --</option>
                       {(availableStores || []).map(s => (
                         <option key={s.id} value={s.id}>{s.nombre} ({s.codigo_interno})</option>
                       ))}
                     </select>
-                    <p className="text-[10px] text-slate-400 mt-2 italic">La conexión se guarda por UUID; el nombre y el código solo ayudan a identificar el local.</p>
+                    <p className="text-[10px] text-slate-400 mt-2 italic">Recomendado: Seleccione un local ya registrado para evitar duplicados.</p>
                   </div>
 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 flex justify-between items-center">
-                      <span>Local vinculado</span>
+                      <span>Nombre de la Fuente / Conexión</span>
                       {editingConfig.id && <span className="text-[9px] bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded">Vinculado a ID: {editingConfig.id.substring(0, 8)}...</span>}
                     </label>
                     <input
-                      type="text"
-                      placeholder="Selecciona un local registrado"
+                      type="text" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none font-medium"
+                      placeholder="Ej: Nike Store - SFTP Principal"
                       value={editingConfig.nombre}
-                      readOnly
-                      aria-readonly="true"
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-600 outline-none font-medium"
+                      onChange={e => setEditingConfig({ ...editingConfig, nombre: e.target.value })}
                     />
                   </div>
 
-                  {editingConfig.protocolo !== 'LOCAL' && !isWebserviceProtocol(editingConfig.protocolo) && (
+                  {editingConfig.protocolo !== 'LOCAL' && (
                     <div className="p-3 rounded-xl border border-indigo-100 bg-indigo-50/50 space-y-2">
                       <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest">
                         Conexiones Guardadas (FTP/SFTP)
@@ -2082,30 +1935,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           const nextProtocol = e.target.value as ImportProtocol;
                           if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
                           if (nextProtocol !== 'LOCAL') setBrowserFilesSelection(null);
-                          const nextConstants = { ...(editingConfig.constants || {}) };
-                          if (isWebserviceProtocol(nextProtocol)) {
-                            nextConstants[webservicePageParamKey] = nextConstants[webservicePageParamKey] || 'page';
-                            nextConstants[webserviceStartPageKey] = nextConstants[webserviceStartPageKey] || '1';
-                            nextConstants[webserviceMaxPagesKey] = nextConstants[webserviceMaxPagesKey] || '50';
-                            nextConstants[webserviceTimeoutKey] = nextConstants[webserviceTimeoutKey] || '45';
-                          }
-                          if (nextProtocol === 'API') {
-                            nextConstants[studioGDateModeKey] = nextConstants[studioGDateModeKey] || 'yesterday';
-                          }
-                          setEditingConfig({
-                            ...editingConfig,
-                            protocolo: nextProtocol,
-                            puerto: nextProtocol === 'SFTP' ? 22 : isWebserviceProtocol(nextProtocol) ? 443 : 21,
-                            tipo_archivo: isWebserviceProtocol(nextProtocol) ? 'JSON' : editingConfig.tipo_archivo,
-                            accion_post_procesado: isWebserviceProtocol(nextProtocol) ? 'NINGUNA' : editingConfig.accion_post_procesado,
-                            constants: nextConstants
-                          });
+                          setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : 21 });
                         }}
                       >
                         <option value="SFTP">SFTP (SSH File Transfer)</option>
                         <option value="FTP">FTP (Estándar)</option>
-                        <option value="WEBSERVICE">Webservice API</option>
-                        <option value="API">API REST</option>
                         <option value="LOCAL">Directorio local (servidor)</option>
                       </select>
                     </div>
@@ -2128,14 +1962,12 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   </div>
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                        {editingConfig.protocolo === 'API' ? 'URL Base API' : isWebserviceProtocol(editingConfig.protocolo) ? 'Endpoint Webservice' : 'Host del Servidor'}
-                      </label>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Host del Servidor</label>
                       <div className="relative">
                         <Globe size={18} className="absolute left-3.5 top-3 text-slate-300" />
                         <input
                           type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                          placeholder={editingConfig.protocolo === 'API' ? 'https://alcagora.ddns.net' : isWebserviceProtocol(editingConfig.protocolo) ? 'https://apisuba.kation.com.do/api/external/v1/invoices' : 'sftp.tu-tienda.com'}
+                          placeholder="sftp.tu-tienda.com"
                           value={editingConfig.host}
                           onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
                         />
@@ -2176,10 +2008,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           onClick={() => setEditingConfig({
                             ...editingConfig,
                             frecuencia: freq.id as any,
-                            tipo_ejecucion: freq.mode as any,
-                            hora_especifica: freq.id === 'hora_especifica'
-                              ? (editingConfig.hora_especifica || '08:00')
-                              : editingConfig.hora_especifica
+                            tipo_ejecucion: freq.mode as any
                           })}
                           className={`py-2 px-3 rounded-xl border-2 font-bold text-[11px] transition-all text-left flex items-center gap-2 ${editingConfig.frecuencia === freq.id
                             ? 'border-indigo-600 bg-indigo-50 text-indigo-600'
@@ -2206,26 +2035,22 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 <div className="space-y-5">
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                        {editingConfig.protocolo === 'API' ? 'Autenticación Client Credentials' : isWebserviceProtocol(editingConfig.protocolo) ? 'Autenticación Bearer' : 'Credenciales de Acceso'}
-                      </label>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Credenciales de Acceso</label>
                       <div className="space-y-3">
-                        {(!isWebserviceProtocol(editingConfig.protocolo) || editingConfig.protocolo === 'API') && (
-                          <div className="relative">
-                            <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
-                            <input
-                              type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                              placeholder={editingConfig.protocolo === 'API' ? 'Client ID' : 'Nombre de usuario'}
-                              value={editingConfig.usuario}
-                              onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
-                            />
-                          </div>
-                        )}
+                        <div className="relative">
+                          <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
+                          <input
+                            type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
+                            placeholder="Nombre de usuario"
+                            value={editingConfig.usuario}
+                            onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
+                          />
+                        </div>
                         <div className="relative">
                           <Key size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="password" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder={editingConfig.protocolo === 'API' ? 'Client Secret' : isWebserviceProtocol(editingConfig.protocolo) ? 'Token Bearer' : 'Contraseña o Frase de paso SSH'}
+                            placeholder="Contraseña o Frase de paso SSH"
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}
                           />
@@ -2233,139 +2058,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       </div>
                     </div>
                   )}
-                  {editingConfig.protocolo === 'API' && (
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">ID TPV</label>
-                      <input
-                        type="text"
-                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                        placeholder="AFB"
-                        value={editingConfig.ruta_remota}
-                        onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
-                      />
-                    </div>
-                  )}
-                  {editingConfig.protocolo === 'API' && (
-                    <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
-                      <div>
-                        <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Periodo de consulta API</p>
-                        <p className="text-xs text-cyan-700 mt-1">Define qué fechas pedirá Studio G al procesar esta conexión.</p>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        {studioGDateModes.map((mode) => (
-                          <button
-                            key={mode.id}
-                            type="button"
-                            onClick={() => setEditingConfig({
-                              ...editingConfig,
-                              constants: {
-                                ...editingConfig.constants,
-                                [studioGDateModeKey]: mode.id
-                              }
-                            })}
-                            className={`px-3 py-2 rounded-xl border text-xs font-bold transition-all text-left ${((editingConfig.constants?.[studioGDateModeKey] || 'yesterday') === mode.id)
-                              ? 'border-cyan-500 bg-white text-cyan-700 shadow-sm'
-                              : 'border-cyan-100 bg-white/70 text-slate-500 hover:bg-white'
-                            }`}
-                          >
-                            {mode.label}
-                          </button>
-                        ))}
-                      </div>
-                      {(editingConfig.constants?.[studioGDateModeKey] || 'yesterday') === 'custom' && (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
-                            Fecha inicio
-                            <input
-                              type="date"
-                              className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
-                              value={editingConfig.constants?.[studioGStartDateKey] || ''}
-                              max={editingConfig.constants?.[studioGEndDateKey] || undefined}
-                              onChange={e => setEditingConfig({
-                                ...editingConfig,
-                                constants: { ...editingConfig.constants, [studioGStartDateKey]: e.target.value }
-                              })}
-                            />
-                          </label>
-                          <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
-                            Fecha fin
-                            <input
-                              type="date"
-                              className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
-                              value={editingConfig.constants?.[studioGEndDateKey] || ''}
-                              min={editingConfig.constants?.[studioGStartDateKey] || undefined}
-                              onChange={e => setEditingConfig({
-                                ...editingConfig,
-                                constants: { ...editingConfig.constants, [studioGEndDateKey]: e.target.value }
-                              })}
-                            />
-                          </label>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {isWebserviceProtocol(editingConfig.protocolo) && (
-                    <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
-                      <div>
-                        <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Parámetros Webservice</p>
-                        <p className="text-xs text-cyan-700 mt-1">Configura paginación y dónde está la lista de ventas dentro del JSON.</p>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
-                          Ruta JSON de datos
-                          <input
-                            type="text"
-                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
-                            placeholder="Ej: data, results, invoices"
-                            value={editingConfig.constants?.[webserviceDataPathKey] || ''}
-                            onChange={e => setEditingConfig({
-                              ...editingConfig,
-                              constants: { ...editingConfig.constants, [webserviceDataPathKey]: e.target.value }
-                            })}
-                          />
-                        </label>
-                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
-                          Parámetro de página
-                          <input
-                            type="text"
-                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
-                            value={editingConfig.constants?.[webservicePageParamKey] || 'page'}
-                            onChange={e => setEditingConfig({
-                              ...editingConfig,
-                              constants: { ...editingConfig.constants, [webservicePageParamKey]: e.target.value || 'page' }
-                            })}
-                          />
-                        </label>
-                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
-                          Página inicial
-                          <input
-                            type="number"
-                            min={1}
-                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
-                            value={editingConfig.constants?.[webserviceStartPageKey] || '1'}
-                            onChange={e => setEditingConfig({
-                              ...editingConfig,
-                              constants: { ...editingConfig.constants, [webserviceStartPageKey]: e.target.value || '1' }
-                            })}
-                          />
-                        </label>
-                        <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
-                          Máximo de páginas
-                          <input
-                            type="number"
-                            min={1}
-                            className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
-                            value={editingConfig.constants?.[webserviceMaxPagesKey] || '50'}
-                            onChange={e => setEditingConfig({
-                              ...editingConfig,
-                              constants: { ...editingConfig.constants, [webserviceMaxPagesKey]: e.target.value || '50' }
-                            })}
-                          />
-                        </label>
-                      </div>
-                    </div>
-                  )}
-                  {!isWebserviceProtocol(editingConfig.protocolo) && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
                       {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio (Servidor)' : 'Ruta Remota de Archivos'}
@@ -2417,11 +2109,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       </div>
                     )}
                   </div>
-                  )}
 
                   <div>
-                    {!isWebserviceProtocol(editingConfig.protocolo) && (
-                    <>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Acción Post-Procesado</label>
                     <div className="space-y-2">
                       {[
@@ -2457,8 +2146,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         </div>
                       ))}
                     </div>
-                    </>
-                    )}
                   </div>
 
                   {editingConfig.protocolo !== 'LOCAL' && (
@@ -2470,20 +2157,17 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         className="w-full py-2.5 border-2 border-indigo-50 text-indigo-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors disabled:opacity-50 shadow-sm"
                       >
                         {testingConnection ? <RefreshCw className="animate-spin" size={18} /> : <Play size={16} fill="currentColor" />}
-                        {testingConnection ? 'Verificando red...' : isWebserviceProtocol(editingConfig.protocolo) ? 'Probar Webservice' : 'Probar Conexión'}
+                        {testingConnection ? 'Verificando red...' : 'Probar Conexión'}
                       </button>
 
                       {editingConfig.frecuencia === 'manual' && editingConfig.id && (
                         <button
                           type="button"
-                          onClick={() => handleSyncNow(editingConfig.id, editingConfig.nombre, {
-                            ...editingConfig,
-                            password: tempPassword || editingConfig.password
-                          })}
+                          onClick={() => handleSyncNow(editingConfig.id, editingConfig.nombre)}
                           className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-600 transition-all shadow-lg active:scale-95 group"
                         >
                           <Database size={18} className="text-indigo-400 group-hover:text-white transition-colors" />
-                          {isWebserviceProtocol(editingConfig.protocolo) ? 'Ejecutar Webservice ahora' : 'Listar y Procesar Archivos'}
+                          Listar y Procesar Archivos
                         </button>
                       )}
                     </div>
@@ -2491,7 +2175,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 </div>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-6">
                 <div className="flex justify-between items-center mb-6">
                   <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100 flex gap-4 text-indigo-700 items-start flex-1">
                     <div className="p-2 bg-indigo-600 rounded-lg text-white">
@@ -2507,10 +2191,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
                   <button
                     onClick={() => {
-                      if (isWebserviceProtocol(editingConfig.protocolo)) {
-                        handleAnalyzeWebserviceFields();
-                        return;
-                      }
                       console.log("Button 'Seleccionar Archivo Ejemplo' clicked");
                       handleOpenExplorer(editingConfig.ruta_remota);
                     }}
@@ -2518,7 +2198,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                     disabled={fetchingHeaders}
                   >
                     {fetchingHeaders ? <RefreshCw className="animate-spin" size={16} /> : <FileSearch size={16} />}
-                    {fetchingHeaders ? 'Leyendo...' : isWebserviceProtocol(editingConfig.protocolo) ? 'Leer campos Webservice' : 'Seleccionar Archivo'}
+                    {fetchingHeaders ? 'Leyendo...' : 'Seleccionar Archivo'}
                   </button>
 
                   <button
@@ -2996,7 +2676,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       )}
 
       {loading ? (
-        <div className="py-10 text-center">
+        <div className="py-20 text-center">
           <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
           <p className="text-slate-400 font-medium">Cargando servicios de red...</p>
         </div>
@@ -3018,9 +2698,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           <p className="text-slate-400 text-sm mt-1">Ajusta la búsqueda para ver otras conexiones configuradas.</p>
         </div>
       ) : viewMode === 'cards' ? (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           {filteredConfigs.map(config => (
-            <div key={config.id} className="bg-white rounded-2xl border border-slate-200 p-4 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
+            <div key={config.id} className="bg-white rounded-3xl border border-slate-200 p-6 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
               <div className={`absolute top-0 right-0 px-6 py-2 rounded-bl-3xl text-[10px] font-bold uppercase tracking-widest ${config.protocolo === 'SFTP' ? 'bg-indigo-600 text-white' : config.protocolo === 'LOCAL' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}`}>
                 {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
               </div>
@@ -3109,7 +2789,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   <button
                     onClick={() => handleSyncNow(config.id, config.nombre)}
                     disabled={syncingId === config.id}
-                    className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-lg shadow-indigo-100 active:scale-95 disabled:opacity-50"
+                    className="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-xs font-bold hover:bg-indigo-600 transition-all flex items-center gap-2 shadow-lg shadow-slate-200 active:scale-95 disabled:opacity-50"
                   >
                     {syncingId === config.id ? <RefreshCw className="animate-spin" size={14} /> : <Play size={14} fill="white" />}
                     Ejecutar Ahora
@@ -3120,18 +2800,19 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           ))}
         </div>
       ) : (
-        <div className="min-w-0 overflow-x-auto border-y border-slate-200 bg-white">
-            <table className="w-full min-w-[1120px] table-auto text-left">
-              <thead className="sticky top-0 z-10 bg-slate-100/95 backdrop-blur-sm">
+        <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1100px] text-left">
+              <thead>
                 <tr className="bg-slate-50 border-b border-slate-100">
-                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Conexión</th>
-                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Protocolo</th>
-                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Acceso</th>
-                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ruta Remota</th>
-                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Última Ejecución</th>
-                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Mapeo</th>
-                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estado</th>
-                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Acciones</th>
+                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Conexión</th>
+                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Protocolo</th>
+                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Acceso</th>
+                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ruta Remota</th>
+                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Última Ejecución</th>
+                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Mapeo</th>
+                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estado</th>
+                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
@@ -3141,23 +2822,23 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
                   return (
                     <tr key={config.id} className="hover:bg-indigo-50/30 transition-colors">
-                      <td className="px-3 py-2.5">
-                        <div className="flex items-center gap-2">
-                          <div className={`p-2 rounded-lg ${config.protocolo === 'SFTP' ? 'bg-indigo-50 text-indigo-600' : config.protocolo === 'LOCAL' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className={`p-2.5 rounded-xl ${config.protocolo === 'SFTP' ? 'bg-indigo-50 text-indigo-600' : config.protocolo === 'LOCAL' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
                             {config.protocolo === 'LOCAL' ? <FolderOpen size={16} /> : <Server size={16} />}
                           </div>
                           <div>
-                            <p className="max-w-[190px] truncate text-sm font-bold text-slate-800">{config.nombre}</p>
+                            <p className="text-sm font-bold text-slate-800">{config.nombre}</p>
                             <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">{config.tipo_archivo}</p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-2.5">
+                      <td className="px-5 py-4">
                         <span className={`inline-flex px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide ${config.protocolo === 'SFTP' ? 'bg-indigo-100 text-indigo-700' : config.protocolo === 'LOCAL' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
                           {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
                         </span>
                       </td>
-                      <td className="px-3 py-2.5 text-xs text-slate-600 font-medium">
+                      <td className="px-5 py-4 text-xs text-slate-600 font-medium">
                         {config.protocolo === 'LOCAL' ? (
                           <span className="text-slate-400">N/A</span>
                         ) : (
@@ -3167,19 +2848,19 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2.5 text-xs text-slate-600 max-w-[210px]">
+                      <td className="px-5 py-4 text-xs text-slate-600 max-w-[260px]">
                         <span className="truncate block font-medium">{config.ruta_remota}</span>
                       </td>
-                      <td className="px-3 py-2.5 text-xs text-slate-600">
+                      <td className="px-5 py-4 text-xs text-slate-600">
                         {config.ultima_ejecucion ? new Date(config.ultima_ejecucion).toLocaleString() : 'Pendiente'}
                       </td>
-                      <td className="px-3 py-2.5 text-xs text-slate-600">
+                      <td className="px-5 py-4 text-xs text-slate-600">
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 font-bold">
                           <Database size={12} />
                           {activeMappings} campos
                         </span>
                       </td>
-                      <td className="px-3 py-2.5">
+                      <td className="px-5 py-4">
                         <div className="flex items-center gap-2">
                           <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-slate-300'}`}></span>
                           <span className={`text-[11px] font-bold uppercase ${isActive ? 'text-green-700' : 'text-slate-500'}`}>
@@ -3192,25 +2873,25 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2.5 text-center">
-                        <div className="inline-flex items-center gap-1.5">
+                      <td className="px-5 py-4 text-center">
+                        <div className="inline-flex items-center gap-2">
                           <button
                             onClick={() => openQuickAudit(config)}
-                            className="p-1.5 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition-all"
+                            className="p-2 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition-all"
                             title="Auditoria rapida"
                           >
                             <FileSearch size={16} />
                           </button>
                           <button
                             onClick={() => openEditConnectionDrawer(config)}
-                            className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                            className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
                             title="Editar"
                           >
                             <Settings2 size={16} />
                           </button>
                           <button
                             onClick={() => handleDelete(config.id)}
-                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
                             title="Eliminar"
                           >
                             <Trash2 size={16} />
@@ -3218,7 +2899,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           <button
                             onClick={() => handleSyncNow(config.id, config.nombre)}
                             disabled={syncingId === config.id}
-                            className="bg-indigo-600 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-bold hover:bg-indigo-700 transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+                            className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-[11px] font-bold hover:bg-indigo-700 transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
                           >
                             {syncingId === config.id ? <RefreshCw className="animate-spin" size={12} /> : <Play size={12} fill="white" />}
                             Ejecutar
@@ -3230,6 +2911,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 })}
               </tbody>
             </table>
+          </div>
         </div>
       )}
 
@@ -3237,13 +2919,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       {auditConfig && (
         <div className="fixed inset-0 z-[105] flex items-center justify-center bg-slate-950/45 backdrop-blur-md p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-5xl max-h-[86vh] overflow-hidden rounded-[2rem] border border-white/60 bg-white/85 shadow-2xl shadow-slate-900/20 backdrop-blur-xl animate-in zoom-in-95 duration-200 flex flex-col">
-            <div className="flex items-start justify-between gap-4 border-b border-white/70 bg-white/55 px-4 py-3">
+            <div className="flex items-start justify-between gap-4 border-b border-white/70 bg-white/55 px-6 py-5">
               <div>
                 <div className="inline-flex items-center gap-2 rounded-full bg-sky-50 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-sky-700">
                   <FileSearch size={13} />
                   Auditoria rapida
                 </div>
-                <h3 className="mt-3 text-xl font-black text-slate-900">{auditConfig.nombre}</h3>
+                <h3 className="mt-3 text-2xl font-black text-slate-900">{auditConfig.nombre}</h3>
                 <p className="mt-1 text-xs font-medium text-slate-500">
                   Monitor de carga filtrado por este local. Se muestran las ultimas 30 ejecuciones.
                 </p>
@@ -3270,7 +2952,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-4 py-3">
+            <div className="flex-1 overflow-y-auto px-6 py-5">
               <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
                 <div className="rounded-2xl border border-white/70 bg-white/70 p-4 shadow-sm">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Local ID</p>
@@ -3298,12 +2980,12 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               )}
 
               {auditLoading ? (
-                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-2xl border border-white/70 bg-white/65 text-slate-500">
+                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-3xl border border-white/70 bg-white/65 text-slate-500">
                   <RefreshCw size={30} className="mb-3 animate-spin text-sky-500" />
                   <p className="text-sm font-bold">Cargando monitor del local...</p>
                 </div>
               ) : auditLogs.length === 0 ? (
-                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white/65 text-center">
+                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/65 text-center">
                   <FileSearch size={34} className="mb-3 text-slate-300" />
                   <p className="text-sm font-bold text-slate-700">Sin cargas registradas para este local.</p>
                   <p className="mt-1 max-w-md text-xs text-slate-500">
@@ -3311,7 +2993,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   </p>
                 </div>
               ) : (
-                <div className="overflow-hidden rounded-2xl border border-white/70 bg-white/80 shadow-sm">
+                <div className="overflow-hidden rounded-3xl border border-white/70 bg-white/80 shadow-sm">
                   <div className="overflow-x-auto">
                     <table className="w-full min-w-[920px] text-left">
                       <thead>
@@ -3354,11 +3036,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               )}
             </div>
 
-            <div className="flex justify-end border-t border-white/70 bg-white/55 px-3 py-2.5">
+            <div className="flex justify-end border-t border-white/70 bg-white/55 px-6 py-4">
               <button
                 type="button"
                 onClick={closeQuickAudit}
-                className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-indigo-100 transition-all hover:bg-indigo-700 active:scale-95"
+                className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-slate-200 transition-all hover:bg-sky-600 active:scale-95"
               >
                 Cerrar
               </button>
@@ -3371,7 +3053,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       {showManualModal && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-4xl bg-white rounded-[2rem] border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col max-h-[85vh]">
-	            <div className="bg-slate-50 p-4 border-b border-slate-100 flex justify-between items-center">
+	            <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-center">
               <div>
                 <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                   <Play size={20} className="text-indigo-600" fill="currentColor" />
@@ -3387,7 +3069,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 	              </button>
 	            </div>
 
-	            <div className="flex-1 overflow-y-auto p-4">
+	            <div className="flex-1 overflow-y-auto p-6">
               <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-2xl">
                 <div className="flex flex-col lg:flex-row lg:items-end gap-3">
                   <div className="flex-1">
@@ -3479,7 +3161,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               </div>
 
 	              {manualLoading ? (
-	                <div className="py-10 text-center">
+	                <div className="py-20 text-center">
 	                  <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
 	                  <p className="text-slate-500 font-medium">Buscando archivos en el servidor...</p>
                 </div>
@@ -3515,7 +3197,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             {new Date(file.fecha).toLocaleString()}
                           </td>
                           <td className="px-5 py-4 text-xs font-mono text-slate-500 text-right">
-                            {formatRemoteFileSize(file.tamano)}
+                            {(file.tamano / 1024).toFixed(1)} KB
                           </td>
                           <td className="px-5 py-4 text-center">
                             <div className="flex items-center justify-center gap-2">
@@ -3561,7 +3243,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   </table>
                 </div>
               ) : (
-                <div className="py-10 text-center">
+                <div className="py-20 text-center">
                   <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
                     <FileSearch size={24} className="text-slate-300" />
                   </div>
@@ -3571,7 +3253,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               )}
             </div>
 
-	            <div className="bg-slate-50 p-4 border-t border-slate-100 flex justify-end">
+	            <div className="bg-slate-50 p-6 border-t border-slate-100 flex justify-end">
 	              <button
 	                onClick={closeManualModal}
 	                className="px-6 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-600 font-bold hover:bg-slate-50 active:scale-95 transition-all text-sm"
@@ -3586,17 +3268,17 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       {/* Progress Modal */}
       {showProgressModal && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
-            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 text-white">
+          <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white">
               <h3 className="text-xl font-bold flex items-center gap-2">
                 <Database size={24} />
                 Procesando Importación
               </h3>
             </div>
 
-            <div className="p-4">
+            <div className="p-8">
               {/* Progress Steps */}
-              <div className="space-y-4">
+              <div className="space-y-6">
                 {/* Step 1: Downloading */}
                 <div className={`flex items-center gap-4 ${progressStep === 'downloading' ? 'opacity-100' : progressStep === 'processing' || progressStep === 'inserting' || progressStep === 'complete' ? 'opacity-50' : 'opacity-30'}`}>
                   <div className={`w-12 h-12 rounded-full flex items-center justify-center ${progressStep === 'downloading' ? 'bg-indigo-100 text-indigo-600' : 'bg-green-100 text-green-600'}`}>

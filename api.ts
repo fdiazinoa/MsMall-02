@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, OperationsFindingsResponse, OperationsAuditorRunResponse, OperationalFinding, OperationsIntelligenceResponse } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -59,28 +59,6 @@ const isNetworkFetchFailure = (error: any): boolean => {
 const withAuthHeaders = (token?: string, headers: Record<string, string> = {}): Record<string, string> => {
   if (!token) return headers;
   return { ...headers, Authorization: `Bearer ${token}` };
-};
-
-type InsightsContext = {
-  mallId?: string;
-  startDate?: string;
-  endDate?: string;
-  token?: string;
-};
-
-const buildInsightsQuery = (
-  params: Record<string, string | undefined>,
-  context: InsightsContext = {}
-): string => {
-  const searchParams = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => {
-    if (value) searchParams.set(key, value);
-  });
-  if (context.mallId) searchParams.set('mall_id', context.mallId);
-  if (context.startDate) searchParams.set('start_date', context.startDate);
-  if (context.endDate) searchParams.set('end_date', context.endDate);
-  const query = searchParams.toString();
-  return query ? `?${query}` : '';
 };
 
 const parseErrorDetail = async (response: Response, fallbackMessage: string): Promise<string> => {
@@ -194,32 +172,20 @@ const normalizeLoadLogRow = (row: any): LoadLogEntry => {
     ? row.detalles.filter((item: any) => item && typeof item === 'object')
     : [];
   const message = String(row?.mensaje || '').trim();
-  const parsedRecordsProcessed = extractLoadCount(message, [
-    /(?:^|\s)(\d+)\s+registros?\s+(?:cargados?|procesados?)/i,
-    /procesado:\s*(\d+)\s+registros?/i,
-    /inserci[oó]n confirmada de\s*(\d+)\s+registros?/i,
-  ]);
-  const explicitRecordsProcessed = toOptionalNonNegativeInt(row?.records_processed ?? metadata?.records_processed);
-  const recordsProcessed = (
-    parsedRecordsProcessed !== null
-      && parsedRecordsProcessed > 0
-      && (explicitRecordsProcessed === null || explicitRecordsProcessed === 0)
-  )
-    ? parsedRecordsProcessed
-    : (explicitRecordsProcessed ?? parsedRecordsProcessed);
-
-  const parsedErrorCount = detalles.length > 0 ? detalles.length : extractLoadCount(message, [
-    /errores?:\s*(\d+)/i,
-    /se encontraron\s*(\d+)\s+errores?/i,
-  ]);
-  const explicitErrorCount = toOptionalNonNegativeInt(row?.error_count ?? metadata?.error_count);
-  const errorCount = (
-    parsedErrorCount !== null
-      && parsedErrorCount > 0
-      && (explicitErrorCount === null || explicitErrorCount === 0)
-  )
-    ? parsedErrorCount
-    : (explicitErrorCount ?? parsedErrorCount ?? 0);
+  const recordsProcessed =
+    toOptionalNonNegativeInt(row?.records_processed ?? metadata?.records_processed)
+    ?? extractLoadCount(message, [
+      /(?:^|\s)(\d+)\s+registros?\s+(?:cargados?|procesados?)/i,
+      /procesado:\s*(\d+)\s+registros?/i,
+      /inserci[oó]n confirmada de\s*(\d+)\s+registros?/i,
+    ]);
+  const errorCount =
+    toOptionalNonNegativeInt(row?.error_count ?? metadata?.error_count)
+    ?? (detalles.length > 0 ? detalles.length : extractLoadCount(message, [
+      /errores?:\s*(\d+)/i,
+      /se encontraron\s*(\d+)\s+errores?/i,
+    ]))
+    ?? 0;
 
   let estado = String(row?.estado || '').trim().toLowerCase() || 'error';
   if (estado === 'exito' && errorCount > 0) estado = 'parcial';
@@ -444,9 +410,6 @@ const normalizeCsvSaleTime = (raw: any): string | null => {
   let hourOnly = text.match(/^(\d{1,2})$/);
   if (hourOnly) {
     const hh = Number(hourOnly[1]);
-    if (hh === 24) {
-      return '00:00:00';
-    }
     if (hh >= 0 && hh <= 23) {
       return `${pad2(hh)}:00:00`;
     }
@@ -565,9 +528,6 @@ export interface Store {
   mts: string;
   porciento_renta: string | number;
   upsert_activo?: boolean;
-  activo?: boolean;
-  fecha_inactivacion?: string | null;
-  motivo_inactivacion?: string | null;
   mall_nombre?: string;
   renta_fija?: string | number;
   breakpoint_venta?: string | number;
@@ -755,8 +715,6 @@ export const ApiService = {
       query = query.eq('mall_id', mallId);
     }
 
-    query = query.or('activo.is.true,activo.is.null');
-
     const { data, error } = await query;
 
     if (error) {
@@ -769,14 +727,14 @@ export const ApiService = {
       nombre: local.nombre,
       protocolo: (local.sftp_protocol || 'SFTP') as ImportProtocol,
       host: local.sftp_host || '',
-      puerto: local.sftp_port || (local.sftp_protocol === 'API' ? 443 : 22),
+      puerto: local.sftp_port || 22,
       usuario: local.sftp_user || '',
       password: local.sftp_pass || '',
       ruta_remota: local.sftp_path || '.',
       tipo_archivo: (local.file_type || 'CSV') as FileType,
       frecuencia: (local.frecuencia_cron || 'manual') as ImportFrequency,
       hora_especifica: local.hora_especifica || '',
-      estado: local.activo === false ? 'inactivo' : 'activo',
+      estado: 'activo',
       accion_post_procesado: (local.accion_post_procesado === 'RENOMBRAR_BACKUP' || local.accion_post_procesado === 'RENOMBRAR_PROCESADO') ? 'RENOMBRAR_PROCESADO' : (local.accion_post_procesado === 'ELIMINAR' ? 'ELIMINAR' : 'NINGUNA'),
       prefijo_renombrado: local.prefijo_backup || 'PR_',
       mapping: local.mapping_config || {},
@@ -791,11 +749,12 @@ export const ApiService = {
   async saveImportConfig(config: ImportConfig, mallId?: string): Promise<void> {
     if (!supabase) throw new Error("Supabase client not initialized");
 
-    if (!config.id) {
-      throw new Error("Selecciona un local existente antes de guardar el importador.");
+    if (!config.id && !mallId) {
+      throw new Error("No se puede crear la configuración sin un mall seleccionado.");
     }
 
     const dbPayload: any = {
+      nombre: config.nombre, // Ensure name is saved if it's new
       sftp_host: config.host,
       sftp_port: config.puerto,
       sftp_user: config.usuario,
@@ -805,9 +764,7 @@ export const ApiService = {
       file_type: config.tipo_archivo,
       tipo_ejecucion: config.frecuencia !== 'manual' ? 'AUTOMATICO' : 'MANUAL',
       frecuencia_cron: config.frecuencia,
-      hora_especifica: config.frecuencia === 'hora_especifica'
-        ? (config.hora_especifica || '08:00')
-        : null,
+      hora_especifica: config.hora_especifica || null,
       accion_post_procesado: (config.accion_post_procesado === 'RENOMBRAR_PROCESADO' || config.accion_post_procesado === 'renombrar') ? 'RENOMBRAR_BACKUP' : (config.accion_post_procesado === 'ELIMINAR' || config.accion_post_procesado === 'eliminar' ? 'ELIMINAR' : 'NINGUNA'),
       prefijo_backup: config.prefijo_renombrado || 'PR_',
       mapping_config: config.mapping,
@@ -815,25 +772,35 @@ export const ApiService = {
       fecha_corte_importacion: config.fecha_corte_importacion || null
     };
 
-    const { data: existing, error: lookupError } = await supabase
-      .from('locales')
-      .select('id, mall_id, activo')
-      .eq('id', config.id)
-      .maybeSingle();
-
-    if (lookupError) throw lookupError;
-    if (!existing) throw new Error("El local seleccionado ya no existe.");
-    if (existing.activo === false) throw new Error("No se puede configurar un importador para un local inactivo.");
-    if (mallId && String(existing.mall_id || '') !== String(mallId)) {
-      throw new Error("El local seleccionado no pertenece al mall activo.");
+    if (mallId) {
+      dbPayload.mall_id = mallId;
     }
 
-    const { data: updated, error } = await supabase
+    // Logic to always ensure codigo_interno is present and valid
+    let finalCodigoInterno = `IMP-${Math.floor(Math.random() * 100000)}`;
+
+    if (config.id) {
+      const { data: existing } = await supabase
+        .from('locales')
+        .select('id, codigo_interno')
+        .eq('id', config.id)
+        .maybeSingle();
+
+      if (existing && existing.codigo_interno) {
+        finalCodigoInterno = existing.codigo_interno;
+      }
+    }
+
+    // Always set the code
+    dbPayload.codigo_interno = finalCodigoInterno;
+
+    // Payload for Upsert
+    const payload = config.id ? { id: config.id, ...dbPayload } : dbPayload;
+
+    const { error } = await supabase
       .from('locales')
-      .update(dbPayload)
-      .eq('id', config.id)
-      .select('id')
-      .maybeSingle();
+      .upsert(payload)
+      .select();
 
     if (error) {
       console.error("Error saving config to Supabase:", error);
@@ -841,9 +808,6 @@ export const ApiService = {
         throw new Error("La base de datos no está actualizada: Falta la columna 'hora_especifica' en la tabla 'locales'. Por favor ejecute el script SQL provisto.");
       }
       throw error;
-    }
-    if (!updated || String(updated.id) !== String(config.id)) {
-      throw new Error("Supabase no confirmó la actualización del local seleccionado.");
     }
   },
 
@@ -883,7 +847,7 @@ export const ApiService = {
       nombre: row.nombre,
       protocolo: (row.protocolo || 'SFTP') as ImportProtocol,
       host: row.host || '',
-      puerto: Number(row.puerto || (row.protocolo === 'API' ? 443 : 22)),
+      puerto: Number(row.puerto || 22),
       usuario: row.usuario || '',
       password: '', // Nunca exponer secretos desde backend.
       password_masked: row.password_masked || '',
@@ -930,7 +894,7 @@ export const ApiService = {
       nombre: data.nombre,
       protocolo: (data.protocolo || 'SFTP') as ImportProtocol,
       host: data.host || '',
-      puerto: Number(data.puerto || (data.protocolo === 'API' ? 443 : 22)),
+      puerto: Number(data.puerto || 22),
       usuario: data.usuario || '',
       password: '',
       password_masked: data.password_masked || '',
@@ -983,57 +947,49 @@ export const ApiService = {
   },
 
   async testConnection(config: Partial<ImportConfig>, password?: string, token?: string): Promise<{ success: boolean, message: string }> {
-    const requestBody = JSON.stringify({
-      protocolo: config.protocolo,
-      host: config.host?.trim(),
-      puerto: Number(config.puerto) || (config.protocolo === 'SFTP' ? 22 : ['WEBSERVICE', 'API'].includes(String(config.protocolo || '').toUpperCase()) ? 443 : 21),
-      usuario: config.usuario?.trim(),
-      password,
-      ruta: config.ruta_remota || '.'
-    });
-    const bases = getApiBaseUrls();
-    const orderedBases = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app')
-      ? [...bases].sort((left, right) => Number(left === BASE_URL) - Number(right === BASE_URL))
-      : bases;
-    let lastMessage = 'No se pudo probar la conexión remota.';
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.warn("ApiService: Disparando abort por timeout de 60s");
+      controller.abort();
+    }, 60000);
 
-    for (const base of orderedBases) {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000);
-      try {
-        const response = await fetch(`${base}/remote/test`, {
-          method: 'POST',
-          headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
-          body: requestBody,
-          signal: controller.signal
-        });
-        const raw = await response.text().catch(() => '');
-        let data: any = {};
-        try {
-          data = raw ? JSON.parse(raw) : {};
-        } catch {
-          data = {};
-        }
-        if (!response.ok) {
-          lastMessage = data.detail || data.message || `Error del servidor (HTTP ${response.status}).`;
-          if (response.status >= 500 && base !== orderedBases[orderedBases.length - 1]) continue;
-          return { success: false, message: lastMessage };
-        }
-        return {
-          success: data.status === 'success',
-          message: data.message || (data.status === 'success' ? 'Conexión exitosa' : 'La conexión remota falló sin detalle.')
-        };
-      } catch (error: any) {
-        const isTimeout = error?.name === 'AbortError' || String(error?.message || '').includes('aborted');
-        lastMessage = isTimeout
-          ? 'Tiempo de espera agotado comprobando el servidor remoto.'
-          : normalizeErrorMessage(error, 'No se pudo contactar el backend de conexiones.');
-      } finally {
-        clearTimeout(timeoutId);
+    console.log("ApiService: Iniciando POST /remote/test...");
+    try {
+      const response = await fetch(`${BASE_URL}/remote/test`, {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          protocolo: config.protocolo,
+          host: config.host?.trim(),
+          puerto: Number(config.puerto) || (config.protocolo === 'SFTP' ? 22 : 21),
+          usuario: config.usuario?.trim(),
+          password: password,
+          ruta: config.ruta_remota || '.'
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      console.log("ApiService: Respuesta recibida, status:", response.status);
+
+      const data = await response.json().catch(() => ({ detail: "Error de servidor" }));
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Error al probar la conexión");
       }
-    }
 
-    return { success: false, message: lastMessage };
+      return {
+        success: data.status === 'success',
+        message: data.message || "Conexión exitosa"
+      };
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      console.error("ApiService: Error en testConnection:", error);
+      const isTimeout = error.name === 'AbortError' || error.message?.includes('aborted');
+      return {
+        success: false,
+        message: isTimeout ? "Error: Tiempo de espera agotado (Timeout)" : (error.message || String(error))
+      };
+    }
   },
 
   async exploreDirectory(path: string, protocol?: string, host?: string, port?: number, user?: string, password?: string, token?: string): Promise<{ ruta_actual: string, items: { nombre: string, ruta: string, es_dir: boolean }[] }> {
@@ -1595,7 +1551,7 @@ export const ApiService = {
     }
   },
 
-  async getStores(mallId?: string, includeInactive = false): Promise<Store[]> {
+  async getStores(mallId?: string): Promise<Store[]> {
     if (!supabase) return [];
 
     try {
@@ -1603,9 +1559,6 @@ export const ApiService = {
 
       if (mallId) {
         query = query.eq('mall_id', mallId);
-      }
-      if (!includeInactive) {
-        query = query.or('activo.is.true,activo.is.null');
       }
 
       const { data, error } = await query;
@@ -2247,7 +2200,39 @@ export const ApiService = {
     );
   },
 
-  async createUser(email: string, password: string, role: string, mallIds: string[], token: string): Promise<any> {
+  async getRoles(token: string): Promise<RoleConfig[]> {
+    return fetchJsonWithBaseFallback<RoleConfig[]>(
+      '/admin/roles',
+      { headers: withAuthHeaders(token) },
+      'No se pudieron cargar los roles'
+    );
+  },
+
+  async createRole(payload: Omit<RoleConfig, 'id' | 'is_factory'>, token: string): Promise<any> {
+    return fetchJsonWithBaseFallback('/admin/roles', {
+      method: 'POST', headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }), body: JSON.stringify(payload),
+    }, 'No se pudo crear el rol');
+  },
+
+  async updateRole(roleId: string, payload: Omit<RoleConfig, 'id' | 'is_factory'>, token: string): Promise<any> {
+    return fetchJsonWithBaseFallback(`/admin/roles/${roleId}`, {
+      method: 'PUT', headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }), body: JSON.stringify(payload),
+    }, 'No se pudo actualizar el rol');
+  },
+
+  async deleteRole(roleId: string, token: string): Promise<any> {
+    return fetchJsonWithBaseFallback(`/admin/roles/${roleId}`, {
+      method: 'DELETE', headers: withAuthHeaders(token),
+    }, 'No se pudo eliminar el rol');
+  },
+
+  async restoreFactoryRole(roleId: string, token: string): Promise<any> {
+    return fetchJsonWithBaseFallback(`/admin/roles/${roleId}/restore-factory`, {
+      method: 'POST', headers: withAuthHeaders(token),
+    }, 'No se pudo restaurar el rol de fábrica');
+  },
+
+  async createUser(email: string, password: string, role: string, mallIds: string[], token: string, roleId?: string): Promise<any> {
     const response = await fetch(`${BASE_URL}/admin/users`, {
       method: 'POST',
       headers: {
@@ -2258,6 +2243,7 @@ export const ApiService = {
         email,
         password,
         rol: role,
+        role_id: roleId,
         mall_ids: mallIds
       })
     });
@@ -2282,7 +2268,7 @@ export const ApiService = {
 
   async updateUser(
     userId: string,
-    payload: { email?: string; nombre?: string; rol?: string; mall_ids?: string[] },
+    payload: { email?: string; nombre?: string; rol?: string; role_id?: string; mall_ids?: string[] },
     token: string
   ): Promise<any> {
     const response = await fetch(`${BASE_URL}/admin/users/${userId}`, {
@@ -2341,13 +2327,9 @@ export const ApiService = {
     );
   },
 
-  async getMissingDaysEmailSettings(
-    mallId: string,
-    token: string,
-    notificationType: MissingDaysEmailSettings['notification_type'] = 'missing_days_audit'
-  ): Promise<MissingDaysEmailSettings> {
+  async getMissingDaysEmailSettings(mallId: string, token: string): Promise<MissingDaysEmailSettings> {
     return fetchJsonWithBaseFallback<MissingDaysEmailSettings>(
-      `/admin/messaging/missing-days/settings?mall_id=${encodeURIComponent(mallId)}&notification_type=${encodeURIComponent(notificationType)}`,
+      `/admin/messaging/missing-days/settings?mall_id=${encodeURIComponent(mallId)}`,
       { headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
       "No se pudo cargar la programación de envío"
     );
@@ -2371,11 +2353,7 @@ export const ApiService = {
     );
   },
 
-  async sendMissingDaysEmailNow(
-    mallId: string,
-    token: string,
-    notificationType: MissingDaysEmailSettings['notification_type'] = 'missing_days_audit'
-  ): Promise<MissingDaysSendNowResponse> {
+  async sendMissingDaysEmailNow(mallId: string, token: string): Promise<MissingDaysSendNowResponse> {
     return fetchJsonWithBaseFallback<MissingDaysSendNowResponse>(
       '/admin/messaging/missing-days/send-now',
       {
@@ -2384,7 +2362,7 @@ export const ApiService = {
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         }),
-        body: JSON.stringify({ mall_id: mallId, notification_type: notificationType })
+        body: JSON.stringify({ mall_id: mallId })
       },
       "No se pudo ejecutar el envío inmediato"
     );
@@ -2469,75 +2447,6 @@ export const ApiService = {
     );
   },
 
-  async getOperationalFindings(
-    mallId: string,
-    token: string,
-    params: { status?: string; severity?: string; source?: string; local_id?: string; limit?: number } = {}
-  ): Promise<OperationsFindingsResponse> {
-    const search = new URLSearchParams({ mall_id: mallId });
-    if (params.status) search.set('status', params.status);
-    if (params.severity) search.set('severity', params.severity);
-    if (params.source) search.set('source', params.source);
-    if (params.local_id) search.set('local_id', params.local_id);
-    if (params.limit) search.set('limit', String(params.limit));
-    return fetchJsonWithBaseFallback<OperationsFindingsResponse>(
-      `/operations/findings?${search.toString()}`,
-      {
-        method: 'GET',
-        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
-      },
-      "No se pudieron cargar los hallazgos operativos"
-    );
-  },
-
-  async getOperationsIntelligence(mallId: string, token: string): Promise<OperationsIntelligenceResponse> {
-    return fetchJsonWithBaseFallback<OperationsIntelligenceResponse>(
-      `/operations/intelligence?mall_id=${encodeURIComponent(mallId)}`,
-      {
-        method: 'GET',
-        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
-      },
-      "No se pudo cargar la inteligencia operativa"
-    );
-  },
-
-  async runOperationsAuditor(mallId: string, token: string, lookbackDays = 7): Promise<OperationsAuditorRunResponse> {
-    const search = new URLSearchParams({
-      mall_id: mallId,
-      lookback_days: String(lookbackDays)
-    });
-    return fetchJsonWithBaseFallback<OperationsAuditorRunResponse>(
-      `/operations/auditor/run?${search.toString()}`,
-      {
-        method: 'POST',
-        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
-      },
-      "No se pudo ejecutar Operations Auditor"
-    );
-  },
-
-  async acknowledgeOperationalFinding(mallId: string, findingId: string, token: string): Promise<OperationalFinding> {
-    return fetchJsonWithBaseFallback<OperationalFinding>(
-      `/operations/findings/${encodeURIComponent(findingId)}/acknowledge?mall_id=${encodeURIComponent(mallId)}`,
-      {
-        method: 'POST',
-        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
-      },
-      "No se pudo marcar el hallazgo como reconocido"
-    );
-  },
-
-  async resolveOperationalFinding(mallId: string, findingId: string, token: string): Promise<OperationalFinding> {
-    return fetchJsonWithBaseFallback<OperationalFinding>(
-      `/operations/findings/${encodeURIComponent(findingId)}/resolve?mall_id=${encodeURIComponent(mallId)}`,
-      {
-        method: 'POST',
-        headers: withAuthHeaders(token, { 'Accept': 'application/json' })
-      },
-      "No se pudo resolver el hallazgo operativo"
-    );
-  },
-
   async toggleUserStatus(userId: string): Promise<void> {
     const users = await this.getUsers();
     const updated = users.map(u => u.id === userId ? { ...u, estado: u.estado === 'activo' ? 'inactivo' : 'activo' } as User : u);
@@ -2545,16 +2454,12 @@ export const ApiService = {
   },
 
   // --- MÉTODOS DE INTELIGENCIA ARTIFICIAL ---
-  async getAIAlerts(localId?: string, context: InsightsContext = {}): Promise<{ alerts: any[], status: 'ok' | 'no_data' | 'error', summary?: any, source?: string }> {
+  async getAIAlerts(localId?: string): Promise<{ alerts: any[], status: 'ok' | 'no_data' | 'error', summary?: any, source?: string }> {
+    const url = localId ? `${BASE_URL}/insights/alerts?local_id=${localId}` : `${BASE_URL}/insights/alerts`;
     try {
-      const data = await fetchJsonWithBaseFallback<any>(
-        `/insights/alerts${buildInsightsQuery({ local_id: localId }, context)}`,
-        {
-          method: 'GET',
-          headers: withAuthHeaders(context.token, { 'Accept': 'application/json' })
-        },
-        "Error al obtener alertas"
-      );
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Error al obtener alertas");
+      const data = await response.json();
       return {
         alerts: Array.isArray(data?.alerts) ? data.alerts : [],
         status: data?.status || 'error',
@@ -2567,64 +2472,47 @@ export const ApiService = {
     }
   },
 
-  async getBenchmarking(localId: string, context: InsightsContext = {}): Promise<any> {
+  async getBenchmarking(localId: string): Promise<any> {
     try {
-      return await fetchJsonWithBaseFallback<any>(
-        `/insights/benchmarking/${encodeURIComponent(localId)}${buildInsightsQuery({}, context)}`,
-        {
-          method: 'GET',
-          headers: withAuthHeaders(context.token, { 'Accept': 'application/json' })
-        },
-        "Error al obtener benchmarking"
-      );
+      const response = await fetch(`${BASE_URL}/insights/benchmarking/${localId}`);
+      if (!response.ok) throw new Error("Error al obtener benchmarking");
+      return await response.json();
     } catch (error) {
       console.error(error);
       return null;
     }
   },
 
-  async getHeatmap(localId: string, context: InsightsContext = {}): Promise<any[]> {
+  async getHeatmap(localId: string): Promise<any[]> {
     try {
-      return await fetchJsonWithBaseFallback<any[]>(
-        `/insights/heatmap/${encodeURIComponent(localId)}${buildInsightsQuery({}, context)}`,
-        {
-          method: 'GET',
-          headers: withAuthHeaders(context.token, { 'Accept': 'application/json' })
-        },
-        "Error al obtener heatmap"
-      );
+      const response = await fetch(`${BASE_URL}/insights/heatmap/${localId}`);
+      if (!response.ok) throw new Error("Error al obtener heatmap");
+      return await response.json();
     } catch (error) {
       console.error(error);
       return [];
     }
   },
 
-  async getEfficiency(localId: string, context: InsightsContext = {}): Promise<any> {
+  async getEfficiency(localId: string): Promise<any> {
     try {
-      return await fetchJsonWithBaseFallback<any>(
-        `/insights/efficiency/${encodeURIComponent(localId)}${buildInsightsQuery({}, context)}`,
-        {
-          method: 'GET',
-          headers: withAuthHeaders(context.token, { 'Accept': 'application/json' })
-        },
-        "Error al obtener eficiencia"
-      );
+      const response = await fetch(`${BASE_URL}/insights/efficiency/${localId}`);
+      if (!response.ok) throw new Error("Error al obtener eficiencia");
+      return await response.json();
     } catch (error) {
       console.error(error);
       return null;
     }
   },
 
-  async getRanking(metric: string, mallId?: string, context: InsightsContext = {}): Promise<any[]> {
+  async getRanking(metric: string, mallId?: string): Promise<any[]> {
     try {
-      return await fetchJsonWithBaseFallback<any[]>(
-        `/insights/ranking${buildInsightsQuery({ metric }, { ...context, mallId: mallId || context.mallId })}`,
-        {
-          method: 'GET',
-          headers: withAuthHeaders(context.token, { 'Accept': 'application/json' })
-        },
-        "Error al obtener ranking"
-      );
+      const params = new URLSearchParams();
+      params.set('metric', metric);
+      if (mallId) params.set('mall_id', mallId);
+      const response = await fetch(`${BASE_URL}/insights/ranking?${params.toString()}`);
+      if (!response.ok) throw new Error("Error al obtener ranking");
+      return await response.json();
     } catch (error) {
       console.error(error);
       return [];

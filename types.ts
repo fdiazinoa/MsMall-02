@@ -71,13 +71,26 @@ export interface User {
   porcentaje_variable?: number;
 }
 
-export interface RoleConfig {
-  id: UserRole;
-  nombre: string;
-  permisos: string[];
+export type PermissionAction = 'view' | 'create' | 'update' | 'delete';
+
+export interface RolePermission {
+  module_key: string;
+  can_view: boolean;
+  can_create: boolean;
+  can_update: boolean;
+  can_delete: boolean;
 }
 
-export type ImportProtocol = 'FTP' | 'SFTP' | 'LOCAL' | 'WEBSERVICE' | 'API';
+export interface RoleConfig {
+  id: string;
+  key: string;
+  nombre: string;
+  descripcion?: string | null;
+  is_factory: boolean;
+  permissions: RolePermission[];
+}
+
+export type ImportProtocol = 'FTP' | 'SFTP' | 'LOCAL';
 export type FileType = 'CSV' | 'TXT' | 'JSON' | 'XML';
 export type ImportFrequency = 'cada_hora' | 'cada_2_horas' | 'hora_especifica' | 'manual' | 'daily_batch';
 export type PostProcessAction = 'ninguna' | 'eliminar' | 'renombrar' | 'NINGUNA' | 'RENOMBRAR_PROCESADO' | 'ELIMINAR';
@@ -221,7 +234,7 @@ export interface ResendSenderConfigPayload {
 export interface MissingDaysEmailSettings {
   id?: string;
   mall_id: string;
-  notification_type: 'missing_days_audit' | 'missing_days_audit_consolidated';
+  notification_type: 'missing_days_audit';
   enabled: boolean;
   weekdays: number[];
   send_time: string;
@@ -237,7 +250,6 @@ export interface MissingDaysEmailSettings {
 export interface MissingDaysSendNowResponse {
   status: string;
   mall_id: string;
-  notification_type?: MissingDaysEmailSettings['notification_type'];
   fecha_inicio: string;
   fecha_fin: string;
   requested: number;
@@ -280,7 +292,6 @@ export interface CopilotChatMessage {
   content: string;
   attachments?: CopilotAttachment[];
   email_actions?: CopilotEmailAction[];
-  emailActions?: CopilotEmailAction[];
 }
 
 export interface CopilotAttachment {
@@ -303,13 +314,6 @@ export interface CopilotChatResponse {
   sources: string[];
   attachments?: CopilotAttachment[];
   email_actions?: CopilotEmailAction[];
-  emailActions?: CopilotEmailAction[];
-  clarification?: {
-    required: boolean;
-    intent?: string;
-    missing_fields?: string[];
-    options?: string[];
-  };
 }
 
 export interface CopilotEmailAction {
@@ -326,167 +330,6 @@ export interface CopilotEmailSendResponse {
   sent: Array<{ email: string; resend_id?: string | null }>;
   subject: string;
   attachment_count: number;
-}
-
-export type OperationalFindingSeverity = 'INFO' | 'WARNING' | 'HIGH' | 'CRITICAL';
-export type OperationalFindingStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED' | 'IGNORED';
-export type OperationalFindingSource = 'FTP' | 'SFTP' | 'WEBSERVICE' | 'WORKER' | 'SALES_AUDIT' | 'MISSING_DAYS';
-
-export interface OperationalFinding {
-  id: string;
-  mall_id: string;
-  local_id?: string | null;
-  local_name?: string | null;
-  type: string;
-  severity: OperationalFindingSeverity;
-  title: string;
-  description: string;
-  evidence: Record<string, any>;
-  root_cause?: string | null;
-  recommendation?: string | null;
-  confidence: number;
-  priority_score?: number;
-  status: OperationalFindingStatus;
-  source: OperationalFindingSource;
-  detected_at: string;
-  resolved_at?: string | null;
-  assigned_to?: string | null;
-  notified_to?: string[];
-  metadata?: Record<string, any>;
-  fingerprint?: string;
-  updated_at?: string;
-}
-
-export interface OperationsAuditorRun {
-  id?: string;
-  mall_id: string;
-  status: string;
-  started_at?: string;
-  finished_at?: string;
-  duration_ms: number;
-  findings_created: number;
-  findings_updated: number;
-  errors?: Array<Record<string, any>>;
-  metadata?: Record<string, any>;
-  created_by?: string | null;
-}
-
-export interface OperationsFindingsResponse {
-  findings: OperationalFinding[];
-  summary: {
-    total_open: number;
-    critical: number;
-    high: number;
-    warning: number;
-    info: number;
-    affected_locals: number;
-    by_severity: Record<string, number>;
-    by_source: Record<string, number>;
-    last_run_at?: string | null;
-    last_run_status?: string | null;
-  };
-  last_run?: OperationsAuditorRun | null;
-}
-
-export interface OperationsAuditorRunResponse {
-  status: string;
-  mall_id: string;
-  findings_created: number;
-  findings_updated: number;
-  findings_detected: number;
-  duration_ms: number;
-  errors: Array<Record<string, any>>;
-  run?: OperationsAuditorRun;
-}
-
-export interface OperationsIntelligenceResponse {
-  health: 'VERDE' | 'AMARILLO' | 'ROJO' | string;
-  summary: {
-    total_open?: number;
-    critical?: number;
-    high?: number;
-    warning?: number;
-    info?: number;
-    affected_locals?: number;
-    observations_24h?: number;
-    active_patterns?: number;
-    by_severity?: Record<string, number>;
-    [key: string]: any;
-  };
-  open_findings: OperationalFinding[];
-  recent_observations: Array<{
-    id?: string;
-    observation_type: string;
-    observation: string;
-    conclusion?: string | null;
-    recommendation?: string | null;
-    confidence?: number;
-    created_at: string;
-    local_id?: string | null;
-  }>;
-  patterns: Array<{
-    id?: string;
-    pattern_type: string;
-    pattern_name: string;
-    description?: string | null;
-    occurrences: number;
-    confidence?: number;
-    last_seen?: string;
-  }>;
-  operational_digest?: {
-    generated_at?: string;
-    summary_text?: string;
-    top_priority?: string;
-    recommended_action?: string;
-    new_findings?: number;
-    critical_findings?: number;
-    high_findings?: number;
-  } | null;
-  changes_since_last_audit?: Record<string, any>;
-  operational_health?: {
-    monitored_locations?: number;
-    healthy_locations?: number;
-    attention_required?: number;
-    active_incidents?: number;
-    locations?: Array<{
-      local_id?: string | null;
-      local_name: string;
-      score: number;
-      status: string;
-      last_activity?: string | null;
-      missing_days?: number;
-      import_failures?: number;
-      action?: string;
-      priority_score?: number;
-    }>;
-  };
-  priority_locations?: Array<{
-    local_id?: string | null;
-    local_name: string;
-    reason: string;
-    action: string;
-    priority_score?: number;
-    severity?: string;
-  }>;
-  locations_without_sales?: {
-    count?: number;
-    items?: OperationalFinding[];
-  };
-  missing_days_summary?: {
-    count?: number;
-    days_missing?: number;
-    items?: OperationalFinding[];
-  };
-  import_failures_summary?: {
-    count?: number;
-    items?: OperationalFinding[];
-  };
-  recommended_actions?: Array<{
-    local_name: string;
-    problem: string;
-    action: string;
-    priority_score?: number;
-  }>;
 }
 
 export type SecurityTokenType = 'app' | 'exporter';
@@ -521,7 +364,6 @@ export interface SecurityApiToken {
   scopes: string[] | string;
   jti: string;
   access_expires_at?: string | null;
-  access_never_expires?: boolean;
   refresh_expires_at?: string | null;
   status: SecurityTokenStatus;
   created_by?: string | null;

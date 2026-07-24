@@ -107,22 +107,22 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
 
     return (
         <div>
-            <div className="max-h-[calc(100dvh-19rem)] min-h-[260px] overflow-auto">
+            <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                     <thead className="bg-slate-50 border-b border-slate-200">
                         <tr>
                             <th className="w-10 px-4 py-4"></th>
-                            <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider">Local</th>
-                            <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider">Centro Comercial</th>
-                            <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Bruto</th>
-                            <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Impuestos</th>
-                            <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Neto</th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Local</th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Centro Comercial</th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Bruto</th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Impuestos</th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Neto</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                         {isLoading ? (
                             <tr>
-                                <td colSpan={6} className="px-6 py-10 text-center text-slate-400">Cargando datos...</td>
+                                <td colSpan={6} className="px-6 py-20 text-center text-slate-400">Cargando datos...</td>
                             </tr>
                         ) : data.length > 0 ? (
                             paginatedData.map((row) => {
@@ -145,18 +145,18 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                                 <ChevronRight size={18} className="text-slate-400" />
                                             )}
                                         </td>
-                                        <td className="px-3 py-2.5 font-medium text-slate-800">{row.local_nombre}</td>
-                                        <td className="px-3 py-2.5 text-slate-500">{row.mall_nombre}</td>
-                                        <td className="px-3 py-2.5 text-right font-mono font-medium text-slate-700">{formatAmount(row.total_bruto)}</td>
-                                        <td className="px-3 py-2.5 text-right font-mono text-slate-400">{formatAmount(row.total_impuestos)}</td>
-                                        <td className="px-3 py-2.5 text-right font-mono font-bold text-indigo-600">{format(row.total_neto)}</td>
+                                        <td className="px-6 py-4 font-medium text-slate-800">{row.local_nombre}</td>
+                                        <td className="px-6 py-4 text-slate-500">{row.mall_nombre}</td>
+                                        <td className="px-6 py-4 text-right font-mono font-medium text-slate-700">{formatAmount(row.total_bruto)}</td>
+                                        <td className="px-6 py-4 text-right font-mono text-slate-400">{formatAmount(row.total_impuestos)}</td>
+                                        <td className="px-6 py-4 text-right font-mono font-bold text-indigo-600">{format(row.total_neto)}</td>
                                     </tr>
 
                                     {/* Expandable Detail Row */}
                                     {expandedLocalId === row.local_id && (
                                         <tr>
                                             <td colSpan={6} className="px-0 py-0 bg-slate-50/50">
-                                                <div className="p-4 border-l-4 border-indigo-500 animate-in slide-in-from-top-2 duration-200">
+                                                <div className="p-6 border-l-4 border-indigo-500 animate-in slide-in-from-top-2 duration-200">
                                                     <h4 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
                                                         Detalle de Facturas - {row.local_nombre}
                                                         {loadingDetails[row.local_id] && <Loader2 size={14} className="animate-spin text-indigo-500" />}
@@ -239,7 +239,7 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                             })
                         ) : (
                             <tr>
-                                <td colSpan={6} className="px-6 py-10 text-center text-slate-400">No hay ventas registradas en este periodo.</td>
+                                <td colSpan={6} className="px-6 py-20 text-center text-slate-400">No hay ventas registradas en este periodo.</td>
                             </tr>
                         )}
                     </tbody>

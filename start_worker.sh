@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Entrypoint para el servicio Railway dedicado al worker de importacion.
+# Script para iniciar el Worker de Importación Automatizada.
 
 cd "$(dirname "$0")"
 
@@ -8,7 +8,6 @@ export WORKER_TIMEZONE="${WORKER_TIMEZONE:-$TZ}"
 
 # Activar entorno virtual si existe
 if [ -d ".venv" ]; then
-    # shellcheck disable=SC1091
     source .venv/bin/activate
 fi
 

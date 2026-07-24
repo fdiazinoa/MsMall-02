@@ -190,24 +190,6 @@ export const describeLoadLog = (log: LoadLogEntry | null): OperationalMessage =>
     || text.includes('persistencia')
     || text.includes('no se confirmo')
   ) {
-    if (status === 'exito' || status === 'parcial') {
-      return status === 'parcial'
-        ? {
-            title: 'Carga parcial.',
-            summary: `${processed} registros procesados y ${errors} errores detectados.`,
-            cause: 'Parte del archivo fue aceptada, pero algunos registros no cumplieron la validacion o no pudieron insertarse.',
-            action: 'Revise las lineas con error, corrija el archivo y reprocese solo lo pendiente si aplica.',
-            category: 'Validacion',
-          }
-        : {
-            title: 'Carga completada.',
-            summary: rawMessage || `${processed} registros procesados correctamente.`,
-            cause: 'El archivo fue validado e insertado sin errores reportados.',
-            action: 'No requiere accion.',
-            category: 'Exito',
-          };
-    }
-
     return {
       title: 'Error al insertar informacion.',
       summary: rawMessage,

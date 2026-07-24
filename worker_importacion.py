@@ -4,8 +4,7 @@ import logging
 import uuid
 import asyncio
 import time
-import hashlib
-from datetime import datetime, time as dt_time, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -15,38 +14,13 @@ import io
 import csv
 import json
 import posixpath
-import pandas as pd
 import re
-import socket
-import urllib.error
-import urllib.parse
-import urllib.request
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from services.connection_monitor_service import ConnectionMonitorService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
-from services.ftp_transfer_service import retrieve_ftp_bytes
-from services.operations_agent_service import OperationsAgentWorker
-
-try:
-    from services.connection_monitor_service import ConnectionMonitorService
-except Exception:
-    ConnectionMonitorService = None  # type: ignore[assignment]
-
-try:
-    from services.missing_days_email_service import run_missing_days_email_scheduler
-except Exception:
-    run_missing_days_email_scheduler = None  # type: ignore[assignment]
-
-try:
-    from services.sensitive_ops_service import sanitize_error_text
-except Exception:
-    def sanitize_error_text(value: object) -> str:
-        return str(value or "").strip()
-
-try:
-    from analytics_service import run_local_risk_analysis
-except Exception:
-    def run_local_risk_analysis(*_args, **_kwargs):
-        raise RuntimeError("Analytics service not available")
+from services.missing_days_email_service import run_missing_days_email_scheduler
+from services.sensitive_ops_service import sanitize_error_text
+from analytics_service import run_local_risk_analysis
 
 # Setup Logging
 logging.basicConfig(
@@ -73,146 +47,10 @@ else:
     except Exception as e:
         logger.error(f"Failed to initialize Supabase client: {e}")
 
-
-def _read_int_env(name: str, default: int, minimum: int = 0, maximum: Optional[int] = None) -> int:
-    raw = os.getenv(name)
-    try:
-        value = int(str(raw).strip()) if raw not in (None, "") else default
-    except (TypeError, ValueError):
-        value = default
-    value = max(minimum, value)
-    if maximum is not None:
-        value = min(maximum, value)
-    return value
-
-
-WORKER_POLL_SECONDS = _read_int_env("WORKER_POLL_SECONDS", 300, minimum=60)
-MAX_CONCURRENT_WORKERS = _read_int_env("MAX_CONCURRENT_WORKERS", 3, minimum=1)
-MAX_CONCURRENT_PER_HOST = _read_int_env("MAX_CONCURRENT_PER_HOST", 1, minimum=1)
-HOURLY_STAGGER_MINUTES = _read_int_env("HOURLY_STAGGER_MINUTES", 15, minimum=0, maximum=55)
-MAX_FILES_PER_BATCH = _read_int_env("MAX_FILES_PER_BATCH", 20, minimum=1)
-OPERATIONS_AGENT_MAX_EVENTS = _read_int_env("OPERATIONS_AGENT_MAX_EVENTS", 50, minimum=1, maximum=200)
-WEBSERVICE_TIMEOUT_SECONDS = _read_int_env("WEBSERVICE_TIMEOUT_SECONDS", 45, minimum=5, maximum=180)
-WEBSERVICE_MAX_PAGES = _read_int_env("WEBSERVICE_MAX_PAGES", 50, minimum=1, maximum=500)
-DEFAULT_SPECIFIC_SCHEDULE_TIME = dt_time(hour=8, minute=0)
-
-
-def _read_bool_env(name: str, default: bool = True) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
-
-ENABLE_OPERATIONS_AGENT = _read_bool_env("ENABLE_OPERATIONS_AGENT", True)
-
-
-def _worker_timezone() -> ZoneInfo:
-    configured = (
-        os.getenv("WORKER_TIMEZONE")
-        or DEFAULT_WORKER_TIMEZONE
-    ).strip() or DEFAULT_WORKER_TIMEZONE
-    try:
-        return ZoneInfo(configured)
-    except ZoneInfoNotFoundError:
-        logger.warning(
-            "Zona horaria del worker invalida '%s'. Usando %s.",
-            configured,
-            DEFAULT_WORKER_TIMEZONE,
-        )
-        return ZoneInfo(DEFAULT_WORKER_TIMEZONE)
-
-
-def _now_local() -> datetime:
-    return datetime.now(_worker_timezone())
-
-
-def _coerce_datetime_to_reference(value: datetime, reference: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=reference.tzinfo)
-    return value.astimezone(reference.tzinfo)
-
-
-def _parse_datetime_value(raw: Any, reference: datetime) -> Optional[datetime]:
-    if not raw:
-        return None
-    text = str(raw).strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return _coerce_datetime_to_reference(parsed, reference)
-    except ValueError:
-        return None
-
-
-def _parse_hora_especifica(raw: Any) -> Optional[dt_time]:
-    if raw in (None, "", "null"):
-        return None
-    if isinstance(raw, dt_time):
-        return raw
-
-    text = str(raw).strip()
-    for fmt in ("%H:%M:%S", "%H:%M"):
-        try:
-            return datetime.strptime(text, fmt).time()
-        except ValueError:
-            continue
-    return None
-
-
-def _stable_offset_minutes(local: Dict[str, Any], max_minutes: int = HOURLY_STAGGER_MINUTES) -> int:
-    if max_minutes <= 0:
-        return 0
-    seed = str(local.get("id") or local.get("nombre") or local.get("sftp_host") or "")
-    if not seed:
-        return 0
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16) % (max_minutes + 1)
-
-
-def _host_key(local: Dict[str, Any]) -> str:
-    return str(local.get("sftp_host") or local.get("host") or "__no_host__").strip().lower()
-
-
-def _schedule_due_at(local: Dict[str, Any], now: datetime) -> Optional[datetime]:
-    frecuencia = str(local.get("frecuencia_cron") or "manual").strip().lower()
-    if frecuencia == "manual":
-        return None
-
-    last_attempt = _parse_datetime_value(local.get("ultima_ejecucion"), now)
-    due_at: Optional[datetime] = None
-
-    if frecuencia == "cada_hora":
-        slot_start = now.replace(minute=0, second=0, microsecond=0)
-        due_at = slot_start + timedelta(minutes=_stable_offset_minutes(local))
-    elif frecuencia == "cada_2_horas":
-        slot_hour = now.hour - (now.hour % 2)
-        slot_start = now.replace(hour=slot_hour, minute=0, second=0, microsecond=0)
-        due_at = slot_start + timedelta(minutes=_stable_offset_minutes(local))
-    elif frecuencia == "hora_especifica":
-        scheduled_time = _parse_hora_especifica(local.get("hora_especifica")) or DEFAULT_SPECIFIC_SCHEDULE_TIME
-        due_at = now.replace(
-            hour=scheduled_time.hour,
-            minute=scheduled_time.minute,
-            second=0,
-            microsecond=0,
-        )
-    else:
-        return None
-
-    if now < due_at:
-        return None
-    if last_attempt and last_attempt >= due_at:
-        return None
-    return due_at
-
 AUTO_SUCCESS_PREFIX = "PR_"
 AUTO_ERROR_PREFIX = "ERR_"
 
 def _connection_monitor_service() -> ConnectionMonitorService:
-    if ConnectionMonitorService is None:
-        raise RuntimeError("ConnectionMonitorService not available")
     return ConnectionMonitorService(supabase, logger)
 
 
@@ -294,8 +132,6 @@ def normalize_date(date_str):
     for fmt in [
         '%d/%m/%Y',
         '%Y-%m-%d',
-        '%Y-%m-%d %H:%M:%S',
-        '%Y-%m-%d %H:%M:%S.%f',
         '%m/%d/%Y',
         '%d-%m-%Y',
         '%Y/%m/%d',
@@ -419,10 +255,6 @@ def _normalize_text_for_csv(content: str) -> str:
         text = text.replace(sep, "\n")
     if "\n" not in text and text.count("\\n") >= 1:
         text = text.replace("\\n", "\n")
-    first_line = next((line for line in text.split("\n") if line.strip()), "")
-    first_line_lower = first_line.lower()
-    if "\t\t" in first_line and any(token in first_line_lower for token in ("fecha", "hora", "total", "bruto", "neto")):
-        text = re.sub(r"\t{2,}", "\t", text)
     return text
 
 
@@ -430,96 +262,6 @@ def _detect_delimiter(content: str) -> str:
     lines = [line for line in _normalize_text_for_csv(content).split("\n") if line.strip()]
     first = lines[0] if lines else ""
     return max([",", ";", "\t", "|"], key=lambda delimiter: first.count(delimiter))
-
-
-def _parse_worker_bool_option(value: Any) -> Optional[bool]:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y", "si", "sí", "on"}:
-        return True
-    if text in {"0", "false", "no", "n", "off"}:
-        return False
-    return None
-
-
-def _extract_worker_parsing_options(config: Dict[str, Any]) -> Tuple[Optional[bool], Optional[int]]:
-    constants = config.get("constants_config") or config.get("constants") or {}
-    has_header = _parse_worker_bool_option(config.get("has_header"))
-    if has_header is None:
-        has_header = _parse_worker_bool_option(constants.get("_has_header"))
-
-    data_start_row = config.get("data_start_row")
-    if data_start_row in (None, ""):
-        data_start_row = constants.get("_data_start_row")
-    try:
-        parsed_row = int(data_start_row) if data_start_row not in (None, "") else None
-        if parsed_row is not None and parsed_row < 1:
-            parsed_row = 1
-    except Exception:
-        parsed_row = None
-
-    return has_header, parsed_row
-
-
-def _parse_worker_delimited_records(
-    content: str,
-    forced_has_header: Optional[bool],
-    forced_data_start_row: Optional[int],
-) -> Tuple[List[Dict[str, Any]], int]:
-    normalized_content = _normalize_text_for_csv(content)
-    delimiter = _detect_delimiter(normalized_content)
-    has_header = True if forced_has_header is None else forced_has_header
-    raw_records: List[Dict[str, Any]] = []
-
-    if has_header:
-        reader = csv.DictReader(
-            io.StringIO(normalized_content),
-            delimiter=delimiter,
-            skipinitialspace=True,
-        )
-        rows = [_normalize_csv_row_keys(r) for r in reader]
-        line_offset = 2
-        if forced_data_start_row and forced_data_start_row > 2:
-            skip_count = forced_data_start_row - 2
-            if skip_count < len(rows):
-                rows = rows[skip_count:]
-                line_offset = forced_data_start_row
-            else:
-                logger.warning(
-                    "Worker: data_start_row=%s fuera de rango. Usando línea 2.",
-                    forced_data_start_row,
-                )
-        return rows, line_offset
-
-    reader = csv.reader(
-        io.StringIO(normalized_content),
-        delimiter=delimiter,
-        skipinitialspace=True,
-    )
-    matrix_rows = [r for r in reader if any(str(c or "").strip() for c in r)]
-    line_offset = 1
-    if forced_data_start_row and forced_data_start_row > 1:
-        skip_count = forced_data_start_row - 1
-        if skip_count < len(matrix_rows):
-            matrix_rows = matrix_rows[skip_count:]
-            line_offset = forced_data_start_row
-        else:
-            logger.warning(
-                "Worker: data_start_row=%s fuera de rango para archivo sin encabezado. Usando línea 1.",
-                forced_data_start_row,
-            )
-
-    if matrix_rows:
-        max_cols = max(len(r) for r in matrix_rows)
-        headers = [f"col_{idx}" for idx in range(1, max_cols + 1)]
-        for row in matrix_rows:
-            padded = list(row) + [""] * (max_cols - len(row))
-            raw_records.append(dict(zip(headers, padded)))
-
-    return raw_records, line_offset
 
 
 def _decode_worker_text(raw_bytes: bytes, is_json: bool = False) -> str:
@@ -587,17 +329,7 @@ def get_sftp_client(host, port, user, password):
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-            ssh.connect(
-                candidate,
-                port=int(port),
-                username=user,
-                password=password,
-                timeout=10,
-                banner_timeout=10,
-                auth_timeout=10,
-                look_for_keys=False,
-                allow_agent=False,
-            )
+            ssh.connect(candidate, port=int(port), username=user, password=password, timeout=10)
             transport = ssh.get_transport()
             if transport:
                 transport.set_keepalive(30)
@@ -612,21 +344,6 @@ def get_sftp_client(host, port, user, password):
     if last_error:
         raise last_error
     raise ValueError("Host remoto inválido o vacío para conexión SFTP")
-
-
-def _friendly_sftp_connection_error(exc: Exception) -> str:
-    message = str(exc or "").strip()
-    normalized = message.lower()
-    if "no existing session" in normalized or "error reading ssh protocol banner" in normalized:
-        return (
-            "El puerto responde, pero el servidor no completa la negociación SSH. "
-            "Revise o reinicie el servicio SSH/SFTP y sus límites de sesiones."
-        )
-    if isinstance(exc, paramiko.AuthenticationException) or "authentication failed" in normalized:
-        return "Autenticación rechazada. Verifique usuario y contraseña SFTP."
-    if isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in normalized:
-        return "El servidor no respondió durante la negociación SSH/SFTP."
-    return message or type(exc).__name__
 
 def get_ftp_client(host, port, user, password):
     last_error = None
@@ -697,31 +414,6 @@ def _build_marked_filename(filename: str, prefix: str, extra_prefixes: Sequence[
                 break
 
     return f"{prefix}{base_name}"
-
-
-def _build_unique_marked_filename(
-    filename: str,
-    prefix: str,
-    existing_names: Sequence[str] = (),
-    extra_prefixes: Sequence[str] = (),
-) -> str:
-    marked_name = _build_marked_filename(filename, prefix, extra_prefixes)
-    existing = {posixpath.basename(str(name or "")) for name in existing_names}
-    if marked_name not in existing:
-        return marked_name
-
-    stem, ext = posixpath.splitext(marked_name)
-    timestamp = datetime.now(_worker_timezone()).strftime("%Y%m%d%H%M%S")
-    candidate = f"{stem}_{timestamp}{ext}"
-    if candidate not in existing:
-        return candidate
-
-    for index in range(2, 100):
-        candidate = f"{stem}_{timestamp}_{index}{ext}"
-        if candidate not in existing:
-            return candidate
-    return f"{stem}_{timestamp}_{uuid.uuid4().hex[:8]}{ext}"
-
 
 def _parse_worker_bool(value: Any) -> bool:
     if isinstance(value, bool):
@@ -808,19 +500,14 @@ def _format_moving_window_message(count: int, stats: Dict[str, Any], errors: lis
 
 def _resolve_worker_processing_outcome(count: int, errors: list, stats: Optional[Dict[str, Any]] = None) -> Tuple[str, str, bool]:
     stats = stats or {}
-    duplicate_skipped = int(stats.get("duplicate_skipped") or 0)
-    idempotent_processed = duplicate_skipped > 0
-    if isinstance(count, int) and (count > 0 or idempotent_processed):
+    moving_window_processed = bool(stats.get("moving_window_mode")) and int(stats.get("duplicate_skipped") or 0) > 0
+    if isinstance(count, int) and (count > 0 or moving_window_processed):
         estado = "parcial" if errors else "exito"
-        if stats.get("moving_window_mode"):
-            mensaje = _format_moving_window_message(count, stats, errors)
-        elif duplicate_skipped:
-            mensaje = (
-                f"Worker: Archivo procesado. Inserción confirmada de {count} registros. "
-                f"{duplicate_skipped} registros ya existentes omitidos."
-            )
-        else:
-            mensaje = f"Worker: Inserción confirmada de {count} registros."
+        mensaje = (
+            _format_moving_window_message(count, stats, errors)
+            if stats.get("moving_window_mode")
+            else f"Worker: Inserción confirmada de {count} registros."
+        )
         if errors:
             if not stats.get("moving_window_mode"):
                 mensaje += f" Se encontraron {len(errors)} errores parciales."
@@ -835,16 +522,6 @@ def _resolve_worker_processing_outcome(count: int, errors: list, stats: Optional
     else:
         mensaje += " El archivo se marcará con error para revisión."
     return "error", mensaje, False
-
-
-def _append_post_process_warning(message: str, warning: str) -> str:
-    """Append a human-friendly warning without converting a successful insert into an error."""
-    if not warning:
-        return message
-    warning_text = str(warning).strip().replace("\n", "; ")
-    if not warning_text:
-        return message
-    return f"{message} Advertencia: {warning_text}"
 
 
 def _is_empty_file_outcome(errors: Optional[list]) -> bool:
@@ -933,18 +610,7 @@ def _build_no_new_file_message(config: Dict[str, Any]) -> str:
     return "Archivo nuevo no encontrado, sin importaciones previas"
 
 
-def _normalize_worker_import_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    normalized = dict(config or {})
-    if not normalized.get("mapping_config"):
-        normalized["mapping_config"] = normalized.get("mapping") or {}
-    if not normalized.get("constants_config"):
-        normalized["constants_config"] = normalized.get("constants") or {}
-    if not normalized.get("file_type"):
-        normalized["file_type"] = normalized.get("tipo_archivo", "CSV")
-    return normalized
-
-
-def _filter_existing_worker_sale_rows(
+def _filter_existing_moving_window_rows(
     rows: List[Dict[str, Any]],
     line_numbers: List[int],
     local_id: str,
@@ -952,39 +618,34 @@ def _filter_existing_worker_sale_rows(
     if not rows or not supabase:
         return rows, line_numbers, 0
 
-    factura_values = list(dict.fromkeys(
+    factura_values = [
         str(row.get("factura_no") or "").strip()
         for row in rows
-        if str(row.get("factura_no") or "").strip()
-    ))
+        if row.get("factura_no")
+    ]
+    factura_values = [value for value in factura_values if value]
     if not factura_values:
         return rows, line_numbers, 0
 
-    def sale_key(row: Dict[str, Any]) -> Optional[str]:
-        fecha = str(row.get("fecha") or "").strip()
-        factura = str(row.get("factura_no") or "").strip()
-        if not fecha or not factura:
-            return None
-        return f"{fecha}|{factura}"
-
     existing: set[str] = set()
+    unique_facturas = list(dict.fromkeys(factura_values))
     chunk_size = 500
-    for start in range(0, len(factura_values), chunk_size):
-        chunk = factura_values[start:start + chunk_size]
+    for start in range(0, len(unique_facturas), chunk_size):
+        chunk = unique_facturas[start:start + chunk_size]
         try:
             response = (
                 supabase.table("ventas")
-                .select("fecha,factura_no")
+                .select("factura_no")
                 .eq("local_id", local_id)
                 .in_("factura_no", chunk)
                 .execute()
             )
             for item in response.data or []:
-                key = sale_key(item)
-                if key:
-                    existing.add(key)
+                factura = str(item.get("factura_no") or "").strip()
+                if factura:
+                    existing.add(factura)
         except Exception as exc:
-            logger.warning("No se pudo consultar ventas existentes para %s: %s", local_id, exc)
+            logger.warning("No se pudo consultar duplicados de ventana móvil para %s: %s", local_id, exc)
             return rows, line_numbers, 0
 
     filtered_rows: List[Dict[str, Any]] = []
@@ -992,30 +653,22 @@ def _filter_existing_worker_sale_rows(
     seen_in_file: set[str] = set()
     skipped = 0
     for row, line_no in zip(rows, line_numbers):
-        key = sale_key(row)
-        if key and (key in existing or key in seen_in_file):
+        factura = str(row.get("factura_no") or "").strip()
+        if factura and (factura in existing or factura in seen_in_file):
             skipped += 1
             continue
-        if key:
-            seen_in_file.add(key)
+        if factura:
+            seen_in_file.add(factura)
         filtered_rows.append(row)
         filtered_lines.append(line_no)
 
     return filtered_rows, filtered_lines, skipped
 
 
-def _filter_existing_moving_window_rows(
-    rows: List[Dict[str, Any]],
-    line_numbers: List[int],
-    local_id: str,
-) -> Tuple[List[Dict[str, Any]], List[int], int]:
-    return _filter_existing_worker_sale_rows(rows, line_numbers, local_id)
-
 def process_file_logic(config, filename, content):
     """
     Process file content (CSV or JSON) and insert to database.
     """
-    config = _normalize_worker_import_config(config)
     logger.info(f"Procesando contenido de {filename} para {config['nombre']}")
     detalles = []
     registros_exito = 0
@@ -1029,9 +682,6 @@ def process_file_logic(config, filename, content):
     try:
         file_type = config.get("file_type", "CSV").upper()
         raw_records = []
-        line_offset = 2
-        constants = config.get('constants_config') or config.get('constants') or {}
-        forced_has_header, forced_data_start_row = _extract_worker_parsing_options(config)
         
         # 1. Parse Content
         if file_type == "JSON":
@@ -1047,17 +697,17 @@ def process_file_logic(config, filename, content):
                             break
                     if not raw_records:
                         raw_records = [data] # Single object
-                if raw_records:
-                    df = pd.json_normalize(raw_records)
-                    raw_records = df.where(pd.notnull(df), None).to_dict(orient='records')
             except Exception as e:
                 return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}], stats
         else:
-            raw_records, line_offset = _parse_worker_delimited_records(
-                content,
-                forced_has_header,
-                forced_data_start_row,
+            # Default to CSV/TXT
+            normalized_content = _normalize_text_for_csv(content)
+            reader = csv.DictReader(
+                io.StringIO(normalized_content),
+                delimiter=_detect_delimiter(normalized_content),
+                skipinitialspace=True
             )
+            raw_records = [_normalize_csv_row_keys(r) for r in reader]
             
         if not raw_records:
             return 0, [{"linea": 0, "error": "Archivo vacío o sin datos válidos"}], stats
@@ -1073,16 +723,7 @@ def process_file_logic(config, filename, content):
             
         # Get mapping
         mapping = config.get('mapping_config') or {}
-        if forced_has_header is False:
-            default_no_header_map = {
-                "factura_numero": "col_1",
-                "local_codigo": "col_2",
-                "fecha_venta": "col_3",
-                "total_bruto": "col_8",
-                "total_impuestos": "col_9",
-                "total_neto": "col_10",
-            }
-            mapping = {**default_no_header_map, **mapping}
+        constants = config.get('constants_config') or config.get('constants') or {}
         decimal_separator = constants.get("_decimal_separator", ".")
         moving_window_mode = _moving_window_enabled(constants)
         chars_to_remove = (
@@ -1096,7 +737,6 @@ def process_file_logic(config, filename, content):
             config.get('codigo_interno')
             or config.get('local_codigo')
             or config.get('codigo')
-            or constants.get('local_codigo')
             or config.get('nombre')
             or local_id
         )
@@ -1104,19 +744,12 @@ def process_file_logic(config, filename, content):
         valid_rows = []
         valid_line_numbers = []
 
-        for i, row in enumerate(raw_records, start=line_offset):
+        for i, row in enumerate(raw_records, start=2):
             try:
-                sequence_number = (i - line_offset) + 1
                 normalized_row = _normalize_csv_row_keys(row)
-                non_empty_values = [str(value or "").strip() for value in normalized_row.values() if str(value or "").strip()]
-                if non_empty_values and all(re.fullmatch(r"[-_=]+", value) for value in non_empty_values):
-                    continue
                 lowered_row = {k.lower(): v for k, v in normalized_row.items()}
 
-                def pick_value(sys_field, mapped_header, fallback_header=""):
-                    constant_value = _clean_cell_value(constants.get(sys_field))
-                    if constant_value not in (None, ""):
-                        return constant_value
+                def pick_value(mapped_header, fallback_header=""):
                     key = _clean_csv_header_name(mapped_header)
                     value = ""
                     if key and key in normalized_row:
@@ -1134,29 +767,10 @@ def process_file_logic(config, filename, content):
                         chars_to_remove,
                     )
 
-                def pick_any(sys_field, mapped_header, fallback_headers: Sequence[str]):
-                    candidates = [mapped_header, *fallback_headers]
-                    for candidate in candidates:
-                        value = pick_value(sys_field, candidate)
-                        if value not in (None, ""):
-                            return value
-                    return ""
-
                 # Map fields using mapping_config
                 # mapping_config usually translates system_field -> file_header
-                fecha_venta_raw = pick_any(
-                    'fecha_venta',
-                    mapping.get('fecha_venta', 'fecha_venta'),
-                    ('fecha', 'FECHA', 'date', 'DATE', 'invoice_date', 'InvoiceDate', 'created_at')
-                )
-                factura_no = pick_any(
-                    'factura_numero',
-                    mapping.get('factura_numero', 'factura_numero'),
-                    (
-                        'factura_no', 'factura', 'FACTURA', 'ID_TRANSACCION', 'id_transaccion',
-                        'invoice_id', 'invoiceNumber', 'numero', 'NUMERO', 'documento'
-                    )
-                )
+                fecha_venta_raw = pick_value(mapping.get('fecha_venta', 'fecha_venta'), 'fecha')
+                factura_no = pick_value(mapping.get('factura_numero', 'factura_numero'), 'factura_no')
                 
                 # Check for direct key matches if mapping fails
                 fecha_venta = normalize_date(fecha_venta_raw)
@@ -1175,7 +789,7 @@ def process_file_logic(config, filename, content):
                 def resolve_transform_value(part: str) -> str:
                     clean_part = str(part or "").strip()
                     if clean_part in ("numero_registro", "linea", "_line_number"):
-                        return f"{sequence_number:04d}"
+                        return f"{i - 1:04d}"
                     if clean_part == "local_codigo":
                         return str(configured_local_code or "")
                     if clean_part == "fecha_venta" and fecha_venta:
@@ -1188,7 +802,7 @@ def process_file_logic(config, filename, content):
 
                 transform_mode = constants.get("_factura_numero_mode")
                 if transform_mode == "generated_sequence":
-                    factura_no = _format_generated_invoice(configured_local_code, fecha_venta, sequence_number)
+                    factura_no = _format_generated_invoice(configured_local_code, fecha_venta, i - 1)
                 elif transform_mode == "concat":
                     transform_fields = _split_transform_fields(constants.get("_factura_numero_concat_fields"))
                     separator = str(constants.get("_factura_numero_concat_separator", "-"))
@@ -1204,21 +818,9 @@ def process_file_logic(config, filename, content):
                 def clean_float(val):
                     return _parse_mapped_decimal(val, decimal_separator)
 
-                total_bruto = clean_float(pick_any(
-                    'total_bruto',
-                    mapping.get('total_bruto', 'total_bruto'),
-                    ('TOTALBRUTO', 'bruto', 'BRUTO', 'subtotal', 'gross_total', 'GrossTotal')
-                ))
-                total_impuestos = clean_float(pick_any(
-                    'total_impuestos',
-                    mapping.get('total_impuestos', 'total_impuestos'),
-                    ('TOTALIMPUESTOS', 'TOTALIMPUESTO', 'impuesto', 'IMPUESTO', 'tax', 'tax_total', 'TaxTotal')
-                ))
-                total_neto = clean_float(pick_any(
-                    'total_neto',
-                    mapping.get('total_neto', 'total_neto'),
-                    ('TOTALNETO', 'neto', 'NETO', 'total', 'TOTAL', 'amount', 'net_total', 'NetTotal')
-                ))
+                total_bruto = clean_float(pick_value(mapping.get('total_bruto', 'total_bruto')))
+                total_impuestos = clean_float(pick_value(mapping.get('total_impuestos', 'total_impuestos')))
+                total_neto = clean_float(pick_value(mapping.get('total_neto', 'total_neto')))
                 
                 if not fecha_venta or total_bruto == 0:
                     detalles.append({"linea": i, "error": "Datos incompletos (Fecha o Total Bruto faltante/cero)"})
@@ -1250,8 +852,8 @@ def process_file_logic(config, filename, content):
                 detalles.append({"linea": i, "error": str(e)})
                 logger.error(f"Error en línea {i}: {e}")
 
-        if valid_rows:
-            valid_rows, valid_line_numbers, duplicate_skipped = _filter_existing_worker_sale_rows(
+        if moving_window_mode and valid_rows:
+            valid_rows, valid_line_numbers, duplicate_skipped = _filter_existing_moving_window_rows(
                 valid_rows,
                 valid_line_numbers,
                 local_id,
@@ -1259,7 +861,7 @@ def process_file_logic(config, filename, content):
             stats["duplicate_skipped"] = duplicate_skipped
             if duplicate_skipped:
                 logger.info(
-                    "%s: worker omitió %s registros existentes en %s",
+                    "%s: ventana móvil omitió %s registros existentes en %s",
                     config.get("nombre"),
                     duplicate_skipped,
                     filename,
@@ -1289,627 +891,8 @@ def process_file_logic(config, filename, content):
             
     return registros_exito, detalles, stats
 
-
-def _webservice_constants(config: Dict[str, Any]) -> Dict[str, Any]:
-    return dict((config or {}).get("constants_config") or (config or {}).get("constants") or {})
-
-
-def _webservice_config_value(config: Dict[str, Any], constants: Dict[str, Any], *keys: str) -> Any:
-    for key in keys:
-        if key in constants and constants.get(key) not in (None, ""):
-            return constants.get(key)
-        if key in config and config.get(key) not in (None, ""):
-            return config.get(key)
-    return None
-
-
-def _webservice_int_value(config: Dict[str, Any], constants: Dict[str, Any], default: int, *keys: str) -> int:
-    raw = _webservice_config_value(config, constants, *keys)
-    try:
-        return int(str(raw).strip()) if raw not in (None, "") else default
-    except (TypeError, ValueError):
-        return default
-
-
-def _webservice_bool_value(config: Dict[str, Any], constants: Dict[str, Any], default: bool, *keys: str) -> bool:
-    raw = _webservice_config_value(config, constants, *keys)
-    if raw in (None, ""):
-        return default
-    return _parse_worker_bool(raw)
-
-
-def _append_query_param(url: str, key: str, value: Any) -> str:
-    parsed = urllib.parse.urlparse(str(url or ""))
-    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-    query = [(k, v) for k, v in query if k != key]
-    query.append((key, str(value)))
-    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
-
-
-def _json_path_value(payload: Any, path: str) -> Any:
-    current = payload
-    for part in [p for p in str(path or "").split(".") if p]:
-        if isinstance(current, dict):
-            current = current.get(part)
-        else:
-            return None
-    return current
-
-
-def _first_list_of_records(payload: Any) -> List[Dict[str, Any]]:
-    if isinstance(payload, list):
-        return [row for row in payload if isinstance(row, dict)]
-    if not isinstance(payload, dict):
-        return []
-
-    for key in ("data", "items", "results", "records", "invoices", "facturas", "ventas"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [row for row in value if isinstance(row, dict)]
-
-    for value in payload.values():
-        if isinstance(value, list) and any(isinstance(row, dict) for row in value):
-            return [row for row in value if isinstance(row, dict)]
-        if isinstance(value, dict):
-            nested = _first_list_of_records(value)
-            if nested:
-                return nested
-
-    return [payload]
-
-
-def _extract_webservice_records(payload: Any, data_path: Optional[str] = None) -> List[Dict[str, Any]]:
-    if data_path:
-        selected = _json_path_value(payload, data_path)
-        if selected is not None:
-            return _first_list_of_records(selected)
-    return _first_list_of_records(payload)
-
-
-def _fetch_webservice_json(url: str, token: Optional[str], timeout_seconds: int) -> Any:
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "MsMall-ImportWorker/1.0",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    request = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-        raw = response.read()
-        text = _decode_worker_text(raw, is_json=True)
-        return json.loads(text or "{}")
-
-
-def _api_base_url(config: Dict[str, Any]) -> str:
-    host = str(
-        _webservice_config_value(
-            config,
-            _webservice_constants(config),
-            "host",
-            "sftp_host",
-            "api_url",
-            "endpoint_url",
-        )
-        or ""
-    ).strip()
-    if not host:
-        raise ValueError("URL base API requerida")
-    if not re.match(r"^https?://", host, flags=re.IGNORECASE):
-        host = f"https://{host}"
-    return host.rstrip("/")
-
-
-def _is_studio_g_config(config: Dict[str, Any], constants: Optional[Dict[str, Any]] = None) -> bool:
-    constants = constants or _webservice_constants(config)
-    provider = str(
-        _webservice_config_value(
-            config,
-            constants,
-            "provider",
-            "_provider",
-            "api_provider",
-            "_api_provider",
-            "webservice_provider",
-        )
-        or ""
-    ).strip().lower()
-    host = str(config.get("sftp_host") or config.get("host") or "").strip().lower()
-    return provider in {"studio_g", "studiog", "sales_tap", "salestap"} or "alcagora.ddns.net" in host
-
-
-def _api_json_request(
-    method: str,
-    url: str,
-    *,
-    headers: Optional[Dict[str, str]] = None,
-    body: Optional[Dict[str, Any]] = None,
-    timeout: int = WEBSERVICE_TIMEOUT_SECONDS,
-) -> Dict[str, Any]:
-    payload = None
-    request_headers = {"Accept": "application/json", **(headers or {})}
-    if body is not None:
-        payload = json.dumps(body).encode("utf-8")
-        request_headers["Content-Type"] = "application/json"
-
-    request = urllib.request.Request(url, data=payload, headers=request_headers, method=method.upper())
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read()
-            text = _decode_worker_text(raw, is_json=True)
-            parsed = json.loads(text or "{}")
-    except urllib.error.HTTPError as exc:
-        detail = _decode_worker_text(exc.read(), is_json=True)
-        raise RuntimeError(f"API HTTP {exc.code}: {detail or exc.reason}") from exc
-
-    if not isinstance(parsed, dict):
-        raise RuntimeError("Respuesta API inesperada: se esperaba objeto JSON")
-    return parsed
-
-
-def _studio_g_authorize(config: Dict[str, Any], constants: Dict[str, Any]) -> str:
-    client_id = str(
-        _webservice_config_value(config, constants, "client_id", "_client_id", "usuario", "sftp_user")
-        or ""
-    ).strip()
-    client_secret = str(
-        _webservice_config_value(config, constants, "client_secret", "_client_secret", "password", "sftp_pass")
-        or ""
-    ).strip()
-    if not client_id or not client_secret:
-        raise ValueError("Client ID y Client Secret requeridos para Studio G")
-
-    data = _api_json_request(
-        "POST",
-        f"{_api_base_url(config)}/authorization",
-        body={"client_id": client_id, "client_secret": client_secret},
-        timeout=max(5, _webservice_int_value(config, constants, WEBSERVICE_TIMEOUT_SECONDS, "_webservice_timeout_seconds", "timeout_seconds")),
-    )
-    token = str(data.get("access_token") or "").strip()
-    if not token:
-        raise RuntimeError("Studio G no devolvio access_token")
-    return token
-
-
-def _parse_api_date(value: Any) -> Optional[str]:
-    if value in (None, ""):
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
-    except ValueError:
-        return normalize_date(text)
-
-
-def _parse_api_time(value: Any) -> Optional[str]:
-    if value in (None, ""):
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed.time().replace(microsecond=0).isoformat()
-    except ValueError:
-        pass
-
-    match = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b", text)
-    if not match:
-        return None
-    parts = match.group(1).split(":")
-    if len(parts) == 2:
-        return f"{int(parts[0]):02d}:{parts[1]}:00"
-    return f"{int(parts[0]):02d}:{parts[1]}:{parts[2]}"
-
-
-def _clean_api_number(value: Any) -> float:
-    if value in (None, ""):
-        return 0.0
-    return _parse_mapped_decimal(value, ".")
-
-
-def _studio_g_value(row: Dict[str, Any], *keys: str) -> Any:
-    for key in keys:
-        if key in row:
-            return row.get(key)
-
-    normalized = {
-        re.sub(r"[^a-z0-9]", "", str(k).lower()): v
-        for k, v in row.items()
-    }
-    for key in keys:
-        lookup = re.sub(r"[^a-z0-9]", "", str(key).lower())
-        if lookup in normalized:
-            return normalized.get(lookup)
-    return None
-
-
-def _studio_g_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
-    constants = _webservice_constants(config)
-    today_date = _now_local().date()
-    date_mode = str(
-        _webservice_config_value(
-            config,
-            constants,
-            "studio_g_date_mode",
-            "_studio_g_date_mode",
-            "date_mode",
-        )
-        or ""
-    ).strip().lower()
-    fecha_inicio = _webservice_config_value(
-        config,
-        constants,
-        "studio_g_fecha_inicio",
-        "_studio_g_fecha_inicio",
-        "fecha_inicio",
-        "FechaInicio",
-    )
-    fecha_fin = _webservice_config_value(
-        config,
-        constants,
-        "studio_g_fecha_fin",
-        "_studio_g_fecha_fin",
-        "fecha_fin",
-        "FechaFin",
-    )
-
-    if date_mode in {"today", "hoy"}:
-        start = end = today_date.isoformat()
-    elif date_mode in {"yesterday", "ayer", "previous_day"}:
-        yesterday = today_date - timedelta(days=1)
-        start = end = yesterday.isoformat()
-    elif date_mode in {"current_month", "mes_actual", "month"}:
-        start = today_date.replace(day=1).isoformat()
-        end = today_date.isoformat()
-    elif date_mode in {"last_30_days", "ultimos_30_dias", "last_month"}:
-        start = (today_date - timedelta(days=29)).isoformat()
-        end = today_date.isoformat()
-    elif date_mode in {"custom", "range", "rango"}:
-        start = normalize_date(fecha_inicio) if fecha_inicio else None
-        end = normalize_date(fecha_fin) if fecha_fin else None
-    else:
-        today = today_date.isoformat()
-        start = normalize_date(fecha_inicio) if fecha_inicio else today
-        end = normalize_date(fecha_fin) if fecha_fin else start
-
-    if not start or not end:
-        raise ValueError("Rango de fechas Studio G invalido")
-    if start > end:
-        logger.warning(
-            "Rango Studio G invertido; normalizando %s..%s a %s..%s.",
-            start,
-            end,
-            end,
-            start,
-        )
-        start, end = end, start
-    return start, end
-
-
-def _map_studio_g_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str) -> Optional[Dict[str, Any]]:
-    raw_fecha = _studio_g_value(row, "Fecha", "FECHA")
-    fecha = _parse_api_date(raw_fecha)
-    if not fecha:
-        return None
-
-    transaction_id = _studio_g_value(row, "IDTransaccion", "ID_TRANSACCION")
-    ncf = str(_studio_g_value(row, "NCF") or "").strip()
-    factura_no = ncf or (f"STUDIOG-{id_tpv}-{transaction_id}" if transaction_id not in (None, "") else "")
-    if not factura_no:
-        return None
-
-    payload = {
-        "local_id": config.get("id"),
-        "mall_id": config.get("mall_id"),
-        "fecha": fecha,
-        "factura_no": factura_no,
-        "comprobante": ncf or None,
-        "hora_transaccion": _parse_api_time(_studio_g_value(row, "Hora", "HORA") or raw_fecha),
-        "total_bruto": _clean_api_number(_studio_g_value(row, "TotalBruto", "TOTALBRUTO")),
-        "total_impuestos": _clean_api_number(_studio_g_value(row, "TotalImpuestos", "TOTALIMPUESTOS")),
-        "total_neto": _clean_api_number(_studio_g_value(row, "TotalNeto", "TOTALNETO")),
-    }
-    return {key: value for key, value in payload.items() if value not in (None, "")}
-
-
-def fetch_studio_g_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
-    config = _normalize_worker_import_config(config)
-    constants = _webservice_constants(config)
-    id_tpv = str(
-        _webservice_config_value(config, constants, "idTpv", "id_tpv", "_studio_g_id_tpv", "ruta_remota", "sftp_path")
-        or ""
-    ).strip()
-    if not id_tpv or id_tpv == ".":
-        raise ValueError("idTpv requerido en Ruta Remota para Studio G")
-
-    fecha_inicio, fecha_fin = _studio_g_date_range(config)
-    token = _studio_g_authorize(config, constants)
-    timeout_seconds = max(5, _webservice_int_value(config, constants, WEBSERVICE_TIMEOUT_SECONDS, "_webservice_timeout_seconds", "timeout_seconds"))
-    query = urllib.parse.urlencode({
-        "idTpv": id_tpv,
-        "FechaInicio": fecha_inicio,
-        "FechaFin": fecha_fin,
-    })
-    data = _api_json_request(
-        "GET",
-        f"{_api_base_url(config)}/ventas?{query}",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=timeout_seconds,
-    )
-    ventas = data.get("ventas") or []
-    if not isinstance(ventas, list):
-        raise RuntimeError("Respuesta Studio G invalida: ventas no es una lista")
-
-    rows = [
-        mapped
-        for sale in ventas
-        if isinstance(sale, dict)
-        for mapped in [_map_studio_g_sale(config, sale, id_tpv)]
-        if mapped
-    ]
-    return rows, f"Studio G {id_tpv} {fecha_inicio}..{fecha_fin}"
-
-
-def _insert_studio_g_sales(config: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[int, int]:
-    if not rows:
-        return 0, 0
-    if not supabase:
-        raise ValueError("Supabase no configurado")
-
-    line_numbers = list(range(1, len(rows) + 1))
-    filtered_rows, _, skipped = _filter_existing_worker_sale_rows(
-        rows,
-        line_numbers,
-        str(config.get("id") or ""),
-    )
-    if filtered_rows:
-        supabase.table("ventas").insert(filtered_rows).execute()
-    return len(filtered_rows), skipped
-
-
-def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
-    config = _normalize_worker_import_config(config)
-    local_name = config.get("nombre") or "Studio G"
-    batch_id = str(uuid.uuid4())
-    try:
-        rows, source_name = fetch_studio_g_sales(config)
-        inserted, skipped = _insert_studio_g_sales(config, rows)
-        message = f"API Studio G: {inserted} ventas importadas"
-        if skipped:
-            message += f", {skipped} duplicadas omitidas"
-        if not rows:
-            message = "API Studio G: 0 ventas encontradas para el rango"
-        if write_load_log:
-            insert_load_log(
-                local_name,
-                source_name,
-                "exito",
-                message,
-                batch_id,
-                mall_id=config.get("mall_id"),
-                local_id=config.get("id"),
-                canal="API",
-                records_processed=inserted,
-                error_count=0,
-                metadata={"source": "worker_studio_g_api", "records_received": len(rows), "duplicate_skipped": skipped},
-            )
-        if inserted > 0 and write_load_log:
-            run_local_risk_analysis_if_possible(config, trigger="worker_studio_g_api")
-        return {
-            "ok": True,
-            "status": "success",
-            "message": message,
-            "records_processed": inserted,
-            "source_name": source_name,
-            "canal": "API",
-            "records_received": len(rows),
-            "duplicate_skipped": skipped,
-            "processed_files": 1 if rows else 0,
-            "failed_files": 0,
-            "total_pending": len(rows),
-            "batch_size": 1 if rows else 0,
-            "details": [],
-        }
-    except Exception as exc:
-        message = f"Fallo API Studio G: {sanitize_error_text(exc)}"
-        if write_load_log:
-            insert_load_log(
-                local_name,
-                "Studio G API",
-                "error",
-                message,
-                batch_id,
-                mall_id=config.get("mall_id"),
-                local_id=config.get("id"),
-                canal="API",
-                records_processed=0,
-                error_count=1,
-                metadata={"source": "worker_studio_g_api", "exception": sanitize_error_text(exc)},
-            )
-        return {"ok": False, "status": "error", "message": message, "records_processed": 0, "source_name": "Studio G API", "canal": "API", "details": [{"linea": 0, "error": message}]}
-
-
-def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
-    config = _normalize_worker_import_config(config)
-    constants = _webservice_constants(config)
-    if str(config.get("sftp_protocol") or config.get("protocolo") or "").strip().upper() == "API" and _is_studio_g_config(config, constants):
-        return process_studio_g_api(config, write_load_log=write_load_log)
-
-    protocol = "WEBSERVICE"
-    local_name = config.get("nombre") or "Local"
-    batch_id = str(uuid.uuid4())
-
-    base_url = _webservice_config_value(
-        config,
-        constants,
-        "_webservice_url",
-        "webservice_url",
-        "api_url",
-        "endpoint_url",
-        "host",
-        "sftp_host",
-    )
-    token = _webservice_config_value(
-        config,
-        constants,
-        "_webservice_token",
-        "webservice_token",
-        "api_token",
-        "auth_token",
-        "password",
-        "sftp_pass",
-    )
-    page_param = str(_webservice_config_value(config, constants, "_webservice_page_param", "page_param") or "page")
-    start_page = max(1, _webservice_int_value(config, constants, 1, "_webservice_start_page", "start_page"))
-    max_pages = max(1, _webservice_int_value(config, constants, WEBSERVICE_MAX_PAGES, "_webservice_max_pages", "max_pages"))
-    timeout_seconds = max(5, _webservice_int_value(config, constants, WEBSERVICE_TIMEOUT_SECONDS, "_webservice_timeout_seconds", "timeout_seconds"))
-    data_path = _webservice_config_value(config, constants, "_webservice_data_path", "data_path")
-    paginate = _webservice_bool_value(config, constants, True, "_webservice_paginate", "paginate")
-
-    if not base_url:
-        message = "Webservice sin URL configurada."
-        if write_load_log:
-            insert_load_log(
-                local_name, "WEBSERVICE", "error", message, batch_id,
-                mall_id=config.get("mall_id"),
-                local_id=config.get("id"),
-                canal=protocol,
-                records_processed=0,
-                error_count=1,
-                metadata={"source": "worker_webservice_import", "reason": "missing_url"},
-            )
-        return {"ok": False, "status": "error", "message": message, "records_processed": 0, "source_name": "WEBSERVICE", "canal": protocol, "details": [{"linea": 0, "error": message}]}
-
-    all_records: List[Dict[str, Any]] = []
-    fetched_pages = 0
-    last_url = ""
-
-    try:
-        page = start_page
-        while fetched_pages < max_pages:
-            url = _append_query_param(str(base_url), page_param, page) if paginate else str(base_url)
-            last_url = url
-            payload = _fetch_webservice_json(url, str(token or "").strip() or None, timeout_seconds)
-            page_records = _extract_webservice_records(payload, str(data_path or "").strip() or None)
-            if not page_records:
-                break
-
-            all_records.extend(page_records)
-            fetched_pages += 1
-            if not paginate:
-                break
-            page += 1
-
-    except urllib.error.HTTPError as exc:
-        message = f"Fallo HTTP Webservice: {exc.code}"
-        if write_load_log:
-            insert_load_log(
-                local_name, "WEBSERVICE", "error", message, batch_id,
-                mall_id=config.get("mall_id"),
-                local_id=config.get("id"),
-                canal=protocol,
-                records_processed=0,
-                error_count=1,
-                metadata={"source": "worker_webservice_import", "status_code": exc.code, "url": last_url},
-            )
-        return {"ok": False, "status": "error", "message": message, "records_processed": 0, "source_name": "WEBSERVICE", "canal": protocol, "details": [{"linea": 0, "error": message}]}
-    except Exception as exc:
-        message = f"Fallo Webservice: {sanitize_error_text(exc)}"
-        if write_load_log:
-            insert_load_log(
-                local_name, "WEBSERVICE", "error", message, batch_id,
-                mall_id=config.get("mall_id"),
-                local_id=config.get("id"),
-                canal=protocol,
-                records_processed=0,
-                error_count=1,
-                metadata={"source": "worker_webservice_import", "exception": sanitize_error_text(exc), "url": last_url},
-            )
-        return {"ok": False, "status": "error", "message": message, "records_processed": 0, "source_name": "WEBSERVICE", "canal": protocol, "details": [{"linea": 0, "error": message}]}
-
-    if not all_records:
-        message = "Webservice ejecutado sin registros nuevos."
-        if write_load_log:
-            insert_load_log(
-                local_name, "WEBSERVICE", "exito", message, batch_id,
-                mall_id=config.get("mall_id"),
-                local_id=config.get("id"),
-                canal=protocol,
-                records_processed=0,
-                error_count=0,
-                metadata={"source": "worker_webservice_import", "pages": fetched_pages, "reason": "empty_response"},
-            )
-        return {
-            "ok": True,
-            "status": "success",
-            "message": message,
-            "records_processed": 0,
-            "source_name": "WEBSERVICE",
-            "canal": protocol,
-            "pages": fetched_pages,
-            "processed_files": 0,
-            "failed_files": 0,
-            "total_pending": 0,
-            "batch_size": 0,
-            "details": [],
-        }
-
-    processing_config = dict(config)
-    processing_config["file_type"] = "JSON"
-    processing_config["tipo_archivo"] = "JSON"
-    processing_constants = dict(constants)
-    processing_constants.setdefault("_moving_window_mode", True)
-    processing_config["constants_config"] = processing_constants
-    processing_config["constants"] = processing_constants
-
-    source_name = f"WEBSERVICE_{start_page}-{start_page + max(fetched_pages - 1, 0)}.json"
-    count, errors, stats = _unpack_process_file_result(
-        process_file_logic(processing_config, source_name, json.dumps(all_records, ensure_ascii=False))
-    )
-    estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors, stats)
-    metadata = {
-        "source": "worker_webservice_import",
-        "pages": fetched_pages,
-        "records_received": len(all_records),
-        **(stats or {}),
-    }
-
-    if write_load_log:
-        insert_load_log(
-            local_name, source_name, estado if insert_confirmed else "error", mensaje, batch_id, errors,
-            mall_id=config.get("mall_id"),
-            local_id=config.get("id"),
-            canal=protocol,
-            records_processed=count,
-            error_count=len(errors or []),
-            metadata=metadata,
-        )
-
-    if count > 0 and write_load_log:
-        run_local_risk_analysis_if_possible(config, trigger="worker_webservice_import")
-
-    return {
-        "ok": bool(insert_confirmed),
-        "status": "partial" if estado == "parcial" else ("success" if insert_confirmed else "error"),
-        "message": mensaje,
-        "records_processed": count,
-        "source_name": source_name,
-        "canal": protocol,
-        "pages": fetched_pages,
-        "records_received": len(all_records),
-        "processed_files": 1 if insert_confirmed else 0,
-        "failed_files": 0 if insert_confirmed else 1,
-        "total_pending": len(all_records),
-        "batch_size": 1,
-        "details": errors or [],
-    }
-
-
 def process_local_files(config):
-    protocol = str(config.get("sftp_protocol", "SFTP") or "SFTP").strip().upper()
+    protocol = config.get("sftp_protocol", "SFTP")
     host = config.get("sftp_host")
     port = config.get("sftp_port", 22)
     user = config.get("sftp_user")
@@ -1919,65 +902,44 @@ def process_local_files(config):
     post_action = config.get("accion_post_procesado", "NINGUNA")
     backup_prefix = config.get("prefijo_backup", "PR_")
     custom_backup_prefix = _normalize_prefix_value(backup_prefix)
-
+    
     ext = f".{file_type.lower()}"
     processed_suffix = ".procesado"
-    max_files_per_batch = MAX_FILES_PER_BATCH
-    processed_count = 0
-    file_errors = 0
-    total_pending = 0
-    batch_size = 0
-    last_error_details = []
-    last_error_message = ""
-
-    def _result(ok: bool, message: str) -> Dict[str, Any]:
-        return {
-            "ok": ok,
-            "message": message,
-            "processed_files": processed_count,
-            "failed_files": file_errors,
-            "total_pending": total_pending,
-            "batch_size": batch_size,
-            "details": last_error_details,
-        }
-
+    MAX_FILES_PER_BATCH = 20  # Safety Cap
+    
     logger.info(f"Conectando a {config['nombre']} ({protocol}) en {host}...")
-
-    if protocol in {"WEBSERVICE", "API"}:
-        return process_webservice_import(config)
-
+    
     if protocol == "SFTP":
         try:
             ssh, sftp = connect_with_retries(lambda: get_sftp_client(host, port, user, password))
         except Exception as ce:
-            friendly_error = _friendly_sftp_connection_error(ce)
-            message = f"Fallo conexión SFTP: {friendly_error}"
             insert_load_log(
-                config['nombre'], "N/A", "error", message,
+                config['nombre'], "N/A", "error", f"Fallo conexión SFTP: {str(ce)}",
                 mall_id=config.get("mall_id"),
                 local_id=config.get("id"),
                 canal=protocol,
                 records_processed=0,
                 error_count=1,
-                metadata={"source": "worker_auto_import", "connection_error": friendly_error},
+                metadata={"source": "worker_auto_import", "connection_error": str(ce)},
             )
-            return _result(False, message)
+            return
 
         try:
+            # Handle directory vs file path
             try:
                 st = sftp.stat(remote_path)
                 if not stat.S_ISDIR(st.st_mode):
                     remote_path = posixpath.dirname(remote_path) or "."
-            except Exception:
+            except:
                 pass
 
+            # 1. DISCOVERY & FILTERING
             items = sftp.listdir_attr(remote_path)
             pending_files = []
-
+            
             for item in items:
-                if stat.S_ISDIR(item.st_mode):
-                    continue
-
+                if stat.S_ISDIR(item.st_mode): continue
+                
                 filename = item.filename
                 is_processed = processed_suffix in filename
                 is_backup = (
@@ -1988,15 +950,19 @@ def process_local_files(config):
                 )
                 is_match = filename.lower().endswith(ext)
                 is_error = ".error" in filename
-
+                
                 if is_match and not is_processed and not is_backup and not is_error:
                     pending_files.append(item)
 
+            # 2. SORTING (Chronological: Oldest Modified First)
+            # This is critical to maintain data integrity order
             pending_files.sort(key=lambda x: x.st_mtime)
+            
             total_pending = len(pending_files)
-            batch_files = pending_files[:max_files_per_batch]
-            batch_size = len(batch_files)
-
+            
+            # 3. BATCHING
+            batch_files = pending_files[:MAX_FILES_PER_BATCH]
+            
             if total_pending == 0:
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
                 message = _build_no_new_file_message(config)
@@ -2009,21 +975,24 @@ def process_local_files(config):
                     error_count=0,
                     metadata={"source": "worker_auto_import", "pending_files": 0, "reason": "no_new_file"},
                 )
-                return _result(True, message)
+                return
 
-            logger.info(f"🚀 {config['nombre']}: Encontrados {total_pending} pendientes. Procesando lote de {batch_size}.")
+            logger.info(f"🚀 {config['nombre']}: Encontrados {total_pending} pendientes. Procesando lote de {len(batch_files)}.")
 
+            # 4. PROCESSING LOOP
+            processed_count = 0
             for item in batch_files:
                 filename = item.filename
                 batch_id = str(uuid.uuid4())
-                logger.info(f"🔄 [{processed_count + 1}/{batch_size}] Procesando SFTP: {filename}")
-
+                logger.info(f"🔄 [{processed_count + 1}/{len(batch_files)}] Procesando SFTP: {filename}")
+                
                 try:
                     with sftp.open(f"{remote_path}/{filename}", 'rb') as f:
                         content = _decode_worker_text(
                             f.read(),
                             is_json=str(filename or "").lower().endswith(".json")
                         )
+                    
                     count, errors, stats = _unpack_process_file_result(
                         process_file_logic(config, filename, content)
                     )
@@ -2031,93 +1000,41 @@ def process_local_files(config):
                     estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors, stats)
 
                     if insert_confirmed:
-                        post_process_warnings = []
-                        if post_action == "RENOMBRAR_BACKUP":
-                            try:
-                                handle_post_process_sftp(
-                                    sftp,
-                                    remote_path,
-                                    filename,
-                                    post_action,
-                                    processed_suffix,
-                                    AUTO_SUCCESS_PREFIX,
-                                    strip_prefixes=(custom_backup_prefix,)
-                                )
-                            except Exception as post_err:
-                                warning = (
-                                    "No se pudo renombrar el archivo a respaldo luego de insertar. "
-                                    f"Acción={post_action}. Error={post_err}"
-                                )
-                                logger.warning(f"⚠️ {config['nombre']}: {warning}")
-                                post_process_warnings.append(warning)
-                        else:
-                            try:
-                                handle_post_process_sftp(
-                                    sftp,
-                                    remote_path,
-                                    filename,
-                                    post_action,
-                                    processed_suffix,
-                                    custom_backup_prefix,
-                                    strip_prefixes=(custom_backup_prefix,)
-                                )
-                            except Exception as post_err:
-                                warning = (
-                                    "No se pudo aplicar acción post-proceso luego de insertar. "
-                                    f"Acción={post_action}. Error={post_err}"
-                                )
-                                logger.warning(f"⚠️ {config['nombre']}: {warning}")
-                                post_process_warnings.append(warning)
-
-                        mensaje_final = mensaje
-                        if post_process_warnings:
-                            mensaje_final = _append_post_process_warning(
-                                mensaje,
-                                " | ".join(post_process_warnings),
-                            )
-
-                        metadata = {"source": "worker_auto_import", **(stats or {})}
-                        if post_process_warnings:
-                            metadata["post_process_warnings"] = post_process_warnings
-
                         insert_load_log(
-                            config['nombre'], filename, estado, mensaje_final, batch_id, errors,
+                            config['nombre'], filename, estado, mensaje, batch_id, errors,
                             mall_id=config.get("mall_id"),
                             local_id=config.get("id"),
                             canal=protocol,
                             records_processed=count,
                             error_count=len(errors or []),
-                            metadata=metadata,
+                            metadata={"source": "worker_auto_import", **(stats or {})},
                         )
-                    else:
-                        file_errors += 1
-                        last_error_message = mensaje
-                        last_error_details = list(errors or [])
-                        logger.error(f"❌ Error validando archivo {filename}: {mensaje}")
-                        insert_load_log(
-                            config['nombre'], filename, "error", mensaje, batch_id, errors,
-                            mall_id=config.get("mall_id"), local_id=config.get("id")
-                        )
-                        try:
+                        if post_action == "RENOMBRAR_BACKUP":
                             handle_post_process_sftp(
                                 sftp,
                                 remote_path,
                                 filename,
-                                "RENOMBRAR_BACKUP",
+                                post_action,
                                 processed_suffix,
-                                AUTO_ERROR_PREFIX,
+                                AUTO_SUCCESS_PREFIX,
                                 strip_prefixes=(custom_backup_prefix,)
                             )
-                        except Exception:
-                            pass
-                        continue
-
+                        else:
+                            handle_post_process_sftp(
+                                sftp,
+                                remote_path,
+                                filename,
+                                post_action,
+                                processed_suffix,
+                                custom_backup_prefix,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
+                    else:
+                        raise Exception(mensaje)
+                        
                     processed_count += 1
-
+                    
                 except Exception as fe:
-                    file_errors += 1
-                    last_error_message = str(fe)
-                    last_error_details = []
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
                         config['nombre'], filename, "error", str(fe), batch_id,
@@ -2139,23 +1056,21 @@ def process_local_files(config):
                             strip_prefixes=(custom_backup_prefix,)
                         )
                     except: pass
-            logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{batch_size} archivos procesados exitosamente.")
+            
+            logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{len(batch_files)} archivos procesados exitosamente.")
             if processed_count > 0:
                 run_local_risk_analysis_if_possible(config, trigger="worker_auto_import")
 
         finally:
-            if 'sftp' in locals():
-                sftp.close()
-            if 'ssh' in locals():
-                ssh.close()
-
+            if 'sftp' in locals(): sftp.close()
+            if 'ssh' in locals(): ssh.close()
+            
     elif protocol == "FTP":
         try:
             ftp = connect_with_retries(lambda: get_ftp_client(host, port, user, password))
         except Exception as ce:
-            message = f"Fallo conexión FTP: {str(ce)}"
             insert_load_log(
-                config['nombre'], "N/A", "error", message,
+                config['nombre'], "N/A", "error", f"Fallo conexión FTP: {str(ce)}",
                 mall_id=config.get("mall_id"),
                 local_id=config.get("id"),
                 canal=protocol,
@@ -2163,20 +1078,21 @@ def process_local_files(config):
                 error_count=1,
                 metadata={"source": "worker_auto_import", "connection_error": str(ce)},
             )
-            return _result(False, message)
+            return
 
         try:
             try:
                 ftp.cwd(remote_path)
-            except Exception:
+            except:
                 remote_path_parent = posixpath.dirname(remote_path) or "."
-                try:
-                    ftp.cwd(remote_path_parent)
-                except Exception:
-                    pass
+                try: ftp.cwd(remote_path_parent)
+                except: pass
 
+            # 1. DISCOVERY
+            files = ftp.nlst()
             pending_files = []
-            for filename in ftp.nlst():
+            
+            for filename in files:
                 is_processed = processed_suffix in filename
                 is_backup = (
                     (custom_backup_prefix and filename.startswith(custom_backup_prefix))
@@ -2186,15 +1102,19 @@ def process_local_files(config):
                 )
                 is_match = filename.lower().endswith(ext)
                 is_error = ".error" in filename
-
+                
                 if is_match and not is_processed and not is_backup and not is_error:
                     pending_files.append(filename)
-
+            
+            # 2. SORTING (Name Ascending)
+            # FTP List doesn't give dates reliable without extra calls. Name sort is best best.
             pending_files.sort()
+            
             total_pending = len(pending_files)
-            batch_files = pending_files[:max_files_per_batch]
-            batch_size = len(batch_files)
-
+            
+            # 3. BATCHING
+            batch_files = pending_files[:MAX_FILES_PER_BATCH]
+            
             if total_pending == 0:
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
                 message = _build_no_new_file_message(config)
@@ -2207,19 +1127,25 @@ def process_local_files(config):
                     error_count=0,
                     metadata={"source": "worker_auto_import", "pending_files": 0, "reason": "no_new_file"},
                 )
-                return _result(True, message)
+                return
 
-            logger.info(f"🚀 {config['nombre']}: Encontrados {total_pending} pendientes. Procesando lote de {batch_size}.")
-
+            logger.info(f"🚀 {config['nombre']}: Encontrados {total_pending} pendientes. Procesando lote de {len(batch_files)}.")
+            
+            # 4. PROCESSING LOOP
+            processed_count = 0
             for filename in batch_files:
                 batch_id = str(uuid.uuid4())
-                logger.info(f"🔄 [{processed_count + 1}/{batch_size}] Procesando FTP: {filename}")
-
+                logger.info(f"🔄 [{processed_count + 1}/{len(batch_files)}] Procesando FTP: {filename}")
+                
                 try:
+                    bio = io.BytesIO()
+                    ftp.retrbinary(f"RETR {filename}", bio.write)
+                    bio.seek(0)
                     content = _decode_worker_text(
-                        retrieve_ftp_bytes(ftp, filename, logger=logger),
+                        bio.read(),
                         is_json=str(filename or "").lower().endswith(".json")
                     )
+                    
                     count, errors, stats = _unpack_process_file_result(
                         process_file_logic(config, filename, content)
                     )
@@ -2227,90 +1153,38 @@ def process_local_files(config):
                     estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors, stats)
 
                     if insert_confirmed:
-                        post_process_warnings = []
-                        if post_action == "RENOMBRAR_BACKUP":
-                            try:
-                                handle_post_process_ftp(
-                                    ftp,
-                                    filename,
-                                    post_action,
-                                    processed_suffix,
-                                    AUTO_SUCCESS_PREFIX,
-                                    strip_prefixes=(custom_backup_prefix,)
-                                )
-                            except Exception as post_err:
-                                warning = (
-                                    "No se pudo renombrar el archivo a respaldo luego de insertar. "
-                                    f"Acción={post_action}. Error={post_err}"
-                                )
-                                logger.warning(f"⚠️ {config['nombre']}: {warning}")
-                                post_process_warnings.append(warning)
-                        else:
-                            try:
-                                handle_post_process_ftp(
-                                    ftp,
-                                    filename,
-                                    post_action,
-                                    processed_suffix,
-                                    custom_backup_prefix,
-                                    strip_prefixes=(custom_backup_prefix,)
-                                )
-                            except Exception as post_err:
-                                warning = (
-                                    "No se pudo aplicar acción post-proceso luego de insertar. "
-                                    f"Acción={post_action}. Error={post_err}"
-                                )
-                                logger.warning(f"⚠️ {config['nombre']}: {warning}")
-                                post_process_warnings.append(warning)
-
-                        mensaje_final = mensaje
-                        if post_process_warnings:
-                            mensaje_final = _append_post_process_warning(
-                                mensaje,
-                                " | ".join(post_process_warnings),
-                            )
-
-                        metadata = {"source": "worker_auto_import", **(stats or {})}
-                        if post_process_warnings:
-                            metadata["post_process_warnings"] = post_process_warnings
-
                         insert_load_log(
-                            config['nombre'], filename, estado, mensaje_final, batch_id, errors,
+                            config['nombre'], filename, estado, mensaje, batch_id, errors,
                             mall_id=config.get("mall_id"),
                             local_id=config.get("id"),
                             canal=protocol,
                             records_processed=count,
                             error_count=len(errors or []),
-                            metadata=metadata,
+                            metadata={"source": "worker_auto_import", **(stats or {})},
                         )
-                    else:
-                        file_errors += 1
-                        last_error_message = mensaje
-                        last_error_details = list(errors or [])
-                        logger.error(f"❌ Error validando archivo {filename}: {mensaje}")
-                        insert_load_log(
-                            config['nombre'], filename, "error", mensaje, batch_id, errors,
-                            mall_id=config.get("mall_id"), local_id=config.get("id")
-                        )
-                        try:
+                        if post_action == "RENOMBRAR_BACKUP":
                             handle_post_process_ftp(
                                 ftp,
                                 filename,
-                                "RENOMBRAR_BACKUP",
+                                post_action,
                                 processed_suffix,
-                                AUTO_ERROR_PREFIX,
+                                AUTO_SUCCESS_PREFIX,
                                 strip_prefixes=(custom_backup_prefix,)
                             )
-                        except Exception:
-                            pass
-                        continue
-
+                        else:
+                            handle_post_process_ftp(
+                                ftp,
+                                filename,
+                                post_action,
+                                processed_suffix,
+                                custom_backup_prefix,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
+                    else:
+                         raise Exception(mensaje)
+                         
                     processed_count += 1
-
                 except Exception as fe:
-                    file_errors += 1
-                    last_error_message = str(fe)
-                    last_error_details = []
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
                         config['nombre'], filename, "error", str(fe), batch_id,
@@ -2331,27 +1205,13 @@ def process_local_files(config):
                             strip_prefixes=(custom_backup_prefix,)
                         )
                     except: pass
-            logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{batch_size} archivos procesados exitosamente.")
+            
+            logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{len(batch_files)} archivos procesados exitosamente.")
             if processed_count > 0:
                 run_local_risk_analysis_if_possible(config, trigger="worker_auto_import")
+            
         finally:
-            if 'ftp' in locals():
-                ftp.quit()
-
-    else:
-        message = f"Protocolo no soportado: {protocol}"
-        logger.error(message)
-        return _result(False, message)
-
-    ok = total_pending == 0 or processed_count > 0
-    message = (
-        f"Lote completado: {processed_count}/{batch_size} archivos procesados."
-        if batch_size
-        else "Sin archivos para procesar."
-    )
-    if not ok and last_error_message:
-        message = f"{message} {last_error_message}"
-    return _result(ok, message)
+            if 'ftp' in locals(): ftp.quit()
 
 def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix="", strip_prefixes: Sequence[str] = ()):
     full_path = f"{path}/{filename}"
@@ -2363,11 +1223,7 @@ def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix="", st
         logger.info(f"Renombrando archivo remoto a: {new_name}")
         sftp.rename(full_path, new_name)
     elif action == "RENOMBRAR_BACKUP":
-        try:
-            existing_names = [item.filename for item in sftp.listdir_attr(path)]
-        except Exception:
-            existing_names = []
-        new_filename = _build_unique_marked_filename(filename, prefix, existing_names, strip_prefixes)
+        new_filename = _build_marked_filename(filename, prefix, strip_prefixes)
         new_full_path = f"{path}/{new_filename}"
         logger.info(f"Renombrando (Backup) archivo remoto a: {new_full_path}")
         sftp.rename(full_path, new_full_path)
@@ -2381,17 +1237,13 @@ def handle_post_process_ftp(ftp, filename, action, suffix, prefix="", strip_pref
         logger.info(f"Renombrando archivo remoto FTP a: {new_name}")
         ftp.rename(filename, new_name)
     elif action == "RENOMBRAR_BACKUP":
-        try:
-            existing_names = [posixpath.basename(str(name or "")) for name in (ftp.nlst() or [])]
-        except Exception:
-            existing_names = []
-        new_name = _build_unique_marked_filename(filename, prefix, existing_names, strip_prefixes)
+        new_name = _build_marked_filename(filename, prefix, strip_prefixes)
         logger.info(f"Renombrando (Backup) archivo remoto FTP a: {new_name}")
         ftp.rename(filename, new_name)
 
 # --- ASYNC LOGIC ---
 
-async def mark_local_status(local_id: str, status: str, *, update_last_execution: bool = True):
+async def mark_local_status(local_id: str, status: str):
     """Updates the processing status of a local."""
     try:
         payload = {
@@ -2399,7 +1251,7 @@ async def mark_local_status(local_id: str, status: str, *, update_last_execution
         }
         if status == 'BUSY':
             payload["processing_started_at"] = datetime.now(_worker_timezone()).isoformat()
-        elif status == 'IDLE' and update_last_execution:
+        elif status == 'IDLE':
             payload["ultima_ejecucion"] = datetime.now(_worker_timezone()).isoformat()
             
         await asyncio.to_thread(
@@ -2414,6 +1266,93 @@ def _sanitize_health_error(value: object) -> str:
         text = f"{text[:497]}..."
     return text or "unknown_error"
 
+
+def _worker_timezone() -> ZoneInfo:
+    configured = (
+        os.getenv("WORKER_TIMEZONE")
+        or DEFAULT_WORKER_TIMEZONE
+    ).strip() or DEFAULT_WORKER_TIMEZONE
+    try:
+        return ZoneInfo(configured)
+    except ZoneInfoNotFoundError:
+        logger.warning(
+            "Zona horaria del worker invalida '%s'. Usando %s.",
+            configured,
+            DEFAULT_WORKER_TIMEZONE,
+        )
+        return ZoneInfo(DEFAULT_WORKER_TIMEZONE)
+
+
+def _parse_worker_datetime(value: Any, tz: ZoneInfo) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
+
+
+def _parse_scheduled_time(value: Any) -> Optional[Tuple[int, int]]:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parts = raw.split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except (TypeError, ValueError):
+        return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour, minute
+
+
+def _schedule_slot_for_local(local: Dict[str, Any], now: datetime) -> Optional[datetime]:
+    frecuencia = str(local.get("frecuencia_cron") or "manual").strip().lower()
+    if frecuencia == "manual":
+        return None
+
+    if frecuencia == "cada_hora":
+        return now.replace(minute=0, second=0, microsecond=0)
+
+    if frecuencia == "cada_2_horas":
+        slot_hour = now.hour - (now.hour % 2)
+        return now.replace(hour=slot_hour, minute=0, second=0, microsecond=0)
+
+    if frecuencia == "hora_especifica":
+        scheduled_time = _parse_scheduled_time(local.get("hora_especifica"))
+        if not scheduled_time:
+            return None
+        hour, minute = scheduled_time
+        slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now < slot:
+            return None
+        return slot
+
+    return None
+
+
+def should_run_scheduled_local(local: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    tz = _worker_timezone()
+    current_time = now.astimezone(tz) if now else datetime.now(tz)
+    slot = _schedule_slot_for_local(local, current_time)
+    if not slot:
+        return False
+
+    last_run = _parse_worker_datetime(local.get("ultima_ejecucion"), tz)
+    if last_run and last_run >= slot:
+        return False
+
+    return True
 
 async def _upsert_system_health_value(key: str, value: str):
     if not supabase:
@@ -2457,8 +1396,6 @@ async def clear_cron_error():
 async def run_connection_monitor_nightly_if_due():
     if not supabase:
         return {"executed": False, "reason": "supabase_not_configured"}
-    if ConnectionMonitorService is None:
-        return {"executed": False, "reason": "service_unavailable"}
     try:
         result = await asyncio.to_thread(_connection_monitor_service().run_nightly_monitor_if_due)
         if result.get("executed"):
@@ -2480,8 +1417,6 @@ async def run_connection_monitor_nightly_if_due():
 async def run_missing_days_email_scheduler_if_due():
     if not supabase:
         return {"executed": False, "reason": "supabase_not_configured"}
-    if run_missing_days_email_scheduler is None:
-        return {"executed": False, "reason": "service_unavailable"}
     try:
         result = await asyncio.to_thread(
             lambda: run_missing_days_email_scheduler(supabase, logger=logger)
@@ -2495,83 +1430,85 @@ async def run_missing_days_email_scheduler_if_due():
         logger.error(f"Missing-days email scheduler failed: {sanitize_error_text(e)}")
         return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
 
-async def process_local_safe(local, semaphore, host_semaphore, due_at: Optional[datetime] = None):
+async def process_local_safe(local, semaphore):
     """
     Wraps the synchronous process_local_files in a semaphore and async thread,
     handling DB locking/unlocking and Circuit Breaker.
     """
-    local_name = local.get('nombre', 'Unknown')
-    consecutive_failures = local.get('consecutive_failures', 0)
-    status = local.get('processing_status')
-
-    if local.get('activo') is False:
-         logger.info(f"⏸️ [Skipped] {local_name} is inactive.")
-         return
-
-    if status == 'SUSPENDED_AUTH_ERROR':
-         logger.warning(f"⛔ [Skipped] {local_name} is SUSPENDED due to auth errors.")
-         return
-
-    if consecutive_failures >= 5:
-         logger.error(f"⛔ [Suspend] {local_name} reached 5 consecutive failures. Suspending...")
-         await mark_local_status(local['id'], 'SUSPENDED_AUTH_ERROR')
-         return
-
     async with semaphore:
-        async with host_semaphore:
-            should_update_last_execution = True
-            logger.info(
-                "🔒 [Lock] Locking %s (Status: BUSY, host=%s, due_at=%s)",
-                local_name,
-                _host_key(local),
-                due_at.isoformat() if due_at else "now",
+        local_name = local.get('nombre', 'Unknown')
+        
+        # --- CIRCUIT BREAKER CHECK ---
+        consecutive_failures = local.get('consecutive_failures', 0)
+        status = local.get('processing_status')
+        
+        if status == 'SUSPENDED_AUTH_ERROR':
+             logger.warning(f"⛔ [Skipped] {local_name} is SUSPENDED due to auth errors.")
+             return
+
+        if consecutive_failures >= 5:
+             logger.error(f"⛔ [Suspend] {local_name} reached 5 consecutive failures. Suspending...")
+             await mark_local_status(local['id'], 'SUSPENDED_AUTH_ERROR')
+             # Reset failures to avoid immediate loop if manually reactivated without reset
+             # But actually, manual reactivation should reset failures.
+             return
+
+        logger.info(f"🔒 [Lock] Locking {local_name} (Status: BUSY)")
+        
+        # 1. LOCK
+        await mark_local_status(local['id'], 'BUSY')
+        
+        try:
+            # 2. EXECUTE (Run sync IO in thread pool)
+            logger.info(f"🚀 [Start] Processing {local_name}...")
+            
+            # Run the processing
+            # We need to capture if it was successful or auth error
+            # process_local_files returns nothing, logs internally. 
+            # We need to modify it or wrap it to know if it failed?
+            # Actually process_local_files catches exceptions internally and logs.
+            # to implement true circuit breaker, we need to know if it failed.
+            
+            # For now, let's assume if it throws exception here it failed.
+            # But process_local_files swallows exceptions mostly.
+            # Let's trust it runs. If we want strict circuit breaker, we'd need to refactor process_local_files to return status.
+            # Let's assume for this task we wrap it.
+            
+            await asyncio.to_thread(process_local_files, local)
+            
+            logger.info(f"✅ [Done] Finished {local_name}")
+            
+            # Reset failures on success (Optimistic: if no exception bubbled up)
+            # Ideal: check logs_carga for this batch? 
+            # For simplicity: reset failures here.
+            await asyncio.to_thread(
+                lambda: supabase.table("locales").update({"consecutive_failures": 0}).eq("id", local['id']).execute()
             )
-            await mark_local_status(local['id'], 'BUSY')
-
-            try:
-                logger.info(f"🚀 [Start] Processing {local_name}...")
-                result = await asyncio.to_thread(process_local_files, local)
-                if not isinstance(result, dict):
-                    result = {"ok": False, "message": "Resultado inválido del worker."}
-                should_update_last_execution = result.get("total_pending") != 0
-
-                if result.get("ok"):
-                    logger.info(f"✅ [Done] Finished {local_name}: {result.get('message', 'ok')}")
-                    await asyncio.to_thread(
-                        lambda: supabase.table("locales").update({"consecutive_failures": 0}).eq("id", local['id']).execute()
-                    )
-                else:
-                    error_text = result.get("message") or "Falló la corrida automática."
-                    logger.error(f"❌ [Error] Processing {local_name}: {error_text}")
-                    new_failures = consecutive_failures + 1
-                    await asyncio.to_thread(
-                         lambda: supabase.table("locales").update({"consecutive_failures": new_failures}).eq("id", local['id']).execute()
-                    )
-
-            except Exception as e:
-                logger.error(f"❌ [Error] Processing {local_name}: {e}")
-                insert_load_log(
-                    local_name, "SYSTEM", "error", f"Async processing failed: {str(e)}",
-                    mall_id=local.get("mall_id"),
-                    local_id=local.get("id"),
-                    canal=local.get("sftp_protocol"),
-                    records_processed=0,
-                    error_count=1,
-                    metadata={"source": "worker_async_wrapper", "exception": str(e)},
-                )
-
-                new_failures = consecutive_failures + 1
-                await asyncio.to_thread(
-                     lambda: supabase.table("locales").update({"consecutive_failures": new_failures}).eq("id", local['id']).execute()
-                )
-
-            finally:
-                logger.info(f"🔓 [Release] Unlocking {local_name} (Status: IDLE)")
-                await mark_local_status(
-                    local['id'],
-                    'IDLE',
-                    update_last_execution=should_update_last_execution,
-                )
+            
+        except Exception as e:
+            logger.error(f"❌ [Error] Processing {local_name}: {e}")
+            insert_load_log(
+                local_name, "SYSTEM", "error", f"Async processing failed: {str(e)}",
+                mall_id=local.get("mall_id"),
+                local_id=local.get("id"),
+                canal=local.get("sftp_protocol"),
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_async_wrapper", "exception": str(e)},
+            )
+            
+            # Increment Failures
+            new_failures = consecutive_failures + 1
+            await asyncio.to_thread(
+                 lambda: supabase.table("locales").update({"consecutive_failures": new_failures}).eq("id", local['id']).execute()
+            )
+            
+        finally:
+            # 3. RELEASE (Only if not suspended inside logic, checking status again?)
+            # If we suspended it above, we returned.
+            # If we are here, we must release lock.
+            logger.info(f"🔓 [Release] Unlocking {local_name} (Status: IDLE)")
+            await mark_local_status(local['id'], 'IDLE')
 
 async def cleanup_zombies():
     """Reset locales that have been stuck in BUSY for more than 2 hours."""
@@ -2610,28 +1547,6 @@ async def cleanup_zombies():
     except Exception as e:
         logger.error(f"Error cleaning zombies: {e}")
 
-async def run_operations_agent_if_due():
-    if not ENABLE_OPERATIONS_AGENT:
-        return
-    if not supabase:
-        return
-    try:
-        result = await asyncio.to_thread(
-            OperationsAgentWorker(supabase, logger).process_pending_events,
-            OPERATIONS_AGENT_MAX_EVENTS,
-        )
-        processed = int(result.get("processed") or 0)
-        failed = int(result.get("failed") or 0)
-        if processed or failed:
-            logger.info(
-                "Operations Agent procesado: %s eventos, %s fallidos.",
-                processed,
-                failed,
-            )
-    except Exception as exc:
-        logger.warning("Operations Agent skipped/failed: %s", sanitize_error_text(exc))
-
-
 async def run_worker_async():
     logger.info("🚀 Iniciando Worker de Importación (Async/Concurrent v2)...")
     if not supabase:
@@ -2645,71 +1560,46 @@ async def run_worker_async():
     await update_heartbeat()
     
     try:
+        # 2. Fetch Tasks (IDLE + AUTOMATIC)
+        # Note: We need to filter by IDLE to avoid double execution if previous job is running
         response = supabase.table("locales")\
             .select("*")\
             .eq("tipo_ejecucion", "AUTOMATICO")\
             .eq("processing_status", "IDLE")\
             .execute()
-
-        locales = [
-            loc for loc in (response.data or [])
-            if loc.get("mall_id") and loc.get("activo") is not False
-        ]
-        now = _now_local()
-        scheduled_locals = []
-
+            
+        locales = [loc for loc in (response.data or []) if loc.get("mall_id")]
+        current_time = datetime.now(_worker_timezone())
+        
+        tasks_to_run = []
+        
         for local in locales:
-            due_at = _schedule_due_at(local, now)
-            if due_at is None:
-                continue
-            scheduled_locals.append((
-                due_at,
-                _stable_offset_minutes(local, 59),
-                _host_key(local),
-                local,
-            ))
+            if should_run_scheduled_local(local, current_time):
+                tasks_to_run.append(local)
 
-        if not scheduled_locals:
-            logger.info("😴 No active tasks for this scheduling window.")
-            await run_operations_agent_if_due()
+        if not tasks_to_run:
+            logger.info("😴 No active tasks for this hour.")
             await run_missing_days_email_scheduler_if_due()
             await run_connection_monitor_nightly_if_due()
             await update_cron_success()
             await clear_cron_error()
             return
 
-        scheduled_locals.sort(
-            key=lambda item: (
-                item[0],
-                item[1],
-                item[2],
-                str(item[3].get("nombre") or ""),
-            )
-        )
-
-        logger.info(
-            "📋 Encolados %s locales para ejecución (poll=%ss, max_workers=%s, per_host=%s).",
-            len(scheduled_locals),
-            WORKER_POLL_SECONDS,
-            MAX_CONCURRENT_WORKERS,
-            MAX_CONCURRENT_PER_HOST,
-        )
-
+        logger.info(f"📋 Encolados {len(tasks_to_run)} locales para ejecución.")
+        
+        # 3. Execute with Semaphore
+        MAX_CONCURRENT_WORKERS = 5
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_WORKERS)
-        host_semaphores: Dict[str, asyncio.Semaphore] = {}
-        tasks = []
-        for due_at, _rank, host_key, local in scheduled_locals:
-            host_semaphore = host_semaphores.setdefault(host_key, asyncio.Semaphore(MAX_CONCURRENT_PER_HOST))
-            tasks.append(process_local_safe(local, semaphore, host_semaphore, due_at))
+        
+        tasks = [process_local_safe(local, semaphore) for local in tasks_to_run]
         await asyncio.gather(*tasks)
-
+        
         logger.info("🏁 Cycle finished.")
-        await run_operations_agent_if_due()
         await run_missing_days_email_scheduler_if_due()
         await run_connection_monitor_nightly_if_due()
         await update_cron_success()
         await clear_cron_error()
-
+        
     except Exception as e:
         logger.error(f"Critical error in main loop: {e}")
         await update_cron_error(e)

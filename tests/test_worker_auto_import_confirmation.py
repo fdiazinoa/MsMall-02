@@ -1,7 +1,5 @@
 import importlib
-import asyncio
 import io
-import json
 import stat as stat_module
 import sys
 from types import SimpleNamespace
@@ -69,35 +67,14 @@ class _FakeSSH:
         return None
 
 
-class _FakeFTP:
-    def __init__(self, files):
-        self.files = dict(files)
-        self.renames = []
-
-    def nlst(self):
-        return list(self.files.keys())
-
-    def retrbinary(self, command, callback):
-        filename = command.split(" ", 1)[1]
-        callback(self.files[filename])
-
-    def rename(self, old_name, new_name):
-        self.renames.append((old_name, new_name))
-        self.files[new_name] = self.files.pop(old_name)
-
-    def quit(self):
-        return None
-
-
 class _FakeWorkerTable:
     def __init__(self, supabase, table_name):
         self.supabase = supabase
         self.table_name = table_name
-        self._payload = None
+        self.payload = None
         self._select = None
         self._filters = []
         self._in_filters = []
-        self._limit = None
 
     def select(self, value, *_args, **_kwargs):
         self._select = value
@@ -112,22 +89,12 @@ class _FakeWorkerTable:
         return self
 
     def insert(self, payload):
-        self._payload = payload
-        return self
-
-    def update(self, _payload):
-        return self
-
-    def order(self, *_args, **_kwargs):
-        return self
-
-    def limit(self, value):
-        self._limit = value
+        self.payload = payload
         return self
 
     def execute(self):
-        if self._payload is not None:
-            rows = self._payload if isinstance(self._payload, list) else [self._payload]
+        if self.payload is not None:
+            rows = self.payload if isinstance(self.payload, list) else [self.payload]
             self.supabase.tables.setdefault(self.table_name, []).extend([dict(row) for row in rows])
             return SimpleNamespace(data=rows)
 
@@ -139,33 +106,15 @@ class _FakeWorkerTable:
         if self._select and self._select != "*":
             columns = [col.strip() for col in str(self._select).split(",")]
             rows = [{col: row.get(col) for col in columns} for row in rows]
-        if self._limit is not None:
-            rows = rows[: self._limit]
         return SimpleNamespace(data=rows)
 
 
-class _FakeSupabase:
-    def __init__(self, inserted_rows=None):
-        self.inserted_rows = inserted_rows if inserted_rows is not None else []
-        self.tables = {"ventas": self.inserted_rows}
-
-    def table(self, table_name):
-        self.tables.setdefault(table_name, [])
-        return _FakeWorkerTable(self, table_name)
-
-
-class _FakeWorkerSupabase(_FakeSupabase):
+class _FakeWorkerSupabase:
     def __init__(self):
-        super().__init__([])
         self.tables = {}
 
-
-class _AsyncNullContext:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
+    def table(self, table_name):
+        return _FakeWorkerTable(self, table_name)
 
 
 class _FakeLogQuery:
@@ -233,8 +182,8 @@ def test_worker_ftp_client_uses_normalized_host(monkeypatch):
 
 def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
     worker = _load_worker(monkeypatch)
-    inserted_rows = []
-    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
 
     content = "\n".join([
         "fecha_venta,total_bruto,total_impuestos,total_neto",
@@ -263,111 +212,16 @@ def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
     assert count == 2
     assert errors == []
     assert stats["moving_window_mode"] is False
-    assert [row["factura_no"] for row in inserted_rows] == [
+    assert [row["factura_no"] for row in fake_db.tables["ventas"]] == [
         "PABT01202603010001",
         "PABT01202603010002",
     ]
 
 
-def test_worker_process_file_logic_parses_no_header_col_mapping(monkeypatch):
-    worker = _load_worker(monkeypatch)
-    inserted_rows = []
-    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
-
-    content = "\n".join([
-        "A;2026-07-03;12:00;foo;bar;100.00;18.00;82.00",
-        "B;2026-07-03;12:01;foo;bar;50.00;9.00;41.00",
-    ])
-    config = {
-        "nombre": "LA DOLCERIE",
-        "id": "local-1",
-        "mall_id": "mall-1",
-        "file_type": "TXT",
-        "mapping_config": {
-            "fecha_venta": "col_2",
-            "hora_transaccion": "col_3",
-            "total_bruto": "col_6",
-            "total_impuestos": "col_7",
-            "total_neto": "col_8",
-        },
-        "constants_config": {
-            "_has_header": "false",
-            "_data_start_row": "1",
-            "_date_format": "YYYY-MM-DD",
-            "local_codigo": "54",
-            "_factura_numero_mode": "generated_sequence",
-        },
-    }
-
-    count, errors, stats = worker.process_file_logic(config, "Ventas20260703.txt", content)
-
-    assert count == 2
-    assert errors == []
-    assert stats["duplicate_skipped"] == 0
-    assert inserted_rows[0]["fecha"] == "2026-07-03"
-    assert inserted_rows[0]["factura_no"] == "54202607030001"
-    assert inserted_rows[0]["total_bruto"] == 100.0
-    assert inserted_rows[1]["factura_no"] == "54202607030002"
-
-
-def test_worker_process_file_logic_skips_existing_duplicates_for_regular_import(monkeypatch):
-    worker = _load_worker(monkeypatch)
-    fake_db = _FakeWorkerSupabase()
-    fake_db.tables["ventas"] = [
-        {
-            "local_id": "local-1",
-            "fecha": "2026-06-10",
-            "factura_no": "993",
-            "total_bruto": 35627.12,
-        },
-        {
-            "local_id": "local-1",
-            "fecha": "2026-06-10",
-            "factura_no": "994",
-            "total_bruto": 11186.44,
-        },
-    ]
-    monkeypatch.setattr(worker, "supabase", fake_db)
-
-    content = "\n".join([
-        "ID_TRANSACCION,NUMSERIE,FECHA,HORA,TOTALART,TOTALTRANSVENTA,TASA,TOTALBRUTO,TOTALIMPUESTOS,TOTALNETO",
-        "993,333,10/06/2026,14,3.00,2,1.00,35627.12,6412.88,42040.00",
-        "994,333,10/06/2026,15,1.00,1,1.00,11186.44,2013.56,13200.00",
-    ])
-    config = {
-        "nombre": "CASTANER",
-        "id": "local-1",
-        "mall_id": "mall-1",
-        "file_type": "TXT",
-        "mapping_config": {
-            "factura_numero": "ID_TRANSACCION",
-            "fecha_venta": "FECHA",
-            "total_bruto": "TOTALBRUTO",
-            "total_impuestos": "TOTALIMPUESTOS",
-            "total_neto": "TOTALNETO",
-        },
-        "constants_config": {
-            "_date_format": "DD/MM/YYYY",
-            "local_codigo": "19",
-        },
-    }
-
-    count, errors, stats = worker.process_file_logic(config, "Ventas Castaner 10062026.txt", content)
-    estado, mensaje, confirmed = worker._resolve_worker_processing_outcome(count, errors, stats)
-
-    assert count == 0
-    assert errors == []
-    assert stats["duplicate_skipped"] == 2
-    assert len(fake_db.tables["ventas"]) == 2
-    assert estado == "exito"
-    assert confirmed is True
-    assert "2 registros ya existentes omitidos" in mensaje
-
-
 def test_worker_process_file_logic_rejects_closed_import_period(monkeypatch):
     worker = _load_worker(monkeypatch)
-    inserted_rows = []
-    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
 
     content = "\n".join([
         "fecha_venta,total_bruto,total_impuestos,total_neto",
@@ -398,14 +252,14 @@ def test_worker_process_file_logic_rejects_closed_import_period(monkeypatch):
     assert len(errors) == 1
     assert errors[0]["linea"] == 2
     assert "periodo cerrado" in errors[0]["error"]
-    assert inserted_rows[0]["factura_no"] == "PABT01202606010002"
-    assert inserted_rows[0]["fecha"] == "2026-06-01"
+    assert fake_db.tables["ventas"][0]["factura_no"] == "PABT01202606010002"
+    assert fake_db.tables["ventas"][0]["fecha"] == "2026-06-01"
 
 
 def test_worker_process_file_logic_parses_comma_decimal_mapping(monkeypatch):
     worker = _load_worker(monkeypatch)
-    inserted_rows = []
-    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
 
     content = "\n".join([
         "NCF\tFECHA\tHORA\tTOTALBRUTO\tTOTALIMPUESTOS\tTOTALNETO",
@@ -433,7 +287,7 @@ def test_worker_process_file_logic_parses_comma_decimal_mapping(monkeypatch):
 
     assert count == 1
     assert errors == []
-    row = inserted_rows[0]
+    row = fake_db.tables["ventas"][0]
     assert row["factura_no"] == "E320000378096"
     assert row["fecha"] == "2026-05-01"
     assert row["total_bruto"] == 3995.0
@@ -609,72 +463,6 @@ def test_worker_marks_success_with_pr_prefix_after_confirmed_insert(monkeypatch)
     assert triggered == ["worker_auto_import"]
 
 
-def test_worker_uses_unique_pr_name_when_sftp_backup_already_exists(monkeypatch):
-    worker = _load_worker(monkeypatch)
-    fake_sftp = _FakeSFTP({
-        "ventas_20260301.json": b'{"rows":[{"ok":true}]}',
-        "PR_ventas_20260301.json": b"previous",
-    })
-
-    monkeypatch.setattr(worker, "connect_with_retries", lambda connector, attempts=3, base_delay=2: connector())
-    monkeypatch.setattr(worker, "get_sftp_client", lambda *args, **kwargs: (_FakeSSH(), fake_sftp))
-    monkeypatch.setattr(worker, "process_file_logic", lambda config, filename, content: (12, []))
-    monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: None)
-    monkeypatch.setattr(worker, "run_local_risk_analysis_if_possible", lambda *args, **kwargs: None)
-
-    worker.process_local_files({
-        "nombre": "Cafe Santo Domingo",
-        "id": "local-1",
-        "mall_id": "mall-1",
-        "sftp_protocol": "SFTP",
-        "sftp_host": "example.com",
-        "sftp_port": 22,
-        "sftp_user": "demo",
-        "sftp_pass": "secret",
-        "sftp_path": ".",
-        "file_type": "JSON",
-        "accion_post_procesado": "RENOMBRAR_BACKUP",
-    })
-
-    assert fake_sftp.renames[0][0] == "ventas_20260301.json"
-    assert fake_sftp.renames[0][1].startswith("PR_ventas_20260301_")
-    assert fake_sftp.renames[0][1].endswith(".json")
-    assert "PR_ventas_20260301.json" in fake_sftp.files
-
-
-def test_worker_uses_unique_pr_name_when_ftp_backup_already_exists(monkeypatch):
-    worker = _load_worker(monkeypatch)
-    fake_ftp = _FakeFTP({
-        "ventas_20260301.json": b'{"rows":[{"ok":true}]}',
-        "PR_ventas_20260301.json": b"previous",
-    })
-
-    monkeypatch.setattr(worker, "connect_with_retries", lambda connector, attempts=3, base_delay=2: connector())
-    monkeypatch.setattr(worker, "get_ftp_client", lambda *args, **kwargs: fake_ftp)
-    monkeypatch.setattr(worker, "process_file_logic", lambda config, filename, content: (12, []))
-    monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: None)
-    monkeypatch.setattr(worker, "run_local_risk_analysis_if_possible", lambda *args, **kwargs: None)
-
-    worker.process_local_files({
-        "nombre": "Cafe Santo Domingo",
-        "id": "local-1",
-        "mall_id": "mall-1",
-        "sftp_protocol": "FTP",
-        "sftp_host": "example.com",
-        "sftp_port": 21,
-        "sftp_user": "demo",
-        "sftp_pass": "secret",
-        "sftp_path": ".",
-        "file_type": "JSON",
-        "accion_post_procesado": "RENOMBRAR_BACKUP",
-    })
-
-    assert fake_ftp.renames[0][0] == "ventas_20260301.json"
-    assert fake_ftp.renames[0][1].startswith("PR_ventas_20260301_")
-    assert fake_ftp.renames[0][1].endswith(".json")
-    assert "PR_ventas_20260301.json" in fake_ftp.files
-
-
 def test_worker_builds_no_new_file_message_from_last_import_log(monkeypatch):
     worker = _load_worker(monkeypatch)
     monkeypatch.setattr(worker, "supabase", _FakeLogSupabase([
@@ -759,99 +547,3 @@ def test_worker_strips_legacy_custom_prefix_when_building_standard_marker(monkey
         worker.AUTO_SUCCESS_PREFIX,
         ("MS02_",),
     ) == "PR_ventas_20260301.json"
-
-
-def test_worker_processes_nested_json_using_dot_mapping(monkeypatch):
-    worker = _load_worker(monkeypatch)
-    inserted_rows = []
-    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
-
-    content = json.dumps({
-        "rows": [
-            {
-                "invoiceNumber": "1001",
-                "invoiceDate": "2026-03-06",
-                "totals": {"grandTotal": 118.0, "taxTotal": 18.0, "subTotal": 100.0},
-                "fiscalData": {"ncf": "B0100001"},
-            },
-            {
-                "invoiceNumber": "1002",
-                "invoiceDate": "2026-03-06",
-                "totals": {"grandTotal": 59.0, "taxTotal": 9.0, "subTotal": 50.0},
-                "fiscalData": {"ncf": "B0100002"},
-            },
-        ]
-    })
-
-    count, errors, _stats = worker.process_file_logic(
-        {
-            "nombre": "Cafe Santo Domingo",
-            "id": "local-1",
-            "mall_id": "mall-1",
-            "file_type": "JSON",
-            "mapping_config": {
-                "factura_numero": "invoiceNumber",
-                "fecha_venta": "invoiceDate",
-                "total_bruto": "totals.grandTotal",
-                "total_impuestos": "totals.taxTotal",
-                "total_neto": "totals.subTotal",
-            },
-            "constants_config": {
-                "local_codigo": "L003",
-            },
-        },
-        "MS02_ventas_20260306.json",
-        content,
-    )
-
-    assert count == 2
-    assert errors == []
-    assert [row["factura_no"] for row in inserted_rows] == ["1001", "1002"]
-    assert inserted_rows[0]["fecha"] == "2026-03-06"
-    assert inserted_rows[0]["total_bruto"] == 118.0
-    assert inserted_rows[0]["total_impuestos"] == 18.0
-    assert inserted_rows[0]["total_neto"] == 100.0
-
-
-def test_worker_failed_result_does_not_duplicate_file_error_log(monkeypatch):
-    worker = _load_worker(monkeypatch)
-    inserted_rows = []
-    logs = []
-
-    async def _noop_mark_local_status(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(worker, "supabase", _FakeSupabase(inserted_rows))
-    monkeypatch.setattr(
-        worker,
-        "process_local_files",
-        lambda local: {
-            "ok": False,
-            "message": "Lote completado: 0/1 archivos procesados. Worker: No se confirmó inserción en BD. Se encontraron 2 errores.",
-            "total_pending": 1,
-            "processed_files": 0,
-            "failed_files": 1,
-            "details": [
-                {"linea": 2, "error": "Datos incompletos"},
-                {"linea": 3, "error": "Datos incompletos"},
-            ],
-        },
-    )
-    monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: logs.append((args, kwargs)))
-    monkeypatch.setattr(worker, "mark_local_status", _noop_mark_local_status)
-
-    asyncio.run(
-        worker.process_local_safe(
-            {
-                "nombre": "Cafe Santo Domingo",
-                "id": "local-1",
-                "mall_id": "mall-1",
-                "consecutive_failures": 0,
-                "processing_status": "IDLE",
-            },
-            _AsyncNullContext(),
-            _AsyncNullContext(),
-        )
-    )
-
-    assert logs == []

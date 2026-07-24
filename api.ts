@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -2200,7 +2200,39 @@ export const ApiService = {
     );
   },
 
-  async createUser(email: string, password: string, role: string, mallIds: string[], token: string): Promise<any> {
+  async getRoles(token: string): Promise<RoleConfig[]> {
+    return fetchJsonWithBaseFallback<RoleConfig[]>(
+      '/admin/roles',
+      { headers: withAuthHeaders(token) },
+      'No se pudieron cargar los roles'
+    );
+  },
+
+  async createRole(payload: Omit<RoleConfig, 'id' | 'is_factory'>, token: string): Promise<any> {
+    return fetchJsonWithBaseFallback('/admin/roles', {
+      method: 'POST', headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }), body: JSON.stringify(payload),
+    }, 'No se pudo crear el rol');
+  },
+
+  async updateRole(roleId: string, payload: Omit<RoleConfig, 'id' | 'is_factory'>, token: string): Promise<any> {
+    return fetchJsonWithBaseFallback(`/admin/roles/${roleId}`, {
+      method: 'PUT', headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }), body: JSON.stringify(payload),
+    }, 'No se pudo actualizar el rol');
+  },
+
+  async deleteRole(roleId: string, token: string): Promise<any> {
+    return fetchJsonWithBaseFallback(`/admin/roles/${roleId}`, {
+      method: 'DELETE', headers: withAuthHeaders(token),
+    }, 'No se pudo eliminar el rol');
+  },
+
+  async restoreFactoryRole(roleId: string, token: string): Promise<any> {
+    return fetchJsonWithBaseFallback(`/admin/roles/${roleId}/restore-factory`, {
+      method: 'POST', headers: withAuthHeaders(token),
+    }, 'No se pudo restaurar el rol de fábrica');
+  },
+
+  async createUser(email: string, password: string, role: string, mallIds: string[], token: string, roleId?: string): Promise<any> {
     const response = await fetch(`${BASE_URL}/admin/users`, {
       method: 'POST',
       headers: {
@@ -2211,6 +2243,7 @@ export const ApiService = {
         email,
         password,
         rol: role,
+        role_id: roleId,
         mall_ids: mallIds
       })
     });
@@ -2235,7 +2268,7 @@ export const ApiService = {
 
   async updateUser(
     userId: string,
-    payload: { email?: string; nombre?: string; rol?: string; mall_ids?: string[] },
+    payload: { email?: string; nombre?: string; rol?: string; role_id?: string; mall_ids?: string[] },
     token: string
   ): Promise<any> {
     const response = await fetch(`${BASE_URL}/admin/users/${userId}`, {

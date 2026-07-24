@@ -130,6 +130,26 @@ COPILOT_DEFAULT_MODELS = {
 ADMIN_ROLES = {"admin", "superadmin", "super_admin", "administrador"}
 IT_ROLES = {"it", "tic"}
 
+RBAC_ACTIONS = {"view", "create", "update", "delete"}
+FACTORY_ROLE_PERMISSIONS: Dict[str, Dict[str, Dict[str, bool]]] = {
+    "admin": {module: {action: True for action in RBAC_ACTIONS} for module in (
+        "dashboard", "sales_reports", "stores", "imports", "monitor", "financial",
+        "cube", "comparisons", "malls", "users", "roles",
+    )},
+    "it": {
+        "dashboard": {"view": True}, "sales_reports": {"view": True, "create": True},
+        "stores": {"view": True, "create": True, "update": True},
+        "imports": {"view": True, "create": True, "update": True},
+        "monitor": {"view": True, "create": True, "update": True},
+        "financial": {"view": True}, "cube": {"view": True}, "comparisons": {"view": True},
+    },
+    "auditor": {
+        "dashboard": {"view": True}, "sales_reports": {"view": True},
+        "monitor": {"view": True}, "financial": {"view": True}, "cube": {"view": True},
+        "comparisons": {"view": True},
+    },
+}
+
 def _sensitive_ops_service() -> SensitiveOpsService:
     return SensitiveOpsService(supabase, logger)
 
@@ -522,11 +542,76 @@ async def _get_access_context(user_id: str) -> Dict[str, Any]:
         logger.warning(f"No se pudo cargar roles de usuarios_malls para {user_id}: {e}")
 
     effective_role = _resolve_effective_role(email, [profile_role, metadata_role, *mall_roles])
-    return {"user_id": user_id, "email": email, "role": effective_role}
+    role_key = effective_role
+    role_name = effective_role.title()
+    permissions = FACTORY_ROLE_PERMISSIONS.get(effective_role, FACTORY_ROLE_PERMISSIONS["auditor"])
+    has_assignment = False
+
+    # The RBAC tables are intentionally optional during rollout so current users keep access
+    # until the migration is applied. Once assigned, configurable permissions are authoritative.
+    try:
+        assignment = (
+            supabase.table("profile_role_assignments")
+            .select("role_id")
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        if assignment and assignment.data and assignment.data.get("role_id"):
+            role_id = assignment.data["role_id"]
+            role_res = supabase.table("app_roles").select("id,key,nombre").eq("id", role_id).maybe_single().execute()
+            if role_res and role_res.data:
+                role_key = str(role_res.data.get("key") or effective_role)
+                role_name = str(role_res.data.get("nombre") or role_key)
+                rows = supabase.table("app_role_permissions").select(
+                    "module_key,can_view,can_create,can_update,can_delete"
+                ).eq("role_id", role_id).execute().data or []
+                permissions = {
+                    str(row["module_key"]): {
+                        "view": bool(row.get("can_view")),
+                        "create": bool(row.get("can_create")),
+                        "update": bool(row.get("can_update")),
+                        "delete": bool(row.get("can_delete")),
+                    }
+                    for row in rows
+                }
+                has_assignment = True
+    except Exception as e:
+        logger.warning("No se pudo cargar RBAC para %s: %s", user_id, e)
+
+    if _is_system_admin_email(email):
+        role_key = "admin"
+        role_name = "Administrador"
+        permissions = FACTORY_ROLE_PERMISSIONS["admin"]
+        has_assignment = False
+    return {
+        "user_id": user_id,
+        "email": email,
+        "role": role_key,
+        "role_name": role_name,
+        "legacy_role": effective_role,
+        "permissions": permissions,
+        "has_role_assignment": has_assignment,
+    }
+
+def _has_module_permission(access_ctx: Dict[str, Any], module_key: str, action: str) -> bool:
+    if action not in RBAC_ACTIONS:
+        return False
+    if _is_system_admin_email(access_ctx.get("email")):
+        return True
+    return bool((access_ctx.get("permissions") or {}).get(module_key, {}).get(action))
+
+def require_module_permission(module_key: str, action: str):
+    async def dependency(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+        access_ctx = await _get_access_context(user_id)
+        if not _has_module_permission(access_ctx, module_key, action):
+            raise HTTPException(status_code=403, detail=f"No tienes permiso para {action} en el módulo {module_key}.")
+        return access_ctx
+    return dependency
 
 async def require_admin_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
     access_ctx = await _get_access_context(user_id)
-    if access_ctx["role"] != "admin":
+    if access_ctx["legacy_role"] != "admin" and not _has_module_permission(access_ctx, "users", "update"):
         raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere rol ADMIN.")
     return access_ctx
 
@@ -6679,21 +6764,155 @@ async def delete_mall(mall_id: str, admin_ctx: Dict[str, Any] = Depends(require_
 class UserMallAssignment(BaseModel):
     mall_ids: List[str]
     rol: str = 'auditor'
+    role_id: Optional[str] = None
 
 class AdminCreateUserRequest(BaseModel):
     email: str
     password: str
     rol: str = 'auditor'
+    role_id: Optional[str] = None
     mall_ids: List[str] = []
 
 class AdminUpdateUserRequest(BaseModel):
     email: Optional[str] = None
     nombre: Optional[str] = None
     rol: Optional[str] = None
+    role_id: Optional[str] = None
     mall_ids: Optional[List[str]] = None
 
+class RolePermissionRequest(BaseModel):
+    module_key: str
+    can_view: bool = False
+    can_create: bool = False
+    can_update: bool = False
+    can_delete: bool = False
+
+class RoleRequest(BaseModel):
+    key: str
+    nombre: str
+    descripcion: Optional[str] = None
+    permissions: List[RolePermissionRequest] = []
+
+def _validate_role_key(value: str) -> str:
+    key = _normalize_role(value)
+    if not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", key):
+        raise HTTPException(status_code=400, detail="El identificador del rol sólo admite letras, números y guion bajo.")
+    return key
+
+def _role_permissions_payload(role_id: str, permissions: List[RolePermissionRequest]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    seen = set()
+    for permission in permissions:
+        module_key = _validate_role_key(permission.module_key)
+        if module_key in seen:
+            raise HTTPException(status_code=400, detail=f"El módulo {module_key} está repetido.")
+        seen.add(module_key)
+        can_create = bool(permission.can_create)
+        can_update = bool(permission.can_update)
+        can_delete = bool(permission.can_delete)
+        rows.append({
+            "role_id": role_id,
+            "module_key": module_key,
+            "can_view": bool(permission.can_view or can_create or can_update or can_delete),
+            "can_create": can_create,
+            "can_update": can_update,
+            "can_delete": can_delete,
+        })
+    return rows
+
+async def _list_roles_with_permissions() -> List[Dict[str, Any]]:
+    roles = supabase.table("app_roles").select("id,key,nombre,descripcion,is_factory,created_at,updated_at").order("nombre").execute().data or []
+    permissions = supabase.table("app_role_permissions").select("role_id,module_key,can_view,can_create,can_update,can_delete").execute().data or []
+    by_role: Dict[str, List[Dict[str, Any]]] = {}
+    for permission in permissions:
+        by_role.setdefault(permission["role_id"], []).append(permission)
+    return [{**role, "permissions": by_role.get(role["id"], [])} for role in roles]
+
+@app.get("/api/v1/admin/roles")
+async def admin_get_roles(access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "view"))):
+    return await _list_roles_with_permissions()
+
+@app.post("/api/v1/admin/roles")
+async def admin_create_role(payload: RoleRequest, access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "create"))):
+    key = _validate_role_key(payload.key)
+    if key in {"admin", "it", "auditor"}:
+        raise HTTPException(status_code=400, detail="Los roles de fábrica ya existen y no se pueden duplicar.")
+    created = supabase.table("app_roles").insert({
+        "key": key, "nombre": payload.nombre.strip(), "descripcion": payload.descripcion, "is_factory": False,
+    }).execute().data or []
+    if not created:
+        raise HTTPException(status_code=400, detail="No se pudo crear el rol.")
+    rows = _role_permissions_payload(created[0]["id"], payload.permissions)
+    if rows:
+        supabase.table("app_role_permissions").insert(rows).execute()
+    return {"id": created[0]["id"], "message": "Rol creado correctamente."}
+
+@app.put("/api/v1/admin/roles/{role_id}")
+async def admin_update_role(role_id: str, payload: RoleRequest, access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "update"))):
+    role = supabase.table("app_roles").select("id,key,is_factory").eq("id", role_id).maybe_single().execute().data
+    if not role:
+        raise HTTPException(status_code=404, detail="Rol no encontrado.")
+    key = _validate_role_key(payload.key)
+    if role.get("is_factory") and key != role.get("key"):
+        raise HTTPException(status_code=400, detail="No se puede cambiar el identificador de un rol de fábrica.")
+    supabase.table("app_roles").update({
+        "key": key, "nombre": payload.nombre.strip(), "descripcion": payload.descripcion, "updated_at": datetime.utcnow().isoformat(),
+    }).eq("id", role_id).execute()
+    supabase.table("app_role_permissions").delete().eq("role_id", role_id).execute()
+    rows = _role_permissions_payload(role_id, payload.permissions)
+    if rows:
+        supabase.table("app_role_permissions").insert(rows).execute()
+    return {"message": "Permisos del rol actualizados."}
+
+@app.delete("/api/v1/admin/roles/{role_id}")
+async def admin_delete_role(role_id: str, access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "delete"))):
+    role = supabase.table("app_roles").select("is_factory").eq("id", role_id).maybe_single().execute().data
+    if not role:
+        raise HTTPException(status_code=404, detail="Rol no encontrado.")
+    if role.get("is_factory"):
+        raise HTTPException(status_code=400, detail="Los roles de fábrica no se eliminan; puedes ajustar o restaurar sus permisos.")
+    assigned = supabase.table("profile_role_assignments").select("user_id").eq("role_id", role_id).limit(1).execute().data or []
+    if assigned:
+        raise HTTPException(status_code=400, detail="No puedes eliminar un rol que tiene usuarios asignados.")
+    supabase.table("app_roles").delete().eq("id", role_id).execute()
+    return {"message": "Rol eliminado correctamente."}
+
+@app.post("/api/v1/admin/roles/{role_id}/restore-factory")
+async def admin_restore_factory_role(role_id: str, access_ctx: Dict[str, Any] = Depends(require_module_permission("roles", "update"))):
+    role = supabase.table("app_roles").select("id,key,is_factory").eq("id", role_id).maybe_single().execute().data
+    if not role or not role.get("is_factory") or role.get("key") not in FACTORY_ROLE_PERMISSIONS:
+        raise HTTPException(status_code=400, detail="Sólo los roles de fábrica pueden restaurarse.")
+    permissions = FACTORY_ROLE_PERMISSIONS[role["key"]]
+    supabase.table("app_role_permissions").delete().eq("role_id", role_id).execute()
+    rows = [
+        {"role_id": role_id, "module_key": module, "can_view": bool(actions.get("view")),
+         "can_create": bool(actions.get("create")), "can_update": bool(actions.get("update")), "can_delete": bool(actions.get("delete"))}
+        for module, actions in permissions.items()
+    ]
+    if rows:
+        supabase.table("app_role_permissions").insert(rows).execute()
+    return {"message": "Permisos de fábrica restaurados."}
+
+def _resolve_role_assignment(role_id: Optional[str], legacy_role: Optional[str]) -> Tuple[Optional[str], str]:
+    """Returns the RBAC role id plus the compatible legacy role stored in existing tables."""
+    role = None
+    if role_id:
+        role = supabase.table("app_roles").select("id,key").eq("id", role_id).maybe_single().execute().data
+    else:
+        canonical = _canonical_admin_role(legacy_role) or "auditor"
+        role = supabase.table("app_roles").select("id,key").eq("key", canonical).maybe_single().execute().data
+    if not role:
+        raise HTTPException(status_code=400, detail="El rol seleccionado no existe. Aplica primero la migración de roles.")
+    legacy = _canonical_admin_role(role.get("key")) or "auditor"
+    return role["id"], legacy
+
+def _assign_rbac_role(user_id: str, role_id: str, assigned_by: Optional[str]) -> None:
+    supabase.table("profile_role_assignments").upsert({
+        "user_id": user_id, "role_id": role_id, "assigned_by": assigned_by, "assigned_at": datetime.utcnow().isoformat(),
+    }, on_conflict="user_id").execute()
+
 @app.get("/api/v1/admin/users")
-async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_module_permission("users", "view"))):
     """
     List all users and their assigned malls. Requires ADMIN role.
     """
@@ -6738,7 +6957,18 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_acce
             for p in profiles:
                 profile_role_map[p["id"]] = p.get("role")
             
-        # 4. Merge
+        # 4. Resolve configurable role assignments in one query.
+        rbac_role_map: Dict[str, Dict[str, Any]] = {}
+        if user_ids:
+            role_links = supabase.table("profile_role_assignments").select("user_id,role_id").in_("user_id", user_ids).execute().data or []
+            role_ids = [link["role_id"] for link in role_links if link.get("role_id")]
+            roles_by_id = {}
+            if role_ids:
+                role_rows = supabase.table("app_roles").select("id,key,nombre").in_("id", role_ids).execute().data or []
+                roles_by_id = {row["id"]: row for row in role_rows}
+            rbac_role_map = {link["user_id"]: roles_by_id[link["role_id"]] for link in role_links if link.get("role_id") in roles_by_id}
+
+        # 5. Merge
         result = []
         for u in users_list:
             u['malls'] = assign_map.get(u['id'], [])
@@ -6746,7 +6976,10 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_acce
                 u.get("email"),
                 [profile_role_map.get(u["id"]), *(u.get("_role_candidates") or [])]
             )
-            u['rol'] = effective_role
+            assigned_role = rbac_role_map.get(u["id"])
+            u['rol'] = assigned_role.get("key") if assigned_role else effective_role
+            u['role_id'] = assigned_role.get("id") if assigned_role else None
+            u['role_name'] = assigned_role.get("nombre") if assigned_role else effective_role.title()
             u.pop("_role_candidates", None)
             result.append(u)
             
@@ -6757,15 +6990,13 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_admin_acce
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/admin/users")
-async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str, Any] = Depends(require_module_permission("users", "create"))):
     """
     Create a new auth user and optionally assign malls.
     Requires ADMIN role.
     """
     try:
-        role = _canonical_admin_role(payload.rol)
-        if not role:
-            raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
+        role_id, role = _resolve_role_assignment(payload.role_id, payload.rol)
 
         email = (payload.email or "").strip().lower()
         if not email:
@@ -6811,6 +7042,8 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
         except Exception as p_err:
             logger.warning(f"No se pudo upsert profiles para {created_user_id}: {p_err}")
 
+        _assign_rbac_role(created_user_id, role_id, admin_ctx.get("user_id"))
+
         # Assign malls if requested.
         supabase.table("usuarios_malls").delete().eq("usuario_id", created_user_id).execute()
         if payload.mall_ids:
@@ -6821,6 +7054,7 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
             "id": created_user_id,
             "email": email,
             "rol": role,
+            "role_id": role_id,
             "mall_ids": payload.mall_ids,
             "message": "Usuario ya existía; rol y asignaciones actualizados" if user_previously_existed else "Usuario creado correctamente"
         }
@@ -6831,14 +7065,13 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/admin/users/{target_user_id}/malls")
-async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, admin_ctx: Dict[str, Any] = Depends(require_admin_access)):
+async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, admin_ctx: Dict[str, Any] = Depends(require_module_permission("users", "update"))):
     """
     Assign a list of malls to a user.
     """
     try:
-        role = _canonical_admin_role(payload.rol)
-        if not role:
-            raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
+        role_id, role = _resolve_role_assignment(payload.role_id, payload.rol)
+        _assign_rbac_role(target_user_id, role_id, admin_ctx.get("user_id"))
 
         # Transaction? (Not supported natively in HTTP API, do sequentially)
         
@@ -6867,7 +7100,7 @@ async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, a
 async def admin_update_user(
     target_user_id: str,
     payload: AdminUpdateUserRequest,
-    admin_ctx: Dict[str, Any] = Depends(require_admin_access)
+    admin_ctx: Dict[str, Any] = Depends(require_module_permission("users", "update"))
 ):
     """
     Updates editable user profile fields (email/nombre), role and optional mall assignments.
@@ -6884,10 +7117,9 @@ async def admin_update_user(
             current_metadata = {}
 
         role_to_set: Optional[str] = None
-        if payload.rol is not None:
-            role_to_set = _canonical_admin_role(payload.rol)
-            if not role_to_set:
-                raise HTTPException(status_code=400, detail="Rol inválido. Use: admin, it, auditor.")
+        role_assignment_id: Optional[str] = None
+        if payload.role_id is not None or payload.rol is not None:
+            role_assignment_id, role_to_set = _resolve_role_assignment(payload.role_id, payload.rol)
 
         email_to_set: Optional[str] = None
         if payload.email is not None:
@@ -6926,6 +7158,8 @@ async def admin_update_user(
                 supabase.table("profiles").upsert({"id": target_user_id, "role": role_to_set}, on_conflict="id").execute()
             except Exception as p_err:
                 logger.warning(f"No se pudo upsert profiles al actualizar usuario {target_user_id}: {p_err}")
+
+            _assign_rbac_role(target_user_id, role_assignment_id, admin_ctx.get("user_id"))
 
             # Keep existing assignments synchronized to the new role when malls are not being replaced.
             if payload.mall_ids is None:
@@ -6972,6 +7206,7 @@ async def admin_update_user(
                 effective_email,
                 [updated_metadata.get("rol"), updated_metadata.get("role")]
             ),
+            "role_id": role_assignment_id,
             "message": "Usuario actualizado correctamente."
         }
     except HTTPException:

@@ -103,7 +103,10 @@ async def ranking(mall_id: str, start_date: date, end_date: date, limit: int = Q
 @router.get("/quality")
 async def quality(mall_id: str, start_date: date, end_date: date, user: dict = Depends(current_user)):
     _context(mall_id, start_date, end_date, user)
-    watermark = db.table("big_data_watermarks").select("*").eq("mall_id", mall_id).maybe_single().execute().data or {}
+    # Supabase's maybe_single() returns None when the mall has not been processed
+    # yet. That is an expected initial state, not an API failure.
+    watermark_response = db.table("big_data_watermarks").select("*").eq("mall_id", mall_id).maybe_single().execute()
+    watermark = getattr(watermark_response, "data", None) or {}
     logs = db.table("logs_carga").select("estado").eq("mall_id", mall_id).gte("fecha_hora", start_date.isoformat()).lte("fecha_hora", (end_date + timedelta(days=1)).isoformat()).execute().data or []
     expected = (end_date - start_date).days + 1
     present = _rpc("big_data_daily_evolution", mall_id, start_date, end_date)

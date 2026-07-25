@@ -47,3 +47,23 @@ def test_cors_production_does_not_return_wildcard(monkeypatch):
     assert response.status_code == 200
     assert response.headers.get("access-control-allow-origin") == "https://msmall.vercel.app"
     assert response.headers.get("access-control-allow-origin") != "*"
+
+
+def test_cors_allows_only_this_project_vercel_previews(monkeypatch):
+    main = _load_main(monkeypatch, APP_ENV="production")
+
+    preview = _request(
+        main.app,
+        "GET",
+        "/",
+        headers={"Origin": "https://msmall-6ovf0rwyg-felix-diaz-s-projects.vercel.app"},
+    )
+    foreign = _request(
+        main.app,
+        "GET",
+        "/",
+        headers={"Origin": "https://untrusted-project.vercel.app"},
+    )
+
+    assert preview.headers.get("access-control-allow-origin") == "https://msmall-6ovf0rwyg-felix-diaz-s-projects.vercel.app"
+    assert foreign.headers.get("access-control-allow-origin") is None

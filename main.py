@@ -98,6 +98,10 @@ def _parse_bool_env(name: str, default: bool = False) -> bool:
 def _is_api_scheduler_enabled() -> bool:
     return _parse_bool_env("ENABLE_API_SCHEDULER", default=False)
 _CORS_LOCK_V1_ORIGINS = ["https://msmall.vercel.app"]
+# Preview URLs are generated per deployment, while production keeps the stable
+# origin above. Restrict direct API access to this Vercel project instead of
+# opening CORS to arbitrary `*.vercel.app` origins.
+_CORS_LOCK_V1_ORIGIN_REGEX = r"https://msmall-[a-z0-9-]+-felix-diaz-s-projects\.vercel\.app"
 
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -366,12 +370,13 @@ async def startup_event():
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_LOCK_V1_ORIGINS,
+    allow_origin_regex=_CORS_LOCK_V1_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-logger.info("CORS_LOCK_V1 origins=%s", _CORS_LOCK_V1_ORIGINS)
+logger.info("CORS_LOCK_V1 origins=%s origin_regex=%s", _CORS_LOCK_V1_ORIGINS, _CORS_LOCK_V1_ORIGIN_REGEX)
 
 # --- SECURITY & MULTI-TENANT MIDDLEWARE ---
 security = HTTPBearer()

@@ -90,7 +90,11 @@ La reclasificación histórica no pudo certificarse: las tablas
 `local_classification_history` están vacías en el entorno. Además, el refresco
 actual usa la clasificación vigente, no un intervalo histórico de vigencia. No
 se debe declarar soporte histórico hasta implementar ese mantenimiento y
-probarlo con categorías reales. La paridad queda **PARTIAL**.
+probarlo con categorías reales. La migración aditiva
+`20260725_big_data_reclassification_history.sql` ya fue preparada: conserva
+historial con `effective_from`, encola sólo días de venta afectados al cambiar
+una clasificación y resuelve una única categoría por fecha. Aún no se aplicó
+ni se validó con categorías reales; la paridad queda **PARTIAL**.
 
 ## 5. Semántica de registros, ventas y notas de crédito
 

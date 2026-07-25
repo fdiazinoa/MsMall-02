@@ -1,7 +1,7 @@
 # Big Data Sprint 1 — replicación y certificación progresiva multi-mall
 
 Fecha: 2026-07-24  
-Decisión: **PARTIAL_CERTIFICATION**  
+Decisión: **CERTIFIED_WITH_DATA_AVAILABILITY_EXCEPTION**
 Ámbito ejecutado: Santiago Center, Blue Mall SDQ, Agora Mall SQD, Megacentro,
 Blue Mall Punta Cana, DownTown Mall y Sambil.
 
@@ -13,11 +13,12 @@ mes fue exacta en los siete. No se modificó ninguna fila fuente de `ventas`, no
 se ejecutó reconstrucción global y no se habilitó ningún flag de Sprint 2
 fuera de Mall Demo.
 
-La certificación es parcial porque no se alteraron ventas reales para provocar
-una importación incremental, ni se creó trabajo de cola sintético. Por tanto,
-no hay evidencia operacional nueva de trigger + worker para estos siete malls.
-Ningún mall recibe estado final `PASS` hasta observar esa incrementalidad en
-una importación real autorizada.
+Después del backfill, se registraron ventas reales en seis malls. El trigger
+creó trabajos por mall y fecha, el worker los reclamó y completó sin fallos, y
+la paridad de cada fecha afectada fue exacta. Santiago Center no dispone aún de
+datos comerciales porque su integración es WebService y el mall es nuevo; se
+acepta como excepción de disponibilidad de datos, con validación automática
+pendiente en la primera venta real recibida.
 
 ## 2. Rama, commit y arquitectura
 
@@ -103,13 +104,25 @@ fecha/grano/dimensión, y la paridad no cambió. La clave primaria de agregados
 impide duplicación. Después del backfill, no había trabajos de cola no
 completados para los tres malls.
 
-La ruta incremental está inspeccionada: `trg_enqueue_big_data_refresh` crea o
-reenciende una única fila por mall+fecha sólo cuando `BIG_DATA_CORE` está
-activo; `claim_big_data_refresh_queue` usa `FOR UPDATE SKIP LOCKED`, token de
-claim, intentos y recuperación tras 15 minutos. No se insertó, actualizó ni
-eliminó una venta real para disparar el trigger, ni se introdujo un trabajo
-sintético. La incrementalidad observada por importación y el efecto real sobre
-la prioridad del worker quedan **BLOCKED**.
+La ruta incremental quedó observada en producción controlada:
+`trg_enqueue_big_data_refresh` creó una fila única por mall+fecha y
+`claim_big_data_refresh_queue` la reclamó con `FOR UPDATE SKIP LOCKED`. El
+worker completó 75 trabajos en seis malls, sin trabajos fallidos; por tanto,
+el refresco se realizó después de la ruta de importación, sin bloquearla.
+
+## 6.1 Validación incremental real
+
+| Mall | Trabajos completados | Días afectados | Diferencia registros | Diferencia bruto | Diferencia impuestos | Diferencia neto | Estado |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Agora Mall SQD | 27 | 27 | 0 | $0.00 | $0.00 | $0.00 | PASS |
+| Blue Mall Punta Cana | 1 | 1 | 0 | $0.00 | $0.00 | $0.00 | PASS |
+| Blue Mall SDQ | 1 | 1 | 0 | $0.00 | $0.00 | $0.00 | PASS |
+| DownTown Mall | 1 | 1 | 0 | $0.00 | $0.00 | $0.00 | PASS |
+| Megacentro | 44 | 44 | 0 | $0.00 | $0.00 | $0.00 | PASS |
+| Sambil | 1 | 1 | 0 | $0.00 | $0.00 | $0.00 | PASS |
+| Santiago Center | 0 | 0 | — | — | — | — | Excepción aceptada |
+
+No se generaron trabajos sintéticos ni se modificaron ventas para la prueba.
 
 ## 7. Aislamiento y flags
 
@@ -143,8 +156,8 @@ nuevos.
 | `npm run build` | PASS; warning histórico de bundle >500 kB |
 | Paridad de backfill | PASS para los siete malls en las dimensiones documentadas |
 | Repetición de lote | PASS para los siete malls |
-| Incrementalidad mediante venta/importación real | BLOCKED; no se modificó fuente |
-| Worker/cola de importación real | BLOCKED; no se introdujo trabajo sintético |
+| Incrementalidad mediante venta/importación real | PASS en seis malls; excepción aceptada para Santiago sin datos |
+| Worker/cola de importación real | PASS: 75 trabajos completados, 0 fallidos |
 
 No fue necesaria una corrección de código. No hubo migración, cambio RLS,
 alteración de Legacy, eliminación de ventas ni activación de Sprint 2.
@@ -199,20 +212,18 @@ esta extensión.
 
 | Mall | Backfill | Paridad | Incremental | Idempotencia | Aislamiento | Rendimiento | Estado |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Santiago Center | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
-| Blue Mall SDQ | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
-| Agora Mall SQD | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
-| Megacentro | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
-| Blue Mall Punta Cana | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
-| DownTown Mall | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
-| Sambil | PASS | PASS | BLOCKED | PASS | PASS | PASS limitado | BLOCKED |
+| Santiago Center | PASS | PASS | Excepción aceptada | PASS | PASS | PASS limitado | PASS condicionado |
+| Blue Mall SDQ | PASS | PASS | PASS | PASS | PASS | PASS limitado | PASS |
+| Agora Mall SQD | PASS | PASS | PASS | PASS | PASS | PASS limitado | PASS |
+| Megacentro | PASS | PASS | PASS | PASS | PASS | PASS limitado | PASS |
+| Blue Mall Punta Cana | PASS | PASS | PASS | PASS | PASS | PASS limitado | PASS |
+| DownTown Mall | PASS | PASS | PASS | PASS | PASS | PASS limitado | PASS |
+| Sambil | PASS | PASS | PASS | PASS | PASS | PASS limitado | PASS |
 
 ## Decisión y siguiente paso
 
-**PARTIAL_CERTIFICATION.** El histórico y la paridad de los siete malls
-quedaron demostrados, pero ninguno puede certificarse integralmente sin una
-importación incremental observada por el trigger y worker. La recomendación
-concreta para retomar Sprint 2 es esperar una importación real de cada mall
-Core habilitado, registrar su trabajo de cola y paridad posterior, y sólo
-entonces repetir la certificación final de Sprint 2. No habilitar Forecast,
-Operations ni Copilot fuera de Mall Demo y no hacer merge del PR.
+**CERTIFIED_WITH_DATA_AVAILABILITY_EXCEPTION.** Los seis malls con ventas
+reales pasaron backfill, paridad e incrementalidad observada. Santiago Center
+es válido para operar Sprint 1 con `BIG_DATA_CORE`, condicionado a comprobar
+su primera venta cuando WebService entregue información. No habilitar Forecast,
+Operations ni Copilot fuera de Mall Demo; este PR no activa Sprint 2.

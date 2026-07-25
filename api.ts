@@ -480,6 +480,7 @@ const fetchJsonWithBaseFallback = async <T>(
   fallbackMessage: string
 ): Promise<T> => {
   const baseUrls = getApiBaseUrls();
+  const isVercelPreview = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
   let lastError: any = null;
 
   for (let i = 0; i < baseUrls.length; i++) {
@@ -492,8 +493,12 @@ const fetchJsonWithBaseFallback = async <T>(
         return await response.json();
       }
 
-      // 5xx from proxy/rewrite should try direct backend fallback.
-      if (response.status >= 500 && i < baseUrls.length - 1) {
+      // Preview deployments can return a Vercel 404 before their API rewrite is
+      // ready, even though the authenticated Railway API already has the
+      // endpoint. Continue only from the same-origin preview proxy; a 404 from
+      // the direct backend remains a real application error.
+      const retryableProxyNotFound = isVercelPreview && baseUrl === BASE_URL && response.status === 404;
+      if ((response.status >= 500 || retryableProxyNotFound) && i < baseUrls.length - 1) {
         console.warn(`API fallback: ${endpoint} respondió ${response.status}. Intentando siguiente base...`);
         continue;
       }
@@ -717,9 +722,8 @@ const toStorePersistenceError = (error: any): Error => {
 export const ApiService = {
   async getBigData<T>(path: string, mallId: string, startDate: string, endDate: string, token: string): Promise<T> {
     const params = new URLSearchParams({ mall_id: mallId, start_date: startDate, end_date: endDate });
-    // In Vercel this stays on the same-origin rewrite. A 404 from the rewrite is
-    // intentionally preserved: it means Railway still runs a backend without
-    // the Big Data router, not that the mall feature flag is disabled.
+    // Preview rewrites can briefly return 404; fetchJsonWithBaseFallback then
+    // verifies the direct Railway API before reporting a missing capability.
     return fetchJsonWithBaseFallback<T>(
       `/big-data/${path}?${params.toString()}`,
       { headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },

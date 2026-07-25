@@ -6,13 +6,14 @@ PR: [#299](https://github.com/fdiazinoa/MsMall-02/pull/299) — debe permanecer 
 
 ## 1. Resumen ejecutivo
 
-La validación controlada en Mall Demo confirma que el panel, las proyecciones
-con datos insuficientes, Operations Center, observaciones, Copilot Big Data e
-idempotencia de hallazgos funcionan en el piloto. No obstante, no es posible
-demostrar los controles obligatorios de paridad multi-mall, semántica comercial
-de transacción, benchmark comparable de importación, concurrencia de dos
-workers ni recuperación real de trabajos abandonados bajo las restricciones
-vigentes. Por tanto, el PR **no puede pasar a listo para merge**.
+La validación controlada confirma que el panel, las proyecciones con datos
+insuficientes, Operations Center, observaciones, Copilot Big Data e
+idempotencia de hallazgos funcionan en el piloto. La paridad de ventas se
+confirmó con datos reales para un mall alto, medio y bajo, y la semántica de
+notas de crédito está cerrada. Siguen pendientes benchmark comparable de
+importación, concurrencia de dos workers, recuperación real de trabajos
+abandonados y algunos escenarios de paridad correctiva. Por tanto, el PR **no
+puede pasar a listo para merge**.
 
 No se hizo merge, no se activó otro mall, no se modificó RLS Legacy, no se
 reconstruyeron agregados globales y no se alteraron ventas reales durante esta
@@ -44,10 +45,10 @@ activaron para ejecutar certificación.
 
 ### Resultado ejecutado
 
-Sólo Mall Demo posee agregados Big Data: 3 filas diarias, para 2026-07-24.
-Los perfiles alto, medio y bajo existen en `ventas`, pero sus agregados no
-existen; crear o refrescar agregados para ellos exigiría habilitar flags o
-reconstruir datos fuera del piloto, prohibido por esta certificación.
+La consulta de solo lectura del 2026-07-25 confirmó que ya existen agregados
+Sprint 1 para los perfiles seleccionados. Se comparó la fuente `ventas` contra
+los agregados Big Data para el 2026-07-23 y para el mes parcial del 1 al 23 de
+julio; todas las diferencias son absolutas y porcentualmente cero.
 
 | Escenario | Fuente | Big Data | Diferencia | Resultado |
 | --- | ---: | ---: | ---: | --- |
@@ -57,12 +58,20 @@ reconstruir datos fuera del piloto, prohibido por esta certificación.
 | Mall Demo, ventas netas | $3,260.32 | $3,260.32 | $0.00 | PASS parcial |
 | Mall Demo, local Zara Demo | 6 / $3,260.32 netas | 6 / $3,260.32 netas | 0 / $0.00 | PASS parcial |
 | Mall Demo, categoría MODA | 6 / $3,260.32 netas | 6 / $3,260.32 netas | 0 / $0.00 | PASS parcial |
-| Alto: Agora Mall SQD | 608,449 filas fuente | sin agregados | no comparable | BLOCKED |
-| Medio: Blue Mall SDQ | 130,390 filas fuente | sin agregados | no comparable | BLOCKED |
-| Bajo: Santiago Center | 33,419 filas fuente | sin agregados | no comparable | BLOCKED |
+| Agora Mall SQD — día 2026-07-23 | 767 / $4,485,065.30 netas | 767 / $4,485,065.30 netas | $0.00 / 0.00% | PASS |
+| Blue Mall SDQ — día 2026-07-23 | 35 / $209,092.58 netas | 35 / $209,092.58 netas | $0.00 / 0.00% | PASS |
+| Santiago Center — día 2026-07-23 | 358 / $1,653,658.18 netas | 358 / $1,653,658.18 netas | $0.00 / 0.00% | PASS |
+| Agora Mall SQD — 1–23 jul. 2026 | 98,830 / $848,848,078.60 netas | 98,830 / $848,848,078.60 netas | $0.00 / 0.00% | PASS |
+| Blue Mall SDQ — 1–23 jul. 2026 | 4,490 / $112,976,017.83 netas | 4,490 / $112,976,017.83 netas | $0.00 / 0.00% | PASS |
+| Santiago Center — 1–23 jul. 2026 | 6,498 / $26,777,608.16 netas | 6,498 / $26,777,608.16 netas | $0.00 / 0.00% | PASS |
+| Locales por día — Agora / Blue / Santiago | 20 / 1 / 12 grupos | mismos grupos y valores | 0 grupos / $0.00 | PASS |
+| Categorías por día — Agora / Blue / Santiago | 9 / 1 / 6 grupos | mismos grupos y valores | 0 grupos / $0.00 | PASS |
 
-No se certificaron período completo, reingesta/duplicados, incrementalidad o
-paridad mensual multi-mall. El control completo queda **BLOCKED**, no PASS.
+También se obtuvo diferencia cero para bruto e impuestos en los seis controles
+mall/día y mall/mes. Julio es un período incompleto y se conserva como tal.
+Siguen pendientes escenarios controlados de reingesta/corrección, cambio de
+fecha, cambio de local y reclasificación histórica; la paridad queda **PARCIAL**,
+no certificada completamente.
 
 ## 5. Semántica de registros, ventas y notas de crédito
 
@@ -198,7 +207,7 @@ Rollback del piloto:
 
 | Control | Estado | Evidencia | Bloqueador |
 | --- | --- | --- | --- |
-| Paridad multi-mall | BLOCKED | Paridad exacta diaria de Mall Demo; cero agregados en alto/medio/bajo | No se permite activar/reconstruir fuera del piloto |
+| Paridad multi-mall | PARTIAL | Paridad exacta diaria y mensual parcial en Agora, Blue Mall SDQ y Santiago; locales y categorías diarios sin diferencias | Faltan escenarios correctivos e históricos controlados |
 | Semántica de ventas y registros | PASS | Notas de crédito definidas como importes negativos que rebajan ventas; `count(*)` se presenta como registros de venta | Ticket comercial no se expone ni se infiere |
 | Benchmark de importación | BLOCKED | Trigger sólo encola; sin medición comparable | No se puede reimportar/alternar trigger sin afectar condiciones reales |
 | Concurrencia de workers | BLOCKED | Claim seguro inspeccionado; no hubo dos workers reales | Falta infraestructura aislada o autorización específica |

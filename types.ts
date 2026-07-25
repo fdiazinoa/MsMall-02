@@ -69,6 +69,72 @@ export interface BigDataSummary {
 export interface BigDataCategory { category_id?: string; category_name: string; sales_net: number; transactions: number; share_percent: number; }
 export interface BigDataRanking { local_id: string; name: string; sales_net: number; transactions: number; ticket_average: number; }
 
+export interface BigDataForecast {
+  mall_id: string;
+  grain: 'mall' | 'category' | 'local';
+  dimension_key?: string | null;
+  status: 'OK' | 'INSUFFICIENT_DATA';
+  period_start: string;
+  period_end: string;
+  accumulated_sales: number;
+  days_with_data: number;
+  days_remaining: number;
+  expected_close?: number;
+  lower_bound?: number;
+  upper_bound?: number;
+  coverage: number;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  low_confidence_reasons: string[];
+  methodology: string;
+  calculated_at: string;
+  historical_range: { start?: string | null; end?: string | null };
+  model_version: string;
+}
+
+export interface OperationalFinding {
+  id: string;
+  mall_id: string;
+  local_id?: string | null;
+  local_name?: string | null;
+  type: string;
+  severity: 'CRITICAL' | 'HIGH' | 'WARNING' | 'INFO' | string;
+  title: string;
+  description: string;
+  evidence?: Record<string, any>;
+  recommendation?: string | null;
+  confidence?: number;
+  status: 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED' | string;
+  source: string;
+  detected_at: string;
+  metadata?: Record<string, any>;
+  comments?: Array<{ text: string; user_id: string; created_at: string }>;
+}
+
+export interface BigDataExecutiveSummary {
+  mall_id: string;
+  period: { start: string; end: string };
+  general_status: 'NORMAL' | 'ATTENTION_REQUIRED' | 'DATA_INCOMPLETE';
+  accumulated_sales: number;
+  coverage: number;
+  forecast: BigDataForecast;
+  top_categories: Array<{ category_id?: string; category_name: string; sales_net: number }>;
+  categories_in_reduction: Array<{ category_id?: string; category_name: string; sales_net: number }>;
+  highlighted_stores: Array<{ local_id: string; local_name: string; sales_net: number }>;
+  stores_requiring_review: Array<{ local_id: string; local_name?: string; severity: string; reason: string }>;
+  anomalies: OperationalFinding[];
+  observations: Array<{ id: string; observation: string; recommendation?: string; confidence: number; created_at: string }>;
+  updated_at?: string | null;
+  facts_only: boolean;
+}
+
+export interface OperationsCollection<T> {
+  data: T[];
+  pagination: { limit: number; offset: number; count?: number | null };
+  updated_at: string;
+}
+
+export type OperationsCollectionName = 'events' | 'findings' | 'anomalies' | 'observations' | 'patterns';
+
 export type UserRole = 'admin' | 'it' | 'tic' | 'auditor' | 'mall_manager';
 
 export interface User {

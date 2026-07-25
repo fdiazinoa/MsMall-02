@@ -4,7 +4,7 @@ import logging
 import uuid
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -17,10 +17,12 @@ import posixpath
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from services.big_data_analytics_service import BigDataAnalyticsService
+from services.big_data_sprint2_service import BigDataSprint2Service
 from services.connection_monitor_service import ConnectionMonitorService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import run_missing_days_email_scheduler
 from services.sensitive_ops_service import sanitize_error_text
+from services.operations_agent_service import OperationsAgentWorker
 from analytics_service import run_local_risk_analysis
 
 # Setup Logging
@@ -1548,6 +1550,88 @@ async def cleanup_zombies():
     except Exception as e:
         logger.error(f"Error cleaning zombies: {e}")
 
+def run_deferred_big_data_jobs() -> None:
+    """Run bounded analytics only after the import priority lane has completed."""
+    analytics_result = BigDataAnalyticsService(supabase, logger).process_pending_refreshes()
+    if analytics_result["processed"] or analytics_result["failed"]:
+        logger.info("Big Data aggregate queue: %s", analytics_result)
+
+    # No row means disabled. This also keeps deployments safe before the Sprint 2
+    # migration because the old constraint cannot contain BIG_DATA_OPERATIONS.
+    try:
+        enabled_rows = (
+            supabase.table("mall_feature_flags")
+            .select("mall_id")
+            .eq("feature_key", "BIG_DATA_OPERATIONS")
+            .eq("enabled", True)
+            .limit(100)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        # Backward-compatible before the Sprint 2 migration and in reduced
+        # worker smoke environments.
+        logger.info("Sprint 2 operations lane unavailable: %s", str(exc)[:180])
+        return
+    if not enabled_rows:
+        return
+
+    service = BigDataSprint2Service(supabase)
+    period_end = date.today()
+    period_start = period_end - timedelta(days=30)
+    for flag in enabled_rows:
+        mall_id = flag.get("mall_id")
+        if not mall_id:
+            continue
+        core_enabled = supabase.rpc(
+            "is_mall_feature_enabled",
+            {"requested_mall_id": mall_id, "requested_feature": "BIG_DATA_CORE"},
+        ).execute().data
+        if core_enabled is not True:
+            continue
+        started = time.monotonic()
+        run_row = {
+            "mall_id": mall_id,
+            "job_type": "ANOMALY_DETECTION",
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "status": "RUNNING",
+        }
+        run_id = None
+        try:
+            saved = supabase.table("big_data_operations_runs").insert(run_row).execute().data or []
+            run_id = saved[0].get("id") if saved else None
+            findings = service.detect_and_persist_anomalies(
+                mall_id, period_start, period_end
+            )
+            changes = {
+                "status": "COMPLETED",
+                "items_generated": len(findings),
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if run_id:
+                supabase.table("big_data_operations_runs").update(changes).eq(
+                    "id", run_id
+                ).execute()
+        except Exception as exc:
+            logger.exception("Sprint 2 anomaly job failed mall=%s", mall_id)
+            if run_id:
+                supabase.table("big_data_operations_runs").update(
+                    {
+                        "status": "FAILED",
+                        "error": str(exc)[:1000],
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                ).eq("id", run_id).execute()
+
+    operations_result = OperationsAgentWorker(supabase, logger).process_pending_events()
+    if operations_result["processed"] or operations_result["failed"]:
+        logger.info("Operations event queue: %s", operations_result)
+
+
 async def run_worker_async():
     logger.info("🚀 Iniciando Worker de Importación (Async/Concurrent v2)...")
     if not supabase:
@@ -1561,12 +1645,6 @@ async def run_worker_async():
     await update_heartbeat()
     
     try:
-        # Big Data work is queued by the database trigger and deliberately runs
-        # here, outside importer requests and independently from FTP/SFTP work.
-        analytics_result = BigDataAnalyticsService(supabase, logger).process_pending_refreshes()
-        if analytics_result["processed"] or analytics_result["failed"]:
-            logger.info("Big Data queue: %s", analytics_result)
-
         # 2. Fetch Tasks (IDLE + AUTOMATIC)
         # Note: We need to filter by IDLE to avoid double execution if previous job is running
         response = supabase.table("locales")\
@@ -1586,6 +1664,7 @@ async def run_worker_async():
 
         if not tasks_to_run:
             logger.info("😴 No active tasks for this hour.")
+            run_deferred_big_data_jobs()
             await run_missing_days_email_scheduler_if_due()
             await run_connection_monitor_nightly_if_due()
             await update_cron_success()
@@ -1600,7 +1679,10 @@ async def run_worker_async():
         
         tasks = [process_local_safe(local, semaphore) for local in tasks_to_run]
         await asyncio.gather(*tasks)
-        
+
+        # Imports are always the priority lane. Aggregate refreshes, anomaly
+        # detection and operational observations only run after ingestion settles.
+        run_deferred_big_data_jobs()
         logger.info("🏁 Cycle finished.")
         await run_missing_days_email_scheduler_if_due()
         await run_connection_monitor_nightly_if_due()

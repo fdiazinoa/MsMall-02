@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
 from supabase import create_client
+
+from services.big_data_sprint2_service import BigDataSprint2Service
 
 router = APIRouter(prefix="/api/v1/big-data", tags=["Big Data"])
 security = HTTPBearer()
@@ -51,6 +54,16 @@ def _require_core(mall_id: str) -> None:
         raise HTTPException(403, "Big Data no está activado para este mall")
 
 
+def _require_feature(mall_id: str, feature: str) -> None:
+    _require_core(mall_id)
+    enabled = db.rpc(
+        "is_mall_feature_enabled",
+        {"requested_mall_id": mall_id, "requested_feature": feature},
+    ).execute().data
+    if enabled is not True:
+        raise HTTPException(403, f"{feature} no está activado para este mall")
+
+
 def _context(mall_id: str, start_date: date, end_date: date, user: dict) -> None:
     _date_range(start_date, end_date)
     _authorize(mall_id, user)
@@ -59,6 +72,14 @@ def _context(mall_id: str, start_date: date, end_date: date, user: dict) -> None
 
 def _rpc(name: str, mall_id: str, start_date: date, end_date: date) -> list[dict]:
     return db.rpc(name, {"p_mall_id": mall_id, "p_start_date": start_date.isoformat(), "p_end_date": end_date.isoformat()}).execute().data or []
+
+
+class FindingAction(BaseModel):
+    comment: Optional[str] = Field(default=None, max_length=1000)
+
+
+class FindingComment(BaseModel):
+    comment: str = Field(min_length=1, max_length=1000)
 
 
 @router.get("/summary")
@@ -164,3 +185,372 @@ async def rebuild(mall_id: str, start_date: date, end_date: date, user: dict = D
     rows = [{"mall_id": mall_id, "affected_date": (start_date + timedelta(days=offset)).isoformat(), "requested_by": user["id"]} for offset in range((end_date-start_date).days + 1)]
     db.table("big_data_refresh_queue").upsert(rows, on_conflict="mall_id,affected_date").execute()
     return {"status": "queued", "dates": len(rows)}
+
+
+def _capability_context(mall_id: str, user: dict, feature: str) -> None:
+    _authorize(mall_id, user)
+    _require_feature(mall_id, feature)
+
+
+def _operational_query(
+    table: str,
+    mall_id: str,
+    *,
+    limit: int,
+    offset: int,
+    status: Optional[str] = None,
+    severity: Optional[str] = None,
+    local_id: Optional[str] = None,
+    item_type: Optional[str] = None,
+    source: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+):
+    query = db.table(table).select("*", count="exact").eq("mall_id", mall_id)
+    if status and table in {"operational_findings", "operational_patterns"}:
+        query = query.eq("status", status.upper())
+    elif status and table == "operations_events":
+        query = query.eq("processing_status", status.upper())
+    if severity and table in {"operational_findings", "operations_events"}:
+        query = query.eq("severity", severity.upper())
+    if local_id:
+        query = query.eq("local_id", local_id)
+    if item_type:
+        type_column = {
+            "operational_findings": "type",
+            "operations_events": "event_type",
+            "operations_agent_observations": "observation_type",
+            "operational_patterns": "pattern_type",
+        }[table]
+        query = query.eq(type_column, item_type)
+    if source and table in {"operational_findings", "operations_events"}:
+        query = query.eq("source", source)
+    order_column = {
+        "operational_findings": "detected_at",
+        "operations_events": "created_at",
+        "operations_agent_observations": "created_at",
+        "operational_patterns": "last_seen",
+    }[table]
+    if start_date:
+        query = query.gte(order_column, start_date.isoformat())
+    if end_date:
+        query = query.lt(order_column, (end_date + timedelta(days=1)).isoformat())
+    return query.order(order_column, desc=True).range(offset, offset + limit - 1).execute()
+
+
+@router.get("/forecast/mall")
+async def mall_forecast(
+    mall_id: str,
+    as_of: Optional[date] = None,
+    user: dict = Depends(current_user),
+):
+    _capability_context(mall_id, user, "BIG_DATA_FORECAST")
+    return BigDataSprint2Service(db).forecast(mall_id, as_of or date.today())
+
+
+@router.get("/forecast/categories")
+async def category_forecasts(
+    mall_id: str,
+    as_of: Optional[date] = None,
+    limit: int = Query(20, ge=1, le=50),
+    user: dict = Depends(current_user),
+):
+    _capability_context(mall_id, user, "BIG_DATA_FORECAST")
+    as_of = as_of or date.today()
+    month_start = as_of.replace(day=1)
+    rows = (
+        db.table("big_data_daily_aggregates")
+        .select("dimension_key,category_id,category_name")
+        .eq("mall_id", mall_id)
+        .eq("grain", "category")
+        .gte("period_date", month_start.isoformat())
+        .lte("period_date", as_of.isoformat())
+        .limit(1000)
+        .execute()
+        .data
+        or []
+    )
+    dimensions = list(
+        {
+            str(row.get("dimension_key")): row
+            for row in rows
+            if row.get("dimension_key")
+        }.values()
+    )[:limit]
+    service = BigDataSprint2Service(db)
+    return {
+        "data": [
+            {
+                **service.forecast(
+                    mall_id,
+                    as_of,
+                    grain="category",
+                    dimension_key=str(row["dimension_key"]),
+                ),
+                "category_id": row.get("category_id"),
+                "category_name": row.get("category_name"),
+            }
+            for row in dimensions
+        ]
+    }
+
+
+@router.get("/forecast/stores/{local_id}")
+async def store_forecast(
+    local_id: str,
+    mall_id: str,
+    as_of: Optional[date] = None,
+    user: dict = Depends(current_user),
+):
+    _capability_context(mall_id, user, "BIG_DATA_FORECAST")
+    as_of = as_of or date.today()
+    local = (
+        db.table("locales")
+        .select("id")
+        .eq("id", local_id)
+        .eq("mall_id", mall_id)
+        .maybe_single()
+        .execute()
+        .data
+    )
+    if not local:
+        raise HTTPException(404, "Local no encontrado en el mall seleccionado")
+    return BigDataSprint2Service(db).forecast(
+        mall_id, as_of, grain="local", dimension_key=local_id
+    )
+
+
+@router.get("/executive-summary")
+async def executive_summary(
+    mall_id: str,
+    start_date: date,
+    end_date: date,
+    user: dict = Depends(current_user),
+):
+    _date_range(start_date, end_date)
+    _capability_context(mall_id, user, "BIG_DATA_FORECAST")
+    return BigDataSprint2Service(db).executive_summary(mall_id, start_date, end_date)
+
+
+@router.get("/operations/items/{collection}")
+async def operations_collection(
+    collection: str,
+    mall_id: str,
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0, le=10000),
+    status: Optional[str] = None,
+    severity: Optional[str] = None,
+    local_id: Optional[str] = None,
+    item_type: Optional[str] = Query(None, alias="type"),
+    source: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    user: dict = Depends(current_user),
+):
+    _capability_context(mall_id, user, "BIG_DATA_OPERATIONS")
+    if start_date and end_date:
+        _date_range(start_date, end_date)
+    tables = {
+        "events": "operations_events",
+        "findings": "operational_findings",
+        "anomalies": "operational_findings",
+        "observations": "operations_agent_observations",
+        "patterns": "operational_patterns",
+    }
+    table = tables.get(collection)
+    if not table:
+        raise HTTPException(404, "Colección operacional no válida")
+    if collection == "anomalies":
+        item_type = item_type
+    response = _operational_query(
+        table,
+        mall_id,
+        limit=limit,
+        offset=offset,
+        status=status,
+        severity=severity,
+        local_id=local_id,
+        item_type=item_type,
+        source="BIG_DATA_ANOMALY" if collection == "anomalies" else source,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    data = response.data or []
+    return {
+        "data": data,
+        "pagination": {
+            "limit": limit,
+            "offset": offset,
+            "count": getattr(response, "count", None),
+        },
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/operations/status")
+async def operations_status(mall_id: str, user: dict = Depends(current_user)):
+    _capability_context(mall_id, user, "BIG_DATA_OPERATIONS")
+    findings = (
+        db.table("operational_findings")
+        .select("id,severity,status,type,detected_at")
+        .eq("mall_id", mall_id)
+        .in_("status", ["OPEN", "ACKNOWLEDGED"])
+        .limit(1000)
+        .execute()
+        .data
+        or []
+    )
+    counts: dict[str, int] = {}
+    for finding in findings:
+        key = str(finding.get("severity") or "INFO")
+        counts[key] = counts.get(key, 0) + 1
+    return {
+        "mall_id": mall_id,
+        "open_findings": len(findings),
+        "by_severity": counts,
+        "data_incomplete": any(row.get("type") == "DATA_INCOMPLETE" for row in findings),
+        "updated_at": max(
+            (row.get("detected_at") for row in findings if row.get("detected_at")),
+            default=None,
+        ),
+    }
+
+
+def _finding_action(
+    mall_id: str,
+    finding_id: str,
+    user: dict,
+    status: str,
+    comment: Optional[str],
+) -> dict[str, Any]:
+    current = (
+        db.table("operational_findings")
+        .select("id,status,comments")
+        .eq("id", finding_id)
+        .eq("mall_id", mall_id)
+        .maybe_single()
+        .execute()
+        .data
+    )
+    if not current:
+        raise HTTPException(404, "Hallazgo no encontrado")
+    now = datetime.now(timezone.utc).isoformat()
+    comments = list(current.get("comments") or [])
+    if comment:
+        comments.append({"text": comment, "user_id": user["id"], "created_at": now})
+    changes: dict[str, Any] = {"status": status, "updated_at": now, "comments": comments}
+    if status == "ACKNOWLEDGED":
+        changes.update({"reviewed_at": now, "reviewed_by": user["id"]})
+    if status == "RESOLVED":
+        changes.update({"resolved_at": now, "resolved_by": user["id"]})
+    if status == "OPEN":
+        changes.update({"resolved_at": None, "resolved_by": None})
+    updated = (
+        db.table("operational_findings")
+        .update(changes)
+        .eq("id", finding_id)
+        .eq("mall_id", mall_id)
+        .execute()
+        .data
+        or []
+    )
+    db.table("operations_events").insert(
+        {
+            "mall_id": mall_id,
+            "event_type": f"FINDING_{status}",
+            "source": "BIG_DATA_API",
+            "severity": "INFO",
+            "processing_status": "PENDING",
+            "payload": {
+                "finding_id": finding_id,
+                "previous_status": current.get("status"),
+                "new_status": status,
+                "operator_id": user["id"],
+                "has_comment": bool(comment),
+            },
+        }
+    ).execute()
+    return (updated or [{**current, **changes}])[0]
+
+
+@router.post("/operations/findings/{finding_id}/review")
+async def review_finding(
+    finding_id: str,
+    mall_id: str,
+    action: FindingAction,
+    user: dict = Depends(current_user),
+):
+    _capability_context(mall_id, user, "BIG_DATA_OPERATIONS")
+    return _finding_action(mall_id, finding_id, user, "ACKNOWLEDGED", action.comment)
+
+
+@router.post("/operations/findings/{finding_id}/resolve")
+async def resolve_finding(
+    finding_id: str,
+    mall_id: str,
+    action: FindingAction,
+    user: dict = Depends(current_user),
+):
+    _capability_context(mall_id, user, "BIG_DATA_OPERATIONS")
+    return _finding_action(mall_id, finding_id, user, "RESOLVED", action.comment)
+
+
+@router.post("/operations/findings/{finding_id}/reopen")
+async def reopen_finding(
+    finding_id: str,
+    mall_id: str,
+    action: FindingAction,
+    user: dict = Depends(current_user),
+):
+    _capability_context(mall_id, user, "BIG_DATA_OPERATIONS")
+    return _finding_action(mall_id, finding_id, user, "OPEN", action.comment)
+
+
+@router.post("/operations/findings/{finding_id}/comments")
+async def comment_finding(
+    finding_id: str,
+    mall_id: str,
+    body: FindingComment,
+    user: dict = Depends(current_user),
+):
+    _capability_context(mall_id, user, "BIG_DATA_OPERATIONS")
+    current = (
+        db.table("operational_findings")
+        .select("status")
+        .eq("id", finding_id)
+        .eq("mall_id", mall_id)
+        .maybe_single()
+        .execute()
+        .data
+    )
+    if not current:
+        raise HTTPException(404, "Hallazgo no encontrado")
+    return _finding_action(
+        mall_id, finding_id, user, str(current.get("status") or "OPEN"), body.comment
+    )
+
+
+@router.get("/copilot-context")
+async def copilot_context(
+    mall_id: str,
+    start_date: date,
+    end_date: date,
+    user: dict = Depends(current_user),
+):
+    _date_range(start_date, end_date)
+    _capability_context(mall_id, user, "BIG_DATA_COPILOT")
+    context = BigDataSprint2Service(db).executive_summary(mall_id, start_date, end_date)
+    db.table("operations_events").insert(
+        {
+            "mall_id": mall_id,
+            "event_type": "COPILOT_BIG_DATA_CONTEXT_ACCESSED",
+            "source": "COPILOT",
+            "severity": "INFO",
+            "processing_status": "PENDING",
+            "payload": {
+                "user_id": user["id"],
+                "period": {"start": start_date.isoformat(), "end": end_date.isoformat()},
+            },
+        }
+    ).execute()
+    return context

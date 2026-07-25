@@ -265,8 +265,6 @@ export const AuthProvider = ({ children }) => {
         setCurrentMall(mall);
         if (mall) {
             localStorage.setItem('msmall_current_mall_id', mall.id);
-            // Optional: Reload page to force refresh of all components
-            window.location.reload();
         }
     };
 

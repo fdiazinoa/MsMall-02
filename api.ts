@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -480,6 +480,7 @@ const fetchJsonWithBaseFallback = async <T>(
   fallbackMessage: string
 ): Promise<T> => {
   const baseUrls = getApiBaseUrls();
+  const isVercelPreview = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
   let lastError: any = null;
 
   for (let i = 0; i < baseUrls.length; i++) {
@@ -492,8 +493,12 @@ const fetchJsonWithBaseFallback = async <T>(
         return await response.json();
       }
 
-      // 5xx from proxy/rewrite should try direct backend fallback.
-      if (response.status >= 500 && i < baseUrls.length - 1) {
+      // Preview deployments can return a Vercel 404 before their API rewrite is
+      // ready, even though the authenticated Railway API already has the
+      // endpoint. Continue only from the same-origin preview proxy; a 404 from
+      // the direct backend remains a real application error.
+      const retryableProxyNotFound = isVercelPreview && baseUrl === BASE_URL && response.status === 404;
+      if ((response.status >= 500 || retryableProxyNotFound) && i < baseUrls.length - 1) {
         console.warn(`API fallback: ${endpoint} respondió ${response.status}. Intentando siguiente base...`);
         continue;
       }
@@ -717,9 +722,8 @@ const toStorePersistenceError = (error: any): Error => {
 export const ApiService = {
   async getBigData<T>(path: string, mallId: string, startDate: string, endDate: string, token: string): Promise<T> {
     const params = new URLSearchParams({ mall_id: mallId, start_date: startDate, end_date: endDate });
-    // In Vercel this stays on the same-origin rewrite. A 404 from the rewrite is
-    // intentionally preserved: it means Railway still runs a backend without
-    // the Big Data router, not that the mall feature flag is disabled.
+    // Preview rewrites can briefly return 404; fetchJsonWithBaseFallback then
+    // verifies the direct Railway API before reporting a missing capability.
     return fetchJsonWithBaseFallback<T>(
       `/big-data/${path}?${params.toString()}`,
       { headers: withAuthHeaders(token, { 'Accept': 'application/json' }) },
@@ -738,6 +742,86 @@ export const ApiService = {
       this.getBigData<any>('quality', mallId, startDate, endDate, token)
     ]);
     return { summary, daily, categories, ranking, quality };
+  },
+
+  async getBigDataForecast(mallId: string, asOf: string, token: string): Promise<BigDataForecast> {
+    const params = new URLSearchParams({ mall_id: mallId, as_of: asOf });
+    return fetchJsonWithBaseFallback<BigDataForecast>(
+      `/big-data/forecast/mall?${params.toString()}`,
+      { headers: withAuthHeaders(token, { Accept: 'application/json' }) },
+      'No se pudo consultar la proyección'
+    );
+  },
+
+  async getBigDataExecutiveSummary(mallId: string, startDate: string, endDate: string, token: string): Promise<BigDataExecutiveSummary> {
+    const params = new URLSearchParams({ mall_id: mallId, start_date: startDate, end_date: endDate });
+    return fetchJsonWithBaseFallback<BigDataExecutiveSummary>(
+      `/big-data/executive-summary?${params.toString()}`,
+      { headers: withAuthHeaders(token, { Accept: 'application/json' }) },
+      'No se pudo consultar el resumen ejecutivo'
+    );
+  },
+
+  async getOperationsFindings(
+    mallId: string,
+    token: string,
+    filters: { status?: string; severity?: string; local_id?: string; type?: string; limit?: number; offset?: number } = {}
+  ): Promise<OperationsCollection<OperationalFinding>> {
+    return this.getOperationsItems<OperationalFinding>('findings', mallId, token, filters);
+  },
+
+  async getOperationsItems<T = any>(
+    collection: OperationsCollectionName,
+    mallId: string,
+    token: string,
+    filters: { status?: string; severity?: string; local_id?: string; type?: string; source?: string; start_date?: string; end_date?: string; limit?: number; offset?: number } = {}
+  ): Promise<OperationsCollection<T>> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') params.set(key, String(value));
+    });
+    return fetchJsonWithBaseFallback<OperationsCollection<T>>(
+      `/big-data/operations/items/${collection}?${params.toString()}`,
+      { headers: withAuthHeaders(token, { Accept: 'application/json' }) },
+      'No se pudieron consultar los hallazgos'
+    );
+  },
+
+  async updateOperationsFinding(
+    mallId: string,
+    findingId: string,
+    action: 'review' | 'resolve' | 'reopen',
+    token: string,
+    comment?: string
+  ): Promise<OperationalFinding> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<OperationalFinding>(
+      `/big-data/operations/findings/${encodeURIComponent(findingId)}/${action}?${params.toString()}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { Accept: 'application/json', 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ comment: comment || null })
+      },
+      'No se pudo actualizar el hallazgo'
+    );
+  },
+
+  async addOperationsFindingComment(
+    mallId: string,
+    findingId: string,
+    comment: string,
+    token: string
+  ): Promise<OperationalFinding> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<OperationalFinding>(
+      `/big-data/operations/findings/${encodeURIComponent(findingId)}/comments?${params.toString()}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { Accept: 'application/json', 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ comment })
+      },
+      'No se pudo registrar el comentario'
+    );
   },
 
   // --- MÉTODOS DE IMPORTACIÓN AUTOMATIZADA ---

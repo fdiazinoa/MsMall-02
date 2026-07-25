@@ -7,6 +7,7 @@ const BIG_DATA_FLAG_LABELS: Record<string, { title: string; description: string 
     BIG_DATA_CORE: { title: 'Big Data Core', description: 'Panel, agregados incrementales y perfil básico de locales.' },
     BIG_DATA_BENCHMARK: { title: 'Benchmark', description: 'Preparado para comparativas comerciales avanzadas.' },
     BIG_DATA_FORECAST: { title: 'Forecast', description: 'Preparado para proyecciones y pronósticos.' },
+    BIG_DATA_OPERATIONS: { title: 'Operations Center', description: 'Hallazgos, anomalías y observaciones operativas.' },
     BIG_DATA_COPILOT: { title: 'Copilot Big Data', description: 'Preparado para consultas asistidas sobre analítica.' },
 };
 

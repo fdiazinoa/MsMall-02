@@ -4,6 +4,7 @@ export type AppTab =
   | 'reports'
   | 'analytics'
   | 'big-data'
+  | 'operations'
   | 'stores'
   | 'store-catalogs'
   | 'users'

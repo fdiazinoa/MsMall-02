@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { Activity, Calendar, Database, DollarSign, ShoppingBag, Store } from 'lucide-react';
+import { Activity, AlertTriangle, Calendar, Database, DollarSign, ShoppingBag, Store, TrendingUp } from 'lucide-react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
@@ -27,27 +27,31 @@ export const BigDataDashboard: React.FC = () => {
   const [profileLoading, setProfileLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [executive, setExecutive] = useState<any>(null);
+  const requestVersion = useRef(0);
   const dashboardRequestGate = useRef(createBigDataRequestGate());
   const profileRequestGate = useRef(createBigDataRequestGate());
 
   useEffect(() => {
+    const mallId = currentMall?.id;
+    const token = session?.access_token;
+    const version = ++requestVersion.current;
     const requestId = dashboardRequestGate.current.begin();
-    // Mall data must never remain visible while the next mall is loading.
-    // Invalidating the profile gate also ignores a profile response in flight.
     profileRequestGate.current.begin();
-    setData(null); setProfile(null); setProfileLoading(false); setError(null); setLoading(false);
-    if (!currentMall?.id || !session?.access_token) return;
-    setLoading(true); setError(null);
-    ApiService.getBigDataDashboard(currentMall.id, dates.start, dates.end, session.access_token)
-      .then((nextData) => {
-        if (dashboardRequestGate.current.isCurrent(requestId)) setData(nextData);
-      })
-      .catch((err) => {
-        if (dashboardRequestGate.current.isCurrent(requestId)) setError(err.message || 'No se pudo cargar Big Data');
-      })
-      .finally(() => {
-        if (dashboardRequestGate.current.isCurrent(requestId)) setLoading(false);
-      });
+    setData(null); setExecutive(null); setProfile(null); setProfileLoading(false); setError(null);
+    if (!mallId || !token) { setLoading(false); return; }
+    setLoading(true);
+    Promise.allSettled([
+      ApiService.getBigDataDashboard(mallId, dates.start, dates.end, token),
+      ApiService.getBigDataExecutiveSummary(mallId, dates.start, dates.end, token),
+    ]).then(([dashboardResult, executiveResult]) => {
+      if (!dashboardRequestGate.current.isCurrent(requestId) || requestVersion.current !== version || currentMall?.id !== mallId) return;
+      if (dashboardResult.status === 'fulfilled') setData(dashboardResult.value);
+      else setError(dashboardResult.reason?.message || 'No se pudo cargar Big Data');
+      if (executiveResult.status === 'fulfilled') setExecutive(executiveResult.value);
+    }).finally(() => {
+      if (dashboardRequestGate.current.isCurrent(requestId) && requestVersion.current === version) setLoading(false);
+    });
   }, [currentMall?.id, session?.access_token, dates.start, dates.end]);
 
   if (!currentMall?.id) return <div className="bg-white rounded-2xl p-6 border border-slate-200">Selecciona un mall para consultar Big Data.</div>;
@@ -56,21 +60,24 @@ export const BigDataDashboard: React.FC = () => {
   const ranking = data?.ranking?.data || [];
   const apiUnavailable = Boolean(error && /not found|http 404/i.test(error));
   const openProfile = async (localId: string) => {
-    if (!currentMall?.id || !session?.access_token) return;
+    const mallId = currentMall?.id;
+    const token = session?.access_token;
+    if (!mallId || !token) return;
+    const version = requestVersion.current;
     const requestId = profileRequestGate.current.begin();
     setProfile(null);
     setProfileLoading(true);
     try {
       const [storeProfile, benchmark] = await Promise.all([
-        ApiService.getBigData<any>(`stores/${encodeURIComponent(localId)}/profile`, currentMall.id, dates.start, dates.end, session.access_token),
-        ApiService.getBigData<any>(`stores/${encodeURIComponent(localId)}/category-benchmark`, currentMall.id, dates.start, dates.end, session.access_token)
+        ApiService.getBigData<any>(`stores/${encodeURIComponent(localId)}/profile`, mallId, dates.start, dates.end, token),
+        ApiService.getBigData<any>(`stores/${encodeURIComponent(localId)}/category-benchmark`, mallId, dates.start, dates.end, token)
       ]);
-      if (profileRequestGate.current.isCurrent(requestId)) setProfile({ ...storeProfile, benchmark });
+      if (profileRequestGate.current.isCurrent(requestId) && requestVersion.current === version && currentMall?.id === mallId) setProfile({ ...storeProfile, benchmark });
     } catch (err: any) {
-      if (profileRequestGate.current.isCurrent(requestId)) setError(err.message || 'No se pudo cargar el perfil del local');
+      if (profileRequestGate.current.isCurrent(requestId) && requestVersion.current === version) setError(err.message || 'No se pudo cargar el perfil del local');
     }
     finally {
-      if (profileRequestGate.current.isCurrent(requestId)) setProfileLoading(false);
+      if (profileRequestGate.current.isCurrent(requestId) && requestVersion.current === version) setProfileLoading(false);
     }
   };
 
@@ -85,6 +92,17 @@ export const BigDataDashboard: React.FC = () => {
     {error && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-800 text-sm">{error}. {apiUnavailable ? 'La API de Big Data todavía no está desplegada en el backend seleccionado; despliega esta rama en Railway antes de activar o probar el módulo.' : <>El módulo está desactivado por defecto; actívalo con la licencia <code>BIG_DATA_CORE</code> para este mall.</>}</div>}
     {loading && <div className="h-64 flex items-center justify-center"><div className="animate-spin h-9 w-9 rounded-full border-b-2 border-indigo-600" /></div>}
     {data && <>
+      {executive && <section className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-white to-indigo-50 p-5 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div><p className="text-xs font-bold uppercase tracking-wider text-indigo-500">Resumen ejecutivo</p><h3 className="mt-1 text-lg font-bold text-slate-800">{executive.general_status === 'DATA_INCOMPLETE' ? 'El período requiere completar información' : executive.general_status === 'ATTENTION_REQUIRED' ? 'Existen hallazgos que requieren revisión' : 'Desempeño sin alertas activas'}</h3><p className="mt-1 text-sm text-slate-600">Cobertura {Number(executive.coverage || 0).toFixed(1)}% · actualizado {executive.updated_at ? new Date(executive.updated_at).toLocaleString() : 'pendiente'}</p></div>
+          <div className="rounded-xl bg-white px-4 py-3 shadow-sm"><p className="text-xs text-slate-500">Proyección de cierre</p>{executive.forecast?.status === 'OK' ? <><p className="text-xl font-black text-indigo-700">{format(executive.forecast.expected_close || 0)}</p><p className="text-xs text-slate-500">{format(executive.forecast.lower_bound || 0)} – {format(executive.forecast.upper_bound || 0)} · confianza {executive.forecast.confidence}</p></> : <p className="mt-1 font-bold text-amber-700">Datos insuficientes</p>}</div>
+        </div>
+        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+          <div className="rounded-xl bg-white p-3"><p className="flex items-center gap-2 text-sm font-bold text-slate-700"><TrendingUp size={15} className="text-emerald-500"/> Categorías destacadas</p><div className="mt-2 flex flex-wrap gap-2">{(executive.top_categories || []).slice(0, 4).map((row: any) => <span key={row.category_id || row.category_name} className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">{row.category_name}: {format(row.sales_net)}</span>)}</div></div>
+          <div className="rounded-xl bg-white p-3"><p className="flex items-center gap-2 text-sm font-bold text-slate-700"><Store size={15} className="text-indigo-500"/> Locales destacados</p><div className="mt-2 space-y-1">{(executive.highlighted_stores || []).slice(0, 3).map((row: any) => <button key={row.local_id} onClick={() => openProfile(row.local_id)} className="block w-full truncate text-left text-xs font-semibold text-indigo-700">{row.local_name}: {format(row.sales_net)}</button>)}{!(executive.highlighted_stores || []).length && <p className="text-xs text-slate-500">Sin datos suficientes.</p>}</div></div>
+          <div className="rounded-xl bg-white p-3"><p className="flex items-center gap-2 text-sm font-bold text-slate-700"><AlertTriangle size={15} className="text-amber-500"/> Observaciones principales</p><p className="mt-2 text-xs leading-5 text-slate-600">{executive.observations?.[0]?.observation || executive.anomalies?.[0]?.description || 'Sin observaciones para este período.'}</p></div>
+        </div>
+      </section>}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <Metric label="Ventas netas" value={format(Number(current.sales_net || 0))} icon={DollarSign} />
         <Metric label="Variación vs. período anterior" value={`${Number(data.summary.variation_percent || 0).toFixed(1)}%`} icon={Activity} />

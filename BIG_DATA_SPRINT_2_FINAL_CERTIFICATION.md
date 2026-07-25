@@ -69,9 +69,28 @@ julio; todas las diferencias son absolutas y porcentualmente cero.
 
 También se obtuvo diferencia cero para bruto e impuestos en los seis controles
 mall/día y mall/mes. Julio es un período incompleto y se conserva como tal.
-Siguen pendientes escenarios controlados de reingesta/corrección, cambio de
-fecha, cambio de local y reclasificación histórica; la paridad queda **PARCIAL**,
-no certificada completamente.
+
+### Correcciones incrementales controladas
+
+Con una venta sintética, identificada y eliminada antes de finalizar, se validó
+el encargo incremental de correcciones. La fila no dejó ventas ni colas de
+prueba.
+
+| Caso | Resultado |
+| --- | --- |
+| Inserción | Una fila creó una única fila `pending` en la cola. |
+| Reingesta / corrección de importe | El trabajo volvió a `pending` y su `claim_token` quedó en `NULL`. |
+| Cambio de fecha | Se encolaron los dos períodos: origen y destino. |
+| Cambio de local dentro del mall | El período afectado permaneció encolado para reconstrucción. |
+| Cambio de mall y local | Se encolaron tres claves: dos períodos de Mall Demo y el período destino de Agora. |
+| Limpieza | 0 ventas y 0 filas de cola sintéticas. |
+
+La reclasificación histórica no pudo certificarse: las tablas
+`commercial_taxonomy`, `local_commercial_classifications` y
+`local_classification_history` están vacías en el entorno. Además, el refresco
+actual usa la clasificación vigente, no un intervalo histórico de vigencia. No
+se debe declarar soporte histórico hasta implementar ese mantenimiento y
+probarlo con categorías reales. La paridad queda **PARTIAL**.
 
 ## 5. Semántica de registros, ventas y notas de crédito
 
@@ -231,7 +250,7 @@ Rollback del piloto:
 
 | Control | Estado | Evidencia | Bloqueador |
 | --- | --- | --- | --- |
-| Paridad multi-mall | PARTIAL | Paridad exacta diaria y mensual parcial en Agora, Blue Mall SDQ y Santiago; locales y categorías diarios sin diferencias | Faltan escenarios correctivos e históricos controlados |
+| Paridad multi-mall | PARTIAL | Paridad exacta diaria y mensual parcial en Agora, Blue Mall SDQ y Santiago; correcciones de venta, fecha, local y mall encoladas correctamente | Falta reclasificación histórica: taxonomía y mantenimientos están vacíos/no implementados |
 | Semántica de ventas y registros | PASS | Notas de crédito definidas como importes negativos que rebajan ventas; `count(*)` se presenta como registros de venta | Ticket comercial no se expone ni se infiere |
 | Benchmark de importación | PARTIAL | 1,000 filas: 800.078 ms con encolado vs. 696.644 ms sin encolado; +14.85%; limpieza verificada | Falta ejecución completa desde el importador y telemetría de CPU/base |
 | Concurrencia de workers | PASS | Dos conexiones PostgreSQL reales; una sola obtuvo el trabajo; token único | Ninguno observado |

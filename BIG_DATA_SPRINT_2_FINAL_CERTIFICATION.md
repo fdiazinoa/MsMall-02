@@ -124,10 +124,24 @@ o actualiza una fila `(mall_id, affected_date)` de
 importación. El worker reclama después la cola con `FOR UPDATE SKIP LOCKED` y
 ejecuta `refresh_big_data_aggregates` fuera del carril de importación.
 
-No se ejecutó un benchmark sin/con trigger con el mismo dataset: exigiría
-desactivar temporalmente el trigger o reimportar datos comparables, lo que
-alteraría datos y condiciones reales. No hay SLO previo para convertir una
-medición aislada en aprobación. El control queda **BLOCKED**.
+Se ejecutó un benchmark controlado en Mall Demo con 1,000 filas sintéticas de
+fecha histórica, identificadas y eliminadas dentro de la misma ejecución. No
+quedaron ventas ni filas de cola de prueba. Para proteger producción, el rol de
+base no permite desactivar `session_replication_role`; el comparativo sin
+encolado se realizó desactivando `BIG_DATA_CORE` sólo dentro de la operación y
+restaurándolo antes de terminar.
+
+| Caso | Filas | Duración | Cola final |
+| --- | ---: | ---: | ---: |
+| Con encolado Big Data | 1,000 | 800.078 ms | 0 filas de prueba |
+| Sin encolado Big Data | 1,000 | 696.644 ms | 0 filas de prueba |
+
+El impacto observado fue **103.434 ms (14.85%)**. No se observaron bloqueos ni
+esperas; no hubo métrica directa de CPU disponible desde el entorno. El
+resultado demuestra que el trigger sólo agrega encolado y no ejecuta la
+reconstrucción en la importación. Falta repetir la prueba con una importación
+de aplicación completa y una métrica de CPU/base para convertirla en una
+certificación final de rendimiento; el control queda **PARTIAL**.
 
 ## 7. Worker, concurrencia y recuperación
 
@@ -209,7 +223,7 @@ Rollback del piloto:
 | --- | --- | --- | --- |
 | Paridad multi-mall | PARTIAL | Paridad exacta diaria y mensual parcial en Agora, Blue Mall SDQ y Santiago; locales y categorías diarios sin diferencias | Faltan escenarios correctivos e históricos controlados |
 | Semántica de ventas y registros | PASS | Notas de crédito definidas como importes negativos que rebajan ventas; `count(*)` se presenta como registros de venta | Ticket comercial no se expone ni se infiere |
-| Benchmark de importación | BLOCKED | Trigger sólo encola; sin medición comparable | No se puede reimportar/alternar trigger sin afectar condiciones reales |
+| Benchmark de importación | PARTIAL | 1,000 filas: 800.078 ms con encolado vs. 696.644 ms sin encolado; +14.85%; limpieza verificada | Falta ejecución completa desde el importador y telemetría de CPU/base |
 | Concurrencia de workers | BLOCKED | Claim seguro inspeccionado; no hubo dos workers reales | Falta infraestructura aislada o autorización específica |
 | Recuperación de trabajos | BLOCKED | Timeout de 15 min inspeccionado; 0 eventos vencidos | No se creó ni abandonó trabajo de prueba |
 | Idempotencia de hallazgos | PASS parcial | Dos ejecuciones reales, un fingerprint lógico | No sustituye concurrencia de dos workers |

@@ -14,7 +14,7 @@ import {
 import { useAuth } from '../context/AuthProvider';
 
 export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initialLocalId }) => {
-    const { currentMall } = useAuth();
+    const { currentMall, session } = useAuth();
     const [selectedLocalId, setSelectedLocalId] = useState<string>(initialLocalId || '');
     const [availableStores, setAvailableStores] = useState<any[]>([]);
     const [alerts, setAlerts] = useState<any[]>([]);
@@ -36,6 +36,25 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
         }
         return map;
     }, [heatmap]);
+    const insightsPeriod = useMemo(() => {
+        const now = new Date();
+        const startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+        const endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+        return { startDate, endDate };
+    }, []);
+    const insightsContext = useMemo(() => ({
+        mallId: currentMall?.id,
+        startDate: insightsPeriod.startDate,
+        endDate: insightsPeriod.endDate,
+        token: session?.access_token
+    }), [currentMall?.id, insightsPeriod.endDate, insightsPeriod.startDate, session?.access_token]);
+
+    const hourlyHeatmapColor = (value: number) => {
+        const intensity = Math.max(0, Math.min(100, value)) / 100;
+        const lightness = 97 - intensity * 52;
+        const saturation = 70 + intensity * 18;
+        return `hsl(0 ${saturation}% ${lightness}%)`;
+    };
 
     useEffect(() => {
         const fetchStores = async () => {
@@ -47,15 +66,17 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
             }
             const stores = await ApiService.getStores(currentMall.id);
             setAvailableStores(stores);
-            if (!selectedLocalId && stores.length > 0) {
+            const selectedStoreStillVisible = stores.some(store => store.id === selectedLocalId);
+            if (stores.length > 0 && (!selectedLocalId || !selectedStoreStillVisible)) {
                 setSelectedLocalId(stores[0].id);
             }
             if (stores.length === 0) {
+                setSelectedLocalId('');
                 setLoading(false);
             }
         };
         fetchStores();
-    }, [currentMall]);
+    }, [currentMall?.id, selectedLocalId]);
 
     useEffect(() => {
         if (!selectedLocalId) {
@@ -66,10 +87,10 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
             setLoading(true);
             try {
                 const [alertsData, benchData, heatmapData, efficiencyData] = await Promise.all([
-                    ApiService.getAIAlerts(selectedLocalId),
-                    ApiService.getBenchmarking(selectedLocalId),
-                    ApiService.getHeatmap(selectedLocalId),
-                    ApiService.getEfficiency(selectedLocalId)
+                    ApiService.getAIAlerts(selectedLocalId, insightsContext),
+                    ApiService.getBenchmarking(selectedLocalId, insightsContext),
+                    ApiService.getHeatmap(selectedLocalId, insightsContext),
+                    ApiService.getEfficiency(selectedLocalId, insightsContext)
                 ]);
                 setAlerts(alertsData.alerts || []);
                 setAlertsStatus(alertsData.status);
@@ -87,14 +108,14 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
             }
         };
         loadData();
-    }, [selectedLocalId]);
+    }, [selectedLocalId, insightsContext]);
 
     const handleCardClick = async (metric: string, title: string) => {
         setShowModal(true);
         setLoadingModal(true);
         setModalConfig({ title, metric, data: [] });
         try {
-            const ranking = await ApiService.getRanking(metric, currentMall?.id);
+            const ranking = await ApiService.getRanking(metric, currentMall?.id, insightsContext);
             setModalConfig(prev => ({ ...prev, data: ranking }));
         } catch (error) {
             console.error("Error loading ranking:", error);
@@ -173,10 +194,10 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
         : null;
 
     return (
-        <div className="space-y-6 animate-in fade-in duration-500 pb-12">
+        <div className="space-y-4 animate-in fade-in duration-500 pb-12">
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
                 <div>
-                    <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                    <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                         <Zap className="text-amber-500 fill-amber-500" size={24} />
                         Inteligencia de Negocio & IA
                     </h2>
@@ -198,9 +219,9 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                 {/* Risk Traffic Light */}
-                <div className={`p-6 rounded-3xl border-2 transition-all ${riskCardStyles}`}>
+                <div className={`p-4 rounded-2xl border-2 transition-all ${riskCardStyles}`}>
                     <div className="flex items-center justify-between mb-4">
                         <div className={`p-3 rounded-2xl ${riskIconStyles}`}>
                             <AlertTriangle size={24} />
@@ -248,10 +269,10 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                 </div>
 
                 {/* Efficiency Metrics */}
-                <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div
                         onClick={() => handleCardClick('sales_per_m2', 'Ranking: Ventas por m²')}
-                        className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md hover:border-indigo-300 transition-all cursor-pointer group"
+                        className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:border-indigo-300 transition-all cursor-pointer group"
                     >
                         <div className="flex items-center justify-between mb-4">
                             <div className="flex items-center gap-3">
@@ -262,13 +283,13 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                             </div>
                             <ChevronRight size={18} className="text-slate-300 group-hover:text-indigo-500 transition-colors" />
                         </div>
-                        <p className="text-3xl font-bold text-slate-800">${efficiency?.sales_per_m2?.toLocaleString()}</p>
+                        <p className="text-xl font-bold text-slate-800">${efficiency?.sales_per_m2?.toLocaleString()}</p>
                         <p className="text-xs text-slate-400 mt-2">Eficiencia de uso de espacio físico. <span className="text-indigo-500 font-medium">Ver ranking →</span></p>
                     </div>
 
                     <div
                         onClick={() => handleCardClick('occupancy_cost', 'Salud del Locatario: Ranking OCR')}
-                        className={`p-6 rounded-3xl border shadow-sm hover:shadow-md transition-all cursor-pointer group ${efficiency?.is_healthy ? 'bg-white border-slate-200 hover:border-indigo-300' : 'bg-amber-50 border-amber-200 hover:border-amber-300'}`}
+                        className={`p-4 rounded-2xl border shadow-sm hover:shadow-md transition-all cursor-pointer group ${efficiency?.is_healthy ? 'bg-white border-slate-200 hover:border-indigo-300' : 'bg-amber-50 border-amber-200 hover:border-amber-300'}`}
                     >
                         <div className="flex items-center justify-between mb-4">
                             <div className="flex items-center gap-3">
@@ -281,7 +302,7 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                         </div>
                         <div className="flex items-end justify-between">
                             <div>
-                                <p className="text-3xl font-bold text-slate-800">{efficiency?.occupancy_cost_ratio}%</p>
+                                <p className="text-xl font-bold text-slate-800">{efficiency?.occupancy_cost_ratio}%</p>
                                 <p className="text-[10px] font-bold uppercase text-slate-400 mt-1">Occupancy Cost Ratio</p>
                             </div>
                             <span className={`text-[10px] font-bold px-2 py-1 rounded-lg ${efficiency?.is_healthy ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
@@ -292,9 +313,9 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {/* Benchmarking & ATV */}
-                <div className="bg-white p-4 sm:p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <div className="bg-white p-4 sm:p-4 rounded-2xl border border-slate-200 shadow-sm">
                     <div className="flex items-center justify-between mb-8">
                         <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                             <BarChart3 className="text-indigo-500" size={20} />
@@ -302,15 +323,15 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                         </h3>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-8 mb-8">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-4 mb-8">
                         <div className="p-4 bg-slate-50 rounded-2xl">
                             <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Ticket Promedio (ATV)</p>
-                            <p className="text-2xl font-bold text-slate-800">${benchmarking?.atv_local}</p>
+                            <p className="text-xl font-bold text-slate-800">${benchmarking?.atv_local}</p>
                             <span className="text-[10px] font-bold text-green-600">{benchmarking?.atv_growth} vs mes anterior</span>
                         </div>
                         <div className="p-4 bg-slate-50 rounded-2xl">
                             <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Promedio Rubro</p>
-                            <p className="text-2xl font-bold text-slate-500">${benchmarking?.atv_category}</p>
+                            <p className="text-xl font-bold text-slate-500">${benchmarking?.atv_category}</p>
                             <span className="text-[10px] font-bold text-slate-400">Referencia mercado</span>
                         </div>
                     </div>
@@ -338,22 +359,22 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                 </div>
 
                 {/* Heatmap Section */}
-                <div className="bg-white p-4 sm:p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <div className="bg-white p-4 sm:p-4 rounded-2xl border border-slate-200 shadow-sm">
                     <div className="flex items-center justify-between mb-8">
                         <div>
                             <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                                <Clock className="text-indigo-500" size={20} />
+                                <Clock className="text-red-500" size={20} />
                                 Intensidad Horaria
                             </h3>
                             <p className="text-slate-400 text-xs">Vital para planificación de seguridad y limpieza.</p>
                         </div>
                         <div className="flex items-center gap-4">
                             <div className="flex items-center gap-1.5">
-                                <div className="w-3 h-3 rounded bg-indigo-50"></div>
+                                <div className="w-3 h-3 rounded bg-red-50 border border-red-100"></div>
                                 <span className="text-[10px] font-bold text-slate-400 uppercase">Bajo</span>
                             </div>
                             <div className="flex items-center gap-1.5">
-                                <div className="w-3 h-3 rounded bg-indigo-600"></div>
+                                <div className="w-3 h-3 rounded bg-red-700"></div>
                                 <span className="text-[10px] font-bold text-slate-400 uppercase">Pico</span>
                             </div>
                         </div>
@@ -379,8 +400,8 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                                                 key={i}
                                                 className="h-8 rounded-lg transition-all hover:scale-110 cursor-pointer"
                                                 style={{
-                                                    backgroundColor: `rgba(79, 70, 229, ${val / 100})`,
-                                                    border: '1px solid rgba(79, 70, 229, 0.1)'
+                                                    backgroundColor: hourlyHeatmapColor(val),
+                                                    border: '1px solid rgba(239, 68, 68, 0.16)'
                                                 }}
                                                 title={`${day} ${10 + i * 2}:00 - Intensidad: ${Math.round(val)}%`}
                                             ></div>
@@ -396,8 +417,8 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
             {/* Drill-down Modal */}
             {showModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-                    <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
-                        <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                    <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+                        <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                             <div className="flex items-center gap-3">
                                 <div className="p-2 bg-indigo-600 text-white rounded-xl shadow-lg shadow-indigo-200">
                                     <Trophy size={20} />
@@ -412,9 +433,9 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                             </button>
                         </div>
 
-                        <div className="p-6 max-h-[70vh] overflow-y-auto">
+                        <div className="p-4 max-h-[70vh] overflow-y-auto">
                             {loadingModal ? (
-                                <div className="flex flex-col items-center justify-center py-20 gap-4">
+                                <div className="flex flex-col items-center justify-center py-10 gap-4">
                                     <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600"></div>
                                     <p className="text-slate-400 text-sm font-medium">Cargando ranking de locales...</p>
                                 </div>
@@ -446,7 +467,7 @@ export const SmartInsights: React.FC<{ localId?: string }> = ({ localId: initial
                             )}
                         </div>
 
-                        <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end">
+                        <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
                             <button
                                 onClick={() => setShowModal(false)}
                                 className="px-6 py-2.5 bg-slate-800 text-white rounded-xl font-bold text-sm hover:bg-slate-700 transition-all shadow-lg shadow-slate-200"

@@ -119,10 +119,10 @@ export const MallManager: React.FC = () => {
     if (loading) return <div className="flex justify-center p-10"><Loader2 className="animate-spin text-indigo-600" /></div>;
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-4">
             <div className="flex justify-between items-center">
                 <div>
-                    <h2 className="text-2xl font-bold text-slate-800">Gestión de Malls</h2>
+                    <h2 className="text-xl font-bold text-slate-800">Gestión de Malls</h2>
                     <p className="text-slate-500">Administra los centros comerciales del sistema.</p>
                 </div>
                 <button
@@ -137,9 +137,9 @@ export const MallManager: React.FC = () => {
                 <table className="w-full text-left">
                     <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-medium text-xs uppercase">
                         <tr>
-                            <th className="px-6 py-4">Nombre</th>
-                            <th className="px-6 py-4">ID</th>
-                            <th className="px-6 py-4 text-right">Acciones</th>
+                            <th className="px-3 py-2.5">Nombre</th>
+                            <th className="px-3 py-2.5">ID</th>
+                            <th className="px-3 py-2.5 text-right">Acciones</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -148,14 +148,14 @@ export const MallManager: React.FC = () => {
                         ) : (
                             malls.map(mall => (
                                 <tr key={mall.id} className="hover:bg-slate-50 transition-colors">
-                                    <td className="px-6 py-4 font-medium text-slate-800 flex items-center gap-3">
+                                    <td className="px-3 py-2.5 font-medium text-slate-800 flex items-center gap-3">
                                         <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg">
                                             <Building size={18} />
                                         </div>
                                         {mall.nombre}
                                     </td>
-                                    <td className="px-6 py-4 text-slate-500 font-mono text-xs">{mall.id}</td>
-                                    <td className="px-6 py-4 text-right space-x-2">
+                                    <td className="px-3 py-2.5 text-slate-500 font-mono text-xs">{mall.id}</td>
+                                    <td className="px-3 py-2.5 text-right space-x-2">
                                         <button
                                             onClick={() => openModal(mall)}
                                             className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
@@ -188,7 +188,7 @@ export const MallManager: React.FC = () => {
             {/* Modal */}
             {modalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in">
-                    <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+                    <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-4">
                         <div className="flex justify-between items-center mb-6">
                             <h3 className="text-lg font-bold text-slate-800">{editingMall ? 'Editar Mall' : 'Nuevo Mall'}</h3>
                             <button onClick={() => setModalOpen(false)} className="text-slate-400 hover:text-slate-600">

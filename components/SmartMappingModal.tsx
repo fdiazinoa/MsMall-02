@@ -83,7 +83,7 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh]">
                 {/* Header */}
-                <div className="bg-indigo-600 p-6 text-white flex justify-between items-center shrink-0">
+                <div className="bg-indigo-600 p-4 text-white flex justify-between items-center shrink-0">
                     <div>
                         <h3 className="text-xl font-bold flex items-center gap-2">
                             <Wand2 size={24} className="text-indigo-200" />
@@ -97,10 +97,10 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
                 </div>
 
                 {/* Content */}
-                <div className="p-8 overflow-y-auto grow">
+                <div className="p-4 overflow-y-auto grow">
                     {step === 1 ? (
                         <div
-                            className="border-2 border-dashed border-slate-300 rounded-3xl p-12 text-center flex flex-col items-center justify-center gap-4 hover:border-indigo-400 hover:bg-indigo-50/30 transition-all cursor-pointer group"
+                            className="border-2 border-dashed border-slate-300 rounded-2xl p-12 text-center flex flex-col items-center justify-center gap-4 hover:border-indigo-400 hover:bg-indigo-50/30 transition-all cursor-pointer group"
                             onDragOver={handleDragOver}
                             onDrop={handleDrop}
                             onClick={() => fileInputRef.current?.click()}
@@ -135,7 +135,7 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
                             )}
                         </div>
                     ) : (
-                        <div className="space-y-6">
+                        <div className="space-y-4">
                             <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 flex gap-3 text-amber-800 text-xs">
                                 <AlertTriangle size={16} className="shrink-0 mt-0.5" />
                                 <p>
@@ -242,7 +242,7 @@ export const SmartMappingModal: React.FC<SmartMappingModalProps> = ({ isOpen, on
                 </div>
 
                 {/* Footer */}
-                <div className="bg-slate-50 p-6 border-t border-slate-100 flex justify-between items-center shrink-0">
+                <div className="bg-slate-50 p-4 border-t border-slate-100 flex justify-between items-center shrink-0">
                     {step === 1 ? (
                         <button onClick={onClose} className="px-6 py-2.5 text-slate-500 font-bold hover:text-slate-700">Cancelar</button>
                     ) : (

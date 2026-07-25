@@ -340,7 +340,7 @@ export const UploadForm: React.FC = () => {
   };
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
       <div className="mb-8">
         <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
           <Upload className="text-indigo-600" size={24} />
@@ -349,7 +349,7 @@ export const UploadForm: React.FC = () => {
         <p className="text-slate-500 mt-1">Sube el archivo de ventas diario para procesar auditoría.</p>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
+      <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">Clave API del Local (Header: X-API-Key)</label>
           <input
@@ -427,7 +427,7 @@ export const UploadForm: React.FC = () => {
         </div>
 
         {isMappingNeeded && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 animate-in fade-in slide-in-from-top-4">
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 animate-in fade-in slide-in-from-top-4">
             <div className="flex items-center gap-2 mb-4 text-amber-800">
               <AlertCircle size={20} />
               <h4 className="font-bold">Mapeo de Columnas Requerido</h4>

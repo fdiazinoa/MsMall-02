@@ -1,7 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { ApiService } from '../api';
-import { Plus, Edit2, Trash2, Building, Loader2, X } from 'lucide-react';
+import { Plus, Edit2, Trash2, Building, Loader2, X, SlidersHorizontal } from 'lucide-react';
+
+const BIG_DATA_FLAG_LABELS: Record<string, { title: string; description: string }> = {
+    BIG_DATA_CORE: { title: 'Big Data Core', description: 'Panel, agregados incrementales y perfil básico de locales.' },
+    BIG_DATA_BENCHMARK: { title: 'Benchmark', description: 'Preparado para comparativas comerciales avanzadas.' },
+    BIG_DATA_FORECAST: { title: 'Forecast', description: 'Preparado para proyecciones y pronósticos.' },
+    BIG_DATA_OPERATIONS: { title: 'Operations Center', description: 'Hallazgos, anomalías y observaciones operativas.' },
+    BIG_DATA_COPILOT: { title: 'Copilot Big Data', description: 'Preparado para consultas asistidas sobre analítica.' },
+};
 
 export const MallManager: React.FC = () => {
     const { session, refreshMalls } = useAuth();
@@ -11,6 +19,11 @@ export const MallManager: React.FC = () => {
     const [editingMall, setEditingMall] = useState<any>(null);
     const [formData, setFormData] = useState({ nombre: '', conf_locale: 'es-CL', conf_moneda: 'CLP' });
     const [error, setError] = useState<string | null>(null);
+    const [featureMall, setFeatureMall] = useState<any>(null);
+    const [featureFlags, setFeatureFlags] = useState<Array<{ feature_key: string; enabled: boolean; updated_at?: string | null }>>([]);
+    const [flagsLoading, setFlagsLoading] = useState(false);
+    const [flagsError, setFlagsError] = useState<string | null>(null);
+    const [savingFeatureKey, setSavingFeatureKey] = useState<string | null>(null);
 
     const loadMalls = async () => {
         setLoading(true);
@@ -74,6 +87,35 @@ export const MallManager: React.FC = () => {
         setModalOpen(true);
     };
 
+    const openFeatureModal = async (mall: any) => {
+        if (!session?.access_token) return;
+        setFeatureMall(mall);
+        setFeatureFlags([]);
+        setFlagsError(null);
+        setFlagsLoading(true);
+        try {
+            setFeatureFlags(await ApiService.getMallFeatureFlags(mall.id, session.access_token));
+        } catch (err: any) {
+            setFlagsError(err.message || 'No se pudieron cargar los módulos. Verifica que la migración Big Data esté desplegada.');
+        } finally {
+            setFlagsLoading(false);
+        }
+    };
+
+    const toggleFeature = async (featureKey: string, enabled: boolean) => {
+        if (!featureMall || !session?.access_token) return;
+        setSavingFeatureKey(featureKey);
+        setFlagsError(null);
+        try {
+            const updated = await ApiService.updateMallFeatureFlag(featureMall.id, featureKey, enabled, session.access_token);
+            setFeatureFlags((current) => current.map((flag) => flag.feature_key === featureKey ? { ...flag, enabled: updated.enabled, updated_at: new Date().toISOString() } : flag));
+        } catch (err: any) {
+            setFlagsError(err.message || 'No se pudo guardar el cambio.');
+        } finally {
+            setSavingFeatureKey(null);
+        }
+    };
+
     if (loading) return <div className="flex justify-center p-10"><Loader2 className="animate-spin text-indigo-600" /></div>;
 
     return (
@@ -120,6 +162,13 @@ export const MallManager: React.FC = () => {
                                             title="Editar"
                                         >
                                             <Edit2 size={16} />
+                                        </button>
+                                        <button
+                                            onClick={() => openFeatureModal(mall)}
+                                            className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                                            title="Módulos contratados"
+                                        >
+                                            <SlidersHorizontal size={16} />
                                         </button>
                                         <button
                                             onClick={() => handleDelete(mall.id)}
@@ -206,6 +255,36 @@ export const MallManager: React.FC = () => {
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {featureMall && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in">
+                    <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6">
+                        <div className="flex justify-between items-start gap-4 mb-2">
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-800">Módulos contratados</h3>
+                                <p className="text-sm text-slate-500">{featureMall.nombre}</p>
+                            </div>
+                            <button onClick={() => setFeatureMall(null)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+                        </div>
+                        <p className="text-xs text-slate-500 mb-4">Sólo Administrador puede activar o desactivar estos módulos para el mall seleccionado.</p>
+                        {flagsError && <div className="mb-4 p-3 bg-red-50 text-red-600 rounded-lg text-sm">{flagsError}</div>}
+                        {flagsLoading ? <div className="flex justify-center py-10"><Loader2 className="animate-spin text-indigo-600" /></div> : (
+                            <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg overflow-hidden">
+                                {featureFlags.map((flag) => {
+                                    const label = BIG_DATA_FLAG_LABELS[flag.feature_key] || { title: flag.feature_key, description: '' };
+                                    const saving = savingFeatureKey === flag.feature_key;
+                                    return <div key={flag.feature_key} className="flex items-center justify-between gap-4 p-4">
+                                        <div><p className="font-medium text-slate-800">{label.title}</p><p className="text-xs text-slate-500 mt-1">{label.description}</p></div>
+                                        <button type="button" role="switch" aria-checked={flag.enabled} disabled={saving} onClick={() => toggleFeature(flag.feature_key, !flag.enabled)} className={`relative h-7 w-12 rounded-full transition-colors disabled:opacity-50 ${flag.enabled ? 'bg-indigo-600' : 'bg-slate-300'}`}>
+                                            <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${flag.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                                        </button>
+                                    </div>;
+                                })}
+                            </div>
+                        )}
                     </div>
                 </div>
             )}

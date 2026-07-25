@@ -152,11 +152,15 @@ async def store_profile(local_id: str, mall_id: str, start_date: date, end_date:
 @router.get("/stores/{local_id}/category-benchmark")
 async def category_benchmark(local_id: str, mall_id: str, start_date: date, end_date: date, user: dict = Depends(current_user)):
     _context(mall_id, start_date, end_date, user)
-    classifications = db.table("local_commercial_classifications").select("category_id").eq("local_id", local_id).maybe_single().execute().data or {}
+    # An unclassified local is expected during the Sprint 2 rollout. Supabase's
+    # maybe_single() returns None in that case, so treat it as insufficient
+    # benchmark data instead of turning the whole Profile 360 request into a 500.
+    classification_response = db.table("local_commercial_classifications").select("category_id").eq("local_id", local_id).maybe_single().execute()
+    classifications = getattr(classification_response, "data", None) or {}
     category_id = classifications.get("category_id")
     if not category_id:
         return {"status": "insufficient_data", "reason": "El local no tiene categoría homologada."}
-    category_rows = db.table("big_data_daily_aggregates").select("sales_net").eq("mall_id", mall_id).eq("grain", "local").gte("period_date", start_date.isoformat()).lte("period_date", end_date.isoformat()).execute().data or []
+    category_rows = db.table("big_data_daily_aggregates").select("local_id,sales_net").eq("mall_id", mall_id).eq("grain", "local").gte("period_date", start_date.isoformat()).lte("period_date", end_date.isoformat()).execute().data or []
     # Category membership is resolved through the local classification, avoiding cross-mall comparisons.
     members = db.table("local_commercial_classifications").select("local_id").eq("category_id", category_id).execute().data or []
     member_ids = {member["local_id"] for member in members}

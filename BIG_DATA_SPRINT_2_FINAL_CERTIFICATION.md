@@ -9,11 +9,12 @@ PR: [#299](https://github.com/fdiazinoa/MsMall-02/pull/299) — debe permanecer 
 La validación controlada confirma que el panel, las proyecciones con datos
 insuficientes, Operations Center, observaciones, Copilot Big Data e
 idempotencia de hallazgos funcionan en el piloto. La paridad de ventas se
-confirmó con datos reales para un mall alto, medio y bajo, y la semántica de
-notas de crédito está cerrada. Siguen pendientes benchmark comparable de
-importación, concurrencia de dos workers, recuperación real de trabajos
-abandonados y algunos escenarios de paridad correctiva. Por tanto, el PR **no
-puede pasar a listo para merge**.
+confirmó con datos reales para un mall alto, medio y bajo, la semántica de
+notas de crédito está cerrada y la concurrencia de dos conexiones PostgreSQL
+fue ejecutada. Además, la ruta real de ingesta CSV → cola → worker → agregado
+Big Data se validó sobre Mall Demo. Persisten controles de rendimiento y de
+evidencia visual integral; por tanto, el PR **no puede pasar a listo para
+merge**.
 
 No se hizo merge, no se activó otro mall, no se modificó RLS Legacy, no se
 reconstruyeron agregados globales y no se alteraron ventas reales durante esta
@@ -53,11 +54,11 @@ julio; todas las diferencias son absolutas y porcentualmente cero.
 | Escenario | Fuente | Big Data | Diferencia | Resultado |
 | --- | ---: | ---: | ---: | --- |
 | Mall Demo, 2026-07-24, registros | 6 | 6 | 0 | PASS parcial |
-| Mall Demo, ventas brutas | $3,976.00 | $3,976.00 | $0.00 | PASS parcial |
-| Mall Demo, impuestos | $715.68 | $715.68 | $0.00 | PASS parcial |
-| Mall Demo, ventas netas | $3,260.32 | $3,260.32 | $0.00 | PASS parcial |
-| Mall Demo, local Zara Demo | 6 / $3,260.32 netas | 6 / $3,260.32 netas | 0 / $0.00 | PASS parcial |
-| Mall Demo, categoría MODA | 6 / $3,260.32 netas | 6 / $3,260.32 netas | 0 / $0.00 | PASS parcial |
+| Mall Demo, ventas brutas | $3,856.00 | $3,856.00 | $0.00 | PASS parcial |
+| Mall Demo, impuestos | $694.08 | $694.08 | $0.00 | PASS parcial |
+| Mall Demo, ventas netas | $3,161.92 | $3,161.92 | $0.00 | PASS parcial |
+| Mall Demo, local Zara Demo | 6 / $3,161.92 netas | 6 / $3,161.92 netas | 0 / $0.00 | PASS parcial |
+| Mall Demo, categoría MODA | 6 / $3,161.92 netas | 6 / $3,161.92 netas | 0 / $0.00 | PASS parcial |
 | Agora Mall SQD — día 2026-07-23 | 767 / $4,485,065.30 netas | 767 / $4,485,065.30 netas | $0.00 / 0.00% | PASS |
 | Blue Mall SDQ — día 2026-07-23 | 35 / $209,092.58 netas | 35 / $209,092.58 netas | $0.00 / 0.00% | PASS |
 | Santiago Center — día 2026-07-23 | 358 / $1,653,658.18 netas | 358 / $1,653,658.18 netas | $0.00 / 0.00% | PASS |
@@ -97,6 +98,19 @@ el 2000-01-10 únicamente en Categoría C ($100) y el 2000-01-20 únicamente en
 Categoría B ($200). No se dejó ninguna venta, categoría, agregado ni cola de
 prueba. La paridad queda **PARTIAL** sólo por la cobertura temporal de los
 casos, no por reclasificación.
+
+### Ingesta de aplicación de extremo a extremo
+
+Se cargó desde la interfaz CSV de Mall Demo un comprobante controlado para el
+local `DEMO-514`. La aplicación informó **1 registro procesado**. Al tratarse
+de una reingesta de una factura existente, el conteo se conservó en 6 y el
+importe corrigió el agregado; no se generó una séptima fila. El trabajo de cola
+`de29462a-ad2f-411e-8ce8-624da1cd7a61` pasó de `pending` a `completed` en el
+siguiente ciclo del worker, sin error. La comparación final para 2026-07-24
+fue exactamente igual entre fuente y agregado: 6 registros, $3,856.00 brutos,
+$694.08 de impuestos y $3,161.92 netos (diferencia $0.00). Esta evidencia
+cubre el flujo real de importador, trigger/cola, worker y actualización
+incremental; no sustituye la telemetría de rendimiento de infraestructura.
 
 ## 5. Semántica de registros, ventas y notas de crédito
 
@@ -204,26 +218,29 @@ se conserva como riesgo operativo de menor prioridad.
 En el preview autenticado de Mall Demo se verificó:
 
 - Panel Big Data con estado “El período requiere completar información”.
-- Cobertura 4.2%, 23 días incompletos y proyección “Datos insuficientes”.
-- Valores visibles: $3,260.32 netos, 6 registros y promedio por registro
-  $543.39.
+- Cobertura cercana al 4%, período incompleto y proyección “Datos
+  insuficientes”.
+- Tras la reingesta controlada: $3,161.92 netos, 6 registros y promedio por
+  registro $526.99, idénticos al agregado final.
+- Ingesta CSV que mostró “Procesado: 1 registros” antes del ciclo del worker.
 - Operations Center con hallazgo `DATA_INCOMPLETE`, severidad HIGH y texto que
   evita afirmar caída comercial.
-- Copilot Big Data con período, acumulado $3,260.32, un día con datos,
-  cobertura 4.17% y `DATA_INCOMPLETE`.
+- Copilot Big Data con período, cobertura y estado `DATA_INCOMPLETE`, sin
+  atribuir una caída comercial a un período incompleto.
 - Cambio desde otro mall a Mall Demo sin conservar el error ni la selección
   anterior, tras la corrección `3ca844c`.
 
 No se reunió un paquete persistente de capturas 1366×768 para todos los estados
-solicitados, ni fue posible mostrar perfil 360° con datos útiles, estado vacío
-de otro mall con agregados o cambio rápido entre dos malls analíticos. El
-control visual completo queda **BLOCKED**.
+solicitados, ni fue posible mostrar perfil 360° con datos útiles ni cambio
+rápido entre dos malls analíticos habilitados. El control visual completo queda
+**PARTIAL**; la evidencia navegada confirma los estados esenciales, pero no
+sustituye el paquete final requerido para cerrar el PR.
 
 ## 9. Pruebas ejecutadas
 
 | Comando | Resultado |
 | --- | --- |
-| `python3 -m pytest -q tests` | 117 passed, 83 warnings de dependencias/obsolescencias existentes |
+| `python3 -m pytest -q tests` | 121 passed, 85 warnings de dependencias/obsolescencias existentes |
 | `npm run build` | PASS; warning existente por bundle de 1.32 MB (>500 kB) |
 | `python3 -m pytest -q tests/test_big_data_sprint_two_contract.py` | 8 passed durante la corrección del Copilot |
 
@@ -238,9 +255,11 @@ control visual completo queda **BLOCKED**.
 
 ## 11. Riesgos residuales y rollback
 
-Riesgos bloqueantes: paridad multi-mall no demostrada, definición comercial de
-transacción pendiente, benchmark sin evidencia comparable, concurrencia y
-recuperación sin prueba real, y evidencia visual incompleta.
+Riesgos bloqueantes: el benchmark aún no dispone de telemetría CPU/base ni de
+una comparación completa de importación masiva de aplicación; la paridad debe
+ampliarse a más fechas y períodos; y falta el paquete visual integral. La
+transacción comercial no se infiere: la interfaz continúa usando “Registros de
+venta”, y la concurrencia/recuperación de cola sí tienen prueba real.
 
 Rollback del piloto:
 
@@ -258,18 +277,18 @@ Rollback del piloto:
 | --- | --- | --- | --- |
 | Paridad multi-mall | PARTIAL | Paridad exacta diaria y mensual parcial en Agora, Blue Mall SDQ y Santiago; correcciones y reclasificación histórica con una sola categoría por día validadas | Falta ampliar la cobertura temporal de paridad, no hay diferencia observada |
 | Semántica de ventas y registros | PASS | Notas de crédito definidas como importes negativos que rebajan ventas; `count(*)` se presenta como registros de venta | Ticket comercial no se expone ni se infiere |
-| Benchmark de importación | PARTIAL | 1,000 filas: 800.078 ms con encolado vs. 696.644 ms sin encolado; +14.85%; limpieza verificada | Falta ejecución completa desde el importador y telemetría de CPU/base |
+| Benchmark de importación | PARTIAL | 1,000 filas: 800.078 ms con encolado vs. 696.644 ms sin encolado; +14.85%; y una reingesta CSV real completó cola, worker y paridad exacta | Falta comparación masiva completa y telemetría de CPU/base |
 | Concurrencia de workers | PASS | Dos conexiones PostgreSQL reales; una sola obtuvo el trabajo; token único | Ninguno observado |
 | Recuperación de trabajos | PASS | Abandono >15 min recuperado, attempts 1→2 y token anterior rechazado | Falta apagado físico de proceso en refresco largo como riesgo menor |
 | Idempotencia de hallazgos | PASS parcial | Dos ejecuciones reales, un fingerprint lógico | No sustituye concurrencia de dos workers |
-| Validación visual | BLOCKED | Panel, Operations y Copilot vistos en Mall Demo | Paquete de evidencias y escenarios faltantes |
+| Validación visual | PARTIAL | Panel, importación CSV, Operations, Copilot y cambio entre mall habilitado/no habilitado verificados | Paquete persistente, perfil 360° y cambio rápido entre dos malls habilitados |
 | Flags y aislamiento | PASS | Cada flag Sprint 2 activo en un único mall, Mall Demo | Ninguno observado |
-| Regresión automatizada | PASS | 117 tests y build exitosos | Warning histórico de tamaño de bundle |
+| Regresión automatizada | PASS | 121 tests y build exitosos | Warning histórico de tamaño de bundle |
 
 ## Decisión
 
-**NO_GO.** Los controles bloqueados son requisitos explícitos previos a merge.
-El siguiente paso recomendado es preparar un entorno integrado aislado o
-autorizar por escrito una ventana de prueba con datasets no comerciales para:
-paridad multi-mall, benchmark con/sin trigger y dos workers con recuperación.
-Hasta entonces, mantener PR #299 en borrador y Sprint 2 limitado a Mall Demo.
+**NO_GO.** Los controles parciales siguen siendo requisitos explícitos previos
+a merge. El siguiente paso recomendado es ejecutar una importación representativa
+con telemetría de Railway/Supabase y completar el paquete visual, mientras se
+amplía la paridad a fechas adicionales. Hasta entonces, mantener PR #299 en
+borrador y Sprint 2 limitado a Mall Demo.

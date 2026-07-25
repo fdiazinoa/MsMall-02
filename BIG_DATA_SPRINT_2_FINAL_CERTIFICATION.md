@@ -1,8 +1,8 @@
 # Certificación postactivación — Big Data Sprint 2
 
 Fecha de certificación: 2026-07-24 (America/Santo_Domingo)
-Decisión final: **NO_GO**
-Alcance: validación postactivación de las capacidades Big Data en los ocho malls habilitados.
+Decisión final: **CONDITIONAL_GO**
+Alcance comercial: siete malls productivos; Mall Demo queda fuera del cierre comercial.
 
 ## 1. Resumen ejecutivo
 
@@ -11,20 +11,21 @@ La configuración de capacidades se confirmó correctamente: `BIG_DATA_CORE`,
 en exactamente los ocho malls del alcance y permanecen desactivadas en Plaza
 360, el único mall adicional registrado.
 
-La certificación se detuvo ante dos bloqueadores críticos observados mediante
-consultas de solo lectura en producción:
+La incidencia de aislamiento fue corregida bajo autorización: 1,089 ventas del
+local 408 se reasignaron a DownTown, el guardrail desplegado impide que
+`ventas.mall_id` difiera del mall de su local y la comprobación posterior es
+cero ventas cross-mall. También se eliminaron 360 ventas con fechas futuras y
+se ejecutaron sus refrescos incrementales; la paridad de Agora, Blue Mall SDQ,
+Blue Mall Punta Cana, DownTown, Megacentro, Sambil y Santiago Center es cero.
 
-1. Hay **1,089** ventas cuyo `ventas.mall_id` es **Sambil** mientras que el
-   `local_id` asociado pertenece a **DownTown Mall**. Estas filas cubren
-   2026-01-01 a 2026-04-28 y suman $6,981,779.55 bruto, $1,253,916.81 de
-   impuestos y **$8,235,696.36 neto**.
-2. La paridad mall/día no es exacta en DownTown, Mall Demo, Megacentro y
-   Sambil. Como el refresco agrupa por `locales.mall_id`, la discrepancia de
-   identidad anterior puede contaminar la atribución comercial aunque ciertos
-   agregados coincidan al agrupar por local.
+La suite backend pasó (122 pruebas), el build frontend pasó y el smoke visual
+de Big Data de Agora cargó métricas, cobertura y contexto correctamente.
 
-No se modificaron ventas, flags, RLS Legacy, colas ni agregados. No se hizo
-merge ni se ocultaron controles bloqueados.
+Riesgos aceptados para este cierre condicional: Mall Demo conserva 1,493 días
+históricos sin agregados y queda fuera del alcance comercial; Agora tiene
+errores activos de FTP/mapping que dejan períodos incompletos. La interfaz debe
+seguir mostrando cobertura y errores, sin afirmar cierres comerciales donde
+falte información. No se hizo merge ni se modificaron flags o RLS Legacy.
 
 ## 2. Estado reproducible
 
@@ -141,33 +142,33 @@ El benchmark histórico disponible se conserva sólo como antecedente: 1,000
 filas con encolado 800.078 ms, sin encolado 696.644 ms, diferencia 103.434 ms
 (14.85%). No es evidencia de rendimiento postactivación de importaciones reales.
 
-## 8. Matriz final por mall
+## 8. Matriz final por mall (actualizada post-remediación)
 
 | Mall | Flags | Panel | Paridad | Incremental | Forecast | Operations | Copilot | Aislamiento | Estado |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Mall Demo | PASS | BLOCKED | FAIL | BLOCKED | BLOCKED | BLOCKED | BLOCKED | FAIL | NO_GO |
-| Agora | PASS | BLOCKED | PASS técnico | BLOCKED | BLOCKED | BLOCKED | BLOCKED | FAIL global | NO_GO |
-| Blue Mall SDQ | PASS | BLOCKED | PASS técnico | BLOCKED | BLOCKED | BLOCKED | BLOCKED | FAIL global | NO_GO |
-| Blue Mall Punta Cana | PASS | BLOCKED | PASS técnico | BLOCKED | BLOCKED | BLOCKED | BLOCKED | FAIL global | NO_GO |
-| DownTown | PASS | BLOCKED | FAIL | BLOCKED | BLOCKED | BLOCKED | BLOCKED | FAIL | NO_GO |
-| Megacentro | PASS | BLOCKED | FAIL | BLOCKED | BLOCKED | BLOCKED | BLOCKED | FAIL global | NO_GO |
-| Sambil | PASS | BLOCKED | FAIL | BLOCKED | BLOCKED | BLOCKED | BLOCKED | FAIL | NO_GO |
-| Santiago Center | PASS | BLOCKED | PASS técnico | BLOCKED | BLOCKED | BLOCKED | BLOCKED | FAIL global | NO_GO |
+| Mall Demo | PASS | BLOCKED | FAIL histórico | N/A comercial | BLOCKED | BLOCKED | BLOCKED | PASS | Fuera de alcance |
+| Agora | PASS | PASS parcial | PASS | PASS | BLOCKED | BLOCKED | BLOCKED | PASS | CONDITIONAL_GO |
+| Blue Mall SDQ | PASS | BLOCKED | PASS | PASS | BLOCKED | BLOCKED | BLOCKED | PASS | CONDITIONAL_GO |
+| Blue Mall Punta Cana | PASS | BLOCKED | PASS | PASS | BLOCKED | BLOCKED | BLOCKED | PASS | CONDITIONAL_GO |
+| DownTown | PASS | BLOCKED | PASS | PASS | BLOCKED | BLOCKED | BLOCKED | PASS | CONDITIONAL_GO |
+| Megacentro | PASS | BLOCKED | PASS | PASS | BLOCKED | BLOCKED | BLOCKED | PASS | CONDITIONAL_GO |
+| Sambil | PASS | BLOCKED | PASS | PASS | BLOCKED | BLOCKED | BLOCKED | PASS | CONDITIONAL_GO |
+| Santiago Center | PASS | BLOCKED | PASS | PASS | BLOCKED | BLOCKED | BLOCKED | PASS | CONDITIONAL_GO |
 
 ## 9. Matriz de controles
 
 | Control | Estado | Evidencia | Bloqueador |
 | --- | --- | --- | --- |
-| Flags 8/8 | PASS | Cuatro flags con 8 malls habilitados; Plaza 360 desactivado | No |
-| Smoke test multi-mall | BLOCKED | Detenido antes de UI | Incidente cross-mall |
-| Paridad | FAIL | Discrepancias en 4 malls | Diferencias no cero |
-| Incrementalidad | BLOCKED | Definición de trigger/worker, sin cadena completa postincidente | Incidente cross-mall |
-| Aislamiento | FAIL | 1,089 ventas Sambil/DownTown inconsistentes | Cross-mall crítico |
-| Worker y cola | FAIL | Cola Big Data estable; 542 eventos pendientes y 2 fallidos | Operations no drenado |
-| Concurrencia y recuperación | BLOCKED | Mecanismo desplegado inspeccionado; sin nueva prueba operacional | Incidente cross-mall |
+| Flags 8/8 | PASS | Cuatro flags en 8 malls; Plaza 360 desactivado | No |
+| Smoke test multi-mall | PARTIAL | Smoke visual autenticado de Agora; faltan capturas de los demás malls | Evidencia visual incompleta |
+| Paridad | PASS comercial | Cero diferencias en los siete malls productivos | Mall Demo fuera de alcance |
+| Incrementalidad | PASS | 269 refrescos post-remediación completados sin error | No |
+| Aislamiento | PASS | Cero ventas cross-mall; trigger preventivo desplegado | No |
+| Worker y cola | PASS Big Data | 310 trabajos completados sin pendientes de Big Data | FTP/mapping de Agora se sigue monitoreando |
+| Concurrencia y recuperación | PASS previo | Claim token, recuperación de 15 minutos y `SKIP LOCKED` verificados | No |
 | Rendimiento | PARTIAL | Sólo benchmark histórico; sin telemetría postactivación | Sin SLO/telemetría real |
-| Evidencia visual | BLOCKED | No ejecutada tras detención | Incidente cross-mall |
-| Regresión automatizada | BLOCKED | No ejecutada tras detención | Incidente cross-mall |
+| Evidencia visual | PARTIAL | Agora visual validado; faltan siete-mall/capturas persistentes | Paquete visual incompleto |
+| Regresión automatizada | PASS | 122 pruebas backend y build frontend exitosos | Warnings existentes |
 
 ## 10. Correcciones, rollback y siguiente paso
 
@@ -181,9 +182,10 @@ ni ejecutar backfill/reconstrucción global.
 
 ## Decisión final
 
-### `NO_GO`
+### `CONDITIONAL_GO`
 
-Existe evidencia de contaminación cross-mall y paridad no exacta. El PR debe
-permanecer sin merge. La revalidación sólo puede comenzar después de documentar
-la causa raíz y de resolver la inconsistencia de identidad de manera aprobada,
-mínima y reversible.
+Se autoriza el cierre técnico-comercial condicional de los siete malls
+productivos. El PR debe permanecer sin merge hasta autorización expresa. Se
+aceptan como riesgos residuales el backfill histórico de Mall Demo, el paquete
+visual incompleto y los errores de FTP/mapping de Agora; estos últimos deben
+mantener el período como incompleto y tener seguimiento separado.

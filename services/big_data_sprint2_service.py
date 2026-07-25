@@ -100,7 +100,9 @@ def build_monthly_forecast(
     if coverage < 0.8:
         low_confidence_reasons.append("La cobertura del período transcurrido es inferior a 80%.")
     if any(row["_sales"] < 0 for row in current):
-        low_confidence_reasons.append("El período contiene valores negativos.")
+        low_confidence_reasons.append(
+            "El período contiene notas de crédito que reducen la venta neta."
+        )
 
     common = {
         "mall_id": mall_id,
@@ -281,7 +283,14 @@ def detect_explainable_anomalies(
     if baseline_records and abs(latest["_records"] - baseline_records) / baseline_records >= 0.5:
         add("RECORD_COUNT_SHIFT", "WARNING", latest["_records"], baseline_records, "La cantidad de registros cambió al menos 50%.", {"date": latest["_date"].isoformat()})
     if latest["_sales"] < 0 and latest["_sales"] < statistics.mean(sales[:-1]):
-        add("ATYPICAL_NEGATIVE", "HIGH", latest["_sales"], baseline_sales, "Se detectó un valor negativo atípico.", {"date": latest["_date"].isoformat()})
+        add(
+            "ATYPICAL_NEGATIVE",
+            "HIGH",
+            latest["_sales"],
+            baseline_sales,
+            "Las notas de crédito del día superan el comportamiento esperado y reducen la venta neta.",
+            {"date": latest["_date"].isoformat(), "semantic": "CREDIT_NOTE"},
+        )
     if len(sales) >= 5 and all(value < baseline_sales * 0.8 for value in sales[-3:]):
         add("CONSECUTIVE_BELOW_EXPECTED", "HIGH", statistics.mean(sales[-3:]), baseline_sales, "Tres días consecutivos están por debajo de 80% de la referencia.", {"dates": [row["_date"].isoformat() for row in normalized[-3:]]})
     if category_expected and abs(latest["_sales"] - category_expected) / abs(category_expected) >= 0.3:

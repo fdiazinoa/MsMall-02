@@ -54,7 +54,7 @@ def test_forecast_reports_insufficient_data_for_new_store():
     assert result["low_confidence_reasons"]
 
 
-def test_missing_days_and_negative_values_reduce_confidence():
+def test_missing_days_and_credit_notes_reduce_confidence():
     historical = _rows(date(2026, 6, 1), [100] * 30)
     current = [
         {"period_date": "2026-07-01", "sales_net": 100},
@@ -68,7 +68,7 @@ def test_missing_days_and_negative_values_reduce_confidence():
     assert result["status"] == "OK"
     assert result["confidence"] == "MEDIUM"
     assert result["coverage"] == 60
-    assert any("negativos" in reason for reason in result["low_confidence_reasons"])
+    assert any("notas de crédito" in reason for reason in result["low_confidence_reasons"])
 
 
 def test_incomplete_data_prevents_false_commercial_drop():
@@ -110,6 +110,20 @@ def test_drop_increase_zero_records_negative_and_repeated_run_are_deterministic(
         assert all(item["rule_version"] == ANOMALY_RULE_VERSION for item in first)
 
 
+def test_negative_sales_are_explained_as_credit_notes_that_reduce_net_sales():
+    findings = detect_explainable_anomalies(
+        _rows(date(2026, 7, 1), [100, 100, 100, -50]),
+        mall_id="mall-1",
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 4),
+        coverage_percent=100,
+    )
+
+    finding = next(item for item in findings if item["type"] == "ATYPICAL_NEGATIVE")
+    assert "notas de crédito" in finding["explanation"]
+    assert finding["evidence"]["semantic"] == "CREDIT_NOTE"
+
+
 def test_record_count_shift_and_consecutive_low_days():
     rows = _rows(date(2026, 7, 1), [100, 100, 100, 20, 20, 20], records=10)
     rows[-1]["records_processed"] = 1
@@ -123,4 +137,3 @@ def test_record_count_shift_and_consecutive_low_days():
     types = {finding["type"] for finding in findings}
     assert "RECORD_COUNT_SHIFT" in types
     assert "CONSECUTIVE_BELOW_EXPECTED" in types
-

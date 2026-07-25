@@ -64,7 +64,7 @@ reconstruir datos fuera del piloto, prohibido por esta certificación.
 No se certificaron período completo, reingesta/duplicados, incrementalidad o
 paridad mensual multi-mall. El control completo queda **BLOCKED**, no PASS.
 
-## 5. Semántica de transacción
+## 5. Semántica de registros, ventas y notas de crédito
 
 ### Definición técnica actual
 
@@ -88,22 +88,23 @@ inferencia.
 
 | Medida | Resultado |
 | --- | ---: |
-| Filas totales | 1,792,608 |
+| Filas totales | 1,792,670 |
 | Filas con `factura_no` no vacío | 1,792,065 |
 | Facturas distintas por `local_id + fecha + factura_no` | 1,792,065 |
 | Grupos de factura repetidos | 0 |
 | Máximo de filas por grupo de factura | 1 |
 | Filas sin factura | 543 |
-| Filas con bruto o neto negativo | 13,180 |
+| Filas con bruto o neto negativo | 13,132 |
 | Comprobantes explícitamente parecidos a crédito/anulación | 0 |
 
 Existen días con hasta 1,121 filas de un mismo local y 60 días donde filas e
-identificadores de factura no coinciden. Los campos no contienen una
-clasificación confiable de anulación, devolución o nota de crédito. La
-evidencia apoya que la mayoría de filas parece estar identificada por factura,
-pero no demuestra que cada fila sea un ticket comercial ni cómo tratar las
-13,180 filas negativas. El control queda **BLOCKED pendiente de decisión
-comercial**.
+identificadores de factura no coinciden. La decisión comercial del 2026-07-24
+define toda fila negativa como **nota de crédito**: debe rebajar ventas netas,
+brutas e impuestos del mismo período y dimensión. `sum(total_neto)` ya aplica
+esta regla; no requiere migración ni reconstrucción. La métrica visible se
+mantiene como **Registros de venta** y el promedio como **Promedio por
+registro**. La semántica de ticket/transacción comercial sigue sin certificarse
+porque no existe una regla de agrupación de comprobantes.
 
 ## 6. Trigger, cola y benchmark de importación
 

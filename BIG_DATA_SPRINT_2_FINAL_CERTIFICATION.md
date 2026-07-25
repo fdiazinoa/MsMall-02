@@ -199,7 +199,7 @@ Rollback del piloto:
 | Control | Estado | Evidencia | Bloqueador |
 | --- | --- | --- | --- |
 | Paridad multi-mall | BLOCKED | Paridad exacta diaria de Mall Demo; cero agregados en alto/medio/bajo | No se permite activar/reconstruir fuera del piloto |
-| Semántica de transacción | BLOCKED | `count(*)` técnico; 13,180 negativos y sin clasificación comercial fiable | Falta decisión/documento comercial |
+| Semántica de ventas y registros | PASS | Notas de crédito definidas como importes negativos que rebajan ventas; `count(*)` se presenta como registros de venta | Ticket comercial no se expone ni se infiere |
 | Benchmark de importación | BLOCKED | Trigger sólo encola; sin medición comparable | No se puede reimportar/alternar trigger sin afectar condiciones reales |
 | Concurrencia de workers | BLOCKED | Claim seguro inspeccionado; no hubo dos workers reales | Falta infraestructura aislada o autorización específica |
 | Recuperación de trabajos | BLOCKED | Timeout de 15 min inspeccionado; 0 eventos vencidos | No se creó ni abandonó trabajo de prueba |

@@ -157,12 +157,22 @@ Evidencia existente:
   `0740f3d6861e6735dc2b2657df645806e24fd1160f57dc80b29b4e1a2923e55d`.
 - No había eventos `PROCESSING` vencidos al momento de la inspección.
 
-No se ejecutaron dos workers independientes compitiendo por el mismo trabajo,
-no se interrumpió un worker y no se esperó un timeout sobre un trabajo de
-prueba. Crear eventos/colas sintéticos o un segundo servicio de worker en el
-entorno principal excedería la autorización y podría interferir con la
-operación. Concurrencia y recuperación quedan **BLOCKED**; la idempotencia de
-hallazgos sí tiene evidencia real limitada.
+Se ejecutó una prueba controlada sobre dos conexiones PostgreSQL independientes
+(backend PID `3367537` y `3367538`) y filas sintéticas de Mall Demo con fechas
+históricas. No se tocaron ventas reales.
+
+| Caso | Resultado |
+| --- | --- |
+| Reclamo simultáneo | Dos conexiones llamaron `claim_big_data_refresh_queue(1)`: una recibió la fila `691e57d5-9772-480f-9bec-d4287c9fe3b9` con token `79abe5da-d005-4ff8-8715-deb0aabf54d5`; la otra recibió 0 filas. |
+| Reencolado durante proceso | Al borrar el token y devolver el trabajo a `pending`, la actualización de finalización con el token anterior devolvió 0 filas. |
+| Worker abandonado | Una fila `processing` con `started_at` de 16 minutos fue reclamada de nuevo; `attempts` pasó de 1 a 2 y recibió el token `f4619f37-6545-407b-874d-e3d046566cd9`. |
+| Reinicio / propietario anterior | La finalización con el token abandonado `22222222-2222-4222-8222-222222222222` devolvió 0 filas; no pudo sobrescribir al nuevo propietario. |
+
+La limpieza final confirmó 0 filas de cola de prueba, 0 agregados diarios o
+mensuales sintéticos y watermark de Mall Demo sin cambio (`2026-07-24`). La
+concurrencia de reclamo, reencolado y recuperación queda **PASS**. Falta una
+prueba de apagado físico de un proceso de worker durante un refresco largo, que
+se conserva como riesgo operativo de menor prioridad.
 
 ## 8. Validación visual
 
@@ -224,8 +234,8 @@ Rollback del piloto:
 | Paridad multi-mall | PARTIAL | Paridad exacta diaria y mensual parcial en Agora, Blue Mall SDQ y Santiago; locales y categorías diarios sin diferencias | Faltan escenarios correctivos e históricos controlados |
 | Semántica de ventas y registros | PASS | Notas de crédito definidas como importes negativos que rebajan ventas; `count(*)` se presenta como registros de venta | Ticket comercial no se expone ni se infiere |
 | Benchmark de importación | PARTIAL | 1,000 filas: 800.078 ms con encolado vs. 696.644 ms sin encolado; +14.85%; limpieza verificada | Falta ejecución completa desde el importador y telemetría de CPU/base |
-| Concurrencia de workers | BLOCKED | Claim seguro inspeccionado; no hubo dos workers reales | Falta infraestructura aislada o autorización específica |
-| Recuperación de trabajos | BLOCKED | Timeout de 15 min inspeccionado; 0 eventos vencidos | No se creó ni abandonó trabajo de prueba |
+| Concurrencia de workers | PASS | Dos conexiones PostgreSQL reales; una sola obtuvo el trabajo; token único | Ninguno observado |
+| Recuperación de trabajos | PASS | Abandono >15 min recuperado, attempts 1→2 y token anterior rechazado | Falta apagado físico de proceso en refresco largo como riesgo menor |
 | Idempotencia de hallazgos | PASS parcial | Dos ejecuciones reales, un fingerprint lógico | No sustituye concurrencia de dos workers |
 | Validación visual | BLOCKED | Panel, Operations y Copilot vistos en Mall Demo | Paquete de evidencias y escenarios faltantes |
 | Flags y aislamiento | PASS | Cada flag Sprint 2 activo en un único mall, Mall Demo | Ninguno observado |

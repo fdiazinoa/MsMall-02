@@ -91,10 +91,12 @@ La reclasificación histórica no pudo certificarse: las tablas
 actual usa la clasificación vigente, no un intervalo histórico de vigencia. No
 se debe declarar soporte histórico hasta implementar ese mantenimiento y
 probarlo con categorías reales. La migración aditiva
-`20260725_big_data_reclassification_history.sql` ya fue preparada: conserva
-historial con `effective_from`, encola sólo días de venta afectados al cambiar
-una clasificación y resuelve una única categoría por fecha. Aún no se aplicó
-ni se validó con categorías reales; la paridad queda **PARTIAL**.
+`20260725_big_data_reclassification_history.sql` fue aplicada y validada con
+un fixture aislado: la reclasificación encoló 2 días afectados y reconstruyó
+el 2000-01-10 únicamente en Categoría C ($100) y el 2000-01-20 únicamente en
+Categoría B ($200). No se dejó ninguna venta, categoría, agregado ni cola de
+prueba. La paridad queda **PARTIAL** sólo por la cobertura temporal de los
+casos, no por reclasificación.
 
 ## 5. Semántica de registros, ventas y notas de crédito
 
@@ -254,7 +256,7 @@ Rollback del piloto:
 
 | Control | Estado | Evidencia | Bloqueador |
 | --- | --- | --- | --- |
-| Paridad multi-mall | PARTIAL | Paridad exacta diaria y mensual parcial en Agora, Blue Mall SDQ y Santiago; correcciones de venta, fecha, local y mall encoladas correctamente | Falta reclasificación histórica: taxonomía y mantenimientos están vacíos/no implementados |
+| Paridad multi-mall | PARTIAL | Paridad exacta diaria y mensual parcial en Agora, Blue Mall SDQ y Santiago; correcciones y reclasificación histórica con una sola categoría por día validadas | Falta ampliar la cobertura temporal de paridad, no hay diferencia observada |
 | Semántica de ventas y registros | PASS | Notas de crédito definidas como importes negativos que rebajan ventas; `count(*)` se presenta como registros de venta | Ticket comercial no se expone ni se infiere |
 | Benchmark de importación | PARTIAL | 1,000 filas: 800.078 ms con encolado vs. 696.644 ms sin encolado; +14.85%; limpieza verificada | Falta ejecución completa desde el importador y telemetría de CPU/base |
 | Concurrencia de workers | PASS | Dos conexiones PostgreSQL reales; una sola obtuvo el trabajo; token único | Ninguno observado |

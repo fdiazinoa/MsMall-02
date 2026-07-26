@@ -4,6 +4,7 @@ import { Activity, AlertTriangle, Calendar, Database, DollarSign, ShoppingBag, S
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
+import { createBigDataRequestGate } from '../utils/bigDataRequestGate';
 
 const initialDates = () => {
   const now = new Date();
@@ -28,26 +29,29 @@ export const BigDataDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [executive, setExecutive] = useState<any>(null);
   const requestVersion = useRef(0);
+  const dashboardRequestGate = useRef(createBigDataRequestGate());
+  const profileRequestGate = useRef(createBigDataRequestGate());
 
   useEffect(() => {
     const mallId = currentMall?.id;
     const token = session?.access_token;
     const version = ++requestVersion.current;
-    setData(null); setExecutive(null); setProfile(null); setError(null);
+    const requestId = dashboardRequestGate.current.begin();
+    profileRequestGate.current.begin();
+    setData(null); setExecutive(null); setProfile(null); setProfileLoading(false); setError(null);
     if (!mallId || !token) { setLoading(false); return; }
     setLoading(true);
     Promise.allSettled([
       ApiService.getBigDataDashboard(mallId, dates.start, dates.end, token),
       ApiService.getBigDataExecutiveSummary(mallId, dates.start, dates.end, token),
     ]).then(([dashboardResult, executiveResult]) => {
-      if (requestVersion.current !== version || currentMall?.id !== mallId) return;
+      if (!dashboardRequestGate.current.isCurrent(requestId) || requestVersion.current !== version || currentMall?.id !== mallId) return;
       if (dashboardResult.status === 'fulfilled') setData(dashboardResult.value);
       else setError(dashboardResult.reason?.message || 'No se pudo cargar Big Data');
       if (executiveResult.status === 'fulfilled') setExecutive(executiveResult.value);
     }).finally(() => {
-      if (requestVersion.current === version) setLoading(false);
+      if (dashboardRequestGate.current.isCurrent(requestId) && requestVersion.current === version) setLoading(false);
     });
-    return () => { requestVersion.current += 1; };
   }, [currentMall?.id, session?.access_token, dates.start, dates.end]);
 
   if (!currentMall?.id) return <div className="bg-white rounded-2xl p-6 border border-slate-200">Selecciona un mall para consultar Big Data.</div>;
@@ -58,18 +62,23 @@ export const BigDataDashboard: React.FC = () => {
   const openProfile = async (localId: string) => {
     const mallId = currentMall?.id;
     const token = session?.access_token;
-    const version = requestVersion.current;
     if (!mallId || !token) return;
+    const version = requestVersion.current;
+    const requestId = profileRequestGate.current.begin();
+    setProfile(null);
     setProfileLoading(true);
     try {
       const [storeProfile, benchmark] = await Promise.all([
         ApiService.getBigData<any>(`stores/${encodeURIComponent(localId)}/profile`, mallId, dates.start, dates.end, token),
         ApiService.getBigData<any>(`stores/${encodeURIComponent(localId)}/category-benchmark`, mallId, dates.start, dates.end, token)
       ]);
-      if (requestVersion.current !== version || currentMall?.id !== mallId) return;
-      setProfile({ ...storeProfile, benchmark });
-    } catch (err: any) { setError(err.message || 'No se pudo cargar el perfil del local'); }
-    finally { setProfileLoading(false); }
+      if (profileRequestGate.current.isCurrent(requestId) && requestVersion.current === version && currentMall?.id === mallId) setProfile({ ...storeProfile, benchmark });
+    } catch (err: any) {
+      if (profileRequestGate.current.isCurrent(requestId) && requestVersion.current === version) setError(err.message || 'No se pudo cargar el perfil del local');
+    }
+    finally {
+      if (profileRequestGate.current.isCurrent(requestId) && requestVersion.current === version) setProfileLoading(false);
+    }
   };
 
   return <div className="space-y-6 animate-in fade-in duration-500">
@@ -110,6 +119,6 @@ export const BigDataDashboard: React.FC = () => {
       </div>
       <div className="text-xs text-slate-500 flex items-center gap-2"><Database size={14}/> Datos agregados; ventas del período anterior: {format(previous)}.</div>
     </>}
-    {(profile || profileLoading) && <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4"><div className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-white rounded-2xl p-6 shadow-2xl"><div className="flex justify-between gap-4"><div><h3 className="text-xl font-bold text-slate-800">{profileLoading ? 'Cargando perfil 360°...' : profile.local?.nombre}</h3><p className="text-sm text-slate-500">Rubro: {profile?.local?.rubro || 'Sin clasificar'}</p></div><button onClick={() => setProfile(null)} className="text-slate-500">Cerrar</button></div>{profile && <div className="grid grid-cols-2 gap-4 mt-5 text-sm"><div><p className="text-slate-500">Ventas del período</p><b>{format(profile.period.sales_net || 0)}</b></div><div><p className="text-slate-500">Ticket promedio</p><b>{format(profile.period.ticket_average || 0)}</b></div><div><p className="text-slate-500">Última venta</p><b>{profile.period.last_sale_received || 'Sin ventas'}</b></div><div><p className="text-slate-500">Comparación categoría</p><b>{profile.benchmark?.status === 'ok' ? `Posición ${profile.benchmark.rank} de ${profile.benchmark.comparable_stores}` : 'Datos insuficientes'}</b></div></div>}</div></div>}
+    {(profile || profileLoading) && <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4"><div className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-white rounded-2xl p-6 shadow-2xl"><div className="flex justify-between gap-4"><div><h3 className="text-xl font-bold text-slate-800">{profileLoading ? 'Cargando perfil 360°...' : profile.local?.nombre}</h3><p className="text-sm text-slate-500">Rubro: {profile?.local?.rubro || 'Sin clasificar'}</p></div><button onClick={() => setProfile(null)} className="text-slate-500">Cerrar</button></div>{profile && <div className="grid grid-cols-2 gap-4 mt-5 text-sm"><div><p className="text-slate-500">Ventas del período</p><b>{format(profile.period.sales_net || 0)}</b></div><div><p className="text-slate-500">Promedio por registro</p><b>{format(profile.period.ticket_average || 0)}</b></div><div><p className="text-slate-500">Última venta</p><b>{profile.period.last_sale_received || 'Sin ventas'}</b></div><div><p className="text-slate-500">Comparación categoría</p><b>{profile.benchmark?.status === 'ok' ? `Posición ${profile.benchmark.rank} de ${profile.benchmark.comparable_stores}` : 'Datos insuficientes'}</b></div></div>}</div></div>}
   </div>;
 };

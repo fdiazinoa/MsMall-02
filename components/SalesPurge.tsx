@@ -98,11 +98,11 @@ export const SalesPurge: React.FC = () => {
     };
 
     return (
-        <div className="bg-white border border-red-100 rounded-3xl overflow-hidden shadow-xl shadow-red-500/5 group transition-all hover:shadow-red-500/10 active:scale-[0.998]">
+        <div className="bg-white border border-red-100 rounded-2xl overflow-hidden shadow-xl shadow-red-500/5 group transition-all hover:shadow-red-500/10 active:scale-[0.998]">
             {/* Red Stripe Header */}
             <div className="h-2 bg-gradient-to-r from-red-500 via-rose-500 to-red-400" />
 
-            <div className="p-8">
+            <div className="p-4">
                 {/* Section Title */}
                 <div className="flex items-center justify-between mb-8">
                     <div className="flex items-center gap-4">
@@ -120,7 +120,7 @@ export const SalesPurge: React.FC = () => {
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
                     {/* LEFT: Store Selection (7 cols) */}
                     <div className="lg:col-span-7 space-y-4">
                         <div className="flex items-center justify-between px-1">
@@ -200,7 +200,7 @@ export const SalesPurge: React.FC = () => {
 
                     {/* RIGHT: Filters & Action (5 cols) */}
                     <div className="lg:col-span-5 flex flex-col h-full">
-                        <div className="flex-1 space-y-6 bg-slate-50/50 p-6 rounded-3xl border border-slate-100">
+                        <div className="flex-1 space-y-4 bg-slate-50/50 p-4 rounded-2xl border border-slate-100">
                             {/* Toggle Range */}
                             <div className="bg-white p-5 border border-slate-100 rounded-2xl shadow-sm">
                                 <label className="flex items-center justify-between cursor-pointer group">
@@ -279,7 +279,7 @@ export const SalesPurge: React.FC = () => {
                             <button
                                 onClick={handlePurgeClick}
                                 disabled={loading || !selectedStoreId}
-                                className={`w-full group relative overflow-hidden px-8 py-5 rounded-3xl text-sm font-black tracking-widest uppercase transition-all flex items-center justify-center gap-3 shadow-2xl ${loading || !selectedStoreId
+                                className={`w-full group relative overflow-hidden px-8 py-5 rounded-2xl text-sm font-black tracking-widest uppercase transition-all flex items-center justify-center gap-3 shadow-2xl ${loading || !selectedStoreId
                                     ? 'bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed'
                                     : 'bg-red-600 text-white shadow-red-500/20 hover:bg-red-700 hover:-translate-y-1 active:scale-95'
                                     }`}
@@ -300,7 +300,7 @@ export const SalesPurge: React.FC = () => {
 
                 {/* Status Feedback */}
                 {message && (
-                    <div className={`mt-8 p-6 rounded-3xl flex items-start gap-4 border-2 animate-in slide-in-from-bottom-4 duration-500 ${message.type === 'success'
+                    <div className={`mt-8 p-4 rounded-2xl flex items-start gap-4 border-2 animate-in slide-in-from-bottom-4 duration-500 ${message.type === 'success'
                         ? 'bg-emerald-50/50 border-emerald-100 text-emerald-800'
                         : 'bg-red-50 border-red-100 text-red-800'
                         }`}>

@@ -2,9 +2,21 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 import time
-from datetime import datetime, timezone
-from typing import Any
+from datetime import date, datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+
+EVENT_IMPORT_COMPLETED = "FTP_IMPORT_COMPLETED"
+EVENT_IMPORT_FAILED = "FTP_IMPORT_FAILED"
+EVENT_SALES_IMPORTED = "SALES_IMPORTED"
+EVENT_SALES_IMPORT_FAILED = "SALES_IMPORT_FAILED"
+EVENT_WEBSERVICE_RECEIVED = "WEBSERVICE_RECEIVED"
+EVENT_WEBSERVICE_FAILED = "WEBSERVICE_FAILED"
+EVENT_MONITOR_ENTRY_CREATED = "MONITOR_ENTRY_CREATED"
+EVENT_PENDING = "PENDING"
 
 
 def _utcnow() -> str:
@@ -14,6 +26,81 @@ def _utcnow() -> str:
 def _rows(response: Any) -> list[dict[str, Any]]:
     data = getattr(response, "data", None)
     return data if isinstance(data, list) else []
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(float(str(value or 0)))
+    except Exception:
+        return 0
+
+
+def _response_data(response: Any) -> List[Dict[str, Any]]:
+    return _rows(response)
+
+
+def _read_int_env(name: str, default: int, minimum: int = 1, maximum: int = 1440) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(str(raw).strip()) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _normalize_date(value: Any) -> Optional[str]:
+    if not value:
+        return None
+    match = re.search(r"(\d{4}-\d{2}-\d{2})", str(value))
+    return match.group(1) if match else None
+
+
+def extract_file_date(text: Any) -> Optional[str]:
+    for match in re.finditer(r"(?<!\d)(\d{8})(?!\d)", str(text or "")):
+        raw = match.group(1)
+        for year, month, day in ((int(raw[4:8]), int(raw[2:4]), int(raw[:2])), (int(raw[:4]), int(raw[4:6]), int(raw[6:]))):
+            try:
+                return date(year, month, day).isoformat()
+            except ValueError:
+                continue
+    return None
+
+
+def infer_event_type_from_load_log(payload: Dict[str, Any]) -> str:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    channel = str(payload.get("canal") or metadata.get("canal") or "").upper()
+    status = str(payload.get("estado") or "").lower()
+    records = _safe_int(payload.get("records_processed") or metadata.get("records_processed"))
+    failed = status in {"error", "failed", "fail", "no_encontrado"} or _safe_int(payload.get("error_count") or metadata.get("error_count")) > 0
+    if "WEBSERVICE" in channel:
+        return EVENT_WEBSERVICE_FAILED if failed else EVENT_WEBSERVICE_RECEIVED
+    if "FTP" in channel or "SFTP" in channel:
+        return EVENT_IMPORT_FAILED if failed else EVENT_IMPORT_COMPLETED
+    if records > 0 and not failed:
+        return EVENT_SALES_IMPORTED
+    return EVENT_SALES_IMPORT_FAILED if failed else EVENT_MONITOR_ENTRY_CREATED
+
+
+def should_publish_operations_event(payload: Dict[str, Any], event_type: str) -> bool:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    records = _safe_int(payload.get("records_processed") or metadata.get("records_processed"))
+    errors = _safe_int(payload.get("error_count") or metadata.get("error_count"))
+    reason = str(metadata.get("reason") or payload.get("reason") or "").strip().lower()
+    filename = str(payload.get("archivo") or metadata.get("archivo") or "").strip().upper()
+    return not (reason == "no_new_file" and records == 0 and errors == 0) and not (event_type == EVENT_IMPORT_COMPLETED and records == 0 and errors == 0 and filename in {"", "N/A"})
+
+
+def publish_operations_event(supabase_client: Any, *, mall_id: Optional[str], local_id: Optional[str], event_type: str, source: str, payload: Optional[Dict[str, Any]] = None, severity: str = "INFO", logger: Optional[logging.Logger] = None) -> Optional[Dict[str, Any]]:
+    if not supabase_client or not mall_id or not event_type or not should_publish_operations_event(payload or {}, event_type):
+        return None
+    row = {"mall_id": mall_id, "local_id": local_id, "event_type": event_type, "source": source, "payload": payload or {}, "severity": severity, "processing_status": EVENT_PENDING}
+    try:
+        response = supabase_client.table("operations_events").insert(row).execute()
+        return (_response_data(response) or [row])[0]
+    except Exception as exc:
+        if logger:
+            logger.warning("Operations event publish skipped: %s", str(exc)[:220])
+        return None
 
 
 class OperationsAgentWorker:
@@ -202,4 +289,3 @@ class OperationsAgentWorker:
         if event_type in {"DATA_INCOMPLETE", "IMPORT_FAILED", "SALES_IMPORT_FAILED"}:
             return "Revisar cargas pendientes y actualizar agregados antes de evaluar ventas."
         return "Revisar la evidencia y marcar el hallazgo según corresponda."
-

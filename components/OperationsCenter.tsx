@@ -104,7 +104,7 @@ export const OperationsCenter: React.FC<{ onOpenBigData?: () => void }> = ({ onO
   const high = findings.filter(row => row.severity === 'HIGH').length;
   const incomplete = findings.filter(row => row.type === 'DATA_INCOMPLETE').length;
 
-  return <div className="space-y-4 animate-in fade-in duration-300">
+  return <div className="space-y-2 lg:h-[calc(100dvh-8rem)] animate-in fade-in duration-300">
     <header className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
       <div>
         <h2 className="text-2xl font-bold text-slate-800">Operations Center</h2>
@@ -119,7 +119,7 @@ export const OperationsCenter: React.FC<{ onOpenBigData?: () => void }> = ({ onO
       {error} Las capacidades <code>BIG_DATA_CORE</code> y <code>BIG_DATA_OPERATIONS</code> deben estar habilitadas para este mall.
     </div>}
 
-    <section className="flex flex-wrap gap-2 rounded-xl border border-slate-100 bg-white p-2">
+    <section role="tablist" className="flex flex-wrap gap-2 rounded-xl border border-slate-100 bg-white p-2">
       {([
         ['events', 'Eventos'],
         ['findings', 'Hallazgos'],
@@ -136,7 +136,7 @@ export const OperationsCenter: React.FC<{ onOpenBigData?: () => void }> = ({ onO
       >{label}</button>)}
     </section>
 
-    <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <section id="operations-health-panel" aria-label="Salud de locales" className="max-h-[200px] space-y-2 overflow-y-auto grid grid-cols-2 gap-3 lg:grid-cols-4">
       {[
         ['Hallazgos visibles', findings.length, Clock3, 'text-indigo-600 bg-indigo-50'],
         ['Críticos', critical, AlertTriangle, 'text-red-600 bg-red-50'],
@@ -162,11 +162,12 @@ export const OperationsCenter: React.FC<{ onOpenBigData?: () => void }> = ({ onO
       <input type="date" aria-label="Fecha final" value={filters.end_date} onChange={e => setFilters({ ...filters, end_date: e.target.value })} className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
     </section>
 
+    <section id="operations-cases-panel" aria-label="Casos que explican las prioridades" className="max-h-[280px] overflow-auto">
     {loading && <div className="flex h-48 items-center justify-center"><Loader2 className="animate-spin text-indigo-600" /></div>}
-    {!loading && !findings.length && !error && <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
+    {!loading && !findings.length && !error && <div className="rounded-xl border border-dashed border-slate-300 bg-white p-5 text-center text-slate-500">
       No existen elementos para los filtros seleccionados.
     </div>}
-    {!loading && findings.map(finding => <article key={finding.id} className="rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
+    {!loading && findings.map(finding => <article key={finding.id} className="max-h-[320px] space-y-2 overflow-y-auto rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -186,6 +187,7 @@ export const OperationsCenter: React.FC<{ onOpenBigData?: () => void }> = ({ onO
         </div>
       </div>
     </article>)}
+    </section>
 
     {selected && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
       <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">

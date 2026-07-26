@@ -113,3 +113,15 @@ def test_dashboard_rpc_migration_is_internal_and_returns_all_ui_sections():
         "ventas_por_tienda_completo",
     ):
         assert f"'{field}'" in migration
+
+
+def test_dashboard_name_parity_migration_preserves_legacy_store_names():
+    migration = (
+        ROOT
+        / "supabase"
+        / "migrations"
+        / "20260726200659_fix_dashboard_store_name_parity.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "coalesce(nullif(l.nombre, ''), 'Local sin nombre') as local_name" in migration
+    assert "btrim(l.nombre)" not in migration

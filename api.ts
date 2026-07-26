@@ -902,21 +902,30 @@ export const ApiService = {
 
     // Logic to always ensure codigo_interno is present and valid
     let finalCodigoInterno = `IMP-${Math.floor(Math.random() * 100000)}`;
+    let existingProcessingStatus: string | null = null;
 
     if (config.id) {
       const { data: existing } = await supabase
         .from('locales')
-        .select('id, codigo_interno')
+        .select('id, codigo_interno, processing_status')
         .eq('id', config.id)
         .maybeSingle();
 
       if (existing && existing.codigo_interno) {
         finalCodigoInterno = existing.codigo_interno;
       }
+      existingProcessingStatus = existing?.processing_status || null;
     }
 
     // Always set the code
     dbPayload.codigo_interno = finalCodigoInterno;
+    // A corrected connection must re-enter the scheduler. Preserve BUSY/IDLE
+    // locks and only clear the circuit breaker when an operator saves a
+    // previously suspended configuration.
+    if (existingProcessingStatus === 'SUSPENDED_AUTH_ERROR') {
+      dbPayload.processing_status = 'IDLE';
+      dbPayload.consecutive_failures = 0;
+    }
 
     // Payload for Upsert
     const payload = config.id ? { id: config.id, ...dbPayload } : dbPayload;

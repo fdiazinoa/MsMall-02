@@ -334,6 +334,146 @@ def test_worker_process_file_logic_removes_configured_special_characters(monkeyp
     assert row["total_neto"] == 100.0
 
 
+def test_worker_process_file_logic_flattens_nested_json_mapping(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = """
+    {
+      "sales": [
+        {
+          "invoiceDate": "2026-07-25",
+          "invoiceNumber": "CK-1001",
+          "totals": {
+            "subtotal": 1000,
+            "taxTotal": 180,
+            "grandTotal": 1180
+          },
+          "fiscalData": {"ncf": "B0200000001"}
+        }
+      ]
+    }
+    """
+    config = {
+        "nombre": "Calvin Klein",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "file_type": "JSON",
+        "mapping_config": {
+            "fecha_venta": "invoiceDate",
+            "factura_numero": "invoiceNumber",
+            "total_bruto": "totals.subtotal",
+            "total_impuestos": "totals.taxTotal",
+            "total_neto": "totals.grandTotal",
+        },
+        "constants_config": {},
+    }
+
+    count, errors, stats = worker.process_file_logic(config, "ventas_20260725.json", content)
+
+    assert count == 1
+    assert errors == []
+    assert stats["processing_error_count"] == 0
+    row = fake_db.tables["ventas"][0]
+    assert row["factura_no"] == "CK-1001"
+    assert row["fecha"] == "2026-07-25"
+    assert row["total_bruto"] == 1000.0
+    assert row["total_impuestos"] == 180.0
+    assert row["total_neto"] == 1180.0
+
+
+def test_worker_inserts_new_rows_and_documents_exact_duplicates(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    fake_db.tables["ventas"] = [
+        {
+            "local_id": "local-1",
+            "fecha": "2026-07-25",
+            "factura_no": "1168160",
+            "total_bruto": 500.0,
+        }
+    ]
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = "\n".join([
+        "factura,fecha,bruto,impuestos,neto",
+        "1168160,2026-07-25,500,90,410",
+        "1168161,2026-07-25,750,135,615",
+    ])
+    config = {
+        "nombre": "Pollo Victorina",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "file_type": "CSV",
+        "mapping_config": {
+            "factura_numero": "factura",
+            "fecha_venta": "fecha",
+            "total_bruto": "bruto",
+            "total_impuestos": "impuestos",
+            "total_neto": "neto",
+        },
+        "constants_config": {},
+    }
+
+    count, details, stats = worker.process_file_logic(config, "DailySales.csv", content)
+    estado, mensaje, confirmed = worker._resolve_worker_processing_outcome(count, details, stats)
+
+    assert count == 1
+    assert stats["duplicate_skipped"] == 1
+    assert stats["processing_error_count"] == 0
+    assert details == [
+        {
+            "linea": 2,
+            "tipo": "duplicado",
+            "accion": "omitido",
+            "origen": "base_datos",
+            "local_id": "local-1",
+            "fecha": "2026-07-25",
+            "factura_no": "1168160",
+            "error": "Registro duplicado omitido: factura 1168160, fecha 2026-07-25.",
+        }
+    ]
+    assert estado == "parcial"
+    assert confirmed is True
+    assert "1 registros nuevos" in mensaje
+    assert "1 registros duplicados omitidos y documentados" in mensaje
+    inserted = [row for row in fake_db.tables["ventas"] if row["factura_no"] == "1168161"]
+    assert len(inserted) == 1
+
+
+def test_worker_accepts_zero_value_sale_when_all_totals_are_zero(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = "\n".join([
+        "factura,fecha,bruto,impuestos,neto",
+        "VOID-100,2026-07-25,0,0,0",
+    ])
+    config = {
+        "nombre": "Pollo Victorina",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "file_type": "CSV",
+        "mapping_config": {
+            "factura_numero": "factura",
+            "fecha_venta": "fecha",
+            "total_bruto": "bruto",
+            "total_impuestos": "impuestos",
+            "total_neto": "neto",
+        },
+        "constants_config": {},
+    }
+
+    count, errors, stats = worker.process_file_logic(config, "DailySales.csv", content)
+
+    assert count == 1
+    assert errors == []
+    assert stats["processing_error_count"] == 0
+    assert fake_db.tables["ventas"][0]["total_bruto"] == 0.0
+
+
 def test_worker_moving_window_skips_existing_documents(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_db = _FakeWorkerSupabase()
@@ -372,9 +512,13 @@ def test_worker_moving_window_skips_existing_documents(monkeypatch):
     count, errors, stats = worker.process_file_logic(config, "ZH_PC.txt", content)
 
     assert count == 1
-    assert errors == []
+    assert len(errors) == 1
+    assert errors[0]["tipo"] == "duplicado"
+    assert errors[0]["fecha"] == "2026-05-01"
+    assert errors[0]["factura_no"] == "632026050110"
     assert stats["moving_window_mode"] is True
     assert stats["duplicate_skipped"] == 1
+    assert stats["processing_error_count"] == 0
     assert stats["date_min"] == "2026-05-01"
     assert stats["date_max"] == "2026-05-02"
     inserted = [row for row in fake_db.tables["ventas"] if row["factura_no"] == "632026050210"]
@@ -401,6 +545,34 @@ def test_worker_moving_window_all_duplicates_is_success(monkeypatch):
     assert "Archivo de ventana móvil procesado" in mensaje
     assert "0 registros nuevos insertados" in mensaje
     assert "2 registros ya existentes omitidos" in mensaje
+
+
+def test_worker_standard_file_all_duplicates_is_success(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    details = [
+        {
+            "linea": 2,
+            "tipo": "duplicado",
+            "accion": "omitido",
+            "fecha": "2026-07-25",
+            "factura_no": "1168160",
+        }
+    ]
+
+    estado, mensaje, confirmed = worker._resolve_worker_processing_outcome(
+        0,
+        details,
+        {
+            "moving_window_mode": False,
+            "duplicate_skipped": 1,
+            "processing_error_count": 0,
+        },
+    )
+
+    assert estado == "exito"
+    assert confirmed is True
+    assert "sin registros nuevos" in mensaje
+    assert "1 registros duplicados omitidos y documentados" in mensaje
 
 
 def test_worker_marks_error_when_no_insert_is_confirmed(monkeypatch):

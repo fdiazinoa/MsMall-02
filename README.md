@@ -74,9 +74,17 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
 - Variables operativas relevantes:
   - `ENABLE_API_SCHEDULER=false` (default recomendado)
   - `RESEND_API_KEY` para activar envío de notificaciones con Resend desde `notificaciones@mercasend.net`
+  - `DASHBOARD_KPI_MODE=legacy|shadow|v2` para activar gradualmente la agregación optimizada del Dashboard BI
   - `WORKER_POLL_SECONDS`, `MAX_CONCURRENT_WORKERS`, `MAX_CONCURRENT_PER_HOST`, `HOURLY_STAGGER_MINUTES`, `MAX_FILES_PER_BATCH`
   - `CACHE_TTL_DASHBOARD`, `CACHE_TTL_RANKING`, `CACHE_TTL_HEATMAP`
   - `frecuencia_cron` / `hora_especifica` en configuración de locales (worker)
+
+### Activación segura del Dashboard BI optimizado
+
+1. Desplegar la migración `dashboard_bi_kpis_v2` y el backend manteniendo `DASHBOARD_KPI_MODE=legacy`.
+2. Cambiar temporalmente a `shadow`: el backend compara el resultado optimizado con el actual, registra diferencias y sigue respondiendo con el resultado actual.
+3. Cuando los registros confirmen paridad, cambiar a `DASHBOARD_KPI_MODE=v2`.
+4. Si la función optimizada falla, el endpoint usa automáticamente el cálculo actual como respaldo.
 
 ## 3. Arquitectura de Datos
 Esquema relacional optimizado (`init.sql`):

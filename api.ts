@@ -543,6 +543,8 @@ export interface Store {
   fecha_corte_importacion?: string | null;
 }
 
+export type DashboardStore = Pick<Store, 'id' | 'mall_id' | 'nombre' | 'rubro' | 'tipo_negocio'>;
+
 export type StoreCatalogFieldName = 'tipo_negocio' | 'rubro';
 
 export interface StoreCatalogOption {
@@ -1700,6 +1702,23 @@ export const ApiService = {
       return data as Store[];
     } catch (error) {
       console.error('Error fetching stores:', error);
+      return [];
+    }
+  },
+
+  async getDashboardStores(mallId: string): Promise<DashboardStore[]> {
+    if (!supabase) return [];
+
+    try {
+      const { data, error } = await supabase
+        .from('locales')
+        .select('id,mall_id,nombre,rubro,tipo_negocio')
+        .eq('mall_id', mallId);
+
+      if (error) throw error;
+      return (data || []) as DashboardStore[];
+    } catch (error) {
+      console.error('Error fetching dashboard stores:', error);
       return [];
     }
   },

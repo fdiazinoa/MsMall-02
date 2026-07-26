@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from services.big_data_analytics_service import BigDataAnalyticsService
 from services.big_data_sprint2_service import BigDataSprint2Service
 from services.connection_monitor_service import ConnectionMonitorService
+from services.date_parsing_service import normalize_sale_date
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import run_missing_days_email_scheduler
 from services.sensitive_ops_service import sanitize_error_text
@@ -121,37 +122,12 @@ def insert_load_log(
     except Exception as e:
         logger.error(f"Error inserting load log: {e}")
 
-def normalize_date(date_str):
+def normalize_date(date_str, explicit_format: Any = "auto"):
     """
     Attempts to parse a date string into YYYY-MM-DD format.
-    Supports: DD/MM/YYYY, YYYY-MM-DD, MM/DD/YYYY, DD-MM-YYYY, YYYY/MM/DD,
-    YYYYmmDD and YYYYmmDD with time.
+    Supports configured sale date formats, including ISO dates with time.
     """
-    if not date_str:
-        return None
-        
-    raw_date = str(date_str).strip().strip("'\"")
-    # Try common formats
-    for fmt in [
-        '%d/%m/%Y',
-        '%Y-%m-%d',
-        '%m/%d/%Y',
-        '%d-%m-%Y',
-        '%Y/%m/%d',
-        '%Y%m%d',
-        '%Y%m%d %H:%M:%S',
-        '%Y%m%d %H:%M',
-        '%Y%m%d %H:%M:%S.%f',
-        '%Y%m%dT%H:%M:%S',
-        '%Y%m%dT%H:%M',
-        '%Y%m%dT%H:%M:%S.%f',
-    ]:
-        try:
-            parsed_date = datetime.strptime(raw_date, fmt)
-            return parsed_date.strftime('%Y-%m-%d')
-        except ValueError:
-            continue
-    return None
+    return normalize_sale_date(date_str, explicit_format)
 
 
 def _split_transform_fields(raw_fields: Any) -> List[str]:
@@ -846,7 +822,10 @@ def process_file_logic(config, filename, content):
                 factura_no = pick_value(mapping.get('factura_numero', 'factura_numero'), 'factura_no')
                 
                 # Check for direct key matches if mapping fails
-                fecha_venta = normalize_date(fecha_venta_raw)
+                fecha_venta = normalize_date(
+                    fecha_venta_raw,
+                    constants.get("_date_format", "auto"),
+                )
                 
                 if fecha_venta_raw and not fecha_venta:
                      detalles.append({"linea": i, "error": f"Formato de fecha inválido: {fecha_venta_raw}"})

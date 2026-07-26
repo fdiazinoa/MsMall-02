@@ -295,6 +295,53 @@ def test_worker_process_file_logic_parses_comma_decimal_mapping(monkeypatch):
     assert row["total_neto"] == 3385.59322
 
 
+def test_worker_process_file_logic_accepts_iso_datetime_in_date_column(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = "\n".join([
+        "ID_TRANSACCION,FECHA,HORA,TOTALBRUTO,TOTALIMPUESTOS,TOTALNETO,NUMSERIE",
+        "704401,2026-07-25 00:00:00,0,351.5600,98.4400,450.0000,10026",
+    ])
+    config = {
+        "nombre": "DOMINOS PIZZA",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "codigo_interno": "26",
+        "file_type": "TXT",
+        "mapping_config": {
+            "factura_numero": "ID_TRANSACCION",
+            "fecha_venta": "FECHA",
+            "hora_transaccion": "HORA",
+            "total_bruto": "TOTALBRUTO",
+            "total_impuestos": "TOTALIMPUESTOS",
+            "total_neto": "TOTALNETO",
+        },
+        "constants_config": {
+            "_date_format": "YYYY-MM-DD",
+            "local_codigo": "26",
+        },
+    }
+
+    count, errors, stats = worker.process_file_logic(
+        config,
+        "output_25072026.txt",
+        content,
+    )
+
+    assert count == 1
+    assert errors == []
+    assert stats["date_min"] == "2026-07-25"
+    assert stats["date_max"] == "2026-07-25"
+    row = fake_db.tables["ventas"][0]
+    assert row["factura_no"] == "704401"
+    assert row["fecha"] == "2026-07-25"
+    assert row["total_bruto"] == 351.56
+    assert row["total_impuestos"] == 98.44
+    assert row["total_neto"] == 450.0
+
+
 def test_worker_process_file_logic_removes_configured_special_characters(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_db = _FakeWorkerSupabase()

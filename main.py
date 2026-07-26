@@ -66,6 +66,7 @@ from services.connection_monitor_service import (
     ConnectionMonitorService,
     RetryPolicyBlocked,
 )
+from services.date_parsing_service import normalize_sale_date
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import (
     DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
@@ -1863,77 +1864,13 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 record['local_codigo'] = local_code
                 record['_source_line'] = line_no
 
-                # Normalize Date with format-specific or comprehensive support
+                # Normalize date with shared format support used by manual and automatic imports.
                 raw_date = str(record['fecha_venta']).strip().strip("'\"")
-                parsed_date = None
-                
-                # Check explicit date_format from constants selected in UI
                 explicit_format = constants.get('_date_format', 'auto')
-                
-                # Define format groups based on user selection
-                if explicit_format == 'DD/MM/YYYY':
-                    date_formats = ['%d/%m/%Y', '%d-%m-%Y']
-                elif explicit_format == 'DDmmYYYY':
-                    date_formats = ['%d%m%Y']
-                elif explicit_format == 'YYYYmmDD':
-                    date_formats = [
-                        '%Y%m%d',
-                        '%Y%m%d %H:%M:%S',
-                        '%Y%m%d %H:%M',
-                        '%Y%m%d %H:%M:%S.%f',
-                        '%Y%m%dT%H:%M:%S',
-                        '%Y%m%dT%H:%M',
-                        '%Y%m%dT%H:%M:%S.%f',
-                    ]
-                elif explicit_format == 'MM/DD/YYYY':
-                    date_formats = ['%m/%d/%Y', '%m-%d-%Y']
-                elif explicit_format == 'YYYY/MM/DD':
-                    date_formats = ['%Y/%m/%d']
-                elif explicit_format == 'YYYY-MM-DD':
-                    date_formats = ['%Y-%m-%d', '%Y/%m/%d']
-                elif explicit_format == 'timestamp':
-                    date_formats = [
-                        '%Y-%m-%dT%H:%M:%S.%fZ',
-                        '%Y-%m-%dT%H:%M:%S.%f',
-                        '%Y-%m-%dT%H:%M:%SZ',
-                        '%Y-%m-%dT%H:%M:%S',
-                        '%Y-%m-%d %H:%M:%S'
-                    ]
-                else:  # 'auto' - try all formats
-                    date_formats = [
-                        '%Y-%m-%dT%H:%M:%S.%fZ',  # ISO 8601 with milliseconds and Z (2026-02-01T14:30:00.000Z)
-                        '%Y-%m-%dT%H:%M:%S.%f',   # ISO 8601 with milliseconds (2026-02-01T14:30:00.000)
-                        '%Y-%m-%dT%H:%M:%SZ',     # ISO 8601 with Z (2026-02-01T14:30:00Z)
-                        '%Y-%m-%dT%H:%M:%S',      # ISO 8601 with time (2026-02-01T14:30:00)
-                        '%Y-%m-%d %H:%M:%S',      # SQL datetime (2026-02-01 14:30:00)
-                        '%Y-%m-%d',               # ISO 8601 date only (2026-02-01)
-                        '%d/%m/%Y',               # DD/MM/YYYY (Dominican/Spanish format)
-                        '%d%m%Y',                 # DDmmYYYY (05012026)
-                        '%Y%m%d',                 # YYYYmmDD (20260105)
-                        '%Y%m%d %H:%M:%S',       # YYYYmmDD HH:MM:SS (20260219 10:14:19)
-                        '%Y%m%d %H:%M',          # YYYYmmDD HH:MM (20260219 10:14)
-                        '%Y%m%d %H:%M:%S.%f',    # YYYYmmDD HH:MM:SS.sss
-                        '%Y%m%dT%H:%M:%S',       # YYYYmmDDTHH:MM:SS
-                        '%Y%m%dT%H:%M',          # YYYYmmDDTHH:MM
-                        '%Y%m%dT%H:%M:%S.%f',    # YYYYmmDDTHH:MM:SS.sss
-                        '%m/%d/%Y',               # MM/DD/YYYY (US format)
-                        '%d-%m-%Y',               # DD-MM-YYYY with hyphens
-                        '%m-%d-%Y',               # MM-DD-YYYY with hyphens
-                        '%Y/%m/%d',               # YYYY/MM/DD with slashes
-                        '%Y-%d-%m',               # YYYY-DD-MM (uncommon but requested)
-                        '%d/%m/%Y %H:%M:%S',      # DD/MM/YYYY with time
-                        '%m/%d/%Y %H:%M:%S',      # MM/DD/YYYY with time
-                    ]
-                
-                for fmt in date_formats:
-                    try:
-                        parsed_date = datetime.strptime(raw_date, fmt)
-                        break
-                    except ValueError:
-                        continue
-                
-                if parsed_date:
-                    record['fecha_venta'] = parsed_date.strftime('%Y-%m-%d')
+                normalized_date = normalize_sale_date(raw_date, explicit_format)
+
+                if normalized_date:
+                    record['fecha_venta'] = normalized_date
                 else:
                     errors.append({"linea": line_no, "error": f"Formato de fecha inválido: {raw_date}"})
                     continue

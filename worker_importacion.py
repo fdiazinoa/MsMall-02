@@ -488,6 +488,7 @@ def _format_worker_range_date(value: Any) -> Optional[str]:
 
 def _format_moving_window_message(count: int, stats: Dict[str, Any], errors: list) -> str:
     duplicate_skipped = int(stats.get("duplicate_skipped") or 0)
+    processing_error_count = int(stats.get("processing_error_count") or 0)
     date_min = _format_worker_range_date(stats.get("date_min"))
     date_max = _format_worker_range_date(stats.get("date_max"))
     range_text = f" Rango detectado: {date_min} - {date_max}." if date_min and date_max else ""
@@ -496,24 +497,46 @@ def _format_moving_window_message(count: int, stats: Dict[str, Any], errors: lis
         f"{count} registros nuevos insertados. "
         f"{duplicate_skipped} registros ya existentes omitidos."
     )
-    if errors:
-        message += f" Se encontraron {len(errors)} errores parciales."
+    if processing_error_count:
+        message += f" Se encontraron {processing_error_count} errores parciales."
+    return message
+
+
+def _format_standard_worker_message(count: int, stats: Dict[str, Any]) -> str:
+    duplicate_skipped = int(stats.get("duplicate_skipped") or 0)
+    processing_error_count = int(stats.get("processing_error_count") or 0)
+    if count > 0:
+        message = f"Worker: Inserción confirmada de {count} registros nuevos."
+    else:
+        message = "Worker: Archivo procesado sin registros nuevos."
+    if duplicate_skipped:
+        message += f" {duplicate_skipped} registros duplicados omitidos y documentados."
+    if processing_error_count:
+        message += f" Se encontraron {processing_error_count} errores parciales."
     return message
 
 
 def _resolve_worker_processing_outcome(count: int, errors: list, stats: Optional[Dict[str, Any]] = None) -> Tuple[str, str, bool]:
     stats = stats or {}
-    moving_window_processed = bool(stats.get("moving_window_mode")) and int(stats.get("duplicate_skipped") or 0) > 0
-    if isinstance(count, int) and (count > 0 or moving_window_processed):
-        estado = "parcial" if errors else "exito"
+    duplicate_skipped = int(stats.get("duplicate_skipped") or 0)
+    processing_error_count = int(
+        stats.get("processing_error_count")
+        if stats.get("processing_error_count") is not None
+        else sum(
+            1
+            for detail in errors or []
+            if not isinstance(detail, dict) or detail.get("tipo") != "duplicado"
+        )
+    )
+    stats["processing_error_count"] = processing_error_count
+    if isinstance(count, int) and (count > 0 or duplicate_skipped > 0):
+        has_partial_result = processing_error_count > 0 or (count > 0 and duplicate_skipped > 0)
+        estado = "parcial" if has_partial_result else "exito"
         mensaje = (
             _format_moving_window_message(count, stats, errors)
             if stats.get("moving_window_mode")
-            else f"Worker: Inserción confirmada de {count} registros."
+            else _format_standard_worker_message(count, stats)
         )
-        if errors:
-            if not stats.get("moving_window_mode"):
-                mensaje += f" Se encontraron {len(errors)} errores parciales."
         return estado, mensaje, True
 
     if _is_empty_file_outcome(errors):
@@ -613,59 +636,100 @@ def _build_no_new_file_message(config: Dict[str, Any]) -> str:
     return "Archivo nuevo no encontrado, sin importaciones previas"
 
 
-def _filter_existing_moving_window_rows(
+def _duplicate_sale_detail(
+    row: Dict[str, Any],
+    line_no: int,
+    source: str,
+) -> Dict[str, Any]:
+    factura = str(row.get("factura_no") or "").strip()
+    fecha = str(row.get("fecha") or "").strip()
+    return {
+        "linea": line_no,
+        "tipo": "duplicado",
+        "accion": "omitido",
+        "origen": source,
+        "local_id": row.get("local_id"),
+        "fecha": fecha,
+        "factura_no": factura,
+        "error": f"Registro duplicado omitido: factura {factura}, fecha {fecha}.",
+    }
+
+
+def _filter_existing_sale_rows(
     rows: List[Dict[str, Any]],
     line_numbers: List[int],
     local_id: str,
-) -> Tuple[List[Dict[str, Any]], List[int], int]:
+) -> Tuple[List[Dict[str, Any]], List[int], List[Dict[str, Any]]]:
     if not rows or not supabase:
-        return rows, line_numbers, 0
+        return rows, line_numbers, []
 
-    factura_values = [
-        str(row.get("factura_no") or "").strip()
+    candidate_keys = [
+        (
+            str(row.get("fecha") or "").strip(),
+            str(row.get("factura_no") or "").strip(),
+        )
         for row in rows
-        if row.get("factura_no")
+        if row.get("fecha") and row.get("factura_no")
     ]
-    factura_values = [value for value in factura_values if value]
-    if not factura_values:
-        return rows, line_numbers, 0
+    candidate_keys = [(fecha, factura) for fecha, factura in candidate_keys if fecha and factura]
+    if not candidate_keys:
+        return rows, line_numbers, []
 
-    existing: set[str] = set()
-    unique_facturas = list(dict.fromkeys(factura_values))
-    chunk_size = 500
+    existing: set[Tuple[str, str]] = set()
+    unique_facturas = list(dict.fromkeys(factura for _, factura in candidate_keys))
+    unique_dates = list(dict.fromkeys(fecha for fecha, _ in candidate_keys))
+    chunk_size = 300
     for start in range(0, len(unique_facturas), chunk_size):
         chunk = unique_facturas[start:start + chunk_size]
         try:
             response = (
                 supabase.table("ventas")
-                .select("factura_no")
+                .select("fecha,factura_no")
                 .eq("local_id", local_id)
+                .in_("fecha", unique_dates)
                 .in_("factura_no", chunk)
                 .execute()
             )
             for item in response.data or []:
                 factura = str(item.get("factura_no") or "").strip()
-                if factura:
-                    existing.add(factura)
+                fecha = str(item.get("fecha") or "").strip()
+                if factura and fecha:
+                    existing.add((fecha, factura))
         except Exception as exc:
-            logger.warning("No se pudo consultar duplicados de ventana móvil para %s: %s", local_id, exc)
-            return rows, line_numbers, 0
+            logger.warning("No se pudo consultar duplicados para %s: %s", local_id, exc)
+            return rows, line_numbers, []
 
     filtered_rows: List[Dict[str, Any]] = []
     filtered_lines: List[int] = []
-    seen_in_file: set[str] = set()
-    skipped = 0
+    seen_in_file: set[Tuple[str, str]] = set()
+    duplicate_details: List[Dict[str, Any]] = []
     for row, line_no in zip(rows, line_numbers):
         factura = str(row.get("factura_no") or "").strip()
-        if factura and (factura in existing or factura in seen_in_file):
-            skipped += 1
+        fecha = str(row.get("fecha") or "").strip()
+        key = (fecha, factura)
+        if fecha and factura and key in existing:
+            duplicate_details.append(_duplicate_sale_detail(row, line_no, "base_datos"))
             continue
-        if factura:
-            seen_in_file.add(factura)
+        if fecha and factura and key in seen_in_file:
+            duplicate_details.append(_duplicate_sale_detail(row, line_no, "archivo"))
+            continue
+        if fecha and factura:
+            seen_in_file.add(key)
         filtered_rows.append(row)
         filtered_lines.append(line_no)
 
-    return filtered_rows, filtered_lines, skipped
+    return filtered_rows, filtered_lines, duplicate_details
+
+
+def _flatten_json_record(record: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    flattened: Dict[str, Any] = {}
+    for key, value in record.items():
+        flat_key = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            flattened.update(_flatten_json_record(value, flat_key))
+        else:
+            flattened[flat_key] = value
+    return flattened
 
 
 def process_file_logic(config, filename, content):
@@ -678,6 +742,7 @@ def process_file_logic(config, filename, content):
     stats: Dict[str, Any] = {
         "moving_window_mode": False,
         "duplicate_skipped": 0,
+        "processing_error_count": 0,
         "date_min": None,
         "date_max": None,
     }
@@ -700,6 +765,11 @@ def process_file_logic(config, filename, content):
                             break
                     if not raw_records:
                         raw_records = [data] # Single object
+                raw_records = [
+                    _flatten_json_record(record)
+                    for record in raw_records
+                    if isinstance(record, dict)
+                ]
             except Exception as e:
                 return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}], stats
         else:
@@ -825,8 +895,15 @@ def process_file_logic(config, filename, content):
                 total_impuestos = clean_float(pick_value(mapping.get('total_impuestos', 'total_impuestos')))
                 total_neto = clean_float(pick_value(mapping.get('total_neto', 'total_neto')))
                 
-                if not fecha_venta or total_bruto == 0:
-                    detalles.append({"linea": i, "error": "Datos incompletos (Fecha o Total Bruto faltante/cero)"})
+                if not fecha_venta:
+                    detalles.append({"linea": i, "error": "Datos incompletos (Fecha faltante)"})
+                    continue
+
+                if total_bruto == 0 and (total_impuestos != 0 or total_neto != 0):
+                    detalles.append({
+                        "linea": i,
+                        "error": "Datos inconsistentes (Total Bruto cero con impuestos o total neto distinto de cero)"
+                    })
                     continue
 
                 if moving_window_mode and not factura_no:
@@ -855,18 +932,21 @@ def process_file_logic(config, filename, content):
                 detalles.append({"linea": i, "error": str(e)})
                 logger.error(f"Error en línea {i}: {e}")
 
-        if moving_window_mode and valid_rows:
-            valid_rows, valid_line_numbers, duplicate_skipped = _filter_existing_moving_window_rows(
+        stats["processing_error_count"] = len(detalles)
+
+        if valid_rows:
+            valid_rows, valid_line_numbers, duplicate_details = _filter_existing_sale_rows(
                 valid_rows,
                 valid_line_numbers,
                 local_id,
             )
-            stats["duplicate_skipped"] = duplicate_skipped
-            if duplicate_skipped:
+            detalles.extend(duplicate_details)
+            stats["duplicate_skipped"] = len(duplicate_details)
+            if duplicate_details:
                 logger.info(
-                    "%s: ventana móvil omitió %s registros existentes en %s",
+                    "%s: se omitieron y documentaron %s registros duplicados en %s",
                     config.get("nombre"),
-                    duplicate_skipped,
+                    len(duplicate_details),
                     filename,
                 )
 
@@ -887,6 +967,12 @@ def process_file_logic(config, filename, content):
                     except Exception as row_error:
                         detalles.append({"linea": line_no, "error": str(row_error)})
                         logger.error(f"Error insertando línea {line_no}: {row_error}")
+
+        stats["processing_error_count"] = sum(
+            1
+            for detail in detalles
+            if not isinstance(detail, dict) or detail.get("tipo") != "duplicado"
+        )
                 
     except Exception as e:
         logger.error(f"Error general procesando archivo: {e}")
@@ -1009,7 +1095,7 @@ def process_local_files(config):
                             local_id=config.get("id"),
                             canal=protocol,
                             records_processed=count,
-                            error_count=len(errors or []),
+                            error_count=int((stats or {}).get("processing_error_count") or 0),
                             metadata={"source": "worker_auto_import", **(stats or {})},
                         )
                         if post_action == "RENOMBRAR_BACKUP":
@@ -1162,7 +1248,7 @@ def process_local_files(config):
                             local_id=config.get("id"),
                             canal=protocol,
                             records_processed=count,
-                            error_count=len(errors or []),
+                            error_count=int((stats or {}).get("processing_error_count") or 0),
                             metadata={"source": "worker_auto_import", **(stats or {})},
                         )
                         if post_action == "RENOMBRAR_BACKUP":

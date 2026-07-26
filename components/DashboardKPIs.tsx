@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar, LineChart, Line
@@ -10,7 +10,7 @@ import {
   AreaChart as AreaChartIcon, LineChart as LineChartIcon, List
 } from 'lucide-react';
 import { KPIData, DateRange, SegmentStoreDetail } from '../types';
-import { ApiService, type Store as MallStore } from '../api';
+import { ApiService, type DashboardStore as MallStore } from '../api';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 
 const COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
@@ -326,6 +326,15 @@ const formatDisplayName = (value: string) => value
   })
   .join(' ');
 
+const defaultDashboardDateRange = (): DateRange => {
+  const now = new Date();
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+  return {
+    startDate: firstDay.toISOString().split('T')[0],
+    endDate: now.toISOString().split('T')[0],
+  };
+};
+
 const normalizeSegmentLabel = (value: string | null | undefined, fallback: string) => {
   const label = String(value || '').trim();
   return label || fallback;
@@ -398,42 +407,51 @@ export const DashboardKPIs: React.FC = () => {
   const [data, setData] = useState<KPIData | null>(null);
   const [stores, setStores] = useState<MallStore[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [selectedSegment, setSelectedSegment] = useState<SegmentSelection | null>(null);
   const [trendChartMode, setTrendChartMode] = useState<TrendChartMode>('area');
   const [topLocalesMode, setTopLocalesMode] = useState<TopLocalesMode>('list');
-  const [dates, setDates] = useState<DateRange>(() => {
-    const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    return {
-      startDate: firstDay.toISOString().split('T')[0],
-      endDate: now.toISOString().split('T')[0]
-    };
-  });
+  const [dates, setDates] = useState<DateRange>(defaultDashboardDateRange);
+  const [draftDates, setDraftDates] = useState<DateRange>(defaultDashboardDateRange);
+  const requestSequence = useRef(0);
 
   const loadKPIs = async () => {
+    const requestId = ++requestSequence.current;
     if (!currentMall?.id || !session?.access_token) {
       setData(null);
       setStores([]);
       setLoading(false);
+      setRefreshing(false);
       return;
     }
-    setLoading(true);
+    if (data) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     try {
       const [kpis, mallStores] = await Promise.all([
         ApiService.getKPIs({ ...dates, mallId: currentMall.id }, session.access_token),
-        ApiService.getStores(currentMall.id),
+        ApiService.getDashboardStores(currentMall.id),
       ]);
+      if (requestId !== requestSequence.current) return;
       setData(kpis);
       setStores(mallStores);
     } catch (e) {
       console.error(e);
     } finally {
-      setLoading(false);
+      if (requestId === requestSequence.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   };
 
   useEffect(() => {
     loadKPIs();
+    return () => {
+      requestSequence.current += 1;
+    };
   }, [dates, currentMall?.id, session?.access_token]);
 
   const businessTypeDetailMap = useMemo(() => {
@@ -483,7 +501,14 @@ export const DashboardKPIs: React.FC = () => {
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div className="space-y-1">
-          <p className="text-2xl font-bold text-slate-900">Hola, {displayName}</p>
+          <div className="flex items-center gap-3">
+            <p className="text-2xl font-bold text-slate-900">Hola, {displayName}</p>
+            {refreshing && (
+              <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-600">
+                Actualizando…
+              </span>
+            )}
+          </div>
           <h2 className="pt-1 text-lg font-semibold text-slate-700">Business Intelligence</h2>
           <p className="text-sm text-slate-500">Indicadores clave de rendimiento del mall.</p>
         </div>
@@ -491,17 +516,31 @@ export const DashboardKPIs: React.FC = () => {
           <Calendar size={16} className="text-slate-400 ml-2" />
           <input
             type="date"
-            value={dates.startDate}
-            onChange={(e) => setDates({ ...dates, startDate: e.target.value })}
+            value={draftDates.startDate}
+            onChange={(e) => setDraftDates({ ...draftDates, startDate: e.target.value })}
             className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[130px]"
           />
           <span className="text-slate-300">-</span>
           <input
             type="date"
-            value={dates.endDate}
-            onChange={(e) => setDates({ ...dates, endDate: e.target.value })}
+            value={draftDates.endDate}
+            onChange={(e) => setDraftDates({ ...draftDates, endDate: e.target.value })}
             className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[130px]"
           />
+          <button
+            type="button"
+            onClick={() => setDates(draftDates)}
+            disabled={
+              refreshing ||
+              !draftDates.startDate ||
+              !draftDates.endDate ||
+              draftDates.startDate > draftDates.endDate ||
+              (draftDates.startDate === dates.startDate && draftDates.endDate === dates.endDate)
+            }
+            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+          >
+            Aplicar
+          </button>
         </div>
       </div>
 

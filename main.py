@@ -11,6 +11,7 @@ import threading
 import re
 import secrets
 import unicodedata
+import weakref
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple, Set
 from uuid import uuid4
@@ -67,6 +68,7 @@ from services.connection_monitor_service import (
     RetryPolicyBlocked,
 )
 from services.date_parsing_service import normalize_sale_date
+from services.dashboard_analytics_service import DashboardAnalyticsService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import (
     DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
@@ -192,6 +194,8 @@ async def _run_local_risk_analysis_async(local_id: Optional[str], trigger: str) 
 _CACHE: Dict[str, Dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MISS = object()
+_DASHBOARD_LOAD_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+_DASHBOARD_LOAD_LOCKS_GUARD = threading.Lock()
 _INFLIGHT_MANUAL_EXEC: set = set()
 _INFLIGHT_MANUAL_EXEC_LOCK = threading.Lock()
 _COPILOT_DOWNLOADS: Dict[str, Dict[str, Any]] = {}
@@ -245,6 +249,42 @@ def _cache_set(key: str, value: Any, ttl: int):
                 oldest_key = min(_CACHE.keys(), key=lambda k: _CACHE[k]["expires_at"])
                 _CACHE.pop(oldest_key, None)
         _CACHE[key] = {"value": value, "expires_at": now + max(1, ttl)}
+
+def _cache_delete_prefix(prefix: str) -> int:
+    with _CACHE_LOCK:
+        matching_keys = [key for key in _CACHE if key.startswith(prefix)]
+        for key in matching_keys:
+            _CACHE.pop(key, None)
+        return len(matching_keys)
+
+
+def _dashboard_mode() -> str:
+    return DashboardAnalyticsService.normalize_mode(os.getenv("DASHBOARD_KPI_MODE", "legacy"))
+
+
+def _dashboard_load_lock(cache_key: str) -> asyncio.Lock:
+    with _DASHBOARD_LOAD_LOCKS_GUARD:
+        lock = _DASHBOARD_LOAD_LOCKS.get(cache_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _DASHBOARD_LOAD_LOCKS[cache_key] = lock
+        return lock
+
+
+def _invalidate_dashboard_cache(mall_id: Optional[str]) -> int:
+    normalized_mall_id = str(mall_id or "").strip()
+    if not normalized_mall_id:
+        return 0
+    mall_marker = f":{normalized_mall_id}:"
+    with _CACHE_LOCK:
+        matching_keys = [
+            key
+            for key in _CACHE
+            if key.startswith("analytics:dashboard:") and mall_marker in key
+        ]
+        for key in matching_keys:
+            _CACHE.pop(key, None)
+        return len(matching_keys)
 
 
 def flatten_json(y):
@@ -2172,7 +2212,15 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                         logger.error(f"Error insertando/upsert chunk: {e}")
                         raise e
                 
-        return len(records_to_insert), errors
+        inserted_count = len(records_to_insert)
+        if inserted_count > 0:
+            invalidated = _invalidate_dashboard_cache(mall_id)
+            logger.info(
+                "Dashboard BI cache invalidated after sales import (mall=%s, keys=%s)",
+                mall_id,
+                invalidated,
+            )
+        return inserted_count, errors
 
     except Exception as e:
         logger.error(f"Error in process_file_content: {e}")
@@ -6530,7 +6578,9 @@ async def reset_sales(admin_ctx: Dict[str, Any] = Depends(require_admin_access))
         # Using a dummy UUID known not to exist: 0000...0000
         res = supabase.table("ventas").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
         count = len(res.data) if res.data else 0
+        invalidated = _cache_delete_prefix("analytics:dashboard:")
         logger.info(f"Reset sales requested by admin. Deleted {count} records.")
+        logger.info("Dashboard BI cache cleared after sales reset (keys=%s)", invalidated)
         return {"status": "success", "message": f"Se han eliminado {count} registros de ventas."}
     except Exception as e:
         logger.error(f"Error resetting sales: {e}")
@@ -6544,150 +6594,61 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
     """
     if not supabase:
          raise HTTPException(status_code=500, detail="Supabase client not initialized")
-    cache_key = f"analytics:dashboard:{mall_id}:{start_date}:{end_date}"
+    try:
+        parsed_start = date.fromisoformat(start_date)
+        parsed_end = date.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Las fechas deben usar el formato YYYY-MM-DD.")
+    if parsed_start > parsed_end:
+        raise HTTPException(status_code=400, detail="La fecha inicial no puede ser posterior a la fecha final.")
+
+    mode = _dashboard_mode()
+    cache_key = f"analytics:dashboard:{mode}:{mall_id}:{start_date}:{end_date}"
+    started_at = time.perf_counter()
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
+        logger.info(
+            "Dashboard BI served (mall=%s, mode=%s, source=cache, duration_ms=%.1f)",
+            mall_id,
+            mode,
+            (time.perf_counter() - started_at) * 1000,
+        )
         return cached
 
-    try:
-        stores_res = supabase.table("locales").select("id, nombre, rubro, tipo_negocio").eq("mall_id", mall_id).execute()
-        stores = stores_res.data or []
-        store_map = {str(s['id']): s for s in stores if s.get('id')}
-        allowed_local_ids = list(store_map.keys())
-        empty_result = {
-            "ventas_totales_bruto": 0,
-            "ventas_totales_neto": 0,
-            "transacciones": 0,
-            "ticket_promedio": 0,
-            "variacion_ventas": 0,
-            "top_locales": [],
-            "ventas_por_dia": [],
-            "ventas_por_tipo_negocio": [],
-            "ventas_por_rubro": [],
-            "ventas_por_tipo_negocio_top_locales": {},
-            "ventas_por_rubro_top_locales": {},
-            "ventas_por_tienda_completo": {}
-        }
-
-        if not allowed_local_ids:
-            _cache_set(cache_key, empty_result, TTL_DASHBOARD)
-            return empty_result
-
-        # Source of truth: only sales linked to valid locales for the current mall.
-        # Filtering by ventas.mall_id alone allows legacy/orphan rows to leak into KPIs as "Desconocido".
-        sales = []
-        page_size = 1000
-        page = 0
-        while True:
-            sales_res = (
-                supabase.table("ventas")
-                .select("local_id, fecha, total_bruto, total_neto")
-                .in_("local_id", allowed_local_ids)
-                .gte("fecha", start_date)
-                .lte("fecha", end_date)
-                .order("fecha")
-                .range(page * page_size, (page + 1) * page_size - 1)
-                .execute()
+    load_lock = _dashboard_load_lock(cache_key)
+    async with load_lock:
+        cached = _cache_get(cache_key)
+        if cached is not _CACHE_MISS:
+            logger.info(
+                "Dashboard BI served after single-flight wait (mall=%s, mode=%s, duration_ms=%.1f)",
+                mall_id,
+                mode,
+                (time.perf_counter() - started_at) * 1000,
             )
-            chunk = sales_res.data or []
-            if not chunk:
-                break
-            sales.extend(chunk)
-            if len(chunk) < page_size:
-                break
-            page += 1
+            return cached
 
-        sales_by_store = {}
-        total_bruto = 0
-        total_neto = 0
-        sales_by_day = {}
-        sales_by_business_type = {}
-        sales_by_rubro = {}
-        stores_by_business_type = {}
-        stores_by_rubro = {}
-
-        def segment_label(value, fallback):
-            label = str(value or "").strip()
-            return label if label else fallback
-
-        def add_segment_store(segment_store_map, segment, store_name, bruto, neto):
-            store_totals = segment_store_map.setdefault(segment, {})
-            totals = store_totals.setdefault(store_name, {
-                "name": store_name,
-                "total": 0,
-                "total_neto": 0,
-                "transacciones": 0,
-            })
-            totals["total"] += bruto
-            totals["total_neto"] += neto
-            totals["transacciones"] += 1
-        
-        for s in sales:
-            lid = str(s.get('local_id') or "")
-            store = store_map.get(lid)
-            if not store:
-                continue
-            s_name = store.get('nombre') or "Local sin nombre"
-
-            bruto = float(s.get('total_bruto') or 0)
-            neto = float(s.get('total_neto') or 0)
-            total_bruto += bruto
-            total_neto += neto
-
-            sales_by_store[s_name] = sales_by_store.get(s_name, 0) + bruto
-            business_type = segment_label(store.get('tipo_negocio'), "Sin tipo de negocio")
-            rubro = segment_label(store.get('rubro'), "Sin rubro")
-            sales_by_business_type[business_type] = sales_by_business_type.get(business_type, 0) + bruto
-            sales_by_rubro[rubro] = sales_by_rubro.get(rubro, 0) + bruto
-            add_segment_store(stores_by_business_type, business_type, s_name, bruto, neto)
-            add_segment_store(stores_by_rubro, rubro, s_name, bruto, neto)
-            
-            day = s.get('fecha')
-            sales_by_day[day] = sales_by_day.get(day, 0) + bruto
-
-        def segment_items(values):
-            return [
-                {"name": k, "value": v}
-                for k, v in sorted(values.items(), key=lambda item: item[1], reverse=True)
-            ]
-
-        def segment_top_stores(segment_store_map):
-            out = {}
-            for segment, stores_in_segment in segment_store_map.items():
-                segment_total = sum(float(item.get("total") or 0) for item in stores_in_segment.values())
-                out[segment] = []
-                for item in sorted(stores_in_segment.values(), key=lambda row: row["total"], reverse=True)[:10]:
-                    bruto = float(item.get("total") or 0)
-                    transacciones = int(item.get("transacciones") or 0)
-                    out[segment].append({
-                        "name": item["name"],
-                        "total": bruto,
-                        "total_neto": float(item.get("total_neto") or 0),
-                        "transacciones": transacciones,
-                        "ticket_promedio": (bruto / transacciones) if transacciones > 0 else 0,
-                        "participacion": (bruto / segment_total * 100) if segment_total > 0 else 0,
-                    })
-            return out
-            
-        result = {
-            "ventas_totales_bruto": total_bruto,
-            "ventas_totales_neto": total_neto,
-            "transacciones": len(sales),
-            "ticket_promedio": (total_bruto / len(sales)) if len(sales) > 0 else 0,
-            "variacion_ventas": 0,
-            "top_locales": [ {"name": k, "total": v} for k, v in sorted(sales_by_store.items(), key=lambda item: item[1], reverse=True)[:5] ],
-            "ventas_por_dia": [ {"fecha": k, "total": v} for k, v in sorted(sales_by_day.items()) ],
-            "ventas_por_tipo_negocio": segment_items(sales_by_business_type),
-            "ventas_por_rubro": segment_items(sales_by_rubro),
-            "ventas_por_tipo_negocio_top_locales": segment_top_stores(stores_by_business_type),
-            "ventas_por_rubro_top_locales": segment_top_stores(stores_by_rubro),
-            "ventas_por_tienda_completo": sales_by_store
-        }
-        _cache_set(cache_key, result, TTL_DASHBOARD)
-        return result
-    except Exception as e:
-        logger.error(f"Error fetching dashboard data: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        try:
+            result, source = await asyncio.to_thread(
+                DashboardAnalyticsService(supabase, logger).load,
+                mall_id,
+                start_date,
+                end_date,
+                mode=mode,
+            )
+            _cache_set(cache_key, result, TTL_DASHBOARD)
+            logger.info(
+                "Dashboard BI served (mall=%s, mode=%s, source=%s, duration_ms=%.1f)",
+                mall_id,
+                mode,
+                source,
+                (time.perf_counter() - started_at) * 1000,
+            )
+            return result
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("Error fetching dashboard data: %s", exc)
+            raise HTTPException(status_code=500, detail=str(exc))
 
 # --- EXPORT ENDPOINTS ---
 from fastapi import APIRouter

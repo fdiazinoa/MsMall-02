@@ -9,13 +9,33 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
 ## 0. Despliegue e Infraestructura
 - **Frontend (SPA):** desplegado en **Vercel**.
 - **Backend API + procesos programados:** ejecutados en **Railway**.
-- **Worker/Cron de importación:** corridos en Railway para tareas horarias de SFTP/FTP.
+- **Worker/Cron de importación:** servicio Railway separado para tareas programadas de SFTP/FTP.
 
 ### Scheduler (autoridad de cron)
 - **Autoridad única recomendada:** `worker_importacion.py` (servicio worker en Railway).
 - **API FastAPI:** el scheduler embebido queda deshabilitado por defecto y solo se activa con `ENABLE_API_SCHEDULER=true`.
 - **Valor recomendado en producción:** `ENABLE_API_SCHEDULER=false`.
-- **Nota de despliegue Railway:** mantener el cron/loop automático únicamente en el servicio worker; la API conserva triggers manuales/endpoints.
+- **Polling recomendado:** `WORKER_POLL_SECONDS=300` para respetar ventanas `HH:MM`, repartir carga y evitar ráfagas simultáneas.
+- **Balanceo:** usar `MAX_CONCURRENT_WORKERS`, `MAX_CONCURRENT_PER_HOST`, `HOURLY_STAGGER_MINUTES` y `MAX_FILES_PER_BATCH` para escalonar ejecuciones automáticas.
+- **Nota de despliegue Railway:** mantener el loop automático únicamente en el servicio worker; la API conserva triggers manuales/endpoints.
+
+### Servicio Railway `ftp-import-worker`
+- Crear un segundo servicio en Railway apuntando al mismo repo, similar a `data-exchange-worker`.
+- Nombre sugerido: `ftp-import-worker`.
+- Opción simple: usar el mismo build del repo y configurar Start Command como `./start_worker.sh`.
+- Opción Dockerfile dedicado: configurar el servicio para usar `Dockerfile.worker`.
+- Variables mínimas del worker:
+  - `SUPABASE_URL`
+  - `SUPABASE_SERVICE_ROLE_KEY`
+  - `WORKER_POLL_SECONDS=300`
+  - `ENABLE_API_SCHEDULER=false`
+- Variables opcionales si aplica:
+  - `NIGHTLY_RETRY_ENABLED=true`
+  - `NIGHTLY_RETRY_CRON=0 2 * * *`
+  - `RETRY_MAX_ATTEMPTS=3`
+  - `RETRY_COOLDOWN_SECONDS=300`
+- El servicio API debe mantener `ENABLE_API_SCHEDULER=false` para evitar dobles ejecuciones.
+- El worker escribe logs en stdout/stderr para que Railway los capture; no depende de `worker.log`.
 
 ## 1. Stack Tecnológico
 - **Frontend:** React 18.3.1 con TypeScript.
@@ -55,6 +75,7 @@ Plataforma de Auditoría diseñada bajo estándares de escalabilidad SaaS, prior
   - `ENABLE_API_SCHEDULER=false` (default recomendado)
   - `RESEND_API_KEY` para activar envío de notificaciones con Resend desde `notificaciones@mercasend.net`
   - `DASHBOARD_KPI_MODE=legacy|shadow|v2` para activar gradualmente la agregación optimizada del Dashboard BI
+  - `WORKER_POLL_SECONDS`, `MAX_CONCURRENT_WORKERS`, `MAX_CONCURRENT_PER_HOST`, `HOURLY_STAGGER_MINUTES`, `MAX_FILES_PER_BATCH`
   - `CACHE_TTL_DASHBOARD`, `CACHE_TTL_RANKING`, `CACHE_TTL_HEATMAP`
   - `frecuencia_cron` / `hora_especifica` en configuración de locales (worker)
 
@@ -73,7 +94,7 @@ Esquema relacional optimizado (`init.sql`):
 - `import_configs`: Configuración de mapeo y conexión.
 
 ## 4. Seguridad e Integración
-- **Autenticación por X-API-Key:** Para integración con sistemas POS externos.
+- **Autenticación por X-API-Key:** Para integraciones externas autorizadas.
 - **Validación de Esquema:** Validación de encabezados CSV.
 - **Cifrado:** Diseño para cifrado RSA-4096 de credenciales.
 

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from fastapi import FastAPI
 import httpx
+import jwt
 
 from routers.token_auth import (
     InMemoryTokenStore,
@@ -140,6 +141,83 @@ def test_exporter_issue_use_refresh_revoke_flow():
     assert reused.status_code == 401
 
 
+def test_non_expiring_access_policy_survives_refresh_rotation():
+    _client, svc, store = build_test_client()
+    pair = svc._issue_pair(
+        mall_id="mall-1",
+        local_id="local-1",
+        token_type="exporter",
+        scopes=["export:write"],
+        created_by="tester",
+        service_account_id=None,
+        request=None,
+        access_never_expires=True,
+    )
+
+    original = store.get_token_by_id(pair["token_id"])
+    assert original["access_never_expires"] is True
+    assert original["access_expires_at"].startswith("9999-12-31")
+    assert "exp" not in jwt.decode(pair["access_token"], options={"verify_signature": False})
+
+    rotated_pair = svc.refresh(pair["refresh_token"], request=None)
+    rotated = store.get_token_by_id(rotated_pair["token_id"])
+    assert original["status"] == "revoked"
+    assert rotated["access_never_expires"] is True
+    assert rotated["access_expires_at"].startswith("9999-12-31")
+    assert "exp" not in jwt.decode(rotated_pair["access_token"], options={"verify_signature": False})
+
+
+def test_non_expiring_access_policy_survives_regeneration():
+    client, svc, store = build_test_client()
+    admin_access = bootstrap_manage_token(client, svc, store)
+    permanent = svc._issue_pair(
+        mall_id="mall-1",
+        local_id="local-1",
+        token_type="exporter",
+        scopes=["export:write"],
+        created_by="tester",
+        service_account_id=None,
+        request=None,
+        access_never_expires=True,
+    )
+
+    regenerated = client.post(
+        f"/tokens/{permanent['token_id']}/regenerate",
+        headers={"Authorization": f"Bearer {admin_access}"},
+    )
+
+    assert regenerated.status_code == 200, regenerated.text
+    regenerated_pair = regenerated.json()
+    replacement = store.get_token_by_id(regenerated_pair["token_id"])
+    assert store.get_token_by_id(permanent["token_id"])["status"] == "revoked"
+    assert replacement["access_never_expires"] is True
+    assert replacement["access_expires_at"].startswith("9999-12-31")
+    assert "exp" not in jwt.decode(regenerated_pair["access_token"], options={"verify_signature": False})
+
+
+def test_service_account_token_cannot_be_regenerated_manually():
+    client, svc, store = build_test_client()
+    admin_access = bootstrap_manage_token(client, svc, store)
+    issued = svc._issue_pair(
+        mall_id="mall-1",
+        local_id="local-1",
+        token_type="exporter",
+        scopes=["export:write"],
+        created_by="tester",
+        service_account_id="service-account-1",
+        request=None,
+    )
+
+    regenerated = client.post(
+        f"/tokens/{issued['token_id']}/regenerate",
+        headers={"Authorization": f"Bearer {admin_access}"},
+    )
+
+    assert regenerated.status_code == 409
+    assert "se renuevan automáticamente" in regenerated.json()["detail"]
+    assert store.get_token_by_id(issued["token_id"])["status"] == "active"
+
+
 def test_exporter_sync_ingest_writes_structured_load_log():
     fake_supabase = _FakeSupabase()
     client, svc, store = build_test_client(fake_supabase)
@@ -190,6 +268,17 @@ def test_exporter_sync_ingest_writes_structured_load_log():
     assert logs[0]["batch_id"] == "batch-web-001"
     assert logs[0]["records_processed"] == 1
     assert logs[0]["error_count"] == 0
+    assert logs[0]["metadata"]["source"] == "exporter_sync_ingest"
+    assert logs[0]["metadata"]["origin"] == "MsExportador"
+    assert logs[0]["metadata"]["channel_family"] == "ERP_WEBSERVICE"
+
+    events = fake_supabase.tables.get("operations_events") or []
+    assert len(events) == 1
+    assert events[0]["event_type"] == "WEBSERVICE_RECEIVED"
+    assert events[0]["source"] == "MONITOR"
+    assert events[0]["mall_id"] == "mall-1"
+    assert events[0]["local_id"] == "local-1"
+    assert events[0]["payload"]["canal"] == "WebService"
 
 
 def test_exporter_token_handles_store_lookup_failure_without_500():
@@ -472,7 +561,8 @@ def test_exporter_sync_ingest_updates_existing_venta_row():
 
 
 def test_exporter_sync_ingest_returns_promotion_error_detail():
-    client, svc, store = build_test_client()
+    fake_supabase = _FakeSupabase()
+    client, svc, store = build_test_client(fake_supabase)
     store.local_codes[("mall-1", "local-1")] = "CLI-001"
     access_token = _issue_exporter_access_for_local(client, svc, store, "mall-1", "local-1")
 
@@ -502,6 +592,19 @@ def test_exporter_sync_ingest_returns_promotion_error_detail():
     assert response.status_code == 500, response.text
     assert 'Error promoviendo ventas WebService a public.ventas' in response.json()["detail"]
     assert 'factura_no' in response.json()["detail"]
+
+    logs = fake_supabase.tables.get("logs_carga") or []
+    assert len(logs) == 1
+    assert logs[0]["estado"] == "error"
+    assert logs[0]["canal"] == "WebService"
+    assert logs[0]["batch_id"] == "batch-error-1"
+    assert logs[0]["metadata"]["origin"] == "MsExportador"
+
+    events = fake_supabase.tables.get("operations_events") or []
+    assert len(events) == 1
+    assert events[0]["event_type"] == "WEBSERVICE_FAILED"
+    assert events[0]["severity"] == "HIGH"
+    assert events[0]["payload"]["metadata"]["channel_family"] == "ERP_WEBSERVICE"
 
 
 def test_exporter_webservice_config_crud_endpoints():

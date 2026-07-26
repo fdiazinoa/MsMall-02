@@ -209,6 +209,59 @@ def test_process_file_content_inserts_rows_with_valid_local_code(monkeypatch):
     }]
 
 
+def test_process_file_content_accepts_iso_datetime_for_yyyy_mm_dd_config(monkeypatch):
+    main = _load_main(monkeypatch)
+    fake_db = _FakeSupabase({
+        "locales": [
+            {"id": "local-1", "codigo_interno": "26", "mall_id": "mall-1"},
+        ],
+        "ventas": [],
+    })
+    monkeypatch.setattr(main, "supabase", fake_db)
+
+    content = "\n".join([
+        "ID_TRANSACCION,FECHA,HORA,TOTALBRUTO,TOTALIMPUESTOS,TOTALNETO,NUMSERIE",
+        "704401,2026-07-25 00:00:00,0,351.5600,98.4400,450.0000,10026",
+    ])
+    config = {
+        "tipo_archivo": "TXT",
+        "mapping": {
+            "factura_numero": "ID_TRANSACCION",
+            "fecha_venta": "FECHA",
+            "local_codigo": "local_codigo",
+            "hora_transaccion": "HORA",
+            "total_bruto": "TOTALBRUTO",
+            "total_impuestos": "TOTALIMPUESTOS",
+            "total_neto": "TOTALNETO",
+        },
+        "constants": {
+            "_date_format": "YYYY-MM-DD",
+            "local_codigo": "26",
+        },
+    }
+
+    count, errors = main.process_file_content(
+        content,
+        "output_25072026.txt",
+        config,
+        "batch-dominos",
+        "mall-1",
+    )
+
+    assert count == 1
+    assert errors == []
+    assert fake_db.upserts == [{
+        "factura_no": "704401",
+        "fecha": "2026-07-25",
+        "hora_transaccion": "00:00:00",
+        "total_bruto": 351.56,
+        "total_impuestos": 98.44,
+        "total_neto": 450.0,
+        "local_id": "local-1",
+        "mall_id": "mall-1",
+    }]
+
+
 def test_process_file_content_rejects_rows_in_closed_import_period(monkeypatch):
     main = _load_main(monkeypatch)
     fake_db = _FakeSupabase({

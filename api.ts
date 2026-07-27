@@ -853,7 +853,7 @@ export const ApiService = {
       nombre: local.nombre,
       protocolo: (local.sftp_protocol || 'SFTP') as ImportProtocol,
       host: local.sftp_host || '',
-      puerto: local.sftp_port || 22,
+      puerto: local.sftp_port || (local.sftp_protocol === 'API' ? 443 : 22),
       usuario: local.sftp_user || '',
       password: local.sftp_pass || '',
       ruta_remota: local.sftp_path || '.',
@@ -875,12 +875,11 @@ export const ApiService = {
   async saveImportConfig(config: ImportConfig, mallId?: string): Promise<void> {
     if (!supabase) throw new Error("Supabase client not initialized");
 
-    if (!config.id && !mallId) {
-      throw new Error("No se puede crear la configuración sin un mall seleccionado.");
+    if (!config.id) {
+      throw new Error("Selecciona un local existente antes de guardar el importador.");
     }
 
     const dbPayload: any = {
-      nombre: config.nombre, // Ensure name is saved if it's new
       sftp_host: config.host,
       sftp_port: config.puerto,
       sftp_user: config.usuario,
@@ -890,7 +889,9 @@ export const ApiService = {
       file_type: config.tipo_archivo,
       tipo_ejecucion: config.frecuencia !== 'manual' ? 'AUTOMATICO' : 'MANUAL',
       frecuencia_cron: config.frecuencia,
-      hora_especifica: config.hora_especifica || null,
+      hora_especifica: config.frecuencia === 'hora_especifica'
+        ? (config.hora_especifica || '08:00')
+        : null,
       accion_post_procesado: (config.accion_post_procesado === 'RENOMBRAR_PROCESADO' || config.accion_post_procesado === 'renombrar') ? 'RENOMBRAR_BACKUP' : (config.accion_post_procesado === 'ELIMINAR' || config.accion_post_procesado === 'eliminar' ? 'ELIMINAR' : 'NINGUNA'),
       prefijo_backup: config.prefijo_renombrado || 'PR_',
       mapping_config: config.mapping,
@@ -898,44 +899,33 @@ export const ApiService = {
       fecha_corte_importacion: config.fecha_corte_importacion || null
     };
 
-    if (mallId) {
-      dbPayload.mall_id = mallId;
+    const { data: existing, error: lookupError } = await supabase
+      .from('locales')
+      .select('id, mall_id, activo, processing_status')
+      .eq('id', config.id)
+      .maybeSingle();
+
+    if (lookupError) throw lookupError;
+    if (!existing) throw new Error("El local seleccionado ya no existe.");
+    if (existing.activo === false) throw new Error("No se puede configurar un importador para un local inactivo.");
+    if (mallId && String(existing.mall_id || '') !== String(mallId)) {
+      throw new Error("El local seleccionado no pertenece al mall activo.");
     }
 
-    // Logic to always ensure codigo_interno is present and valid
-    let finalCodigoInterno = `IMP-${Math.floor(Math.random() * 100000)}`;
-    let existingProcessingStatus: string | null = null;
-
-    if (config.id) {
-      const { data: existing } = await supabase
-        .from('locales')
-        .select('id, codigo_interno, processing_status')
-        .eq('id', config.id)
-        .maybeSingle();
-
-      if (existing && existing.codigo_interno) {
-        finalCodigoInterno = existing.codigo_interno;
-      }
-      existingProcessingStatus = existing?.processing_status || null;
-    }
-
-    // Always set the code
-    dbPayload.codigo_interno = finalCodigoInterno;
     // A corrected connection must re-enter the scheduler. Preserve BUSY/IDLE
     // locks and only clear the circuit breaker when an operator saves a
     // previously suspended configuration.
-    if (existingProcessingStatus === 'SUSPENDED_AUTH_ERROR') {
+    if (existing.processing_status === 'SUSPENDED_AUTH_ERROR') {
       dbPayload.processing_status = 'IDLE';
       dbPayload.consecutive_failures = 0;
     }
 
-    // Payload for Upsert
-    const payload = config.id ? { id: config.id, ...dbPayload } : dbPayload;
-
-    const { error } = await supabase
+    const { data: updated, error } = await supabase
       .from('locales')
-      .upsert(payload)
-      .select();
+      .update(dbPayload)
+      .eq('id', config.id)
+      .select('id')
+      .maybeSingle();
 
     if (error) {
       console.error("Error saving config to Supabase:", error);
@@ -943,6 +933,9 @@ export const ApiService = {
         throw new Error("La base de datos no está actualizada: Falta la columna 'hora_especifica' en la tabla 'locales'. Por favor ejecute el script SQL provisto.");
       }
       throw error;
+    }
+    if (!updated || String(updated.id) !== String(config.id)) {
+      throw new Error("Supabase no confirmó la actualización del local seleccionado.");
     }
   },
 
@@ -982,7 +975,7 @@ export const ApiService = {
       nombre: row.nombre,
       protocolo: (row.protocolo || 'SFTP') as ImportProtocol,
       host: row.host || '',
-      puerto: Number(row.puerto || 22),
+      puerto: Number(row.puerto || (row.protocolo === 'API' ? 443 : 22)),
       usuario: row.usuario || '',
       password: '', // Nunca exponer secretos desde backend.
       password_masked: row.password_masked || '',
@@ -1029,7 +1022,7 @@ export const ApiService = {
       nombre: data.nombre,
       protocolo: (data.protocolo || 'SFTP') as ImportProtocol,
       host: data.host || '',
-      puerto: Number(data.puerto || 22),
+      puerto: Number(data.puerto || (data.protocolo === 'API' ? 443 : 22)),
       usuario: data.usuario || '',
       password: '',
       password_masked: data.password_masked || '',
@@ -1082,49 +1075,57 @@ export const ApiService = {
   },
 
   async testConnection(config: Partial<ImportConfig>, password?: string, token?: string): Promise<{ success: boolean, message: string }> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      console.warn("ApiService: Disparando abort por timeout de 60s");
-      controller.abort();
-    }, 60000);
+    const requestBody = JSON.stringify({
+      protocolo: config.protocolo,
+      host: config.host?.trim(),
+      puerto: Number(config.puerto) || (config.protocolo === 'SFTP' ? 22 : config.protocolo === 'API' ? 443 : 21),
+      usuario: config.usuario?.trim(),
+      password,
+      ruta: config.ruta_remota || '.'
+    });
+    const bases = getApiBaseUrls();
+    const orderedBases = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app')
+      ? [...bases].sort((left, right) => Number(left === BASE_URL) - Number(right === BASE_URL))
+      : bases;
+    let lastMessage = 'No se pudo probar la conexión remota.';
 
-    console.log("ApiService: Iniciando POST /remote/test...");
-    try {
-      const response = await fetch(`${BASE_URL}/remote/test`, {
-        method: 'POST',
-        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          protocolo: config.protocolo,
-          host: config.host?.trim(),
-          puerto: Number(config.puerto) || (config.protocolo === 'SFTP' ? 22 : 21),
-          usuario: config.usuario?.trim(),
-          password: password,
-          ruta: config.ruta_remota || '.'
-        }),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      console.log("ApiService: Respuesta recibida, status:", response.status);
-
-      const data = await response.json().catch(() => ({ detail: "Error de servidor" }));
-
-      if (!response.ok) {
-        throw new Error(data.detail || "Error al probar la conexión");
+    for (const base of orderedBases) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
+      try {
+        const response = await fetch(`${base}/remote/test`, {
+          method: 'POST',
+          headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+          body: requestBody,
+          signal: controller.signal
+        });
+        const raw = await response.text().catch(() => '');
+        let data: any = {};
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch {
+          data = {};
+        }
+        if (!response.ok) {
+          lastMessage = data.detail || data.message || `Error del servidor (HTTP ${response.status}).`;
+          if (response.status >= 500 && base !== orderedBases[orderedBases.length - 1]) continue;
+          return { success: false, message: lastMessage };
+        }
+        return {
+          success: data.status === 'success',
+          message: data.message || (data.status === 'success' ? 'Conexión exitosa' : 'La conexión remota falló sin detalle.')
+        };
+      } catch (error: any) {
+        const isTimeout = error?.name === 'AbortError' || String(error?.message || '').includes('aborted');
+        lastMessage = isTimeout
+          ? 'Tiempo de espera agotado comprobando el servidor remoto.'
+          : normalizeErrorMessage(error, 'No se pudo contactar el backend de conexiones.');
+      } finally {
+        clearTimeout(timeoutId);
       }
-
-      return {
-        success: data.status === 'success',
-        message: data.message || "Conexión exitosa"
-      };
-    } catch (error: any) {
-      clearTimeout(timeoutId);
-      console.error("ApiService: Error en testConnection:", error);
-      const isTimeout = error.name === 'AbortError' || error.message?.includes('aborted');
-      return {
-        success: false,
-        message: isTimeout ? "Error: Tiempo de espera agotado (Timeout)" : (error.message || String(error))
-      };
     }
+
+    return { success: false, message: lastMessage };
   },
 
   async exploreDirectory(path: string, protocol?: string, host?: string, port?: number, user?: string, password?: string, token?: string): Promise<{ ruta_actual: string, items: { nombre: string, ruta: string, es_dir: boolean }[] }> {

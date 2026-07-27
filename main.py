@@ -6,6 +6,7 @@ import csv
 import html
 import io
 import logging
+import socket
 import time
 import threading
 import re
@@ -30,7 +31,11 @@ from ftplib import FTP
 import stat
 import urllib.error
 import urllib.request
-from worker_importacion import run_worker_async
+from worker_importacion import (
+    fetch_studio_g_sales,
+    process_webservice_import,
+    run_worker_async,
+)
 from analytics_service import AnalyticsService
 from routers import recipes, comparisons, admin_tools, big_data
 from routers.token_auth import (
@@ -219,6 +224,12 @@ def _env_int(name: str, default: int, min_value: int = 1, max_value: int = 3600)
         return default
 
 _CACHE_MAX_ITEMS = _env_int("CACHE_MAX_ITEMS", 300, min_value=50, max_value=5000)
+STUDIO_G_PREVIEW_HISTORY_DAYS = _env_int(
+    "STUDIO_G_PREVIEW_HISTORY_DAYS",
+    120,
+    min_value=7,
+    max_value=730,
+)
 
 # Endpoint-specific TTLs (seconds), configurable via environment variables.
 TTL_DASHBOARD = _env_int("CACHE_TTL_DASHBOARD", 90, min_value=5, max_value=1800)
@@ -776,9 +787,13 @@ def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config:
 
 def _normalize_import_config_payload(config_data: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(config_data or {})
-    if not normalized.get("mapping"):
+    if normalized.get("mapping"):
+        normalized["mapping_config"] = dict(normalized["mapping"])
+    else:
         normalized["mapping"] = normalized.get("mapping_config") or {}
-    if not normalized.get("constants"):
+    if normalized.get("constants"):
+        normalized["constants_config"] = dict(normalized["constants"])
+    else:
         normalized["constants"] = normalized.get("constants_config") or {}
     if not normalized.get("tipo_archivo"):
         normalized["tipo_archivo"] = normalized.get("file_type", "CSV")
@@ -2455,24 +2470,131 @@ def get_ftp_client(host, port, user, password):
         raise last_error
     raise ValueError("Host remoto inválido o vacío para conexión FTP")
 
+
+def _remote_connection_error_message(protocol: str, exc: Exception, duration: float) -> str:
+    raw_message = str(exc or "").strip()
+    normalized = raw_message.lower()
+    if str(protocol or "").strip().upper() == "SFTP":
+        if "no existing session" in normalized or "error reading ssh protocol banner" in normalized:
+            return (
+                f"SFTP no disponible ({duration:.2f}s): el puerto responde, pero el servidor no completa "
+                "la negociación SSH. Revise o reinicie el servicio SSH/SFTP y sus límites de sesiones."
+            )
+        if isinstance(exc, paramiko.AuthenticationException) or "authentication failed" in normalized:
+            return f"Autenticación SFTP rechazada ({duration:.2f}s). Verifique usuario y contraseña."
+        if isinstance(exc, (socket.timeout, TimeoutError)) or "timed out" in normalized:
+            return f"Timeout SFTP ({duration:.2f}s): el servidor no respondió durante la negociación SSH."
+    return f"Error ({duration:.2f}s): {raw_message or type(exc).__name__}"
+
+
+def _is_webservice_protocol(value: Any) -> bool:
+    return str(value or "").strip().upper() in {"API", "WEBSERVICE"}
+
+
+def _api_base_url(host: str) -> str:
+    normalized = str(host or "").strip()
+    if not normalized:
+        raise ValueError("URL base API requerida")
+    if not re.match(r"^https?://", normalized, flags=re.IGNORECASE):
+        normalized = f"https://{normalized}"
+    return normalized.rstrip("/")
+
+
+def _test_api_authorization(host: str, client_id: str, client_secret: Optional[str]) -> None:
+    if not client_id or not client_secret:
+        raise ValueError("Client ID y Client Secret requeridos para probar API")
+    payload = json.dumps({
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        f"{_api_base_url(host)}/authorization",
+        data=payload,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=25) as response:
+        raw = response.read().decode("utf-8-sig", errors="replace")
+    result = json.loads(raw or "{}")
+    if not result.get("access_token"):
+        raise ValueError("La API no devolvió access_token")
+
+
 def _test_remote_connection_sync(req: RemoteRequest):
     logger.info(f"Probando conexión remota sync a {req.host}:{req.puerto} ({req.protocolo})")
     start_time = time.time()
     try:
-        if req.protocolo == "SFTP":
+        protocol = str(req.protocolo or "").strip().upper()
+        if protocol == "API":
+            _test_api_authorization(req.host, req.usuario, req.password)
+            duration = time.time() - start_time
+            return {"status": "success", "message": f"API autenticada correctamente ({duration:.2f}s)"}
+        if protocol == "SFTP":
             ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
             sftp.close()
             ssh.close()
-        elif req.protocolo == "FTP":
+        elif protocol == "FTP":
             ftp = get_ftp_client(req.host, req.puerto, req.usuario, req.password)
             ftp.quit()
+        else:
+            raise ValueError(f"Protocolo no soportado: {req.protocolo}")
         duration = time.time() - start_time
         logger.info(f"Conexión exitosa en {duration:.2f}s")
         return {"status": "success", "message": f"Conexión exitosa ({duration:.2f}s)"}
     except Exception as e:
         duration = time.time() - start_time
         logger.error(f"Error conexión remota después de {duration:.2f}s: {e}")
-        return {"status": "error", "message": f"Error ({duration:.2f}s): {str(e)}"}
+        return {"status": "error", "message": _remote_connection_error_message(req.protocolo, e, duration)}
+
+
+def _studio_g_config_from_remote_request(
+    req: RemoteRequest,
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+) -> Dict[str, Any]:
+    today = date.today().isoformat()
+    return {
+        "id": "studio-g-preview",
+        "mall_id": "00000000-0000-0000-0000-000000000000",
+        "nombre": "Studio G API",
+        "sftp_protocol": "API",
+        "sftp_host": req.host,
+        "sftp_user": req.usuario,
+        "sftp_pass": req.password,
+        "sftp_path": req.ruta,
+        "constants_config": {
+            "provider": "studio_g",
+            "_studio_g_fecha_inicio": fecha_inicio or today,
+            "_studio_g_fecha_fin": fecha_fin or today,
+        },
+    }
+
+
+def _studio_g_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
+    today = date.today()
+    rows, _ = fetch_studio_g_sales(
+        _studio_g_config_from_remote_request(req, today.isoformat(), today.isoformat())
+    )
+    if rows:
+        return rows
+
+    history_start = today - timedelta(days=STUDIO_G_PREVIEW_HISTORY_DAYS)
+    rows, _ = fetch_studio_g_sales(
+        _studio_g_config_from_remote_request(req, history_start.isoformat(), today.isoformat())
+    )
+    if rows:
+        return rows
+
+    return [{
+        "fecha": today.isoformat(),
+        "factura_no": "STUDIOG-MUESTRA",
+        "comprobante": "STUDIOG-MUESTRA",
+        "hora_transaccion": "12:00:00",
+        "total_bruto": 0,
+        "total_impuestos": 0,
+        "total_neto": 0,
+    }]
+
 
 @app.post("/api/v1/remote/test")
 async def test_remote_connection(
@@ -2497,6 +2619,15 @@ async def test_remote_connection(
 
 def _list_remote_files_sync(req: RemoteRequest):
     try:
+        if str(req.protocolo or "").strip().upper() == "API":
+            return {
+                "ruta_actual": req.ruta,
+                "items": [{
+                    "nombre": "STUDIO_G_API",
+                    "ruta": req.ruta,
+                    "es_dir": False,
+                }],
+            }
         items = []
         if req.protocolo == "SFTP":
             ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
@@ -3568,6 +3699,8 @@ async def analyze_remote_mapping(
             is_json = req.tipo_archivo == "JSON" or req.ruta.lower().endswith('.json')
             read_size = -1 if is_json else 32768 # Read all for JSON, 32KB for CSV (increased from 8KB)
 
+            if str(req.protocolo or "").strip().upper() == "API":
+                return json.dumps(_studio_g_preview_rows(req), ensure_ascii=False)
             if req.protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
                 try:
@@ -3886,6 +4019,12 @@ def _list_remote_files(config: Dict[str, Any]):
     ruta = config.get("ruta_remota") or config.get("sftp_path", ".")
     tipo_archivo = config.get("tipo_archivo") or config.get("file_type", "CSV")
     logger.info(f"[DEBUG_AUTH] User: '{usuario}', PassLen: {len(password) if password else 0}, Host: '{host}', Port: {puerto}, Path: '{ruta}'")
+    if str(protocolo or "").strip().upper() == "API":
+        return [{
+            "nombre": "STUDIO_G_API",
+            "fecha": datetime.utcnow().isoformat(),
+            "tamano": 0,
+        }]
     
     # Allow all supported extensions to be listed, to prevent confusion if config doesn't match file
     # ext = ".csv" if tipo_archivo == "CSV" else ".txt" if tipo_archivo == "TXT" else ".json"
@@ -4077,6 +4216,54 @@ async def _execute_manual_endpoint_impl(
         ruta_remota = config_data.get("ruta_remota") or config_data.get("sftp_path", ".")
         protocolo = config_data.get("protocolo") or config_data.get("sftp_protocol", "SFTP")
         source_filename = req.filename
+
+        if _is_webservice_protocol(protocolo):
+            result = await asyncio.to_thread(process_webservice_import, config_data, write_load_log=False)
+            records_processed = int(result.get("records_processed") or 0)
+            status_value = str(result.get("status") or ("success" if result.get("ok") else "error"))
+            details = result.get("details") or []
+            error_count = len(details)
+            log_status = (
+                "parcial" if records_processed > 0 and error_count > 0
+                else "exito" if status_value in {"success", "ok"} or result.get("ok")
+                else "error"
+            )
+            log_channel = str(result.get("canal") or protocolo or "API").strip().upper()
+            log_source_name = result.get("source_name") or "Studio G API"
+            insert_load_log(
+                local_nombre,
+                log_source_name,
+                log_status,
+                result.get("message") or f"{log_channel} ejecutado.",
+                batch_id,
+                details,
+                mall_id=config_data.get("mall_id"),
+                local_id=config_data.get("id"),
+                canal=log_channel,
+                records_processed=records_processed,
+                error_count=error_count,
+                metadata={
+                    "source": "manual_api_webservice_import",
+                    "worker_source": "worker_studio_g_api",
+                    "records_received": result.get("records_received"),
+                    "duplicate_skipped": result.get("duplicate_skipped"),
+                },
+            )
+            risk_snapshot = None
+            if records_processed > 0:
+                risk_snapshot = await _run_local_risk_analysis_async(
+                    config_data.get("id"),
+                    trigger="manual_api_webservice_import",
+                )
+            return _cache_and_return({
+                "status": status_value,
+                "message": result.get("message") or "API ejecutada.",
+                "records_processed": records_processed,
+                "batch_id": batch_id,
+                "errors": details,
+                "renaming_error": None,
+                "risk_summary": (risk_snapshot or {}).get("summary"),
+            })
 
         def _build_prefixed_name(filename: str, prefix: str) -> str:
             base_name = posixpath.basename((filename or "").strip())

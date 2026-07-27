@@ -237,3 +237,20 @@ def test_specific_schedule_persists_visible_default_time():
     assert "config.frecuencia === 'hora_especifica'" in api_source
     assert "(config.hora_especifica || '08:00')" in api_source
     assert "freq.id === 'hora_especifica'" in manager_source
+
+
+def test_studio_g_api_configuration_is_available_in_import_manager():
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    manager_source = (repo / "components" / "ImportManager.tsx").read_text(encoding="utf-8")
+    types_source = (repo / "types.ts").read_text(encoding="utf-8")
+
+    assert "'FTP' | 'SFTP' | 'LOCAL' | 'API'" in types_source
+    assert '<option value="API">API REST (Studio G)</option>' in manager_source
+    assert "Autenticación Client Credentials" in manager_source
+    assert "Periodo de consulta API" in manager_source
+    assert "ID TPV" in manager_source
+    assert "constants.provider = 'studio_g'" in manager_source
+    assert "if (config.protocolo === 'API') return true" in manager_source
+    assert "Consultar y Procesar API" in manager_source

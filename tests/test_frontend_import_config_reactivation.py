@@ -8,7 +8,7 @@ def test_saving_corrected_import_config_reactivates_only_suspended_local():
     end = source.index("async deleteImportConfig", start)
     segment = source[start:end]
 
-    assert ".select('id, codigo_interno, processing_status')" in segment
-    assert "existingProcessingStatus === 'SUSPENDED_AUTH_ERROR'" in segment
+    assert ".select('id, mall_id, activo, processing_status')" in segment
+    assert "existing.processing_status === 'SUSPENDED_AUTH_ERROR'" in segment
     assert "dbPayload.processing_status = 'IDLE'" in segment
     assert "dbPayload.consecutive_failures = 0" in segment

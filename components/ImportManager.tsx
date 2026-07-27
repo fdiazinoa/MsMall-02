@@ -290,7 +290,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       return;
     }
     try {
-      const stores = await ApiService.getStores(mallId);
+      const stores = await ApiService.getStores(mallId, false);
       // Avoid stale async overwrite when mall changes quickly.
       if (String(currentMall?.id || '') !== String(mallId)) {
         return;

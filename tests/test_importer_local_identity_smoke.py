@@ -17,6 +17,9 @@ def test_importer_requires_existing_local_uuid():
     assert "-- Seleccionar local registrado --" in manager_source
     assert "Nuevo Local (Crear al guardar)" not in manager_source
     assert "Selecciona el local existente al que pertenece este importador" in manager_source
+    assert "ApiService.getStores(mallId, false)" in manager_source
+    assert "if (!includeInactive)" in api_source
+    assert "query = query.eq('activo', true)" in api_source
     assert 'aria-readonly="true"' in manager_source
     assert "String(log.local_id || '') === localId" in manager_source
     assert "log?.local_nombre === config.nombre" not in manager_source

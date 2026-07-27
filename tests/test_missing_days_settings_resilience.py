@@ -19,7 +19,9 @@ def test_missing_days_settings_get_falls_back_to_defaults():
         '@app.put("/api/v1/admin/messaging/missing-days/settings")',
     )
 
-    assert "return _default_missing_days_email_settings(mall_id)" in get_segment
+    assert "return _default_missing_days_email_settings(mall_id, notification_type)" in get_segment
+    assert "notification_type: str = Query(MISSING_DAYS_NOTIFICATION_TYPE)" in get_segment
+    assert '.eq("notification_type", notification_type)' in get_segment
     assert 'detail="No se pudo cargar la programacion de envio."' not in get_segment
     assert "logger.warning(" in get_segment
 
@@ -53,6 +55,22 @@ def test_missing_days_settings_persists_email_templates():
     assert "body_template: Optional[str] = None" in main_py
     assert '"subject_template": _normalize_email_template(' in save_segment
     assert '"body_template": _normalize_email_template(' in save_segment
+    assert "notification_type = _normalize_missing_days_notification_type(payload.notification_type)" in save_segment
+    assert '"notification_type": notification_type' in save_segment
+
+
+def test_consolidated_send_requires_admin_recipient():
+    repo = Path(__file__).resolve().parents[1]
+    main_py = (repo / "main.py").read_text(encoding="utf-8")
+
+    send_segment = _segment(
+        main_py,
+        '@app.post("/api/v1/admin/messaging/missing-days/send-now")',
+        '@app.delete("/api/v1/admin/reset-sales")',
+    )
+
+    assert "MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE" in send_segment
+    assert "Agregue al menos un correo administrativo antes de enviar el consolidado." in send_segment
 
 
 def test_resend_sender_config_is_editable_and_persisted():

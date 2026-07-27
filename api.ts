@@ -1687,7 +1687,7 @@ export const ApiService = {
     }
   },
 
-  async getStores(mallId?: string): Promise<Store[]> {
+  async getStores(mallId?: string, includeInactive = true): Promise<Store[]> {
     if (!supabase) return [];
 
     try {
@@ -1695,6 +1695,9 @@ export const ApiService = {
 
       if (mallId) {
         query = query.eq('mall_id', mallId);
+      }
+      if (!includeInactive) {
+        query = query.eq('activo', true);
       }
 
       const { data, error } = await query;

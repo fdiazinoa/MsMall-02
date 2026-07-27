@@ -313,7 +313,7 @@ export interface ResendSenderConfigPayload {
 export interface MissingDaysEmailSettings {
   id?: string;
   mall_id: string;
-  notification_type: 'missing_days_audit';
+  notification_type: 'missing_days_audit' | 'missing_days_audit_consolidated';
   enabled: boolean;
   weekdays: number[];
   send_time: string;
@@ -329,6 +329,7 @@ export interface MissingDaysEmailSettings {
 export interface MissingDaysSendNowResponse {
   status: string;
   mall_id: string;
+  notification_type?: MissingDaysEmailSettings['notification_type'];
   fecha_inicio: string;
   fecha_fin: string;
   requested: number;

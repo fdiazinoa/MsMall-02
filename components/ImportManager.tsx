@@ -48,6 +48,17 @@ const decimalSeparatorKey = '_decimal_separator';
 const movingWindowModeKey = '_moving_window_mode';
 const removeSpecialCharsKey = '_remove_special_chars';
 const specialCharsToRemoveKey = '_special_chars_to_remove';
+const studioGDateModeKey = '_studio_g_date_mode';
+const studioGStartDateKey = '_studio_g_fecha_inicio';
+const studioGEndDateKey = '_studio_g_fecha_fin';
+
+const studioGDateModes = [
+  { id: 'yesterday', label: 'Día anterior' },
+  { id: 'today', label: 'Hoy' },
+  { id: 'current_month', label: 'Mes actual' },
+  { id: 'last_30_days', label: 'Últimos 30 días' },
+  { id: 'custom', label: 'Rango' }
+] as const;
 
 const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
   const mode = config.constants?.[fieldModeKey(fieldKey)];
@@ -880,7 +891,19 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const handleSave = async () => {
     // Validar mapeo mínimo
 
-    const missing = STANDARD_FIELDS.filter(f => f.required && !hasFieldMappingValue(editingConfig, f.key));
+    if (!editingConfig.id) {
+      alert('Selecciona el local existente al que pertenece este importador.');
+      return;
+    }
+    const selectedStore = availableStores.find((store) => String(store.id) === String(editingConfig.id));
+    if (!selectedStore) {
+      alert('El local seleccionado no está activo o no pertenece al mall actual.');
+      return;
+    }
+
+    const missing = editingConfig.protocolo === 'API'
+      ? []
+      : STANDARD_FIELDS.filter(f => f.required && !hasFieldMappingValue(editingConfig, f.key));
     if (missing.length > 0) {
       alert(`Faltan campos obligatorios en el mapeo: ${missing.map(m => m.label).join(', ')}`);
       return;
@@ -892,6 +915,19 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
     if (isAutomated && looksLikeFile) {
       if (!confirm(`Advertencia: Has configurado una frecuencia automática (${editingConfig.frecuencia}) pero la ruta parece ser un archivo específico (${editingConfig.ruta_remota}).\n\nPara automatización, generalmente se debe apuntar a la CARPETA donde llegarán los nuevos archivos.\n\n¿Deseas continuar de todos modos?`)) {
+        return;
+      }
+    }
+
+    if (editingConfig.protocolo === 'API' && editingConfig.constants?.[studioGDateModeKey] === 'custom') {
+      const startDate = editingConfig.constants?.[studioGStartDateKey];
+      const endDate = editingConfig.constants?.[studioGEndDateKey];
+      if (!startDate || !endDate) {
+        alert('Selecciona fecha inicio y fecha fin para el rango de consulta API.');
+        return;
+      }
+      if (startDate > endDate) {
+        alert('La fecha inicio no puede ser posterior a la fecha fin.');
         return;
       }
     }
@@ -1035,6 +1071,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   };
 
   const hasRequiredMapping = (config: ImportConfig) => {
+    if (config.protocolo === 'API') return true;
     const requiredFields = ['factura_numero', 'fecha_venta', 'local_codigo', 'total_bruto'];
     return requiredFields.every(field => hasFieldMappingValue(config, field));
   };
@@ -1098,9 +1135,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const resolveProcessedCountFromLogs = async (config: ImportConfig, filename: string): Promise<number | null> => {
     try {
       const logs = await ApiService.getLoadLogs(currentMall?.id, authToken);
+      const localId = String(config.id || '');
       const targetLog = (logs || []).find((log: any) =>
         log?.archivo === filename &&
-        log?.local_nombre === config.nombre &&
+        String(log.local_id || '') === localId &&
         (log?.estado === 'exito' || log?.estado === 'parcial')
       );
 
@@ -1865,28 +1903,30 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         }
                       }}
                     >
-                      <option value="">-- Nuevo Local (Crear al guardar) --</option>
+                      <option value="">-- Seleccionar local registrado --</option>
                       {(availableStores || []).map(s => (
                         <option key={s.id} value={s.id}>{s.nombre} ({s.codigo_interno})</option>
                       ))}
                     </select>
-                    <p className="text-[10px] text-slate-400 mt-2 italic">Recomendado: Seleccione un local ya registrado para evitar duplicados.</p>
+                    <p className="text-[10px] text-slate-400 mt-2 italic">La conexión se guarda por UUID; el nombre y el código solo ayudan a identificar el local.</p>
                   </div>
 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 flex justify-between items-center">
-                      <span>Nombre de la Fuente / Conexión</span>
+                      <span>Local vinculado</span>
                       {editingConfig.id && <span className="text-[9px] bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded">Vinculado a ID: {editingConfig.id.substring(0, 8)}...</span>}
                     </label>
                     <input
-                      type="text" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none font-medium"
-                      placeholder="Ej: Nike Store - SFTP Principal"
+                      type="text"
+                      placeholder="Selecciona un local registrado"
                       value={editingConfig.nombre}
-                      onChange={e => setEditingConfig({ ...editingConfig, nombre: e.target.value })}
+                      readOnly
+                      aria-readonly="true"
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-600 outline-none font-medium"
                     />
                   </div>
 
-                  {editingConfig.protocolo !== 'LOCAL' && (
+                  {editingConfig.protocolo !== 'LOCAL' && editingConfig.protocolo !== 'API' && (
                     <div className="p-3 rounded-xl border border-indigo-100 bg-indigo-50/50 space-y-2">
                       <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest">
                         Conexiones Guardadas (FTP/SFTP)
@@ -1935,11 +1975,24 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           const nextProtocol = e.target.value as ImportProtocol;
                           if (nextProtocol === 'LOCAL') setSelectedConnectionId('');
                           if (nextProtocol !== 'LOCAL') setBrowserFilesSelection(null);
-                          setEditingConfig({ ...editingConfig, protocolo: nextProtocol, puerto: nextProtocol === 'SFTP' ? 22 : 21 });
+                          const constants = { ...(editingConfig.constants || {}) };
+                          if (nextProtocol === 'API') {
+                            constants.provider = 'studio_g';
+                            constants[studioGDateModeKey] = constants[studioGDateModeKey] || 'yesterday';
+                          }
+                          setEditingConfig({
+                            ...editingConfig,
+                            protocolo: nextProtocol,
+                            puerto: nextProtocol === 'SFTP' ? 22 : nextProtocol === 'API' ? 443 : 21,
+                            tipo_archivo: nextProtocol === 'API' ? 'JSON' : editingConfig.tipo_archivo,
+                            accion_post_procesado: nextProtocol === 'API' ? 'NINGUNA' : editingConfig.accion_post_procesado,
+                            constants
+                          });
                         }}
                       >
                         <option value="SFTP">SFTP (SSH File Transfer)</option>
                         <option value="FTP">FTP (Estándar)</option>
+                        <option value="API">API REST (Studio G)</option>
                         <option value="LOCAL">Directorio local (servidor)</option>
                       </select>
                     </div>
@@ -1962,18 +2015,21 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   </div>
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Host del Servidor</label>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                        {editingConfig.protocolo === 'API' ? 'URL Base API' : 'Host del Servidor'}
+                      </label>
                       <div className="relative">
                         <Globe size={18} className="absolute left-3.5 top-3 text-slate-300" />
                         <input
                           type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                          placeholder="sftp.tu-tienda.com"
+                          placeholder={editingConfig.protocolo === 'API' ? 'https://alcagora.ddns.net' : 'sftp.tu-tienda.com'}
                           value={editingConfig.host}
                           onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
                         />
                       </div>
                     </div>
                   )}
+                  {editingConfig.protocolo !== 'API' && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Tipo de Archivo</label>
                     <div className="flex gap-2">
@@ -1992,6 +2048,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       ))}
                     </div>
                   </div>
+                  )}
 
                   <div className="pt-4 border-t border-slate-100">
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Frecuencia de Sincronización</label>
@@ -2008,7 +2065,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           onClick={() => setEditingConfig({
                             ...editingConfig,
                             frecuencia: freq.id as any,
-                            tipo_ejecucion: freq.mode as any
+                            tipo_ejecucion: freq.mode as any,
+                            hora_especifica: freq.id === 'hora_especifica'
+                              ? (editingConfig.hora_especifica || '08:00')
+                              : editingConfig.hora_especifica
                           })}
                           className={`py-2 px-3 rounded-xl border-2 font-bold text-[11px] transition-all text-left flex items-center gap-2 ${editingConfig.frecuencia === freq.id
                             ? 'border-indigo-600 bg-indigo-50 text-indigo-600'
@@ -2035,13 +2095,15 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 <div className="space-y-5">
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Credenciales de Acceso</label>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                        {editingConfig.protocolo === 'API' ? 'Autenticación Client Credentials' : 'Credenciales de Acceso'}
+                      </label>
                       <div className="space-y-3">
                         <div className="relative">
                           <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder="Nombre de usuario"
+                            placeholder={editingConfig.protocolo === 'API' ? 'Client ID' : 'Nombre de usuario'}
                             value={editingConfig.usuario}
                             onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
                           />
@@ -2050,7 +2112,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           <Key size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="password" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder="Contraseña o Frase de paso SSH"
+                            placeholder={editingConfig.protocolo === 'API' ? 'Client Secret' : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}
                           />
@@ -2058,9 +2120,81 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       </div>
                     </div>
                   )}
+                  {editingConfig.protocolo === 'API' && (
+                    <>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">ID TPV</label>
+                        <input
+                          type="text"
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none"
+                          placeholder="AFB"
+                          value={editingConfig.ruta_remota}
+                          onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
+                        />
+                      </div>
+                      <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Periodo de consulta API</p>
+                          <p className="text-xs text-cyan-700 mt-1">Define qué fechas pedirá Studio G al procesar esta conexión.</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {studioGDateModes.map((mode) => (
+                            <button
+                              key={mode.id}
+                              type="button"
+                              onClick={() => setEditingConfig({
+                                ...editingConfig,
+                                constants: {
+                                  ...editingConfig.constants,
+                                  [studioGDateModeKey]: mode.id
+                                }
+                              })}
+                              className={`px-3 py-2 rounded-xl border text-xs font-bold transition-all text-left ${((editingConfig.constants?.[studioGDateModeKey] || 'yesterday') === mode.id)
+                                ? 'border-cyan-500 bg-white text-cyan-700 shadow-sm'
+                                : 'border-cyan-100 bg-white/70 text-slate-500 hover:bg-white'
+                              }`}
+                            >
+                              {mode.label}
+                            </button>
+                          ))}
+                        </div>
+                        {(editingConfig.constants?.[studioGDateModeKey] || 'yesterday') === 'custom' && (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                              Fecha inicio
+                              <input
+                                type="date"
+                                className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                                value={editingConfig.constants?.[studioGStartDateKey] || ''}
+                                max={editingConfig.constants?.[studioGEndDateKey] || undefined}
+                                onChange={e => setEditingConfig({
+                                  ...editingConfig,
+                                  constants: { ...editingConfig.constants, [studioGStartDateKey]: e.target.value }
+                                })}
+                              />
+                            </label>
+                            <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                              Fecha fin
+                              <input
+                                type="date"
+                                className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                                value={editingConfig.constants?.[studioGEndDateKey] || ''}
+                                min={editingConfig.constants?.[studioGStartDateKey] || undefined}
+                                onChange={e => setEditingConfig({
+                                  ...editingConfig,
+                                  constants: { ...editingConfig.constants, [studioGEndDateKey]: e.target.value }
+                                })}
+                              />
+                            </label>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                  {editingConfig.protocolo !== 'API' && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                      {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio (Servidor)' : 'Ruta Remota de Archivos'}
+                      {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio (Servidor)' : editingConfig.protocolo === 'API' ? 'ID TPV configurado' : 'Ruta Remota de Archivos'}
                     </label>
                     <div className="relative">
                       <button
@@ -2109,7 +2243,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       </div>
                     )}
                   </div>
+                  )}
 
+                  {editingConfig.protocolo !== 'API' && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Acción Post-Procesado</label>
                     <div className="space-y-2">
@@ -2147,6 +2283,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       ))}
                     </div>
                   </div>
+                  )}
 
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div className="flex flex-col gap-3">
@@ -2167,7 +2304,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-600 transition-all shadow-lg active:scale-95 group"
                         >
                           <Database size={18} className="text-indigo-400 group-hover:text-white transition-colors" />
-                          Listar y Procesar Archivos
+                          {editingConfig.protocolo === 'API' ? 'Consultar y Procesar API' : 'Listar y Procesar Archivos'}
                         </button>
                       )}
                     </div>
@@ -2676,7 +2813,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       )}
 
       {loading ? (
-        <div className="py-20 text-center">
+        <div className="py-10 text-center">
           <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
           <p className="text-slate-400 font-medium">Cargando servicios de red...</p>
         </div>
@@ -2698,9 +2835,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           <p className="text-slate-400 text-sm mt-1">Ajusta la búsqueda para ver otras conexiones configuradas.</p>
         </div>
       ) : viewMode === 'cards' ? (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {filteredConfigs.map(config => (
-            <div key={config.id} className="bg-white rounded-3xl border border-slate-200 p-6 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
+            <div key={config.id} className="bg-white rounded-2xl border border-slate-200 p-4 hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative overflow-hidden">
               <div className={`absolute top-0 right-0 px-6 py-2 rounded-bl-3xl text-[10px] font-bold uppercase tracking-widest ${config.protocolo === 'SFTP' ? 'bg-indigo-600 text-white' : config.protocolo === 'LOCAL' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}`}>
                 {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
               </div>
@@ -2789,7 +2926,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   <button
                     onClick={() => handleSyncNow(config.id, config.nombre)}
                     disabled={syncingId === config.id}
-                    className="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-xs font-bold hover:bg-indigo-600 transition-all flex items-center gap-2 shadow-lg shadow-slate-200 active:scale-95 disabled:opacity-50"
+                    className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-lg shadow-indigo-100 active:scale-95 disabled:opacity-50"
                   >
                     {syncingId === config.id ? <RefreshCw className="animate-spin" size={14} /> : <Play size={14} fill="white" />}
                     Ejecutar Ahora
@@ -2800,19 +2937,18 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           ))}
         </div>
       ) : (
-        <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1100px] text-left">
-              <thead>
+        <div className="min-w-0 overflow-x-auto border-y border-slate-200 bg-white">
+            <table className="w-full min-w-[1120px] table-auto text-left">
+              <thead className="sticky top-0 z-10 bg-slate-100/95 backdrop-blur-sm">
                 <tr className="bg-slate-50 border-b border-slate-100">
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Conexión</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Protocolo</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Acceso</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ruta Remota</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Última Ejecución</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Mapeo</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estado</th>
-                  <th className="px-5 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Acciones</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Conexión</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Protocolo</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Acceso</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ruta Remota</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Última Ejecución</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Mapeo</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estado</th>
+                  <th className="px-3 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
@@ -2822,23 +2958,23 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
                   return (
                     <tr key={config.id} className="hover:bg-indigo-50/30 transition-colors">
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className={`p-2.5 rounded-xl ${config.protocolo === 'SFTP' ? 'bg-indigo-50 text-indigo-600' : config.protocolo === 'LOCAL' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <div className={`p-2 rounded-lg ${config.protocolo === 'SFTP' ? 'bg-indigo-50 text-indigo-600' : config.protocolo === 'LOCAL' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
                             {config.protocolo === 'LOCAL' ? <FolderOpen size={16} /> : <Server size={16} />}
                           </div>
                           <div>
-                            <p className="text-sm font-bold text-slate-800">{config.nombre}</p>
+                            <p className="max-w-[190px] truncate text-sm font-bold text-slate-800">{config.nombre}</p>
                             <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">{config.tipo_archivo}</p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-5 py-4">
+                      <td className="px-3 py-2.5">
                         <span className={`inline-flex px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide ${config.protocolo === 'SFTP' ? 'bg-indigo-100 text-indigo-700' : config.protocolo === 'LOCAL' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
                           {config.protocolo === 'LOCAL' ? 'Dir. local (servidor)' : config.protocolo}
                         </span>
                       </td>
-                      <td className="px-5 py-4 text-xs text-slate-600 font-medium">
+                      <td className="px-3 py-2.5 text-xs text-slate-600 font-medium">
                         {config.protocolo === 'LOCAL' ? (
                           <span className="text-slate-400">N/A</span>
                         ) : (
@@ -2848,19 +2984,19 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           </div>
                         )}
                       </td>
-                      <td className="px-5 py-4 text-xs text-slate-600 max-w-[260px]">
+                      <td className="px-3 py-2.5 text-xs text-slate-600 max-w-[210px]">
                         <span className="truncate block font-medium">{config.ruta_remota}</span>
                       </td>
-                      <td className="px-5 py-4 text-xs text-slate-600">
+                      <td className="px-3 py-2.5 text-xs text-slate-600">
                         {config.ultima_ejecucion ? new Date(config.ultima_ejecucion).toLocaleString() : 'Pendiente'}
                       </td>
-                      <td className="px-5 py-4 text-xs text-slate-600">
+                      <td className="px-3 py-2.5 text-xs text-slate-600">
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 font-bold">
                           <Database size={12} />
                           {activeMappings} campos
                         </span>
                       </td>
-                      <td className="px-5 py-4">
+                      <td className="px-3 py-2.5">
                         <div className="flex items-center gap-2">
                           <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-slate-300'}`}></span>
                           <span className={`text-[11px] font-bold uppercase ${isActive ? 'text-green-700' : 'text-slate-500'}`}>
@@ -2873,25 +3009,25 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           </div>
                         )}
                       </td>
-                      <td className="px-5 py-4 text-center">
-                        <div className="inline-flex items-center gap-2">
+                      <td className="px-3 py-2.5 text-center">
+                        <div className="inline-flex items-center gap-1.5">
                           <button
                             onClick={() => openQuickAudit(config)}
-                            className="p-2 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition-all"
+                            className="p-1.5 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition-all"
                             title="Auditoria rapida"
                           >
                             <FileSearch size={16} />
                           </button>
                           <button
                             onClick={() => openEditConnectionDrawer(config)}
-                            className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                            className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
                             title="Editar"
                           >
                             <Settings2 size={16} />
                           </button>
                           <button
                             onClick={() => handleDelete(config.id)}
-                            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
                             title="Eliminar"
                           >
                             <Trash2 size={16} />
@@ -2899,7 +3035,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           <button
                             onClick={() => handleSyncNow(config.id, config.nombre)}
                             disabled={syncingId === config.id}
-                            className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-[11px] font-bold hover:bg-indigo-700 transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+                            className="bg-indigo-600 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-bold hover:bg-indigo-700 transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
                           >
                             {syncingId === config.id ? <RefreshCw className="animate-spin" size={12} /> : <Play size={12} fill="white" />}
                             Ejecutar
@@ -2911,7 +3047,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 })}
               </tbody>
             </table>
-          </div>
         </div>
       )}
 

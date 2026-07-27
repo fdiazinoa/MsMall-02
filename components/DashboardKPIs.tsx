@@ -7,7 +7,7 @@ import {
 import {
   TrendingUp, TrendingDown, DollarSign, ShoppingBag,
   CreditCard, BarChart3, Calendar, Info, X, Store, ArrowUpRight,
-  AreaChart as AreaChartIcon, LineChart as LineChartIcon, List
+  AreaChart as AreaChartIcon, LineChart as LineChartIcon, List, PieChart as PieChartIcon
 } from 'lucide-react';
 import { KPIData, DateRange, SegmentStoreDetail } from '../types';
 import { ApiService, type DashboardStore as MallStore } from '../api';
@@ -17,6 +17,8 @@ const COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
 
 type TrendChartMode = 'area' | 'line' | 'bar';
 type TopLocalesMode = 'list' | 'bar';
+type SegmentChartMode = 'donut' | 'bar';
+type RubroChartMode = 'list' | 'bar';
 
 const ChartModeButton = ({ active, label, onClick, children }: {
   active: boolean;
@@ -29,7 +31,7 @@ const ChartModeButton = ({ active, label, onClick, children }: {
     aria-label={label}
     title={label}
     onClick={onClick}
-    className={`flex h-8 w-8 items-center justify-center rounded-lg border transition-colors ${
+    className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors ${
       active
         ? 'border-indigo-200 bg-indigo-50 text-indigo-600'
         : 'border-slate-200 bg-white text-slate-400 hover:border-slate-300 hover:text-slate-700'
@@ -40,18 +42,18 @@ const ChartModeButton = ({ active, label, onClick, children }: {
 );
 
 const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
-  <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow relative group">
+  <div className="min-w-0 bg-white px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow relative group">
     {tooltip && (
-      <div className="absolute top-3 right-3 text-slate-300 hover:text-indigo-500 transition-colors cursor-help">
+      <div className="absolute top-2.5 right-2.5 text-slate-300 hover:text-indigo-500 transition-colors cursor-help">
         <Info size={14} />
         <div className="absolute right-0 w-48 p-2 mt-2 text-xs text-white bg-slate-800 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg top-full">
           {tooltip}
         </div>
       </div>
     )}
-    <div className="flex justify-between items-start mb-3">
-      <div className={`p-2.5 rounded-lg ${color} bg-opacity-10`}>
-        <Icon className={`w-5 h-5 ${color.replace('bg-', 'text-')}`} />
+    <div className="flex justify-between items-start mb-1.5">
+      <div className={`p-1.5 rounded-lg ${color} bg-opacity-10`}>
+        <Icon className={`w-4 h-4 ${color.replace('bg-', 'text-')}`} />
       </div>
       {trend && (
         <span className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-full ${trend > 0 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
@@ -60,8 +62,8 @@ const KPICard = ({ title, value, icon: Icon, trend, color, tooltip }: any) => (
         </span>
       )}
     </div>
-    <p className="text-slate-500 text-xs font-semibold uppercase tracking-wide">{title}</p>
-    <h3 className="text-xl font-bold text-slate-900 mt-1">{value}</h3>
+    <p className="text-slate-500 text-[11px] font-semibold uppercase tracking-wide">{title}</p>
+    <h3 className="break-words text-base sm:text-lg font-bold text-slate-900 mt-0.5 leading-tight">{value}</h3>
   </div>
 );
 
@@ -99,28 +101,47 @@ const SegmentDonutCard = ({
   format,
   detailMap,
   onSelect,
+  mode,
+  onModeChange,
 }: {
   title: string;
   items: SegmentItem[];
   format: (value: number) => string;
   detailMap?: Record<string, SegmentStoreDetail[]>;
   onSelect: (selection: SegmentSelection) => void;
+  mode: SegmentChartMode;
+  onModeChange: (mode: SegmentChartMode) => void;
 }) => {
   const visibleItems = (items || []).filter((item) => item.value > 0).slice(0, 5);
   const total = visibleItems.reduce((sum, item) => sum + item.value, 0);
+  const selectItem = (item: SegmentItem) => onSelect({
+    kind: 'tipo_negocio',
+    title,
+    item,
+    stores: detailMap?.[item.name] || [],
+  });
 
   return (
-    <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm min-h-[300px]">
-      <div className="flex items-center justify-between mb-4">
-        <h4 className="font-bold text-slate-800">{title}</h4>
-        <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
+    <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-100 shadow-sm lg:min-h-[220px]">
+      <div className="flex items-center justify-between gap-3 mb-2.5">
+        <h4 className="font-bold text-sm text-slate-800">{title}</h4>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
+          <ChartModeButton active={mode === 'donut'} label="Ver gráfica de dona" onClick={() => onModeChange('donut')}>
+            <PieChartIcon size={15} />
+          </ChartModeButton>
+          <ChartModeButton active={mode === 'bar'} label="Ver gráfica de barras" onClick={() => onModeChange('bar')}>
+            <BarChart3 size={15} />
+          </ChartModeButton>
+        </div>
       </div>
       {visibleItems.length === 0 ? (
-        <div className="h-48 flex items-center justify-center text-sm text-slate-400">
+        <div className="h-36 flex items-center justify-center text-sm text-slate-400">
           Sin ventas en el periodo.
         </div>
-      ) : (
-        <div className="relative h-[260px] sm:h-[300px]">
+      ) : mode === 'donut' ? (
+        <div>
+          <div className="h-[150px] xl:h-[165px]">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
@@ -132,12 +153,7 @@ const SegmentDonutCard = ({
                 paddingAngle={2}
                 stroke="white"
                 strokeWidth={3}
-                onClick={(item) => onSelect({
-                  kind: 'tipo_negocio',
-                  title,
-                  item: item as SegmentItem,
-                  stores: detailMap?.[(item as SegmentItem).name] || [],
-                })}
+                onClick={(item) => selectItem(item as SegmentItem)}
               >
                 {visibleItems.map((item, index) => (
                   <Cell
@@ -150,10 +166,27 @@ const SegmentDonutCard = ({
               <Tooltip content={<SegmentTooltip format={format} total={total} />} />
             </PieChart>
           </ResponsiveContainer>
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-            <span className="text-[11px] font-bold uppercase text-slate-400">Total</span>
-            <span className="text-base font-bold text-slate-800">{format(total)}</span>
           </div>
+          <div className="mt-1 flex items-center justify-center gap-2 border-t border-slate-100 pt-2">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Total</span>
+            <span className="text-sm font-bold text-slate-800">{format(total)}</span>
+          </div>
+        </div>
+      ) : (
+        <div className="h-[185px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={visibleItems} layout="vertical" margin={{ top: 4, right: 12, left: 8, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+              <XAxis type="number" hide />
+              <YAxis type="category" dataKey="name" width={110} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} />
+              <Tooltip content={<SegmentTooltip format={format} total={total} />} />
+              <Bar dataKey="value" radius={[0, 6, 6, 0]} onClick={(item) => selectItem(item.payload as SegmentItem)}>
+                {visibleItems.map((item, index) => (
+                  <Cell key={`tipo-bar-${item.name}`} fill={COLORS[index % COLORS.length]} className="cursor-pointer focus:outline-none" />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       )}
     </div>
@@ -166,29 +199,47 @@ const RubroExplorerCard = ({
   format,
   detailMap,
   onSelect,
+  mode,
+  onModeChange,
 }: {
   title: string;
   items: SegmentItem[];
   format: (value: number) => string;
   detailMap?: Record<string, SegmentStoreDetail[]>;
   onSelect: (selection: SegmentSelection) => void;
+  mode: RubroChartMode;
+  onModeChange: (mode: RubroChartMode) => void;
 }) => {
   const visibleItems = (items || []).filter((item) => item.value > 0).slice(0, 8);
   const total = visibleItems.reduce((sum, item) => sum + item.value, 0);
   const maxValue = Math.max(...visibleItems.map((item) => item.value), 0);
+  const selectItem = (item: SegmentItem) => onSelect({
+    kind: 'rubro',
+    title,
+    item,
+    stores: detailMap?.[item.name] || [],
+  });
 
   return (
-    <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm min-h-[300px]">
-      <div className="flex items-center justify-between mb-5">
-        <h4 className="font-bold text-slate-800">{title}</h4>
-        <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
+    <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-100 shadow-sm lg:min-h-[220px]">
+      <div className="flex items-center justify-between gap-3 mb-2.5">
+        <h4 className="font-bold text-sm text-slate-800">{title}</h4>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-400">Top {visibleItems.length || 0}</span>
+          <ChartModeButton active={mode === 'list'} label="Ver ranking compacto" onClick={() => onModeChange('list')}>
+            <List size={15} />
+          </ChartModeButton>
+          <ChartModeButton active={mode === 'bar'} label="Ver gráfica de barras" onClick={() => onModeChange('bar')}>
+            <BarChart3 size={15} />
+          </ChartModeButton>
+        </div>
       </div>
       {visibleItems.length === 0 ? (
-        <div className="h-48 flex items-center justify-center text-sm text-slate-400">
+        <div className="h-36 flex items-center justify-center text-sm text-slate-400">
           Sin ventas en el periodo.
         </div>
-      ) : (
-        <div className="space-y-3">
+      ) : mode === 'list' ? (
+        <div className="max-h-[190px] xl:max-h-[205px] space-y-1.5 overflow-y-auto pr-1">
           {visibleItems.map((item, index) => {
             const percent = maxValue > 0 ? (item.value / maxValue) * 100 : 0;
             const share = total > 0 ? (item.value / total) * 100 : 0;
@@ -196,13 +247,8 @@ const RubroExplorerCard = ({
               <button
                 key={`rubro-${item.name}-${index}`}
                 type="button"
-                onClick={() => onSelect({
-                  kind: 'rubro',
-                  title,
-                  item,
-                  stores: detailMap?.[item.name] || [],
-                })}
-                className="group w-full rounded-lg border border-transparent px-2 py-2.5 text-left hover:border-slate-200 hover:bg-slate-50 transition-colors"
+                onClick={() => selectItem(item)}
+                className="group w-full rounded-lg border border-transparent px-2 py-1.5 text-left hover:border-slate-200 hover:bg-slate-50 transition-colors"
               >
                 <div className="flex items-center justify-between gap-3">
                   <span className="min-w-0 flex items-center gap-2">
@@ -214,7 +260,7 @@ const RubroExplorerCard = ({
                     <ArrowUpRight size={13} className="text-slate-300 group-hover:text-indigo-500" />
                   </span>
                 </div>
-                <div className="mt-2 flex items-center gap-3">
+                <div className="mt-1.5 flex items-center gap-3">
                   <div className="h-2 flex-1 rounded-full bg-slate-100 overflow-hidden">
                     <div
                       className="h-full rounded-full transition-all duration-500"
@@ -229,6 +275,22 @@ const RubroExplorerCard = ({
               </button>
             );
           })}
+        </div>
+      ) : (
+        <div className="h-[190px] xl:h-[205px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={visibleItems} layout="vertical" margin={{ top: 6, right: 12, left: 8, bottom: 6 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+              <XAxis type="number" hide />
+              <YAxis type="category" dataKey="name" width={120} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} />
+              <Tooltip content={<SegmentTooltip format={format} total={total} />} />
+              <Bar dataKey="value" radius={[0, 6, 6, 0]} onClick={(item) => selectItem(item.payload as SegmentItem)}>
+                {visibleItems.map((item, index) => (
+                  <Cell key={`rubro-bar-${item.name}`} fill={COLORS[index % COLORS.length]} className="cursor-pointer focus:outline-none" />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       )}
     </div>
@@ -411,6 +473,8 @@ export const DashboardKPIs: React.FC = () => {
   const [selectedSegment, setSelectedSegment] = useState<SegmentSelection | null>(null);
   const [trendChartMode, setTrendChartMode] = useState<TrendChartMode>('area');
   const [topLocalesMode, setTopLocalesMode] = useState<TopLocalesMode>('list');
+  const [businessTypeChartMode, setBusinessTypeChartMode] = useState<SegmentChartMode>('donut');
+  const [rubroChartMode, setRubroChartMode] = useState<RubroChartMode>('list');
   const [dates, setDates] = useState<DateRange>(defaultDashboardDateRange);
   const [draftDates, setDraftDates] = useState<DateRange>(defaultDashboardDateRange);
   const requestSequence = useRef(0);
@@ -476,14 +540,14 @@ export const DashboardKPIs: React.FC = () => {
 
   if (!currentMall?.id) {
     return (
-      <div className="bg-white border border-slate-200 rounded-2xl p-6 text-slate-700">
+      <div className="bg-white border border-slate-200 rounded-2xl px-4 py-4 text-slate-700">
         No hay mall asignado o seleccionado para este usuario.
       </div>
     );
   }
 
   if (loading || !data) return (
-    <div className="flex items-center justify-center h-96">
+    <div className="flex items-center justify-center h-[calc(100dvh-12rem)] min-h-[320px]">
       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
     </div>
   );
@@ -498,18 +562,18 @@ export const DashboardKPIs: React.FC = () => {
   );
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div className="space-y-1">
+    <div className="min-w-0 space-y-3 lg:h-[calc(100dvh-9rem)] xl:h-[calc(100dvh-8rem)] lg:min-h-[520px] xl:min-h-[580px] lg:overflow-y-auto lg:pr-1 animate-in fade-in duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+        <div className="space-y-0.5">
           <div className="flex items-center gap-3">
-            <p className="text-2xl font-bold text-slate-900">Hola, {displayName}</p>
+            <p className="text-xl font-bold text-slate-900">Hola, {displayName}</p>
             {refreshing && (
               <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-600">
                 Actualizando…
               </span>
             )}
           </div>
-          <h2 className="pt-1 text-lg font-semibold text-slate-700">Business Intelligence</h2>
+          <h2 className="pt-0.5 text-base font-semibold text-slate-700">Business Intelligence</h2>
           <p className="text-sm text-slate-500">Indicadores clave de rendimiento del mall.</p>
         </div>
         <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-100 flex flex-wrap items-center gap-2 w-full md:w-auto">
@@ -518,14 +582,14 @@ export const DashboardKPIs: React.FC = () => {
             type="date"
             value={draftDates.startDate}
             onChange={(e) => setDraftDates({ ...draftDates, startDate: e.target.value })}
-            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[130px]"
+            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[120px]"
           />
           <span className="text-slate-300">-</span>
           <input
             type="date"
             value={draftDates.endDate}
             onChange={(e) => setDraftDates({ ...draftDates, endDate: e.target.value })}
-            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[130px]"
+            className="text-sm border-none focus:ring-0 outline-none p-1 min-w-[120px]"
           />
           <button
             type="button"
@@ -544,7 +608,7 @@ export const DashboardKPIs: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
         <KPICard
           title="Ventas Netas"
           value={format(data.ventas_totales_neto || 0)}
@@ -578,10 +642,10 @@ export const DashboardKPIs: React.FC = () => {
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
-          <div className="flex justify-between items-center mb-6">
-            <h4 className="font-bold text-slate-800">Tendencia de Ventas Diarias</h4>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="min-w-0 lg:col-span-2 bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
+          <div className="flex justify-between items-center gap-3 mb-3">
+            <h4 className="font-bold text-sm text-slate-800">Tendencia de Ventas Diarias</h4>
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-400 mr-1">Últimos 7 días</span>
               <ChartModeButton active={trendChartMode === 'area'} label="Ver gráfica de área" onClick={() => setTrendChartMode('area')}><AreaChartIcon size={16} /></ChartModeButton>
@@ -589,7 +653,7 @@ export const DashboardKPIs: React.FC = () => {
               <ChartModeButton active={trendChartMode === 'bar'} label="Ver gráfica de barras" onClick={() => setTrendChartMode('bar')}><BarChart3 size={16} /></ChartModeButton>
             </div>
           </div>
-          <div className="h-[300px] w-full">
+          <div className="h-[180px] xl:h-[200px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               {trendChartMode === 'area' ? <AreaChart data={data.ventas_por_dia} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
                 <defs>
@@ -632,10 +696,10 @@ export const DashboardKPIs: React.FC = () => {
           </div>
         </div>
 
-        <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
-          <div className="flex justify-between items-center gap-3 mb-6"><h4 className="font-bold text-slate-800">Top 5 Locales</h4><div className="flex items-center gap-2"><ChartModeButton active={topLocalesMode === 'list'} label="Ver ranking compacto" onClick={() => setTopLocalesMode('list')}><List size={16} /></ChartModeButton><ChartModeButton active={topLocalesMode === 'bar'} label="Ver gráfica de barras" onClick={() => setTopLocalesMode('bar')}><BarChart3 size={16} /></ChartModeButton></div></div>
-          <div className="h-80 w-full overflow-y-auto pr-2">
-            {topLocalesMode === 'list' ? <div className="space-y-4">
+        <div className="min-w-0 bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
+          <div className="flex justify-between items-center gap-3 mb-3"><h4 className="font-bold text-sm text-slate-800">Top 5 Locales</h4><div className="flex items-center gap-2"><ChartModeButton active={topLocalesMode === 'list'} label="Ver ranking compacto" onClick={() => setTopLocalesMode('list')}><List size={15} /></ChartModeButton><ChartModeButton active={topLocalesMode === 'bar'} label="Ver gráfica de barras" onClick={() => setTopLocalesMode('bar')}><BarChart3 size={15} /></ChartModeButton></div></div>
+          <div className="h-[180px] xl:h-[200px] w-full overflow-y-auto pr-2">
+            {topLocalesMode === 'list' ? <div className="space-y-2.5">
               {data.top_locales.map((locale, index) => {
                 const maxTotal = Math.max(...data.top_locales.map(l => l.total));
                 const percent = maxTotal > 0 ? (locale.total / maxTotal) * 100 : 0;
@@ -663,13 +727,15 @@ export const DashboardKPIs: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <SegmentDonutCard
           title="Ventas por Tipo de Negocio"
           items={data.ventas_por_tipo_negocio || []}
           format={format}
           detailMap={businessTypeDetailMap}
           onSelect={setSelectedSegment}
+          mode={businessTypeChartMode}
+          onModeChange={setBusinessTypeChartMode}
         />
         <RubroExplorerCard
           title="Ventas por Rubro"
@@ -677,6 +743,8 @@ export const DashboardKPIs: React.FC = () => {
           format={format}
           detailMap={rubroDetailMap}
           onSelect={setSelectedSegment}
+          mode={rubroChartMode}
+          onModeChange={setRubroChartMode}
         />
       </div>
 

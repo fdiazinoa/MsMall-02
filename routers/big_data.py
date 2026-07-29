@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import os
 from datetime import date, datetime, timezone, timedelta
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from supabase import create_client
 
+from services.big_data_phase_one_service import BigDataPhaseOneService
 from services.big_data_sprint2_service import BigDataSprint2Service
 
 router = APIRouter(prefix="/api/v1/big-data", tags=["Big Data"])
@@ -82,6 +83,41 @@ class FindingComment(BaseModel):
     comment: str = Field(min_length=1, max_length=1000)
 
 
+class CalendarEventPayload(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    event_type: Literal[
+        "PROMOTION", "HALLWAY_SALE", "MALL_ACTIVITY", "HOLIDAY", "OTHER"
+    ]
+    start_date: date
+    end_date: date
+    expected_impact: Literal["UP", "DOWN", "NEUTRAL"] = "UP"
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+def _require_big_data_manager(mall_id: str, user: dict) -> None:
+    _authorize(mall_id, user)
+    if user["email"] in _system_admins:
+        return
+    profile = (
+        db.table("profiles")
+        .select("role")
+        .eq("id", user["id"])
+        .maybe_single()
+        .execute()
+        .data
+        or {}
+    )
+    if str(profile.get("role") or "").lower() not in {
+        "admin",
+        "administrador",
+        "it",
+        "tic",
+    }:
+        raise HTTPException(
+            403, "El calendario comercial requiere rol administrador o IT"
+        )
+
+
 @router.get("/summary")
 async def summary(mall_id: str, start_date: date, end_date: date, user: dict = Depends(current_user)):
     _context(mall_id, start_date, end_date, user)
@@ -136,6 +172,98 @@ async def quality(mall_id: str, start_date: date, end_date: date, user: dict = D
             "failed_imports": sum(1 for log in logs if str(log.get("estado")).lower() == "error"), "status": "updated" if watermark else "pending"}
 
 
+@router.get("/intelligence/phase-one")
+async def phase_one_intelligence(
+    mall_id: str,
+    start_date: date,
+    end_date: date,
+    user: dict = Depends(current_user),
+):
+    """Calendar, seasonality, explainable anomalies and data confidence."""
+    _context(mall_id, start_date, end_date, user)
+    return BigDataPhaseOneService(db).intelligence(mall_id, start_date, end_date)
+
+
+@router.post("/calendar-events")
+async def create_calendar_event(
+    mall_id: str,
+    payload: CalendarEventPayload,
+    user: dict = Depends(current_user),
+):
+    """Register mall context so known events are not reported as anomalies."""
+    _require_big_data_manager(mall_id, user)
+    _require_core(mall_id)
+    if payload.end_date < payload.start_date:
+        raise HTTPException(422, "La fecha final no puede ser anterior a la inicial")
+    if (payload.end_date - payload.start_date).days > 366:
+        raise HTTPException(422, "Un evento no puede superar 367 días")
+    row = {
+        "mall_id": mall_id,
+        "name": payload.name.strip(),
+        "event_type": payload.event_type,
+        "start_date": payload.start_date.isoformat(),
+        "end_date": payload.end_date.isoformat(),
+        "expected_impact": payload.expected_impact,
+        "notes": payload.notes.strip() if payload.notes else None,
+        "created_by": user["id"],
+    }
+    try:
+        created = (
+            db.table("big_data_calendar_events")
+            .insert(row)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        message = str(exc).lower()
+        if "big_data_calendar_events" in message and (
+            "does not exist" in message or "schema cache" in message
+        ):
+            raise HTTPException(
+                503,
+                "La base de datos no está actualizada: aplique la migración "
+                "big_data_calendar_events.",
+            ) from exc
+        if "duplicate" in message or "23505" in message:
+            raise HTTPException(
+                409, "Ya existe un evento activo con ese nombre y rango."
+            ) from exc
+        raise
+    if not created:
+        raise HTTPException(500, "No se pudo registrar el contexto comercial")
+    return created[0]
+
+
+@router.delete("/calendar-events/{event_id}")
+async def delete_calendar_event(
+    event_id: str,
+    mall_id: str,
+    user: dict = Depends(current_user),
+):
+    """Soft-delete an event while preserving its audit trail."""
+    _require_big_data_manager(mall_id, user)
+    _require_core(mall_id)
+    result = (
+        db.table("big_data_calendar_events")
+        .update(
+            {
+                "active": False,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        .eq("id", event_id)
+        .eq("mall_id", mall_id)
+        .eq("active", True)
+        .execute()
+        .data
+        or []
+    )
+    if not result:
+        raise HTTPException(404, "Evento no encontrado en el mall seleccionado")
+    return {"status": "deleted", "id": event_id}
+
+
 @router.get("/stores/{local_id}/profile")
 async def store_profile(local_id: str, mall_id: str, start_date: date, end_date: date, user: dict = Depends(current_user)):
     _context(mall_id, start_date, end_date, user)
@@ -183,9 +311,7 @@ async def category_benchmark(local_id: str, mall_id: str, start_date: date, end_
 @router.post("/rebuild")
 async def rebuild(mall_id: str, start_date: date, end_date: date, user: dict = Depends(current_user)):
     _context(mall_id, start_date, end_date, user)
-    profile = db.table("profiles").select("role").eq("id", user["id"]).maybe_single().execute().data or {}
-    if user["email"] not in _system_admins and str(profile.get("role") or "").lower() not in {"admin", "administrador", "it", "tic"}:
-        raise HTTPException(403, "La reconstrucción requiere rol administrador o IT")
+    _require_big_data_manager(mall_id, user)
     rows = [{"mall_id": mall_id, "affected_date": (start_date + timedelta(days=offset)).isoformat(), "requested_by": user["id"]} for offset in range((end_date-start_date).days + 1)]
     db.table("big_data_refresh_queue").upsert(rows, on_conflict="mall_id,affected_date").execute()
     return {"status": "queued", "dates": len(rows)}

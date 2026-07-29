@@ -67,8 +67,8 @@ def test_multi_mall_components_clear_and_ignore_stale_responses():
         assert "requestVersion" in source
         assert "currentMall?.id !== mallId" in source
     assert "setData(null)" in dashboard
-    assert "setExecutive(null)" in dashboard
-    assert "setProfile(null)" in dashboard
+    assert "ApiService.getBigDataPhaseOne" in dashboard
+    assert "getBigDataExecutiveSummary" not in dashboard
     assert "setFindings([])" in operations
 
 

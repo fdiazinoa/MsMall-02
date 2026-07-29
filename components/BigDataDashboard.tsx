@@ -26,6 +26,7 @@ import {
   Database,
   Eye,
   FileWarning,
+  Info,
   Lightbulb,
   Loader2,
   Play,
@@ -88,6 +89,47 @@ interface AnomalyListRow {
   contributors: BigDataAnomalyContributor[];
   context: string;
 }
+
+const ANOMALY_TABLE_COLUMNS = [
+  { key: 'date', label: 'Fecha' },
+  {
+    key: 'status',
+    label: 'Estado',
+    help: 'Por explicar significa que todavía no existe un contexto comercial registrado que coincida con el movimiento.',
+  },
+  { key: 'direction', label: 'Dirección' },
+  {
+    key: 'deviation',
+    label: 'Desviación',
+    help: 'Porcentaje de diferencia entre la venta real del mall y su referencia histórica.',
+  },
+  {
+    key: 'observed',
+    label: 'Venta real del mall',
+    help: 'Venta neta total registrada por el mall durante esa fecha.',
+  },
+  {
+    key: 'expected',
+    label: 'Referencia histórica',
+    help: 'Mediana de otros días del mismo tipo dentro del período, excluyendo feriados y eventos registrados.',
+  },
+  {
+    key: 'impact',
+    label: 'Diferencia vs. referencia',
+    help: 'Venta real del mall menos la referencia histórica. No representa venta causada por un local.',
+  },
+  {
+    key: 'confidence',
+    label: 'Confianza',
+    help: 'Solidez de la comparación según los días comparables disponibles y la calidad de los datos.',
+  },
+  {
+    key: 'contributor',
+    label: 'Principal local asociado',
+    help: 'Local con la mayor contribución matemática al movimiento. Es una asociación, no una causa comprobada.',
+  },
+  { key: 'action', label: '' },
+] as const;
 
 const INTELLIGENCE_TABS: Array<{
   id: IntelligenceTab;
@@ -688,6 +730,20 @@ export const BigDataDashboard: React.FC = () => {
     } finally {
       setEventSaving(false);
     }
+  };
+
+  const explainAnomaly = (anomaly: AnomalyListRow) => {
+    setEventError(null);
+    setEventForm({
+      name: '',
+      event_type: 'MALL_ACTIVITY',
+      start_date: anomaly.date,
+      end_date: anomaly.date,
+      expected_impact: anomaly.direction,
+      notes: '',
+    });
+    setSelectedAnomalyId(null);
+    setShowEventForm(true);
   };
 
   const removeCalendarEvent = async (eventId: string, eventName: string) => {
@@ -2030,15 +2086,30 @@ export const BigDataDashboard: React.FC = () => {
               {visibleAnomalyRows.length > 0 ? (
                 <>
                   <div className="hidden overflow-x-auto md:block">
-                    <table className="min-w-[1050px] w-full border-collapse text-left">
+                    <table className="min-w-[1180px] w-full border-collapse text-left">
                       <caption className="sr-only">
-                        Las ventas observadas, esperadas y el impacto corresponden al mall;
-                        el aporte principal corresponde al local identificado.
+                        La venta real, la referencia histórica y su diferencia corresponden
+                        al mall; el principal local asociado es una atribución matemática,
+                        no una causa comprobada.
                       </caption>
                       <thead className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-400">
                         <tr>
-                          {['Fecha', 'Estado', 'Dirección', 'Desviación', 'Observado mall', 'Esperado mall', 'Impacto mall', 'Confianza', 'Aporte principal', ''].map((label) => (
-                            <th key={label || 'action'} className="whitespace-nowrap px-3 py-2.5">{label}</th>
+                          {ANOMALY_TABLE_COLUMNS.map((column) => (
+                            <th key={column.key} className="whitespace-nowrap px-3 py-2.5">
+                              <span
+                                className="inline-flex items-center gap-1"
+                                title={'help' in column ? column.help : undefined}
+                              >
+                                {column.label}
+                                {'help' in column && (
+                                  <Info
+                                    size={11}
+                                    aria-label={`Ayuda: ${column.help}`}
+                                    className="normal-case text-slate-300"
+                                  />
+                                )}
+                              </span>
+                            </th>
                           ))}
                         </tr>
                       </thead>
@@ -2056,7 +2127,7 @@ export const BigDataDashboard: React.FC = () => {
                                     ? 'bg-amber-50 text-amber-700'
                                     : 'bg-sky-50 text-sky-700'
                                 }`}>
-                                  {row.status === 'pending' ? 'Pendiente' : 'Explicada'}
+                                  {row.status === 'pending' ? 'Por explicar' : 'Explicada'}
                                 </span>
                               </td>
                               <td className="px-3 py-3">
@@ -2239,7 +2310,7 @@ export const BigDataDashboard: React.FC = () => {
                       ? 'bg-amber-50 text-amber-700'
                       : 'bg-sky-50 text-sky-700'
                   }`}>
-                    {selectedAnomaly.status === 'pending' ? 'Por investigar' : 'Movimiento explicado'}
+                    {selectedAnomaly.status === 'pending' ? 'Por explicar' : 'Movimiento explicado'}
                   </span>
                   <h3 className="mt-2 text-xl font-black capitalize text-slate-900">
                     {formatDate(selectedAnomaly.date, {
@@ -2285,9 +2356,9 @@ export const BigDataDashboard: React.FC = () => {
                 </div>
                 <div className="mt-4 grid grid-cols-3 gap-2">
                   {[
-                    ['Observado', format(selectedAnomaly.observedSales)],
-                    ['Esperado', format(selectedAnomaly.expectedSales)],
-                    ['Impacto', `${selectedAnomaly.impact > 0 ? '+' : ''}${format(selectedAnomaly.impact)}`],
+                    ['Venta real del mall', format(selectedAnomaly.observedSales)],
+                    ['Referencia histórica', format(selectedAnomaly.expectedSales)],
+                    ['Diferencia vs. referencia', `${selectedAnomaly.impact > 0 ? '+' : ''}${format(selectedAnomaly.impact)}`],
                   ].map(([label, value]) => (
                     <div key={label} className="rounded-xl bg-white/10 p-3">
                       <p className="text-[9px] font-bold uppercase text-slate-400">{label}</p>
@@ -2311,6 +2382,21 @@ export const BigDataDashboard: React.FC = () => {
                   Contexto de la fecha
                 </p>
                 <p className="mt-1 text-sm font-bold text-sky-900">{selectedAnomaly.context}</p>
+                {selectedAnomaly.status === 'pending' && (isAdmin || isTic) && (
+                  <div className="mt-3 border-t border-sky-100 pt-3">
+                    <button
+                      type="button"
+                      onClick={() => explainAnomaly(selectedAnomaly)}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-3 py-2.5 text-xs font-black text-white hover:bg-sky-700"
+                    >
+                      <CalendarPlus size={15} />
+                      Explicar movimiento
+                    </button>
+                    <p className="mt-1.5 text-[10px] leading-4 text-sky-700">
+                      Registrarás una promoción, actividad u otro contexto con la fecha y dirección precargadas.
+                    </p>
+                  </div>
+                )}
               </section>
 
               <section>

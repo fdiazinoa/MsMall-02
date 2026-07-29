@@ -16,6 +16,7 @@ from services.big_data_phase_three_service import BigDataPhaseThreeService
 PHASE_THREE_B_VERSION = "big-data-scenarios-phase-three-b-v1"
 MAX_SCENARIOS = 100
 MAX_ACTIONS = 500
+DELETABLE_SCENARIO_STATUSES = {"DRAFT", "CANCELLED"}
 SCENARIO_TYPE_LABELS = {
     "PROMOTION": "Promoción",
     "HALLWAY_SALE": "Venta de pasillo",
@@ -415,6 +416,45 @@ class BigDataPhaseThreeBService:
         if not updated:
             raise LookupError("Escenario no encontrado.")
         return updated[0]
+
+    def delete_scenario(self, mall_id: str, scenario_id: str) -> dict[str, Any]:
+        """Delete an accidental draft or cancelled scenario and its actions."""
+        current = (
+            self.supabase.table("big_data_scenarios")
+            .select("id,name,status")
+            .eq("id", scenario_id)
+            .eq("mall_id", mall_id)
+            .maybe_single()
+            .execute()
+            .data
+        )
+        if not current:
+            raise LookupError("Escenario no encontrado.")
+        if current["status"] not in DELETABLE_SCENARIO_STATUSES:
+            raise ValueError(
+                "Solo se pueden eliminar escenarios en borrador o cancelados."
+            )
+
+        deleted = (
+            self.supabase.table("big_data_scenarios")
+            .delete()
+            .eq("id", scenario_id)
+            .eq("mall_id", mall_id)
+            .eq("status", current["status"])
+            .execute()
+            .data
+            or []
+        )
+        if not deleted:
+            raise ValueError(
+                "El escenario cambió de estado; actualice la lista antes de eliminarlo."
+            )
+        return {
+            "id": scenario_id,
+            "name": current["name"],
+            "status": current["status"],
+            "deleted": True,
+        }
 
     def update_action_status(
         self, mall_id: str, action_id: str, status: str

@@ -38,6 +38,20 @@ import {
 import { createBigDataRequestGate } from '../utils/bigDataRequestGate';
 
 const WEEKDAY_HEADERS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+type IntelligenceTab = 'summary' | 'calendar' | 'anomalies' | 'quality';
+type AnomalyView = 'pending' | 'explained';
+
+const INTELLIGENCE_TABS: Array<{
+  id: IntelligenceTab;
+  label: string;
+  description: string;
+  icon: React.ElementType;
+}> = [
+  { id: 'summary', label: 'Resumen', description: 'Hallazgos y patrones', icon: Sparkles },
+  { id: 'calendar', label: 'Calendario', description: 'Fechas y actividades', icon: CalendarDays },
+  { id: 'anomalies', label: 'Anomalías', description: 'Movimientos relevantes', icon: AlertTriangle },
+  { id: 'quality', label: 'Calidad', description: 'Cobertura y trazabilidad', icon: ShieldCheck },
+];
 const EVENT_TYPES: Array<{ value: BigDataCalendarEventType; label: string }> = [
   { value: 'PROMOTION', label: 'Promoción' },
   { value: 'HALLWAY_SALE', label: 'Venta de pasillo' },
@@ -132,6 +146,8 @@ export const BigDataDashboard: React.FC = () => {
   const [data, setData] = useState<BigDataPhaseOne | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<IntelligenceTab>('summary');
+  const [anomalyView, setAnomalyView] = useState<AnomalyView>('pending');
   const [selectedMonth, setSelectedMonth] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [showEventForm, setShowEventForm] = useState(false);
@@ -285,12 +301,12 @@ export const BigDataDashboard: React.FC = () => {
     : 'Comportamiento estable';
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      <header className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 text-white shadow-xl shadow-slate-200/70">
-        <div className="relative px-6 py-6 lg:px-8">
+    <div className="space-y-4 animate-in fade-in duration-500">
+      <header className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 text-white shadow-lg shadow-slate-200/60">
+        <div className="relative px-5 py-4 lg:px-6">
           <div className="absolute -right-20 -top-28 h-72 w-72 rounded-full bg-indigo-500/20 blur-3xl" />
           <div className="absolute bottom-0 left-1/3 h-28 w-64 rounded-full bg-cyan-400/10 blur-3xl" />
-          <div className="relative flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
+          <div className="relative flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="max-w-3xl">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full border border-indigo-300/30 bg-indigo-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-indigo-200">
@@ -302,15 +318,15 @@ export const BigDataDashboard: React.FC = () => {
                   </span>
                 )}
               </div>
-              <h2 className="mt-3 text-2xl font-black tracking-tight lg:text-3xl">
+              <h2 className="mt-2 text-xl font-black tracking-tight lg:text-2xl">
                 Inteligencia Comercial
               </h2>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-300">
                 Descubre cuándo se repiten los patrones, qué fechas se salen de lo esperado,
                 cuáles locales explican el movimiento y si los datos son confiables para actuar.
               </p>
             </div>
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-3 backdrop-blur">
+            <div className="rounded-xl border border-white/10 bg-white/5 p-2.5 backdrop-blur">
               <div className="flex flex-wrap items-center gap-2">
                 {[30, 90, 180].map((days) => (
                   <button
@@ -343,6 +359,59 @@ export const BigDataDashboard: React.FC = () => {
         </div>
       </header>
 
+      <nav
+        role="tablist"
+        aria-label="Secciones de Inteligencia Comercial"
+        className="overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm"
+      >
+        <div className="flex min-w-max gap-1">
+          {INTELLIGENCE_TABS.map((tab) => {
+            const Icon = tab.icon;
+            const selected = activeTab === tab.id;
+            const badge = tab.id === 'anomalies'
+              ? data?.anomalies.length
+              : tab.id === 'calendar'
+              ? data?.calendar_context.registered_events.length
+              : tab.id === 'quality'
+              ? data?.quality.missing_days
+              : undefined;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex min-w-40 items-center gap-2.5 rounded-xl px-3 py-2 text-left transition-colors ${
+                  selected
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+                }`}
+              >
+                <Icon size={17} className="shrink-0" />
+                <span>
+                  <span className="flex items-center gap-2 text-xs font-black">
+                    {tab.label}
+                    {badge != null && badge > 0 && (
+                      <span className={`rounded-full px-1.5 py-0.5 text-[9px] ${
+                        selected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'
+                      }`}>
+                        {badge}
+                      </span>
+                    )}
+                  </span>
+                  <span className={`mt-0.5 block text-[9px] ${
+                    selected ? 'text-indigo-100' : 'text-slate-400'
+                  }`}>
+                    {tab.description}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
       {error && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           {error}. {apiUnavailable
@@ -364,8 +433,12 @@ export const BigDataDashboard: React.FC = () => {
 
       {data && quality && (
         <>
-          <section className="grid gap-4 xl:grid-cols-[1.6fr_0.8fr]">
-            <div className="rounded-3xl border border-indigo-100 bg-gradient-to-br from-white via-white to-indigo-50/70 p-5 shadow-sm">
+          {activeTab === 'summary' && (
+          <section
+            role="tabpanel"
+            className="grid gap-3 xl:grid-cols-[1.6fr_0.8fr]"
+          >
+            <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-white via-white to-indigo-50/70 p-4 shadow-sm">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-indigo-600">
@@ -383,7 +456,7 @@ export const BigDataDashboard: React.FC = () => {
                 {data.insights.slice(0, 4).map((insight) => (
                   <article
                     key={insight.type}
-                    className={`rounded-2xl border p-4 ${toneClasses[insight.tone] || toneClasses.neutral}`}
+                    className={`rounded-xl border p-3 ${toneClasses[insight.tone] || toneClasses.neutral}`}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
@@ -402,7 +475,7 @@ export const BigDataDashboard: React.FC = () => {
               </div>
             </div>
 
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">
@@ -411,24 +484,24 @@ export const BigDataDashboard: React.FC = () => {
                   <p className="mt-1 text-sm font-bold text-slate-700">{qualityState.label}</p>
                 </div>
                 <div
-                  className="grid h-20 w-20 place-items-center rounded-full"
+                  className="grid h-16 w-16 place-items-center rounded-full"
                   style={{
                     background: `conic-gradient(${qualityState.color} ${quality.score * 3.6}deg, #e2e8f0 0deg)`,
                   }}
                 >
-                  <div className="grid h-14 w-14 place-items-center rounded-full bg-white">
+                  <div className="grid h-11 w-11 place-items-center rounded-full bg-white">
                     <span className="text-lg font-black text-slate-900">{quality.score}</span>
                   </div>
                 </div>
               </div>
-              <div className="mt-5 grid grid-cols-2 gap-3">
-                <div className="rounded-xl bg-slate-50 p-3">
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <div className="rounded-lg bg-slate-50 p-2.5">
                   <p className="text-[10px] font-bold uppercase text-slate-400">Días cubiertos</p>
                   <p className="mt-1 text-lg font-black text-slate-800">
                     {quality.day_coverage_percent.toFixed(1)}%
                   </p>
                 </div>
-                <div className="rounded-xl bg-slate-50 p-3">
+                <div className="rounded-lg bg-slate-50 p-2.5">
                   <p className="text-[10px] font-bold uppercase text-slate-400">Locales reportando</p>
                   <p className="mt-1 text-lg font-black text-slate-800">
                     {quality.reporting_local_count}/{quality.active_local_count}
@@ -440,9 +513,11 @@ export const BigDataDashboard: React.FC = () => {
               </p>
             </div>
           </section>
+          )}
 
-          <section className="grid gap-6 2xl:grid-cols-[1.45fr_0.8fr]">
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          {activeTab === 'calendar' && (
+          <section role="tabpanel">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
@@ -490,7 +565,7 @@ export const BigDataDashboard: React.FC = () => {
                   </button>
                 </div>
               </div>
-              <div className="mt-5 grid grid-cols-7 gap-1.5">
+              <div className="mt-4 grid grid-cols-7 gap-1.5">
                 {WEEKDAY_HEADERS.map((label) => (
                   <div key={label} className="pb-1 text-center text-[10px] font-black uppercase text-slate-400">
                     {label}
@@ -502,7 +577,7 @@ export const BigDataDashboard: React.FC = () => {
                 {visibleCalendar.map((day) => (
                   <div
                     key={day.date}
-                    className={`min-h-[86px] rounded-xl border p-2 transition-colors ${calendarCellClasses(day)}`}
+                    className={`min-h-[72px] rounded-lg border p-2 transition-colors ${calendarCellClasses(day)}`}
                     title={[
                       formatDate(day.date, { weekday: 'long', day: 'numeric', month: 'long' }),
                       day.sales_net == null ? 'Sin datos' : `Venta: ${format(day.sales_net)}`,
@@ -518,7 +593,7 @@ export const BigDataDashboard: React.FC = () => {
                         <span className="h-2 w-2 rounded-full bg-current opacity-60" />
                       )}
                     </div>
-                    <p className="mt-2 truncate text-[11px] font-black">
+                    <p className="mt-1.5 truncate text-[11px] font-black">
                       {day.sales_net == null ? 'Sin datos' : compactNumber.format(day.sales_net)}
                     </p>
                     {day.deviation_percent != null && (
@@ -547,9 +622,40 @@ export const BigDataDashboard: React.FC = () => {
                 <span className="flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded bg-amber-100" /> Fin de semana</span>
                 <span className="flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded border border-dashed bg-slate-50" /> Sin datos</span>
               </div>
+              {data.calendar_context.registered_events.length > 0 && (
+                <div className="mt-3 border-t border-slate-100 pt-3">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">
+                    Actividades registradas
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {data.calendar_context.registered_events.map((event) => (
+                      <span
+                        key={event.id}
+                        className="inline-flex items-center gap-2 rounded-full bg-sky-50 px-2.5 py-1 text-[10px] font-bold text-sky-800"
+                      >
+                        {event.event_type_label}: {event.name}
+                        {(isAdmin || isTic) && (
+                          <button
+                            type="button"
+                            onClick={() => removeCalendarEvent(event.id, event.name)}
+                            className="text-sky-300 hover:text-rose-600"
+                            aria-label={`Eliminar ${event.name}`}
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
+          </section>
+          )}
 
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          {activeTab === 'summary' && (
+          <section role="tabpanel">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
                   Patrón semanal
@@ -558,7 +664,7 @@ export const BigDataDashboard: React.FC = () => {
                   ¿El fin de semana realmente cambia la venta?
                 </h3>
               </div>
-              <div className="mt-4 h-72">
+              <div className="mt-3 h-56">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={data.weekday_pattern} margin={{ top: 8, right: 4, left: -22, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
@@ -576,7 +682,7 @@ export const BigDataDashboard: React.FC = () => {
                   </BarChart>
                 </ResponsiveContainer>
               </div>
-              <div className="rounded-2xl bg-slate-950 p-4 text-white">
+              <div className="rounded-xl bg-slate-950 p-3.5 text-white">
                 <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
                   Efecto fin de semana
                 </p>
@@ -596,8 +702,37 @@ export const BigDataDashboard: React.FC = () => {
               </div>
             </div>
           </section>
+          )}
 
-          <section className="rounded-3xl border border-sky-100 bg-gradient-to-br from-sky-50 to-white p-5 shadow-sm">
+          {activeTab === 'anomalies' && (
+            <div className="flex w-fit rounded-xl border border-slate-200 bg-white p-1" role="tablist" aria-label="Tipos de anomalías">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={anomalyView === 'pending'}
+                onClick={() => setAnomalyView('pending')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-black ${
+                  anomalyView === 'pending' ? 'bg-slate-900 text-white' : 'text-slate-500'
+                }`}
+              >
+                Por investigar · {data.anomalies.length}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={anomalyView === 'explained'}
+                onClick={() => setAnomalyView('explained')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-black ${
+                  anomalyView === 'explained' ? 'bg-sky-600 text-white' : 'text-slate-500'
+                }`}
+              >
+                Explicadas · {data.explained_events.length}
+              </button>
+            </div>
+          )}
+
+          {activeTab === 'anomalies' && anomalyView === 'explained' && (
+          <section role="tabpanel" className="rounded-2xl border border-sky-100 bg-gradient-to-br from-sky-50 to-white p-4 shadow-sm">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-sky-700">
@@ -617,9 +752,9 @@ export const BigDataDashboard: React.FC = () => {
             </div>
 
             {data.explained_events.length > 0 && (
-              <div className="mt-5 grid gap-3 lg:grid-cols-2">
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
                 {data.explained_events.map((movement) => (
-                  <article key={movement.date} className="rounded-2xl border border-sky-100 bg-white p-4">
+                  <article key={movement.date} className="rounded-xl border border-sky-100 bg-white p-3.5">
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <p className="text-[10px] font-black uppercase tracking-wide text-sky-600">
@@ -687,8 +822,10 @@ export const BigDataDashboard: React.FC = () => {
               </div>
             )}
           </section>
+          )}
 
-          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          {activeTab === 'anomalies' && anomalyView === 'pending' && (
+          <section role="tabpanel" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
@@ -703,12 +840,12 @@ export const BigDataDashboard: React.FC = () => {
                 desempeño comercial cuando la confiabilidad de los datos es baja.
               </p>
             </div>
-            <div className="mt-5 grid gap-4 xl:grid-cols-2">
+            <div className="mt-4 grid gap-3 xl:grid-cols-2">
               {data.anomalies.map((anomaly) => {
                 const copy = anomalyCopy(anomaly);
                 const Icon = copy.icon;
                 return (
-                  <article key={anomaly.date} className="rounded-2xl border border-slate-200 p-4">
+                  <article key={anomaly.date} className="rounded-xl border border-slate-200 p-3.5">
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex gap-3">
                         <div className={`rounded-xl bg-slate-50 p-2.5 ${copy.accent}`}>
@@ -778,8 +915,10 @@ export const BigDataDashboard: React.FC = () => {
               )}
             </div>
           </section>
+          )}
 
-          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          {activeTab === 'quality' && (
+          <section role="tabpanel" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
@@ -794,7 +933,7 @@ export const BigDataDashboard: React.FC = () => {
                 Último dato: {quality.last_processed_sale_date || 'sin confirmar'}
               </div>
             </div>
-            <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="mt-4 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
               {[
                 ['Cobertura de días', `${quality.day_coverage_percent.toFixed(1)}%`],
                 ['Cobertura local-día', `${quality.store_day_coverage_percent.toFixed(1)}%`],
@@ -802,7 +941,7 @@ export const BigDataDashboard: React.FC = () => {
                 ['Importaciones fallidas', quality.failed_imports.toLocaleString()],
                 ['Importaciones parciales', quality.partial_imports.toLocaleString()],
               ].map(([label, value]) => (
-                <div key={label} className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
+                <div key={label} className="rounded-xl border border-slate-100 bg-slate-50/70 p-3">
                   <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">{label}</p>
                   <p className="mt-2 text-xl font-black text-slate-900">{value}</p>
                 </div>
@@ -826,11 +965,14 @@ export const BigDataDashboard: React.FC = () => {
               </div>
             )}
           </section>
+          )}
 
-          <footer className="flex flex-col gap-2 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-[10px] leading-5 text-slate-500 lg:flex-row lg:items-center lg:justify-between">
+          {activeTab === 'quality' && (
+          <footer className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5 text-[10px] leading-5 text-slate-500 lg:flex-row lg:items-center lg:justify-between">
             <span>{data.methodology}</span>
             <span className="shrink-0">Versión {data.version}</span>
           </footer>
+          )}
         </>
       )}
 

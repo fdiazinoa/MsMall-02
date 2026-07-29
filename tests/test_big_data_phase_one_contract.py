@@ -40,6 +40,22 @@ def test_phase_one_is_intelligence_first_not_a_dashboard_clone():
     assert "Ventas por categoría" not in dashboard
 
 
+def test_phase_one_uses_compact_progressive_disclosure_tabs():
+    dashboard = (ROOT / "components" / "BigDataDashboard.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "INTELLIGENCE_TABS" in dashboard
+    assert 'role="tablist"' in dashboard
+    assert "activeTab === 'summary'" in dashboard
+    assert "activeTab === 'calendar'" in dashboard
+    assert "activeTab === 'anomalies'" in dashboard
+    assert "activeTab === 'quality'" in dashboard
+    assert "anomalyView === 'pending'" in dashboard
+    assert "anomalyView === 'explained'" in dashboard
+    assert "min-h-[72px]" in dashboard
+
+
 def test_phase_one_queries_are_batched_and_bounded():
     service = (
         ROOT / "services" / "big_data_phase_one_service.py"

@@ -31,7 +31,7 @@ def test_phase_one_is_intelligence_first_not_a_dashboard_clone():
 
     assert "Calendario de comportamiento" in dashboard
     assert "Anomalías por investigar" in dashboard
-    assert "Movimientos explicados por actividades del mall" in dashboard
+    assert "Movimientos explicados" in dashboard
     assert "Calidad y trazabilidad" in dashboard
     assert "Patrón semanal" in dashboard
     assert 'label="Ventas netas"' not in dashboard
@@ -54,6 +54,23 @@ def test_phase_one_uses_compact_progressive_disclosure_tabs():
     assert "anomalyView === 'pending'" in dashboard
     assert "anomalyView === 'explained'" in dashboard
     assert "min-h-[72px]" in dashboard
+
+
+def test_anomalies_use_comparable_list_and_open_detail_sheet():
+    dashboard = (ROOT / "components" / "BigDataDashboard.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "<table" in dashboard
+    assert "visibleAnomalyRows" in dashboard
+    assert "Mayor impacto" in dashboard
+    assert "Todas las direcciones" in dashboard
+    assert "Ver ficha" in dashboard
+    assert 'aria-label="Ficha de anomalía"' in dashboard
+    assert "Locales contribuyentes" in dashboard
+    assert "Confianza analítica" in dashboard
+    assert "closeOnEscape" in dashboard
+    assert "anomalyCopy" not in dashboard
 
 
 def test_phase_one_queries_are_batched_and_bounded():

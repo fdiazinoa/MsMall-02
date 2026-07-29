@@ -28,6 +28,10 @@ def test_phase_three_b_has_authenticated_simulation_and_workflow_contracts():
         in router
     )
     assert (
+        '@router.delete("/intelligence/phase-three-b/scenarios/{scenario_id}")'
+        in router
+    )
+    assert (
         '@router.patch("/intelligence/phase-three-b/actions/{action_id}/status")'
         in router
     )
@@ -36,9 +40,11 @@ def test_phase_three_b_has_authenticated_simulation_and_workflow_contracts():
     assert "_require_big_data_manager(mall_id, user)" in router
     assert "simulateBigDataScenario" in api
     assert "createBigDataScenario" in api
+    assert "deleteBigDataScenario" in api
     assert "updateBigDataScenarioActionStatus" in api
     assert "Simular una decisión comercial" in dashboard
     assert "Plan de acción" in dashboard
+    assert "Eliminar definitivamente" in dashboard
     assert "no es venta comprometida" in dashboard
 
 
@@ -54,6 +60,8 @@ def test_phase_three_b_storage_is_private_mall_scoped_and_indexed():
     assert "to service_role" in migration
     assert "big_data_scenarios_mall_created_idx" in migration
     assert "big_data_scenario_actions_scenario_status_idx" in migration
+    assert "references public.big_data_scenarios(id, mall_id)" in migration
+    assert "on delete cascade" in migration
 
 
 def test_phase_three_b_does_not_claim_causality_or_query_raw_sales():

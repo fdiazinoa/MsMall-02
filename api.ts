@@ -884,6 +884,27 @@ export const ApiService = {
     );
   },
 
+  async deleteBigDataScenario(
+    mallId: string,
+    scenarioId: string,
+    token: string
+  ): Promise<{ id: string; name: string; status: BigDataScenarioStatus; deleted: true }> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<{
+      id: string;
+      name: string;
+      status: BigDataScenarioStatus;
+      deleted: true;
+    }>(
+      `/big-data/intelligence/phase-three-b/scenarios/${encodeURIComponent(scenarioId)}?${params.toString()}`,
+      {
+        method: 'DELETE',
+        headers: withAuthHeaders(token, { Accept: 'application/json' }),
+      },
+      'No se pudo eliminar el escenario'
+    );
+  },
+
   async updateBigDataScenarioActionStatus(
     mallId: string,
     actionId: string,

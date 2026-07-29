@@ -813,6 +813,37 @@ export const BigDataDashboard: React.FC = () => {
     }
   };
 
+  const deleteScenario = async (scenario: BigDataScenario) => {
+    if (!currentMall?.id || !session?.access_token || !(isAdmin || isTic)) return;
+    if (!['DRAFT', 'CANCELLED'].includes(scenario.status)) return;
+    const actionCount = scenario.actions?.length || 0;
+    const actionWarning = actionCount
+      ? ` También se eliminarán ${actionCount} tarea(s) asociada(s).`
+      : '';
+    if (!window.confirm(
+      `¿Eliminar definitivamente el escenario "${scenario.name}"?${actionWarning} Esta acción no se puede deshacer.`,
+    )) return;
+
+    setScenarioWorkflowBusy(true);
+    setScenariosError(null);
+    try {
+      await ApiService.deleteBigDataScenario(
+        currentMall.id,
+        scenario.id,
+        session.access_token,
+      );
+      setSelectedScenarioId(null);
+      setScenarios((current) => current.filter((item) => item.id !== scenario.id));
+      setScenarioReloadKey((value) => value + 1);
+    } catch (deleteError: any) {
+      setScenariosError(
+        deleteError?.message || 'No se pudo eliminar el escenario.',
+      );
+    } finally {
+      setScenarioWorkflowBusy(false);
+    }
+  };
+
   const updateScenarioActionStatus = async (
     actionId: string,
     status: BigDataScenarioActionStatus,
@@ -1690,7 +1721,10 @@ export const BigDataDashboard: React.FC = () => {
                             {(isAdmin || isTic) ? (
                               <select
                                 value={action.status}
-                                disabled={scenarioWorkflowBusy}
+                                disabled={
+                                  scenarioWorkflowBusy
+                                  || ['COMPLETED', 'CANCELLED'].includes(selectedScenario.status)
+                                }
                                 onChange={(event) => updateScenarioActionStatus(
                                   action.id,
                                   event.target.value as BigDataScenarioActionStatus,
@@ -1744,6 +1778,23 @@ export const BigDataDashboard: React.FC = () => {
                         >
                           Cancelar
                         </button>
+                      </div>
+                    )}
+                    {(isAdmin || isTic)
+                      && ['DRAFT', 'CANCELLED'].includes(selectedScenario.status) && (
+                      <div className="mt-3 border-t border-slate-100 pt-3">
+                        <button
+                          type="button"
+                          disabled={scenarioWorkflowBusy}
+                          onClick={() => deleteScenario(selectedScenario)}
+                          className="flex w-full items-center justify-center gap-2 rounded-xl border border-rose-200 px-3 py-2 text-xs font-black text-rose-600 transition-colors hover:bg-rose-50 disabled:opacity-50"
+                        >
+                          <Trash2 size={14} />
+                          Eliminar definitivamente
+                        </button>
+                        <p className="mt-1.5 text-center text-[9px] leading-4 text-slate-400">
+                          Disponible solo para borradores o escenarios cancelados.
+                        </p>
                       </div>
                     )}
                   </>

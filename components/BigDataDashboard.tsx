@@ -4,6 +4,8 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -11,6 +13,10 @@ import {
 } from 'recharts';
 import {
   AlertTriangle,
+  ArrowLeft,
+  Activity,
+  BadgeCheck,
+  BarChart3,
   CalendarPlus,
   CalendarDays,
   CheckCircle2,
@@ -18,7 +24,9 @@ import {
   ChevronRight,
   Database,
   Eye,
+  FileWarning,
   Lightbulb,
+  Loader2,
   Search,
   ShieldCheck,
   Sparkles,
@@ -36,6 +44,7 @@ import {
   BigDataCalendarEventType,
   BigDataAnomalyContributor,
   BigDataPhaseOne,
+  BigDataPhaseTwoDiagnostic,
 } from '../types';
 import { createBigDataRequestGate } from '../utils/bigDataRequestGate';
 
@@ -129,6 +138,25 @@ const qualityCopy = {
   },
 };
 
+const diagnosticCopy = {
+  COMMERCIAL_MOVEMENT: {
+    label: 'Movimiento comercial',
+    classes: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  },
+  IMPORT_ISSUE: {
+    label: 'Problema de datos',
+    classes: 'border-rose-200 bg-rose-50 text-rose-700',
+  },
+  MIXED: {
+    label: 'Causa mixta',
+    classes: 'border-amber-200 bg-amber-50 text-amber-800',
+  },
+  INSUFFICIENT_DATA: {
+    label: 'Evidencia insuficiente',
+    classes: 'border-slate-200 bg-slate-50 text-slate-600',
+  },
+};
+
 const calendarCellClasses = (day: BigDataCalendarDay) => {
   if (day.status === 'MISSING') {
     return 'border-dashed border-slate-200 bg-slate-50 text-slate-400';
@@ -163,6 +191,10 @@ export const BigDataDashboard: React.FC = () => {
   const [anomalyDirection, setAnomalyDirection] = useState<AnomalyDirection>('ALL');
   const [anomalySort, setAnomalySort] = useState<AnomalySort>('impact');
   const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
+  const [diagnosticLocalId, setDiagnosticLocalId] = useState<string | null>(null);
+  const [diagnostic, setDiagnostic] = useState<BigDataPhaseTwoDiagnostic | null>(null);
+  const [diagnosticLoading, setDiagnosticLoading] = useState(false);
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
   const [selectedMonth, setSelectedMonth] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [showEventForm, setShowEventForm] = useState(false);
@@ -177,6 +209,7 @@ export const BigDataDashboard: React.FC = () => {
     notes: '',
   });
   const requestVersion = useRef(0);
+  const diagnosticRequestVersion = useRef(0);
   const requestGate = useRef(createBigDataRequestGate());
 
   useEffect(() => {
@@ -308,17 +341,73 @@ export const BigDataDashboard: React.FC = () => {
   );
 
   useEffect(() => {
+    diagnosticRequestVersion.current += 1;
     setSelectedAnomalyId(null);
+    setDiagnosticLocalId(null);
+    setDiagnostic(null);
+    setDiagnosticError(null);
   }, [anomalyView, currentMall?.id]);
 
   useEffect(() => {
-    if (!selectedAnomalyId) return;
+    if (!selectedAnomalyId && !diagnosticLocalId) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setSelectedAnomalyId(null);
+      if (event.key !== 'Escape') return;
+      if (diagnosticLocalId) {
+        setDiagnosticLocalId(null);
+        setDiagnostic(null);
+        setDiagnosticError(null);
+        return;
+      }
+      setSelectedAnomalyId(null);
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [selectedAnomalyId]);
+  }, [diagnosticLocalId, selectedAnomalyId]);
+
+  const openDiagnostic = async (contributor: BigDataAnomalyContributor) => {
+    if (!currentMall?.id || !session?.access_token || !selectedAnomaly) return;
+    const localId = contributor.local_id;
+    const version = ++diagnosticRequestVersion.current;
+    setDiagnosticLocalId(localId);
+    setDiagnostic(null);
+    setDiagnosticError(null);
+    setDiagnosticLoading(true);
+    try {
+      const response = await ApiService.getBigDataPhaseTwoDiagnostic(
+        currentMall.id,
+        localId,
+        dates.start,
+        dates.end,
+        selectedAnomaly.date,
+        session.access_token,
+      );
+      if (
+        diagnosticRequestVersion.current === version
+        &&
+        currentMall?.id === response.mall_id
+        && response.local.id === localId
+      ) {
+        setDiagnostic(response);
+      }
+    } catch (requestError: any) {
+      if (diagnosticRequestVersion.current === version) {
+        setDiagnosticError(
+          requestError?.message || 'No se pudo construir el diagnóstico 360°.',
+        );
+      }
+    } finally {
+      if (diagnosticRequestVersion.current === version) {
+        setDiagnosticLoading(false);
+      }
+    }
+  };
+
+  const closeDiagnostic = () => {
+    diagnosticRequestVersion.current += 1;
+    setDiagnosticLocalId(null);
+    setDiagnostic(null);
+    setDiagnosticError(null);
+  };
 
   const shiftMonth = (direction: number) => {
     const index = availableMonths.indexOf(selectedMonth);
@@ -1145,9 +1234,11 @@ export const BigDataDashboard: React.FC = () => {
                 <div className="mt-2 overflow-hidden rounded-xl border border-slate-200">
                   {selectedAnomaly.contributors.length > 0 ? (
                     selectedAnomaly.contributors.map((contributor) => (
-                      <div
+                      <button
+                        type="button"
                         key={contributor.local_id}
-                        className="grid grid-cols-[1fr_auto] gap-3 border-b border-slate-100 px-3 py-2.5 last:border-0"
+                        onClick={() => openDiagnostic(contributor)}
+                        className="grid w-full grid-cols-[1fr_auto] gap-3 border-b border-slate-100 px-3 py-2.5 text-left transition hover:bg-indigo-50/60 last:border-0"
                       >
                         <div className="min-w-0">
                           <p className="truncate text-xs font-black text-slate-800">
@@ -1155,6 +1246,9 @@ export const BigDataDashboard: React.FC = () => {
                           </p>
                           <p className="mt-0.5 text-[10px] text-slate-400">
                             {contributor.impact_share_percent.toFixed(1)}% del impacto · {contributor.peer_days} días comparables
+                          </p>
+                          <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-black text-indigo-600">
+                            Abrir diagnóstico 360° <ChevronRight size={11} />
                           </p>
                         </div>
                         <p className={contributor.contribution >= 0
@@ -1164,7 +1258,7 @@ export const BigDataDashboard: React.FC = () => {
                           {contributor.contribution > 0 ? '+' : ''}
                           {format(contributor.contribution)}
                         </p>
-                      </div>
+                      </button>
                     ))
                   ) : (
                     <p className="p-4 text-xs text-slate-500">
@@ -1198,6 +1292,324 @@ export const BigDataDashboard: React.FC = () => {
                 </div>
               </section>
             </div>
+          </aside>
+        </div>
+      )}
+
+      {diagnosticLocalId && (
+        <div className="fixed inset-0 z-[60] flex justify-end bg-slate-950/55 backdrop-blur-[3px]">
+          <button
+            type="button"
+            aria-label="Cerrar diagnóstico"
+            onClick={closeDiagnostic}
+            className="absolute inset-0 cursor-default"
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Diagnóstico 360 del local"
+            className="relative h-full w-full max-w-3xl overflow-y-auto border-l border-slate-200 bg-slate-50 shadow-2xl"
+          >
+            <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    onClick={closeDiagnostic}
+                    className="mt-0.5 rounded-lg border border-slate-200 p-2 text-slate-500 hover:bg-slate-50"
+                    aria-label="Volver a la anomalía"
+                  >
+                    <ArrowLeft size={16} />
+                  </button>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-indigo-500">
+                      Big Data · Fase 2
+                    </p>
+                    <h2 className="mt-1 text-xl font-black text-slate-900">
+                      Diagnóstico 360°
+                    </h2>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      {diagnostic?.local.name || 'Construyendo diagnóstico del local…'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeDiagnostic}
+                  className="rounded-lg p-2 text-slate-400 hover:bg-slate-100"
+                  aria-label="Cerrar"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </header>
+
+            {diagnosticLoading && (
+              <div className="grid min-h-[60vh] place-items-center p-8">
+                <div className="text-center">
+                  <Loader2 className="mx-auto animate-spin text-indigo-600" size={30} />
+                  <p className="mt-3 text-sm font-bold text-slate-600">
+                    Contrastando historial, pares e importaciones…
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {!diagnosticLoading && diagnosticError && (
+              <div className="m-5 rounded-2xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-800">
+                <p className="font-black">No fue posible completar el diagnóstico.</p>
+                <p className="mt-1">{diagnosticError}</p>
+              </div>
+            )}
+
+            {!diagnosticLoading && diagnostic && (
+              <div className="space-y-4 p-5">
+                <section className="rounded-2xl bg-slate-950 p-5 text-white shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-black text-white">{diagnostic.local.name}</p>
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        {diagnostic.local.category_name
+                          || diagnostic.local.business_type
+                          || 'Sin categoría homologada'}
+                        {diagnostic.local.category_source === 'RUBRO_FALLBACK'
+                          ? ' (rubro provisional)'
+                          : ''}
+                        {' · '}
+                        {formatDate(diagnostic.period.target_date, {
+                          day: 'numeric',
+                          month: 'long',
+                          year: 'numeric',
+                        })}
+                      </p>
+                    </div>
+                    <span className={`rounded-full border px-3 py-1 text-[10px] font-black ${
+                      diagnosticCopy[diagnostic.diagnosis.classification].classes
+                    }`}>
+                      {diagnosticCopy[diagnostic.diagnosis.classification].label}
+                    </span>
+                  </div>
+                  <div className="mt-5 grid grid-cols-2 gap-2 lg:grid-cols-4">
+                    {[
+                      ['Venta observada', format(diagnostic.headline.observed_sales)],
+                      ['Referencia', format(diagnostic.headline.expected_sales)],
+                      [
+                        'Desviación',
+                        diagnostic.headline.deviation_percent == null
+                          ? 'Sin base'
+                          : `${diagnostic.headline.deviation_percent > 0 ? '+' : ''}${diagnostic.headline.deviation_percent.toFixed(1)}%`,
+                      ],
+                      [
+                        'Posición categoría',
+                        diagnostic.benchmark.status === 'OK'
+                          ? `${diagnostic.benchmark.rank}/${diagnostic.benchmark.comparable_stores}`
+                          : 'Sin muestra',
+                      ],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-xl bg-white/10 p-3">
+                        <p className="text-[9px] font-bold uppercase text-slate-400">{label}</p>
+                        <p className="mt-1 truncate text-sm font-black">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-indigo-100 bg-white p-5 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-indigo-500">
+                      <BadgeCheck size={15} /> Conclusión analítica
+                    </p>
+                    <span className="text-[10px] font-bold text-slate-400">
+                      Confianza {(diagnostic.diagnosis.confidence * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  <p className="mt-3 text-base font-black leading-6 text-slate-900">
+                    {diagnostic.diagnosis.summary}
+                  </p>
+                  <div className="mt-4 grid gap-2 md:grid-cols-2">
+                    {diagnostic.diagnosis.factors.map((factor) => (
+                      <div
+                        key={factor.type}
+                        className={`rounded-xl border p-3 ${toneClasses[factor.tone]}`}
+                      >
+                        <p className="text-[10px] font-black uppercase">{factor.label}</p>
+                        <p className="mt-1 text-xs leading-5">{factor.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 rounded-xl bg-indigo-50 p-3">
+                    <p className="text-[10px] font-black uppercase text-indigo-600">Siguiente acción</p>
+                    <p className="mt-1 text-sm leading-6 text-indigo-950">
+                      {diagnostic.diagnosis.recommendation}
+                    </p>
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">
+                      <Activity size={15} /> Evolución del local
+                    </p>
+                    <span className="text-[10px] font-bold text-slate-400">
+                      {diagnostic.headline.peer_days} días comparables
+                    </span>
+                  </div>
+                  <div className="mt-4 h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={diagnostic.timeline} margin={{ top: 5, right: 8, left: -15, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis
+                          dataKey="date"
+                          tick={{ fontSize: 9, fill: '#94a3b8' }}
+                          tickFormatter={(value) => formatDate(value, { day: '2-digit', month: '2-digit' })}
+                          minTickGap={24}
+                        />
+                        <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} tickFormatter={(value) => compactNumber.format(value)} />
+                        <Tooltip
+                          labelFormatter={(value) => formatDate(String(value), {
+                            day: 'numeric',
+                            month: 'long',
+                          })}
+                          formatter={(value: any, name: string) => [
+                            format(Number(value)),
+                            name === 'sales_net' ? 'Venta' : 'Referencia',
+                          ]}
+                        />
+                        <Line type="monotone" dataKey="expected_sales" stroke="#94a3b8" strokeDasharray="5 4" dot={false} strokeWidth={2} />
+                        <Line type="monotone" dataKey="sales_net" stroke="#4f46e5" dot={false} strokeWidth={2.5} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </section>
+
+                <section className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">
+                      <BarChart3 size={15} /> Comparación de categoría
+                    </p>
+                    {diagnostic.benchmark.category_source === 'RUBRO_FALLBACK' && (
+                      <p className="mt-2 text-[10px] font-bold text-amber-600">
+                        Referencia provisional por rubro; pendiente de homologación comercial.
+                      </p>
+                    )}
+                    {diagnostic.benchmark.status === 'OK' ? (
+                      <>
+                        <div className="mt-4 grid grid-cols-2 gap-2">
+                          <div className="rounded-xl bg-indigo-50 p-3">
+                            <p className="text-[9px] font-bold uppercase text-indigo-500">Percentil</p>
+                            <p className="mt-1 text-xl font-black text-indigo-950">
+                              {diagnostic.benchmark.percentile?.toFixed(0)}
+                            </p>
+                          </div>
+                          <div className="rounded-xl bg-slate-50 p-3">
+                            <p className="text-[9px] font-bold uppercase text-slate-500">Vs. mediana</p>
+                            <p className={`mt-1 text-xl font-black ${
+                              Number(diagnostic.benchmark.difference_vs_median_percent) >= 0
+                                ? 'text-emerald-600'
+                                : 'text-rose-600'
+                            }`}>
+                              {Number(diagnostic.benchmark.difference_vs_median_percent) > 0 ? '+' : ''}
+                              {diagnostic.benchmark.difference_vs_median_percent?.toFixed(1)}%
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-4 space-y-2">
+                          {(diagnostic.benchmark.leaders || []).map((leader, index) => (
+                            <div key={leader.local_id} className="flex items-center justify-between gap-3 text-xs">
+                              <span className="min-w-0 truncate font-bold text-slate-600">
+                                {index + 1}. {leader.local_name}
+                              </span>
+                              <span className="shrink-0 font-black text-slate-800">{format(leader.sales_net)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="mt-4 text-sm leading-6 text-slate-500">
+                        {diagnostic.benchmark.reason}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">
+                      <Database size={15} /> Cobertura
+                    </p>
+                    <p className="mt-4 text-3xl font-black text-slate-900">
+                      {diagnostic.evidence.coverage.percent.toFixed(1)}%
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {diagnostic.evidence.coverage.days_with_data} de{' '}
+                      {diagnostic.evidence.coverage.expected_days} días con datos
+                    </p>
+                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-indigo-500"
+                        style={{ width: `${Math.min(diagnostic.evidence.coverage.percent, 100)}%` }}
+                      />
+                    </div>
+                    <p className="mt-3 text-xs font-bold text-slate-600">
+                      Fecha analizada: {diagnostic.evidence.coverage.target_status}
+                    </p>
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">
+                      <FileWarning size={15} /> Evidencia de importación
+                    </p>
+                    <span className={diagnostic.evidence.related_import_issue
+                      ? 'rounded-full bg-rose-50 px-2 py-1 text-[10px] font-black text-rose-600'
+                      : 'rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-black text-emerald-600'}
+                    >
+                      {diagnostic.evidence.related_import_issue ? 'Requiere revisión' : 'Sin fallos relacionados'}
+                    </span>
+                  </div>
+                  <div className="mt-4 overflow-hidden rounded-xl border border-slate-100">
+                    {diagnostic.evidence.imports.length ? (
+                      diagnostic.evidence.imports.map((item, index) => (
+                        <div
+                          key={`${item.date}-${item.filename}-${index}`}
+                          className="grid gap-2 border-b border-slate-100 p-3 last:border-0 md:grid-cols-[1fr_auto]"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-black text-slate-800">{item.filename}</p>
+                            <p className="mt-1 text-[10px] text-slate-400">
+                              {item.channel || 'Canal no identificado'} · {item.records_processed} registros · {item.error_count} errores
+                            </p>
+                            {item.message && <p className="mt-1 line-clamp-2 text-[10px] text-slate-500">{item.message}</p>}
+                          </div>
+                          <div className="flex items-start gap-2">
+                            <span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-500">
+                              {item.match === 'FILE_DATE'
+                                ? 'Fecha en archivo'
+                                : item.match === 'PROCESSING_DATE'
+                                ? 'Fecha cercana'
+                                : 'Dentro del período'}
+                            </span>
+                            <span className={item.has_issue
+                              ? 'rounded-full bg-rose-50 px-2 py-1 text-[9px] font-black text-rose-600'
+                              : 'rounded-full bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-600'}
+                            >
+                              {item.status}
+                            </span>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="p-4 text-xs text-slate-500">
+                        No hay logs de importación para este local dentro del período.
+                      </p>
+                    )}
+                  </div>
+                </section>
+
+                <p className="px-1 text-[10px] leading-5 text-slate-400">
+                  {diagnostic.methodology} Versión {diagnostic.version}.
+                </p>
+              </div>
+            )}
           </aside>
         </div>
       )}

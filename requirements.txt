@@ -14,3 +14,4 @@ openpyxl
 reportlab
 PyJWT
 pytest
+holidays==0.101

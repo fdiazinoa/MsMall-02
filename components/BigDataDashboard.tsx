@@ -17,7 +17,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  Eye,
   Lightbulb,
+  Search,
   ShieldCheck,
   Sparkles,
   Store,
@@ -32,14 +34,32 @@ import { useFormatCurrency } from '../hooks/useFormatCurrency';
 import {
   BigDataCalendarDay,
   BigDataCalendarEventType,
+  BigDataAnomalyContributor,
   BigDataPhaseOne,
-  BigDataPhaseOneAnomaly,
 } from '../types';
 import { createBigDataRequestGate } from '../utils/bigDataRequestGate';
 
 const WEEKDAY_HEADERS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
 type IntelligenceTab = 'summary' | 'calendar' | 'anomalies' | 'quality';
 type AnomalyView = 'pending' | 'explained';
+type AnomalyDirection = 'ALL' | 'UP' | 'DOWN';
+type AnomalySort = 'impact' | 'deviation' | 'date' | 'confidence';
+
+interface AnomalyListRow {
+  id: string;
+  status: AnomalyView;
+  date: string;
+  direction: 'UP' | 'DOWN';
+  deviationPercent: number;
+  observedSales: number;
+  expectedSales: number;
+  impact: number;
+  confidence: number;
+  explanation: string;
+  recommendation?: string;
+  contributors: BigDataAnomalyContributor[];
+  context: string;
+}
 
 const INTELLIGENCE_TABS: Array<{
   id: IntelligenceTab;
@@ -130,15 +150,6 @@ const calendarCellClasses = (day: BigDataCalendarDay) => {
   return 'border-slate-100 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50/40';
 };
 
-const anomalyCopy = (anomaly: BigDataPhaseOneAnomaly) => ({
-  icon: anomaly.direction === 'UP' ? TrendingUp : TrendingDown,
-  accent: anomaly.direction === 'UP' ? 'text-emerald-600' : 'text-rose-600',
-  badge: anomaly.direction === 'UP'
-    ? 'bg-emerald-50 text-emerald-700'
-    : 'bg-rose-50 text-rose-700',
-  label: anomaly.direction === 'UP' ? 'Pico inusual' : 'Caída inusual',
-});
-
 export const BigDataDashboard: React.FC = () => {
   const { currentMall, session, isAdmin, isTic } = useAuth();
   const { format } = useFormatCurrency();
@@ -148,6 +159,10 @@ export const BigDataDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<IntelligenceTab>('summary');
   const [anomalyView, setAnomalyView] = useState<AnomalyView>('pending');
+  const [anomalySearch, setAnomalySearch] = useState('');
+  const [anomalyDirection, setAnomalyDirection] = useState<AnomalyDirection>('ALL');
+  const [anomalySort, setAnomalySort] = useState<AnomalySort>('impact');
+  const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
   const [selectedMonth, setSelectedMonth] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [showEventForm, setShowEventForm] = useState(false);
@@ -223,6 +238,88 @@ export const BigDataDashboard: React.FC = () => {
     const sundayBased = safeDate(`${selectedMonth}-01`).getDay();
     return (sundayBased + 6) % 7;
   }, [selectedMonth]);
+
+  const anomalyRows = useMemo<AnomalyListRow[]>(() => {
+    if (!data) return [];
+    const pending: AnomalyListRow[] = data.anomalies.map((anomaly) => ({
+      id: `pending-${anomaly.date}`,
+      status: 'pending',
+      date: anomaly.date,
+      direction: anomaly.direction,
+      deviationPercent: anomaly.deviation_percent,
+      observedSales: anomaly.observed_sales,
+      expectedSales: anomaly.expected_sales,
+      impact: anomaly.impact,
+      confidence: anomaly.confidence,
+      explanation: anomaly.explanation,
+      recommendation: anomaly.recommendation,
+      contributors: anomaly.contributors,
+      context: anomaly.holiday_name
+        || (anomaly.is_weekend ? 'Fin de semana' : 'Sin contexto comercial registrado'),
+    }));
+    const explained: AnomalyListRow[] = data.explained_events.map((movement) => ({
+      id: `explained-${movement.date}`,
+      status: 'explained',
+      date: movement.date,
+      direction: movement.direction,
+      deviationPercent: movement.deviation_percent,
+      observedSales: movement.observed_sales,
+      expectedSales: movement.expected_sales,
+      impact: movement.impact,
+      confidence: movement.confidence,
+      explanation: movement.explanation,
+      contributors: movement.contributors,
+      context: movement.events.length
+        ? movement.events.map((event) => event.name).join(', ')
+        : movement.holiday_name || 'Calendario comercial',
+    }));
+    return [...pending, ...explained];
+  }, [data]);
+
+  const visibleAnomalyRows = useMemo(() => {
+    const normalizedSearch = anomalySearch.trim().toLocaleLowerCase('es');
+    return anomalyRows
+      .filter((row) => row.status === anomalyView)
+      .filter((row) => anomalyDirection === 'ALL' || row.direction === anomalyDirection)
+      .filter((row) => {
+        if (!normalizedSearch) return true;
+        const contributorNames = row.contributors
+          .map((contributor) => contributor.local_name)
+          .join(' ');
+        return [
+          row.date,
+          row.context,
+          row.explanation,
+          contributorNames,
+        ].join(' ').toLocaleLowerCase('es').includes(normalizedSearch);
+      })
+      .sort((left, right) => {
+        if (anomalySort === 'date') return right.date.localeCompare(left.date);
+        if (anomalySort === 'confidence') return right.confidence - left.confidence;
+        if (anomalySort === 'deviation') {
+          return Math.abs(right.deviationPercent) - Math.abs(left.deviationPercent);
+        }
+        return Math.abs(right.impact) - Math.abs(left.impact);
+      });
+  }, [anomalyDirection, anomalyRows, anomalySearch, anomalySort, anomalyView]);
+
+  const selectedAnomaly = useMemo(
+    () => anomalyRows.find((row) => row.id === selectedAnomalyId) || null,
+    [anomalyRows, selectedAnomalyId],
+  );
+
+  useEffect(() => {
+    setSelectedAnomalyId(null);
+  }, [anomalyView, currentMall?.id]);
+
+  useEffect(() => {
+    if (!selectedAnomalyId) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSelectedAnomalyId(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [selectedAnomalyId]);
 
   const shiftMonth = (direction: number) => {
     const index = availableMonths.indexOf(selectedMonth);
@@ -731,190 +828,155 @@ export const BigDataDashboard: React.FC = () => {
             </div>
           )}
 
-          {activeTab === 'anomalies' && anomalyView === 'explained' && (
-          <section role="tabpanel" className="rounded-2xl border border-sky-100 bg-gradient-to-br from-sky-50 to-white p-4 shadow-sm">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-sky-700">
-                  <CalendarPlus size={16} /> Contexto comercial
-                </p>
-                <h3 className="mt-1 text-lg font-black text-slate-900">
-                  Movimientos explicados por actividades del mall
-                </h3>
-                <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">
-                  Promociones, ventas de pasillo y actividades puntuales se separan de las
-                  anomalías que todavía requieren investigación.
-                </p>
-              </div>
-              <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-xs font-black text-sky-700">
-                {data.calendar_context.registered_events.length} evento(s) en el período
-              </span>
-            </div>
-
-            {data.explained_events.length > 0 && (
-              <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                {data.explained_events.map((movement) => (
-                  <article key={movement.date} className="rounded-xl border border-sky-100 bg-white p-3.5">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-[10px] font-black uppercase tracking-wide text-sky-600">
-                          {movement.events.length
-                            ? movement.events.map((event) => event.event_type_label).join(' · ')
-                            : 'Feriado RD'}
-                        </p>
-                        <h4 className="mt-1 font-black text-slate-900">
-                          {movement.events.length
-                            ? movement.events.map((event) => event.name).join(', ')
-                            : movement.holiday_name}
-                        </h4>
-                        <p className="mt-1 text-xs capitalize text-slate-400">
-                          {formatDate(movement.date, { weekday: 'long', day: 'numeric', month: 'long' })}
-                        </p>
-                      </div>
-                      <p className={movement.deviation_percent >= 0
-                        ? 'text-xl font-black text-emerald-600'
-                        : 'text-xl font-black text-rose-600'}
-                      >
-                        {movement.deviation_percent > 0 ? '+' : ''}
-                        {movement.deviation_percent.toFixed(1)}%
-                      </p>
-                    </div>
-                    <p className="mt-3 text-xs leading-5 text-slate-600">{movement.explanation}</p>
-                  </article>
-                ))}
-              </div>
-            )}
-
-            {data.explained_events.length === 0 && (
-              <div className="mt-4 rounded-2xl border border-sky-100 bg-white p-4 text-xs leading-5 text-slate-600">
-                {data.calendar_context.registered_events.length
-                  ? 'Hay eventos registrados, pero ninguno coincide con una desviación material en el período.'
-                  : 'Aún no hay promociones, ventas de pasillo o actividades registradas para este período.'}
-              </div>
-            )}
-
-            {data.calendar_context.registered_events.length > 0 && (
-              <div className="mt-4 flex flex-wrap gap-2">
-                {data.calendar_context.registered_events.map((event) => (
-                  <span
-                    key={event.id}
-                    className="inline-flex items-center gap-2 rounded-full border border-sky-100 bg-white px-3 py-1.5 text-[10px] font-bold text-slate-600"
+          {activeTab === 'anomalies' && (
+            <section role="tabpanel" className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex flex-col gap-3 border-b border-slate-100 p-4 xl:flex-row xl:items-end xl:justify-between">
+                <div>
+                  <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
+                    <AlertTriangle size={16} />
+                    {anomalyView === 'pending' ? 'Anomalías por investigar' : 'Movimientos explicados'}
+                  </p>
+                  <h3 className="mt-1 text-lg font-black text-slate-900">
+                    Compara el impacto y abre la ficha para profundizar
+                  </h3>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <label className="relative">
+                    <Search size={14} className="pointer-events-none absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      value={anomalySearch}
+                      onChange={(event) => setAnomalySearch(event.target.value)}
+                      placeholder="Buscar fecha, local o contexto"
+                      className="w-full rounded-lg border border-slate-200 py-2 pl-9 pr-3 text-xs outline-none focus:border-indigo-400 sm:w-56"
+                    />
+                  </label>
+                  <select
+                    value={anomalyDirection}
+                    onChange={(event) => setAnomalyDirection(event.target.value as AnomalyDirection)}
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 outline-none focus:border-indigo-400"
+                    aria-label="Filtrar dirección"
                   >
-                    {event.event_type_label}: {event.name}
-                    <span className="text-slate-400">
-                      {formatDate(event.start_date, { day: '2-digit', month: 'short' })}
-                      {event.end_date !== event.start_date
-                        ? `–${formatDate(event.end_date, { day: '2-digit', month: 'short' })}`
-                        : ''}
-                    </span>
-                    {(isAdmin || isTic) && (
-                      <button
-                        type="button"
-                        onClick={() => removeCalendarEvent(event.id, event.name)}
-                        className="text-slate-300 hover:text-rose-600"
-                        aria-label={`Eliminar ${event.name}`}
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
-                  </span>
-                ))}
+                    <option value="ALL">Todas las direcciones</option>
+                    <option value="UP">Picos</option>
+                    <option value="DOWN">Caídas</option>
+                  </select>
+                  <select
+                    value={anomalySort}
+                    onChange={(event) => setAnomalySort(event.target.value as AnomalySort)}
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 outline-none focus:border-indigo-400"
+                    aria-label="Ordenar anomalías"
+                  >
+                    <option value="impact">Mayor impacto</option>
+                    <option value="deviation">Mayor desviación</option>
+                    <option value="date">Fecha más reciente</option>
+                    <option value="confidence">Mayor confianza</option>
+                  </select>
+                </div>
               </div>
-            )}
-          </section>
-          )}
 
-          {activeTab === 'anomalies' && anomalyView === 'pending' && (
-          <section role="tabpanel" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
-                  <AlertTriangle size={16} /> Anomalías por investigar
-                </p>
-                <h3 className="mt-1 text-lg font-black text-slate-900">
-                  Qué cambió sin una causa comercial registrada
-                </h3>
-              </div>
-              <p className="max-w-xl text-xs leading-5 text-slate-500">
-                Se compara cada fecha con la mediana de otros días equivalentes. No se concluye
-                desempeño comercial cuando la confiabilidad de los datos es baja.
-              </p>
-            </div>
-            <div className="mt-4 grid gap-3 xl:grid-cols-2">
-              {data.anomalies.map((anomaly) => {
-                const copy = anomalyCopy(anomaly);
-                const Icon = copy.icon;
-                return (
-                  <article key={anomaly.date} className="rounded-xl border border-slate-200 p-3.5">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex gap-3">
-                        <div className={`rounded-xl bg-slate-50 p-2.5 ${copy.accent}`}>
-                          <Icon size={20} />
-                        </div>
-                        <div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${copy.badge}`}>
-                              {copy.label}
-                            </span>
-                            <span className="text-[10px] font-bold text-slate-400">
-                              confianza {(anomaly.confidence * 100).toFixed(0)}%
-                            </span>
-                          </div>
-                          <h4 className="mt-2 font-black text-slate-900">
-                            {formatDate(anomaly.date, { weekday: 'long', day: 'numeric', month: 'long' })}
-                          </h4>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className={`text-xl font-black ${copy.accent}`}>
-                          {anomaly.deviation_percent > 0 ? '+' : ''}{anomaly.deviation_percent.toFixed(1)}%
-                        </p>
-                        <p className="text-[10px] text-slate-400">vs. día comparable</p>
-                      </div>
-                    </div>
-                    <p className="mt-3 text-xs leading-5 text-slate-600">{anomaly.explanation}</p>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                      <div className="rounded-xl bg-slate-50 p-3">
-                        <p className="text-slate-400">Observado</p>
-                        <p className="mt-1 font-black text-slate-800">{format(anomaly.observed_sales)}</p>
-                      </div>
-                      <div className="rounded-xl bg-slate-50 p-3">
-                        <p className="text-slate-400">Referencia</p>
-                        <p className="mt-1 font-black text-slate-800">{format(anomaly.expected_sales)}</p>
-                      </div>
-                    </div>
-                    <div className="mt-4 border-t border-slate-100 pt-3">
-                      <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-slate-400">
-                        <Store size={13} /> Principales contribuyentes
-                      </p>
-                      <div className="mt-2 space-y-2">
-                        {anomaly.contributors.slice(0, 3).map((contributor) => (
-                          <div key={contributor.local_id} className="flex items-center justify-between gap-3 text-xs">
-                            <span className="truncate font-bold text-slate-700">{contributor.local_name}</span>
-                            <span className={contributor.contribution >= 0 ? 'font-black text-emerald-600' : 'font-black text-rose-600'}>
-                              {contributor.contribution >= 0 ? '+' : ''}{format(contributor.contribution)}
-                            </span>
-                          </div>
-                        ))}
-                        {!anomaly.contributors.length && (
-                          <p className="text-xs text-slate-400">No hay suficiente historial por local para atribuir la causa.</p>
-                        )}
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
-              {!data.anomalies.length && (
-                <div className="flex items-center gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-5 text-emerald-800 xl:col-span-2">
-                  <CheckCircle2 size={22} />
-                  <div>
-                    <p className="font-black">Sin desviaciones materiales</p>
-                    <p className="mt-1 text-xs">No hubo fechas con al menos 30% de diferencia y suficiente historial comparable.</p>
+              {visibleAnomalyRows.length > 0 ? (
+                <>
+                  <div className="hidden overflow-x-auto md:block">
+                    <table className="min-w-[1050px] w-full border-collapse text-left">
+                      <thead className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-400">
+                        <tr>
+                          {['Fecha', 'Estado', 'Dirección', 'Desviación', 'Observado', 'Esperado', 'Impacto', 'Confianza', 'Contribuyente', ''].map((label) => (
+                            <th key={label || 'action'} className="whitespace-nowrap px-3 py-2.5">{label}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {visibleAnomalyRows.map((row) => {
+                          const contributor = row.contributors[0];
+                          return (
+                            <tr key={row.id} className="text-xs text-slate-600 hover:bg-indigo-50/30">
+                              <td className="whitespace-nowrap px-3 py-3 font-black capitalize text-slate-800">
+                                {formatDate(row.date, { day: '2-digit', month: 'short', year: 'numeric' })}
+                              </td>
+                              <td className="px-3 py-3">
+                                <span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${
+                                  row.status === 'pending'
+                                    ? 'bg-amber-50 text-amber-700'
+                                    : 'bg-sky-50 text-sky-700'
+                                }`}>
+                                  {row.status === 'pending' ? 'Pendiente' : 'Explicada'}
+                                </span>
+                              </td>
+                              <td className="px-3 py-3">
+                                <span className={`inline-flex items-center gap-1 font-black ${
+                                  row.direction === 'UP' ? 'text-emerald-600' : 'text-rose-600'
+                                }`}>
+                                  {row.direction === 'UP' ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+                                  {row.direction === 'UP' ? 'Pico' : 'Caída'}
+                                </span>
+                              </td>
+                              <td className={`px-3 py-3 font-black ${
+                                row.direction === 'UP' ? 'text-emerald-600' : 'text-rose-600'
+                              }`}>
+                                {row.deviationPercent > 0 ? '+' : ''}{row.deviationPercent.toFixed(1)}%
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-3 font-bold text-slate-800">{format(row.observedSales)}</td>
+                              <td className="whitespace-nowrap px-3 py-3">{format(row.expectedSales)}</td>
+                              <td className={`whitespace-nowrap px-3 py-3 font-black ${
+                                row.impact >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                              }`}>
+                                {row.impact > 0 ? '+' : ''}{format(row.impact)}
+                              </td>
+                              <td className="px-3 py-3 font-bold">{(row.confidence * 100).toFixed(0)}%</td>
+                              <td className="max-w-40 truncate px-3 py-3 font-bold text-slate-700">
+                                {contributor?.local_name || 'Sin atribución'}
+                              </td>
+                              <td className="px-3 py-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedAnomalyId(row.id)}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-indigo-100 px-2.5 py-1.5 text-[10px] font-black text-indigo-600 hover:bg-indigo-50"
+                                >
+                                  <Eye size={13} /> Ver ficha
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
+
+                  <div className="divide-y divide-slate-100 md:hidden">
+                    {visibleAnomalyRows.map((row) => (
+                      <button
+                        key={row.id}
+                        type="button"
+                        onClick={() => setSelectedAnomalyId(row.id)}
+                        className="flex w-full items-center justify-between gap-3 p-4 text-left"
+                      >
+                        <span>
+                          <span className="block text-xs font-black capitalize text-slate-800">
+                            {formatDate(row.date, { day: '2-digit', month: 'short', year: 'numeric' })}
+                          </span>
+                          <span className="mt-1 block max-w-52 truncate text-[10px] text-slate-500">
+                            {row.contributors[0]?.local_name || row.context}
+                          </span>
+                        </span>
+                        <span className="text-right">
+                          <span className={`block text-sm font-black ${
+                            row.direction === 'UP' ? 'text-emerald-600' : 'text-rose-600'
+                          }`}>
+                            {row.deviationPercent > 0 ? '+' : ''}{row.deviationPercent.toFixed(1)}%
+                          </span>
+                          <span className="mt-1 block text-[9px] font-bold text-indigo-600">Ver ficha</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-3 p-6 text-sm text-slate-500">
+                  <CheckCircle2 size={20} className="text-emerald-500" />
+                  No hay movimientos que coincidan con los filtros seleccionados.
                 </div>
               )}
-            </div>
-          </section>
+            </section>
           )}
 
           {activeTab === 'quality' && (
@@ -974,6 +1036,171 @@ export const BigDataDashboard: React.FC = () => {
           </footer>
           )}
         </>
+      )}
+
+      {selectedAnomaly && (
+        <div className="fixed inset-0 z-50">
+          <button
+            type="button"
+            aria-label="Cerrar ficha de anomalía"
+            onClick={() => setSelectedAnomalyId(null)}
+            className="absolute inset-0 bg-slate-950/45 backdrop-blur-sm"
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Ficha de anomalía"
+            className="absolute inset-y-0 right-0 w-full max-w-xl overflow-y-auto bg-white shadow-2xl"
+          >
+            <div className="sticky top-0 z-10 border-b border-slate-100 bg-white/95 px-5 py-4 backdrop-blur">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${
+                    selectedAnomaly.status === 'pending'
+                      ? 'bg-amber-50 text-amber-700'
+                      : 'bg-sky-50 text-sky-700'
+                  }`}>
+                    {selectedAnomaly.status === 'pending' ? 'Por investigar' : 'Movimiento explicado'}
+                  </span>
+                  <h3 className="mt-2 text-xl font-black capitalize text-slate-900">
+                    {formatDate(selectedAnomaly.date, {
+                      weekday: 'long',
+                      day: 'numeric',
+                      month: 'long',
+                      year: 'numeric',
+                    })}
+                  </h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Ficha analítica del movimiento comercial
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedAnomalyId(null)}
+                  className="rounded-xl border border-slate-200 p-2 text-slate-400 hover:text-slate-700"
+                  aria-label="Cerrar"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-5 p-5">
+              <section className="rounded-2xl bg-slate-950 p-4 text-white">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-2">
+                    {selectedAnomaly.direction === 'UP'
+                      ? <TrendingUp size={20} className="text-emerald-400" />
+                      : <TrendingDown size={20} className="text-rose-400" />}
+                    <span className="text-sm font-black">
+                      {selectedAnomaly.direction === 'UP' ? 'Pico de venta' : 'Caída de venta'}
+                    </span>
+                  </div>
+                  <span className={selectedAnomaly.direction === 'UP'
+                    ? 'text-2xl font-black text-emerald-400'
+                    : 'text-2xl font-black text-rose-400'}
+                  >
+                    {selectedAnomaly.deviationPercent > 0 ? '+' : ''}
+                    {selectedAnomaly.deviationPercent.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  {[
+                    ['Observado', format(selectedAnomaly.observedSales)],
+                    ['Esperado', format(selectedAnomaly.expectedSales)],
+                    ['Impacto', `${selectedAnomaly.impact > 0 ? '+' : ''}${format(selectedAnomaly.impact)}`],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-xl bg-white/10 p-3">
+                      <p className="text-[9px] font-bold uppercase text-slate-400">{label}</p>
+                      <p className="mt-1 truncate text-sm font-black">{value}</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
+                  Interpretación
+                </p>
+                <p className="mt-2 text-sm leading-6 text-slate-700">
+                  {selectedAnomaly.explanation}
+                </p>
+              </section>
+
+              <section className="rounded-xl border border-sky-100 bg-sky-50/70 p-4">
+                <p className="text-[10px] font-black uppercase tracking-wide text-sky-600">
+                  Contexto de la fecha
+                </p>
+                <p className="mt-1 text-sm font-bold text-sky-900">{selectedAnomaly.context}</p>
+              </section>
+
+              <section>
+                <div className="flex items-center justify-between">
+                  <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
+                    <Store size={13} /> Locales contribuyentes
+                  </p>
+                  <span className="text-[10px] font-bold text-slate-400">
+                    Confianza {(selectedAnomaly.confidence * 100).toFixed(0)}%
+                  </span>
+                </div>
+                <div className="mt-2 overflow-hidden rounded-xl border border-slate-200">
+                  {selectedAnomaly.contributors.length > 0 ? (
+                    selectedAnomaly.contributors.map((contributor) => (
+                      <div
+                        key={contributor.local_id}
+                        className="grid grid-cols-[1fr_auto] gap-3 border-b border-slate-100 px-3 py-2.5 last:border-0"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-black text-slate-800">
+                            {contributor.local_name}
+                          </p>
+                          <p className="mt-0.5 text-[10px] text-slate-400">
+                            {contributor.impact_share_percent.toFixed(1)}% del impacto · {contributor.peer_days} días comparables
+                          </p>
+                        </div>
+                        <p className={contributor.contribution >= 0
+                          ? 'text-xs font-black text-emerald-600'
+                          : 'text-xs font-black text-rose-600'}
+                        >
+                          {contributor.contribution > 0 ? '+' : ''}
+                          {format(contributor.contribution)}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="p-4 text-xs text-slate-500">
+                      No hay suficiente historial por local para atribuir la causa.
+                    </p>
+                  )}
+                </div>
+              </section>
+
+              {selectedAnomaly.recommendation && (
+                <section className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-4">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-indigo-600">
+                    Recomendación
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-indigo-900">
+                    {selectedAnomaly.recommendation}
+                  </p>
+                </section>
+              )}
+
+              <section className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                <div className="flex items-center justify-between text-[10px] font-bold text-slate-500">
+                  <span>Confianza analítica</span>
+                  <span>{(selectedAnomaly.confidence * 100).toFixed(0)}%</span>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                  <div
+                    className="h-full rounded-full bg-indigo-500"
+                    style={{ width: `${Math.min(selectedAnomaly.confidence * 100, 100)}%` }}
+                  />
+                </div>
+              </section>
+            </div>
+          </aside>
+        </div>
       )}
 
       {showEventForm && (

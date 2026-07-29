@@ -45,14 +45,16 @@ import {
   BigDataAnomalyContributor,
   BigDataPhaseOne,
   BigDataPhaseTwoDiagnostic,
+  BigDataPhaseThreePrediction,
 } from '../types';
 import { createBigDataRequestGate } from '../utils/bigDataRequestGate';
 
 const WEEKDAY_HEADERS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
-type IntelligenceTab = 'summary' | 'calendar' | 'anomalies' | 'quality';
+type IntelligenceTab = 'summary' | 'prediction' | 'calendar' | 'anomalies' | 'quality';
 type AnomalyView = 'pending' | 'explained';
 type AnomalyDirection = 'ALL' | 'UP' | 'DOWN';
 type AnomalySort = 'impact' | 'deviation' | 'date' | 'confidence';
+type PredictionHorizon = 7 | 30 | 90;
 
 interface AnomalyListRow {
   id: string;
@@ -77,6 +79,7 @@ const INTELLIGENCE_TABS: Array<{
   icon: React.ElementType;
 }> = [
   { id: 'summary', label: 'Resumen', description: 'Hallazgos y patrones', icon: Sparkles },
+  { id: 'prediction', label: 'Predicción', description: 'Próximos 7, 30 y 90 días', icon: TrendingUp },
   { id: 'calendar', label: 'Calendario', description: 'Fechas y actividades', icon: CalendarDays },
   { id: 'anomalies', label: 'Anomalías', description: 'Movimientos relevantes', icon: AlertTriangle },
   { id: 'quality', label: 'Calidad', description: 'Cobertura y trazabilidad', icon: ShieldCheck },
@@ -157,6 +160,21 @@ const diagnosticCopy = {
   },
 };
 
+const predictionConfidenceCopy = {
+  HIGH: {
+    label: 'Alta',
+    classes: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  },
+  MEDIUM: {
+    label: 'Media',
+    classes: 'border-amber-200 bg-amber-50 text-amber-700',
+  },
+  LOW: {
+    label: 'Baja',
+    classes: 'border-rose-200 bg-rose-50 text-rose-700',
+  },
+};
+
 const calendarCellClasses = (day: BigDataCalendarDay) => {
   if (day.status === 'MISSING') {
     return 'border-dashed border-slate-200 bg-slate-50 text-slate-400';
@@ -195,6 +213,10 @@ export const BigDataDashboard: React.FC = () => {
   const [diagnostic, setDiagnostic] = useState<BigDataPhaseTwoDiagnostic | null>(null);
   const [diagnosticLoading, setDiagnosticLoading] = useState(false);
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
+  const [prediction, setPrediction] = useState<BigDataPhaseThreePrediction | null>(null);
+  const [predictionLoading, setPredictionLoading] = useState(false);
+  const [predictionError, setPredictionError] = useState<string | null>(null);
+  const [predictionHorizon, setPredictionHorizon] = useState<PredictionHorizon>(30);
   const [selectedMonth, setSelectedMonth] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [showEventForm, setShowEventForm] = useState(false);
@@ -210,6 +232,7 @@ export const BigDataDashboard: React.FC = () => {
   });
   const requestVersion = useRef(0);
   const diagnosticRequestVersion = useRef(0);
+  const predictionRequestVersion = useRef(0);
   const requestGate = useRef(createBigDataRequestGate());
 
   useEffect(() => {
@@ -246,6 +269,53 @@ export const BigDataDashboard: React.FC = () => {
       });
   }, [currentMall?.id, session?.access_token, dates.start, dates.end, reloadKey]);
 
+  useEffect(() => {
+    if (activeTab !== 'prediction') return;
+    const mallId = currentMall?.id;
+    const token = session?.access_token;
+    const version = ++predictionRequestVersion.current;
+    setPrediction(null);
+    setPredictionError(null);
+    if (!mallId || !token) {
+      setPredictionLoading(false);
+      return;
+    }
+    setPredictionLoading(true);
+    ApiService.getBigDataPhaseThreePrediction(
+      mallId,
+      dates.start,
+      dates.end,
+      token,
+    )
+      .then((response) => {
+        if (
+          predictionRequestVersion.current === version
+          && currentMall?.id === response.mall_id
+        ) {
+          setPrediction(response);
+        }
+      })
+      .catch((requestError: any) => {
+        if (predictionRequestVersion.current === version) {
+          setPredictionError(
+            requestError?.message || 'No se pudo construir la predicción comercial.',
+          );
+        }
+      })
+      .finally(() => {
+        if (predictionRequestVersion.current === version) {
+          setPredictionLoading(false);
+        }
+      });
+  }, [
+    activeTab,
+    currentMall?.id,
+    session?.access_token,
+    dates.start,
+    dates.end,
+    reloadKey,
+  ]);
+
   const availableMonths = useMemo(
     () => Array.from(new Set((data?.calendar || []).map((day) => day.date.slice(0, 7)))).sort(),
     [data?.calendar],
@@ -269,6 +339,21 @@ export const BigDataDashboard: React.FC = () => {
   const calendarLeadingSpaces = useMemo(
     () => visibleCalendar[0]?.weekday ?? 0,
     [visibleCalendar],
+  );
+
+  const selectedPrediction = useMemo(
+    () => prediction?.horizons.find((item) => item.days === predictionHorizon) || null,
+    [prediction?.horizons, predictionHorizon],
+  );
+
+  const visiblePredictionDays = useMemo(
+    () => (prediction?.daily || []).slice(0, predictionHorizon),
+    [prediction?.daily, predictionHorizon],
+  );
+
+  const predictionContextDays = useMemo(
+    () => visiblePredictionDays.filter((item) => item.is_holiday || item.events.length),
+    [visiblePredictionDays],
   );
 
   const anomalyRows = useMemo<AnomalyListRow[]>(() => {
@@ -479,7 +564,11 @@ export const BigDataDashboard: React.FC = () => {
   const apiUnavailable = Boolean(error && /not found|http 404/i.test(error));
   const quality = data?.quality;
   const qualityState = quality ? qualityCopy[quality.status] : qualityCopy.LOW_CONFIDENCE;
-  const statusLabel = data?.general_status === 'DATA_INCOMPLETE'
+  const statusLabel = activeTab === 'prediction'
+    ? prediction
+      ? `Confianza ${predictionConfidenceCopy[prediction.quality.confidence].label.toLowerCase()}`
+      : 'Predicción explicable'
+    : data?.general_status === 'DATA_INCOMPLETE'
     ? 'Información incompleta'
     : data?.general_status === 'ATTENTION_REQUIRED'
     ? 'Requiere atención'
@@ -495,7 +584,7 @@ export const BigDataDashboard: React.FC = () => {
             <div className="max-w-3xl">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full border border-indigo-300/30 bg-indigo-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-indigo-200">
-                  Big Data · Fase 1
+                  Big Data · {activeTab === 'prediction' ? 'Fase 3A' : 'Fase 1'}
                 </span>
                 {data && (
                   <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs font-semibold text-slate-200">
@@ -507,8 +596,9 @@ export const BigDataDashboard: React.FC = () => {
                 Inteligencia Comercial
               </h2>
               <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-300">
-                Descubre cuándo se repiten los patrones, qué fechas se salen de lo esperado,
-                cuáles locales explican el movimiento y si los datos son confiables para actuar.
+                {activeTab === 'prediction'
+                  ? 'Proyecta los próximos 7, 30 y 90 días con rangos de confianza, estacionalidad y contexto comercial verificable.'
+                  : 'Descubre cuándo se repiten los patrones, qué fechas se salen de lo esperado, cuáles locales explican el movimiento y si los datos son confiables para actuar.'}
               </p>
             </div>
             <div className="rounded-xl border border-white/10 bg-white/5 p-2.5 backdrop-blur">
@@ -697,6 +787,368 @@ export const BigDataDashboard: React.FC = () => {
                 {quality.blockers[0] || 'La información disponible permite interpretar los patrones con confianza.'}
               </p>
             </div>
+          </section>
+          )}
+
+          {activeTab === 'prediction' && (
+          <section role="tabpanel" className="space-y-3">
+            {predictionError && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                {predictionError}. Verifica que <code>BIG_DATA_FORECAST</code> esté habilitado para este mall.
+              </div>
+            )}
+
+            {predictionLoading && (
+              <div className="grid min-h-[360px] place-items-center rounded-2xl border border-slate-200 bg-white">
+                <div className="text-center">
+                  <Loader2 className="mx-auto animate-spin text-indigo-600" size={28} />
+                  <p className="mt-3 text-sm font-bold text-slate-600">
+                    Calculando estacionalidad, tendencia y contexto futuro…
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {!predictionLoading && prediction?.status === 'INSUFFICIENT_DATA' && (
+              <div className="rounded-2xl border border-amber-200 bg-white p-5 shadow-sm">
+                <div className="flex items-start gap-3">
+                  <FileWarning className="mt-0.5 shrink-0 text-amber-500" size={22} />
+                  <div>
+                    <p className="font-black text-slate-900">Aún no emitimos una predicción</p>
+                    <p className="mt-1 text-sm leading-6 text-slate-600">
+                      {prediction.quality.reasons[0]
+                        || 'Se requieren al menos 28 días históricos del mall.'}
+                    </p>
+                    <p className="mt-2 text-xs font-bold text-slate-400">
+                      Disponibles: {prediction.quality.days_with_data} de {prediction.quality.expected_days} días del rango.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!predictionLoading && prediction?.status === 'OK' && selectedPrediction && (
+              <>
+                <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
+                        <TrendingUp size={16} /> Horizonte de predicción
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Corte {formatDate(prediction.period.as_of, { day: 'numeric', month: 'long', year: 'numeric' })}
+                      </p>
+                    </div>
+                    <div className="flex rounded-xl bg-slate-100 p-1">
+                      {([7, 30, 90] as PredictionHorizon[]).map((days) => (
+                        <button
+                          key={days}
+                          type="button"
+                          onClick={() => setPredictionHorizon(days)}
+                          className={`rounded-lg px-4 py-2 text-xs font-black transition ${
+                            predictionHorizon === days
+                              ? 'bg-white text-indigo-700 shadow-sm'
+                              : 'text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          {days} días
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <article className="rounded-2xl bg-slate-950 p-4 text-white shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
+                      Venta proyectada
+                    </p>
+                    <p className="mt-2 truncate text-2xl font-black">
+                      {format(selectedPrediction.expected_sales)}
+                    </p>
+                    <p className="mt-1 text-[10px] text-slate-400">
+                      {formatDate(selectedPrediction.start_date, { day: '2-digit', month: 'short' })}
+                      {' — '}
+                      {formatDate(selectedPrediction.end_date, { day: '2-digit', month: 'short' })}
+                    </p>
+                  </article>
+                  <article className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-500">
+                      Rango esperado
+                    </p>
+                    <p className="mt-2 text-sm font-black text-slate-900">
+                      {format(selectedPrediction.lower_bound)}
+                    </p>
+                    <p className="mt-0.5 text-xs font-bold text-slate-400">
+                      hasta {format(selectedPrediction.upper_bound)}
+                    </p>
+                  </article>
+                  <article className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
+                      Promedio diario
+                    </p>
+                    <p className="mt-2 text-xl font-black text-slate-900">
+                      {format(selectedPrediction.average_daily_sales)}
+                    </p>
+                    <p className={`mt-1 text-[10px] font-black ${
+                      Number(selectedPrediction.comparison_recent_average_percent || 0) >= 0
+                        ? 'text-emerald-600'
+                        : 'text-rose-600'
+                    }`}>
+                      {Number(selectedPrediction.comparison_recent_average_percent || 0) > 0 ? '+' : ''}
+                      {Number(selectedPrediction.comparison_recent_average_percent || 0).toFixed(1)}% vs. promedio reciente
+                    </p>
+                  </article>
+                  <article className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
+                          Confianza
+                        </p>
+                        <p className="mt-2 text-xl font-black text-slate-900">
+                          {prediction.quality.score}/100
+                        </p>
+                      </div>
+                      <span className={`rounded-full border px-2.5 py-1 text-[10px] font-black ${
+                        predictionConfidenceCopy[selectedPrediction.confidence].classes
+                      }`}>
+                        {predictionConfidenceCopy[selectedPrediction.confidence].label}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      Cobertura {prediction.quality.coverage_percent.toFixed(1)}%
+                    </p>
+                  </article>
+                </div>
+
+                <div className="grid gap-3 xl:grid-cols-[1.65fr_0.75fr]">
+                  <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
+                          Trayectoria esperada
+                        </p>
+                        <h3 className="mt-1 text-lg font-black text-slate-900">
+                          Venta diaria con límites de incertidumbre
+                        </h3>
+                      </div>
+                      <div className="flex items-center gap-3 text-[10px] font-bold text-slate-400">
+                        <span className="flex items-center gap-1.5">
+                          <i className="h-0.5 w-4 bg-indigo-600" /> Esperado
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <i className="h-0.5 w-4 border-t border-dashed border-slate-400" /> Límites
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-3 h-64">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart
+                          data={visiblePredictionDays}
+                          margin={{ top: 8, right: 8, left: -18, bottom: 0 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 9 }}
+                            axisLine={false}
+                            tickLine={false}
+                            minTickGap={24}
+                            tickFormatter={(value) => formatDate(String(value), { day: '2-digit', month: 'short' })}
+                          />
+                          <YAxis
+                            tick={{ fontSize: 9 }}
+                            axisLine={false}
+                            tickLine={false}
+                            tickFormatter={(value) => compactNumber.format(Number(value))}
+                          />
+                          <Tooltip
+                            labelFormatter={(value) => formatDate(String(value), {
+                              weekday: 'long',
+                              day: 'numeric',
+                              month: 'long',
+                            })}
+                            formatter={(value: number, name: string) => [
+                              format(Number(value)),
+                              name === 'expected_sales'
+                                ? 'Venta esperada'
+                                : name === 'lower_bound'
+                                ? 'Límite inferior'
+                                : 'Límite superior',
+                            ]}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="lower_bound"
+                            stroke="#94a3b8"
+                            strokeDasharray="4 4"
+                            strokeWidth={1}
+                            dot={false}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="upper_bound"
+                            stroke="#94a3b8"
+                            strokeDasharray="4 4"
+                            strokeWidth={1}
+                            dot={false}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="expected_sales"
+                            stroke="#4f46e5"
+                            strokeWidth={2.5}
+                            dot={predictionHorizon === 7}
+                            activeDot={{ r: 4 }}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </article>
+
+                  <aside className="space-y-3">
+                    <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <p className="text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
+                        Motores del cálculo
+                      </p>
+                      <div className="mt-3 space-y-2">
+                        <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5">
+                          <span className="text-xs font-bold text-slate-500">Tendencia 28 días</span>
+                          <span className={`text-sm font-black ${
+                            prediction.drivers.trend_percent >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                          }`}>
+                            {prediction.drivers.trend_percent > 0 ? '+' : ''}
+                            {prediction.drivers.trend_percent.toFixed(1)}%
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5">
+                          <span className="text-xs font-bold text-slate-500">Días históricos</span>
+                          <span className="text-sm font-black text-slate-800">
+                            {prediction.quality.days_with_data}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5">
+                          <span className="text-xs font-bold text-slate-500">Contexto futuro</span>
+                          <span className="text-sm font-black text-slate-800">
+                            {selectedPrediction.known_context_days} día(s)
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5">
+                          <span className="text-xs font-bold text-slate-500">Peso fin de semana</span>
+                          <span className="text-sm font-black text-slate-800">
+                            {selectedPrediction.weekend_share_percent.toFixed(1)}%
+                          </span>
+                        </div>
+                      </div>
+                    </article>
+
+                    {prediction.quality.reasons.length > 0 && (
+                      <article className="rounded-2xl border border-amber-100 bg-amber-50/70 p-4">
+                        <p className="text-xs font-black text-amber-900">Límites de confianza</p>
+                        <ul className="mt-2 space-y-1.5 text-[11px] leading-5 text-amber-800">
+                          {prediction.quality.reasons.slice(0, 3).map((reason) => (
+                            <li key={reason}>• {reason}</li>
+                          ))}
+                        </ul>
+                      </article>
+                    )}
+                  </aside>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+                  <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
+                        Calendario incorporado
+                      </p>
+                      <h3 className="mt-1 text-base font-black text-slate-900">
+                        Feriados y actividades dentro del horizonte
+                      </h3>
+                    </div>
+                    {predictionContextDays.length ? (
+                      <div className="mt-3 divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-100">
+                        {predictionContextDays.slice(0, 8).map((item) => {
+                          const unapplied = item.adjustments.some(
+                            (adjustment) => adjustment.source !== 'RECENT_TREND' && !adjustment.applied,
+                          );
+                          return (
+                            <div
+                              key={item.date}
+                              className="grid gap-2 px-3 py-3 sm:grid-cols-[110px_1fr_auto] sm:items-center"
+                            >
+                              <p className="text-xs font-black capitalize text-slate-800">
+                                {formatDate(item.date, { day: '2-digit', month: 'short' })}
+                              </p>
+                              <div>
+                                <p className="text-xs font-bold text-slate-700">
+                                  {item.events.map((event) => event.name).join(', ')
+                                    || item.holiday_name
+                                    || 'Contexto comercial'}
+                                </p>
+                                <p className="mt-0.5 text-[10px] text-slate-400">
+                                  {unapplied
+                                    ? 'Registrado, sin ajuste por historial insuficiente'
+                                    : `Ajuste total ${item.adjustment_percent > 0 ? '+' : ''}${item.adjustment_percent.toFixed(1)}%`}
+                                </p>
+                              </div>
+                              <p className="text-xs font-black text-indigo-700">
+                                {format(item.expected_sales)}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="mt-3 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
+                        No hay feriados ni actividades registradas dentro de este horizonte.
+                      </div>
+                    )}
+                  </article>
+
+                  <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
+                      Ajustes aprendidos
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {prediction.drivers.event_adjustments.map((adjustment) => (
+                        <div
+                          key={adjustment.event_type}
+                          className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 px-3 py-2.5"
+                        >
+                          <div>
+                            <p className="text-xs font-black text-slate-700">
+                              {adjustment.event_type_label}
+                            </p>
+                            <p className="mt-0.5 text-[10px] text-slate-400">
+                              {adjustment.observations} observación(es)
+                            </p>
+                          </div>
+                          <span className={`text-xs font-black ${
+                            adjustment.applied
+                              ? adjustment.adjustment_percent >= 0
+                                ? 'text-emerald-600'
+                                : 'text-rose-600'
+                              : 'text-slate-400'
+                          }`}>
+                            {adjustment.applied
+                              ? `${adjustment.adjustment_percent > 0 ? '+' : ''}${adjustment.adjustment_percent.toFixed(1)}%`
+                              : 'Sin aplicar'}
+                          </span>
+                        </div>
+                      ))}
+                      {!prediction.drivers.event_adjustments.length && (
+                        <p className="rounded-xl bg-slate-50 p-4 text-xs leading-5 text-slate-500">
+                          Todavía no existen actividades históricas suficientes para aprender un ajuste.
+                        </p>
+                      )}
+                    </div>
+                    <p className="mt-3 text-[10px] leading-4 text-slate-400">
+                      {prediction.methodology}
+                    </p>
+                  </article>
+                </div>
+              </>
+            )}
           </section>
           )}
 

@@ -12,6 +12,7 @@ from supabase import create_client
 
 from services.big_data_phase_one_service import BigDataPhaseOneService
 from services.big_data_phase_two_service import BigDataPhaseTwoService
+from services.big_data_phase_three_service import BigDataPhaseThreeService
 from services.big_data_sprint2_service import BigDataSprint2Service
 
 router = APIRouter(prefix="/api/v1/big-data", tags=["Big Data"])
@@ -345,6 +346,21 @@ async def rebuild(mall_id: str, start_date: date, end_date: date, user: dict = D
 def _capability_context(mall_id: str, user: dict, feature: str) -> None:
     _authorize(mall_id, user)
     _require_feature(mall_id, feature)
+
+
+@router.get("/intelligence/phase-three-a/prediction")
+async def phase_three_a_prediction(
+    mall_id: str,
+    start_date: date,
+    end_date: date,
+    user: dict = Depends(current_user),
+):
+    """Project the next 7/30/90 days from bounded mall aggregates."""
+    _date_range(start_date, end_date)
+    _capability_context(mall_id, user, "BIG_DATA_FORECAST")
+    if start_date > date.today():
+        raise HTTPException(422, "La historia de predicción no puede iniciar en el futuro")
+    return BigDataPhaseThreeService(db).prediction(mall_id, start_date, end_date)
 
 
 def _operational_query(

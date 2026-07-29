@@ -73,6 +73,15 @@ def test_anomalies_use_comparable_list_and_open_detail_sheet():
     assert "anomalyCopy" not in dashboard
 
 
+def test_partial_month_calendar_aligns_from_the_first_visible_date():
+    dashboard = (ROOT / "components" / "BigDataDashboard.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "visibleCalendar[0]?.weekday ?? 0" in dashboard
+    assert 'safeDate(`${selectedMonth}-01`).getDay()' not in dashboard
+
+
 def test_phase_one_queries_are_batched_and_bounded():
     service = (
         ROOT / "services" / "big_data_phase_one_service.py"

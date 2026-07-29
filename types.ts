@@ -215,6 +215,94 @@ export interface BigDataPhaseOne {
   generated_at: string;
 }
 
+export interface BigDataPhaseTwoDiagnostic {
+  mall_id: string;
+  local: {
+    id: string;
+    name: string;
+    business_type?: string | null;
+    category_id?: string | null;
+    category_name?: string | null;
+    category_source?: 'HOMOLOGATED' | 'RUBRO_FALLBACK' | null;
+  };
+  period: { start: string; end: string; target_date: string };
+  headline: {
+    observed_sales: number;
+    expected_sales: number;
+    contribution: number;
+    deviation_percent?: number | null;
+    peer_days: number;
+  };
+  benchmark: {
+    status: 'OK' | 'INSUFFICIENT_DATA';
+    category_id?: string | null;
+    category_name?: string | null;
+    category_source?: 'HOMOLOGATED' | 'RUBRO_FALLBACK' | null;
+    comparable_stores: number;
+    local_sales: number;
+    category_average?: number;
+    category_median?: number;
+    difference_vs_median_percent?: number;
+    rank?: number;
+    percentile?: number;
+    category_share_percent?: number;
+    reason?: string;
+    leaders?: Array<{
+      local_id: string;
+      local_name: string;
+      sales_net: number;
+    }>;
+  };
+  timeline: Array<{
+    date: string;
+    sales_net: number;
+    expected_sales: number;
+    transactions: number;
+    coverage_status: string;
+    is_target: boolean;
+  }>;
+  evidence: {
+    imports: Array<{
+      date: string;
+      filename: string;
+      status: string;
+      channel?: string | null;
+      message?: string | null;
+      records_processed: number;
+      error_count: number;
+      match: 'FILE_DATE' | 'PROCESSING_DATE' | 'PERIOD';
+      has_issue: boolean;
+    }>;
+    related_import_issue: boolean;
+    coverage: {
+      expected_days: number;
+      days_with_data: number;
+      complete_days: number;
+      percent: number;
+      target_status: string;
+    };
+  };
+  diagnosis: {
+    classification:
+      | 'COMMERCIAL_MOVEMENT'
+      | 'IMPORT_ISSUE'
+      | 'MIXED'
+      | 'INSUFFICIENT_DATA';
+    confidence: number;
+    summary: string;
+    factors: Array<{
+      type: string;
+      tone: 'positive' | 'negative' | 'warning' | 'neutral';
+      label: string;
+      detail: string;
+    }>;
+    recommendation: string;
+  };
+  methodology: string;
+  version: string;
+  generated_at: string;
+}
+
 export interface BigDataForecast {
   mall_id: string;
   grain: 'mall' | 'category' | 'local';

@@ -68,6 +68,11 @@ def test_anomalies_use_comparable_list_and_open_detail_sheet():
     assert "Ver ficha" in dashboard
     assert 'aria-label="Ficha de anomalía"' in dashboard
     assert "Locales contribuyentes" in dashboard
+    assert "Observado mall" in dashboard
+    assert "Esperado mall" in dashboard
+    assert "Impacto mall" in dashboard
+    assert "Aporte principal" in dashboard
+    assert "contributor.impact_share_percent.toFixed(1)" in dashboard
     assert "Confianza analítica" in dashboard
     assert "closeOnEscape" in dashboard
     assert "anomalyCopy" not in dashboard

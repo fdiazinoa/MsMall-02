@@ -966,9 +966,13 @@ export const BigDataDashboard: React.FC = () => {
                 <>
                   <div className="hidden overflow-x-auto md:block">
                     <table className="min-w-[1050px] w-full border-collapse text-left">
+                      <caption className="sr-only">
+                        Las ventas observadas, esperadas y el impacto corresponden al mall;
+                        el aporte principal corresponde al local identificado.
+                      </caption>
                       <thead className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-400">
                         <tr>
-                          {['Fecha', 'Estado', 'Dirección', 'Desviación', 'Observado', 'Esperado', 'Impacto', 'Confianza', 'Contribuyente', ''].map((label) => (
+                          {['Fecha', 'Estado', 'Dirección', 'Desviación', 'Observado mall', 'Esperado mall', 'Impacto mall', 'Confianza', 'Aporte principal', ''].map((label) => (
                             <th key={label || 'action'} className="whitespace-nowrap px-3 py-2.5">{label}</th>
                           ))}
                         </tr>
@@ -1011,8 +1015,26 @@ export const BigDataDashboard: React.FC = () => {
                                 {row.impact > 0 ? '+' : ''}{format(row.impact)}
                               </td>
                               <td className="px-3 py-3 font-bold">{(row.confidence * 100).toFixed(0)}%</td>
-                              <td className="max-w-40 truncate px-3 py-3 font-bold text-slate-700">
-                                {contributor?.local_name || 'Sin atribución'}
+                              <td className="max-w-48 px-3 py-3">
+                                {contributor ? (
+                                  <>
+                                    <p className="truncate font-black text-slate-700">
+                                      {contributor.local_name}
+                                    </p>
+                                    <p className={`mt-0.5 whitespace-nowrap text-[10px] font-bold ${
+                                      contributor.contribution >= 0
+                                        ? 'text-emerald-600'
+                                        : 'text-rose-600'
+                                    }`}>
+                                      Aporte {contributor.contribution > 0 ? '+' : ''}
+                                      {format(contributor.contribution)}
+                                      {' · '}
+                                      {contributor.impact_share_percent.toFixed(1)}%
+                                    </p>
+                                  </>
+                                ) : (
+                                  <span className="font-bold text-slate-500">Sin atribución</span>
+                                )}
                               </td>
                               <td className="px-3 py-3 text-right">
                                 <button
@@ -1043,7 +1065,11 @@ export const BigDataDashboard: React.FC = () => {
                             {formatDate(row.date, { day: '2-digit', month: 'short', year: 'numeric' })}
                           </span>
                           <span className="mt-1 block max-w-52 truncate text-[10px] text-slate-500">
-                            {row.contributors[0]?.local_name || row.context}
+                            {row.contributors[0]
+                              ? `${row.contributors[0].local_name} · aporte ${
+                                row.contributors[0].contribution > 0 ? '+' : ''
+                              }${format(row.contributors[0].contribution)}`
+                              : row.context}
                           </span>
                         </span>
                         <span className="text-right">

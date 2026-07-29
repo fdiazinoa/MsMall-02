@@ -392,6 +392,139 @@ export interface BigDataPhaseThreePrediction {
   generated_at: string;
 }
 
+export type BigDataScenarioType =
+  | 'PROMOTION'
+  | 'HALLWAY_SALE'
+  | 'MALL_ACTIVITY'
+  | 'HOLIDAY'
+  | 'EXTENDED_HOURS'
+  | 'OTHER';
+
+export type BigDataScenarioStatus =
+  | 'DRAFT'
+  | 'APPROVED'
+  | 'ACTIVE'
+  | 'COMPLETED'
+  | 'CANCELLED';
+
+export type BigDataScenarioActionStatus =
+  | 'PENDING'
+  | 'IN_PROGRESS'
+  | 'DONE'
+  | 'CANCELLED';
+
+export interface BigDataScenarioInput {
+  name: string;
+  scenario_type: BigDataScenarioType;
+  start_date: string;
+  end_date: string;
+  adjustment_percent: number;
+  notes?: string;
+}
+
+export interface BigDataScenarioSimulation {
+  status: 'OK';
+  mall_id: string;
+  name: string;
+  scenario_type: BigDataScenarioType;
+  scenario_type_label: string;
+  period: {
+    start_date: string;
+    end_date: string;
+    affected_days: number;
+    forecast_as_of: string;
+  };
+  assumption: {
+    adjustment_percent: number;
+    source: 'MANUAL';
+    notes?: string | null;
+    historical_reference?: {
+      event_type: string;
+      event_type_label?: string;
+      observations: number;
+      adjustment_percent: number;
+      applied: boolean;
+    } | null;
+    overlapping_context: Array<{
+      date: string;
+      holiday_name?: string | null;
+      events: Array<{
+        id?: string | null;
+        name?: string | null;
+        event_type?: string | null;
+      }>;
+    }>;
+  };
+  result: {
+    baseline_sales: number;
+    scenario_sales: number;
+    incremental_sales: number;
+    incremental_percent: number;
+    lower_bound: number;
+    upper_bound: number;
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  };
+  daily: Array<{
+    date: string;
+    baseline_sales: number;
+    scenario_sales: number;
+    incremental_sales: number;
+    lower_bound: number;
+    upper_bound: number;
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  }>;
+  warnings: string[];
+  methodology: string;
+  model_version: string;
+  generated_at: string;
+}
+
+export interface BigDataScenarioAction {
+  id: string;
+  scenario_id: string;
+  mall_id: string;
+  title: string;
+  status: BigDataScenarioActionStatus;
+  owner_name?: string | null;
+  due_date?: string | null;
+  notes?: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+}
+
+export interface BigDataScenario {
+  id: string;
+  mall_id: string;
+  name: string;
+  scenario_type: BigDataScenarioType;
+  status: BigDataScenarioStatus;
+  start_date: string;
+  end_date: string;
+  adjustment_percent: number;
+  baseline_sales: number;
+  scenario_sales: number;
+  incremental_sales: number;
+  lower_bound: number;
+  upper_bound: number;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  model_version: string;
+  assumptions: {
+    source?: string;
+    forecast_as_of?: string;
+    affected_days?: number;
+    historical_reference?: Record<string, unknown> | null;
+    overlapping_context?: Array<Record<string, unknown>>;
+    warnings?: string[];
+  };
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+  actions: BigDataScenarioAction[];
+  simulation?: BigDataScenarioSimulation;
+}
+
 export interface BigDataForecast {
   mall_id: string;
   grain: 'mall' | 'category' | 'local';

@@ -22,15 +22,20 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   Database,
   Eye,
   FileWarning,
   Lightbulb,
   Loader2,
+  Play,
+  Plus,
+  Save,
   Search,
   ShieldCheck,
   Sparkles,
   Store,
+  Target,
   TrendingDown,
   TrendingUp,
   Trash2,
@@ -46,11 +51,23 @@ import {
   BigDataPhaseOne,
   BigDataPhaseTwoDiagnostic,
   BigDataPhaseThreePrediction,
+  BigDataScenario,
+  BigDataScenarioActionStatus,
+  BigDataScenarioInput,
+  BigDataScenarioSimulation,
+  BigDataScenarioStatus,
+  BigDataScenarioType,
 } from '../types';
 import { createBigDataRequestGate } from '../utils/bigDataRequestGate';
 
 const WEEKDAY_HEADERS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
-type IntelligenceTab = 'summary' | 'prediction' | 'calendar' | 'anomalies' | 'quality';
+type IntelligenceTab =
+  | 'summary'
+  | 'prediction'
+  | 'scenarios'
+  | 'calendar'
+  | 'anomalies'
+  | 'quality';
 type AnomalyView = 'pending' | 'explained';
 type AnomalyDirection = 'ALL' | 'UP' | 'DOWN';
 type AnomalySort = 'impact' | 'deviation' | 'date' | 'confidence';
@@ -80,6 +97,7 @@ const INTELLIGENCE_TABS: Array<{
 }> = [
   { id: 'summary', label: 'Resumen', description: 'Hallazgos y patrones', icon: Sparkles },
   { id: 'prediction', label: 'Predicción', description: 'Próximos 7, 30 y 90 días', icon: TrendingUp },
+  { id: 'scenarios', label: 'Escenarios', description: 'Simulación y planes', icon: Target },
   { id: 'calendar', label: 'Calendario', description: 'Fechas y actividades', icon: CalendarDays },
   { id: 'anomalies', label: 'Anomalías', description: 'Movimientos relevantes', icon: AlertTriangle },
   { id: 'quality', label: 'Calidad', description: 'Cobertura y trazabilidad', icon: ShieldCheck },
@@ -91,6 +109,41 @@ const EVENT_TYPES: Array<{ value: BigDataCalendarEventType; label: string }> = [
   { value: 'HOLIDAY', label: 'Feriado especial' },
   { value: 'OTHER', label: 'Otro evento' },
 ];
+const SCENARIO_TYPES: Array<{ value: BigDataScenarioType; label: string }> = [
+  { value: 'PROMOTION', label: 'Promoción' },
+  { value: 'HALLWAY_SALE', label: 'Venta de pasillo' },
+  { value: 'MALL_ACTIVITY', label: 'Actividad del mall' },
+  { value: 'HOLIDAY', label: 'Feriado especial' },
+  { value: 'EXTENDED_HOURS', label: 'Horario extendido' },
+  { value: 'OTHER', label: 'Otro escenario' },
+];
+
+const scenarioStatusCopy: Record<BigDataScenarioStatus, {
+  label: string;
+  classes: string;
+}> = {
+  DRAFT: { label: 'Borrador', classes: 'border-slate-200 bg-slate-50 text-slate-600' },
+  APPROVED: { label: 'Aprobado', classes: 'border-indigo-200 bg-indigo-50 text-indigo-700' },
+  ACTIVE: { label: 'En ejecución', classes: 'border-amber-200 bg-amber-50 text-amber-700' },
+  COMPLETED: { label: 'Completado', classes: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
+  CANCELLED: { label: 'Cancelado', classes: 'border-rose-200 bg-rose-50 text-rose-600' },
+};
+
+const actionStatusCopy: Record<BigDataScenarioActionStatus, string> = {
+  PENDING: 'Pendiente',
+  IN_PROGRESS: 'En curso',
+  DONE: 'Completada',
+  CANCELLED: 'Cancelada',
+};
+
+const nextScenarioStatus: Partial<Record<
+  BigDataScenarioStatus,
+  Exclude<BigDataScenarioStatus, 'DRAFT'>
+>> = {
+  DRAFT: 'APPROVED',
+  APPROVED: 'ACTIVE',
+  ACTIVE: 'COMPLETED',
+};
 
 const toIsoDate = (value: Date) => {
   const year = value.getFullYear();
@@ -104,6 +157,21 @@ const initialDates = () => {
   const start = new Date(end);
   start.setDate(start.getDate() - 89);
   return { start: toIsoDate(start), end: toIsoDate(end) };
+};
+
+const initialScenarioForm = (): BigDataScenarioInput => {
+  const start = new Date();
+  start.setDate(start.getDate() + 1);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  return {
+    name: '',
+    scenario_type: 'MALL_ACTIVITY',
+    start_date: toIsoDate(start),
+    end_date: toIsoDate(end),
+    adjustment_percent: 10,
+    notes: '',
+  };
 };
 
 const safeDate = (value: string) => new Date(`${value}T12:00:00`);
@@ -217,6 +285,24 @@ export const BigDataDashboard: React.FC = () => {
   const [predictionLoading, setPredictionLoading] = useState(false);
   const [predictionError, setPredictionError] = useState<string | null>(null);
   const [predictionHorizon, setPredictionHorizon] = useState<PredictionHorizon>(30);
+  const [scenarios, setScenarios] = useState<BigDataScenario[]>([]);
+  const [scenariosLoading, setScenariosLoading] = useState(false);
+  const [scenariosError, setScenariosError] = useState<string | null>(null);
+  const [scenarioReloadKey, setScenarioReloadKey] = useState(0);
+  const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
+  const [showScenarioForm, setShowScenarioForm] = useState(false);
+  const [scenarioForm, setScenarioForm] = useState<BigDataScenarioInput>(
+    initialScenarioForm,
+  );
+  const [scenarioActions, setScenarioActions] = useState([
+    { title: '', owner_name: '', due_date: '', notes: '' },
+  ]);
+  const [scenarioSimulation, setScenarioSimulation] =
+    useState<BigDataScenarioSimulation | null>(null);
+  const [scenarioSimulating, setScenarioSimulating] = useState(false);
+  const [scenarioSaving, setScenarioSaving] = useState(false);
+  const [scenarioFormError, setScenarioFormError] = useState<string | null>(null);
+  const [scenarioWorkflowBusy, setScenarioWorkflowBusy] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [showEventForm, setShowEventForm] = useState(false);
@@ -233,6 +319,7 @@ export const BigDataDashboard: React.FC = () => {
   const requestVersion = useRef(0);
   const diagnosticRequestVersion = useRef(0);
   const predictionRequestVersion = useRef(0);
+  const scenarioRequestVersion = useRef(0);
   const requestGate = useRef(createBigDataRequestGate());
 
   useEffect(() => {
@@ -316,6 +403,52 @@ export const BigDataDashboard: React.FC = () => {
     reloadKey,
   ]);
 
+  useEffect(() => {
+    if (activeTab !== 'scenarios') return;
+    const mallId = currentMall?.id;
+    const token = session?.access_token;
+    const version = ++scenarioRequestVersion.current;
+    setScenariosError(null);
+    if (!mallId || !token) {
+      setScenarios([]);
+      setScenariosLoading(false);
+      return;
+    }
+    setScenariosLoading(true);
+    ApiService.getBigDataScenarios(mallId, token)
+      .then((response) => {
+        if (
+          scenarioRequestVersion.current === version
+          && currentMall?.id === mallId
+        ) {
+          setScenarios(response.data);
+          setSelectedScenarioId((current) => (
+            current && response.data.some((scenario) => scenario.id === current)
+              ? current
+              : response.data[0]?.id || null
+          ));
+        }
+      })
+      .catch((requestError: any) => {
+        if (scenarioRequestVersion.current === version) {
+          setScenarios([]);
+          setScenariosError(
+            requestError?.message || 'No se pudieron cargar los escenarios comerciales.',
+          );
+        }
+      })
+      .finally(() => {
+        if (scenarioRequestVersion.current === version) {
+          setScenariosLoading(false);
+        }
+      });
+  }, [
+    activeTab,
+    currentMall?.id,
+    session?.access_token,
+    scenarioReloadKey,
+  ]);
+
   const availableMonths = useMemo(
     () => Array.from(new Set((data?.calendar || []).map((day) => day.date.slice(0, 7)))).sort(),
     [data?.calendar],
@@ -355,6 +488,28 @@ export const BigDataDashboard: React.FC = () => {
     () => visiblePredictionDays.filter((item) => item.is_holiday || item.events.length),
     [visiblePredictionDays],
   );
+
+  const selectedScenario = useMemo(
+    () => scenarios.find((scenario) => scenario.id === selectedScenarioId) || null,
+    [scenarios, selectedScenarioId],
+  );
+
+  const scenarioSummary = useMemo(() => {
+    const open = scenarios.filter(
+      (scenario) => !['COMPLETED', 'CANCELLED'].includes(scenario.status),
+    );
+    const actions = open.flatMap((scenario) => scenario.actions || []);
+    return {
+      open: open.length,
+      potentialImpact: open.reduce(
+        (total, scenario) => total + Number(scenario.incremental_sales || 0),
+        0,
+      ),
+      pendingActions: actions.filter(
+        (action) => !['DONE', 'CANCELLED'].includes(action.status),
+      ).length,
+    };
+  }, [scenarios]);
 
   const anomalyRows = useMemo<AnomalyListRow[]>(() => {
     if (!data) return [];
@@ -553,6 +708,135 @@ export const BigDataDashboard: React.FC = () => {
     }
   };
 
+  const resetScenarioDraft = () => {
+    setScenarioForm(initialScenarioForm());
+    setScenarioActions([{ title: '', owner_name: '', due_date: '', notes: '' }]);
+    setScenarioSimulation(null);
+    setScenarioFormError(null);
+  };
+
+  const updateScenarioForm = (patch: Partial<BigDataScenarioInput>) => {
+    setScenarioForm((current) => ({ ...current, ...patch }));
+    setScenarioSimulation(null);
+    setScenarioFormError(null);
+  };
+
+  const simulateScenario = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!currentMall?.id || !session?.access_token) return;
+    setScenarioSimulating(true);
+    setScenarioSimulation(null);
+    setScenarioFormError(null);
+    try {
+      const simulation = await ApiService.simulateBigDataScenario(
+        currentMall.id,
+        dates.start,
+        dates.end,
+        scenarioForm,
+        session.access_token,
+      );
+      setScenarioSimulation(simulation);
+    } catch (simulationError: any) {
+      setScenarioFormError(
+        simulationError?.message || 'No se pudo calcular el escenario.',
+      );
+    } finally {
+      setScenarioSimulating(false);
+    }
+  };
+
+  const saveScenario = async () => {
+    if (
+      !currentMall?.id
+      || !session?.access_token
+      || !scenarioSimulation
+      || !(isAdmin || isTic)
+    ) return;
+    setScenarioSaving(true);
+    setScenarioFormError(null);
+    try {
+      const saved = await ApiService.createBigDataScenario(
+        currentMall.id,
+        dates.start,
+        dates.end,
+        {
+          ...scenarioForm,
+          actions: scenarioActions
+            .filter((action) => action.title.trim())
+            .map((action) => ({
+              title: action.title.trim(),
+              owner_name: action.owner_name.trim() || undefined,
+              due_date: action.due_date || undefined,
+              notes: action.notes.trim() || undefined,
+            })),
+        },
+        session.access_token,
+      );
+      setShowScenarioForm(false);
+      resetScenarioDraft();
+      setSelectedScenarioId(saved.id);
+      setScenarioReloadKey((value) => value + 1);
+    } catch (saveError: any) {
+      setScenarioFormError(
+        saveError?.message || 'No se pudo guardar el escenario.',
+      );
+    } finally {
+      setScenarioSaving(false);
+    }
+  };
+
+  const updateScenarioStatus = async (
+    scenario: BigDataScenario,
+    status: Exclude<BigDataScenarioStatus, 'DRAFT'>,
+  ) => {
+    if (!currentMall?.id || !session?.access_token || !(isAdmin || isTic)) return;
+    if (
+      status === 'CANCELLED'
+      && !window.confirm(`¿Cancelar el escenario "${scenario.name}"?`)
+    ) return;
+    setScenarioWorkflowBusy(true);
+    setScenariosError(null);
+    try {
+      await ApiService.updateBigDataScenarioStatus(
+        currentMall.id,
+        scenario.id,
+        status,
+        session.access_token,
+      );
+      setScenarioReloadKey((value) => value + 1);
+    } catch (workflowError: any) {
+      setScenariosError(
+        workflowError?.message || 'No se pudo actualizar el escenario.',
+      );
+    } finally {
+      setScenarioWorkflowBusy(false);
+    }
+  };
+
+  const updateScenarioActionStatus = async (
+    actionId: string,
+    status: BigDataScenarioActionStatus,
+  ) => {
+    if (!currentMall?.id || !session?.access_token || !(isAdmin || isTic)) return;
+    setScenarioWorkflowBusy(true);
+    setScenariosError(null);
+    try {
+      await ApiService.updateBigDataScenarioActionStatus(
+        currentMall.id,
+        actionId,
+        status,
+        session.access_token,
+      );
+      setScenarioReloadKey((value) => value + 1);
+    } catch (workflowError: any) {
+      setScenariosError(
+        workflowError?.message || 'No se pudo actualizar la acción.',
+      );
+    } finally {
+      setScenarioWorkflowBusy(false);
+    }
+  };
+
   if (!currentMall?.id) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white p-6">
@@ -564,7 +848,9 @@ export const BigDataDashboard: React.FC = () => {
   const apiUnavailable = Boolean(error && /not found|http 404/i.test(error));
   const quality = data?.quality;
   const qualityState = quality ? qualityCopy[quality.status] : qualityCopy.LOW_CONFIDENCE;
-  const statusLabel = activeTab === 'prediction'
+  const statusLabel = activeTab === 'scenarios'
+    ? `${scenarioSummary.open} escenario(s) abierto(s)`
+    : activeTab === 'prediction'
     ? prediction
       ? `Confianza ${predictionConfidenceCopy[prediction.quality.confidence].label.toLowerCase()}`
       : 'Predicción explicable'
@@ -584,7 +870,11 @@ export const BigDataDashboard: React.FC = () => {
             <div className="max-w-3xl">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full border border-indigo-300/30 bg-indigo-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-indigo-200">
-                  Big Data · {activeTab === 'prediction' ? 'Fase 3A' : 'Fase 1'}
+                  Big Data · {activeTab === 'scenarios'
+                    ? 'Fase 3B'
+                    : activeTab === 'prediction'
+                    ? 'Fase 3A'
+                    : 'Fase 1'}
                 </span>
                 {data && (
                   <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs font-semibold text-slate-200">
@@ -596,7 +886,9 @@ export const BigDataDashboard: React.FC = () => {
                 Inteligencia Comercial
               </h2>
               <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-300">
-                {activeTab === 'prediction'
+                {activeTab === 'scenarios'
+                  ? 'Compara decisiones contra la predicción base, documenta los supuestos y convierte el escenario aprobado en un plan de ejecución medible.'
+                  : activeTab === 'prediction'
                   ? 'Proyecta los próximos 7, 30 y 90 días con rangos de confianza, estacionalidad y contexto comercial verificable.'
                   : 'Descubre cuándo se repiten los patrones, qué fechas se salen de lo esperado, cuáles locales explican el movimiento y si los datos son confiables para actuar.'}
               </p>
@@ -645,6 +937,8 @@ export const BigDataDashboard: React.FC = () => {
             const selected = activeTab === tab.id;
             const badge = tab.id === 'anomalies'
               ? data?.anomalies.length
+              : tab.id === 'scenarios'
+              ? scenarioSummary.open
               : tab.id === 'calendar'
               ? data?.calendar_context.registered_events.length
               : tab.id === 'quality'
@@ -1149,6 +1443,325 @@ export const BigDataDashboard: React.FC = () => {
                 </div>
               </>
             )}
+          </section>
+          )}
+
+          {activeTab === 'scenarios' && (
+          <section role="tabpanel" className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
+                  Escenarios abiertos
+                </p>
+                <p className="mt-2 text-2xl font-black text-slate-900">
+                  {scenarioSummary.open}
+                </p>
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Borradores, aprobados o en ejecución
+                </p>
+              </article>
+              <article className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-500">
+                  Impacto potencial abierto
+                </p>
+                <p className={`mt-2 text-2xl font-black ${
+                  scenarioSummary.potentialImpact >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                }`}>
+                  {scenarioSummary.potentialImpact > 0 ? '+' : ''}
+                  {format(scenarioSummary.potentialImpact)}
+                </p>
+                <p className="mt-1 text-[10px] text-indigo-500">
+                  Supuestos acumulados; no es venta comprometida
+                </p>
+              </article>
+              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
+                      Acciones pendientes
+                    </p>
+                    <p className="mt-2 text-2xl font-black text-slate-900">
+                      {scenarioSummary.pendingActions}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetScenarioDraft();
+                      setShowScenarioForm(true);
+                    }}
+                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-xs font-black text-white shadow-sm hover:bg-indigo-700"
+                  >
+                    <Plus size={15} /> Simular
+                  </button>
+                </div>
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Tareas del plan que aún requieren seguimiento
+                </p>
+              </article>
+            </div>
+
+            {scenariosError && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">
+                {scenariosError}
+              </div>
+            )}
+
+            <div className="grid gap-3 xl:grid-cols-[1.45fr_0.75fr]">
+              <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+                  <div>
+                    <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
+                      <Target size={16} /> Escenarios comerciales
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Comparación contra la predicción vigente al momento de guardar.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-500">
+                    Últimos {scenarios.length}
+                  </span>
+                </div>
+
+                {scenariosLoading ? (
+                  <div className="grid min-h-56 place-items-center">
+                    <div className="flex items-center gap-2 text-sm font-bold text-slate-500">
+                      <Loader2 size={18} className="animate-spin" /> Cargando escenarios…
+                    </div>
+                  </div>
+                ) : scenarios.length ? (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-left">
+                      <thead className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-400">
+                        <tr>
+                          <th className="px-4 py-2.5">Escenario</th>
+                          <th className="px-3 py-2.5">Período</th>
+                          <th className="px-3 py-2.5">Supuesto</th>
+                          <th className="px-3 py-2.5">Impacto potencial</th>
+                          <th className="px-3 py-2.5">Estado</th>
+                          <th className="px-3 py-2.5 text-right">Plan</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {scenarios.map((scenario) => {
+                          const doneActions = (scenario.actions || []).filter(
+                            (action) => action.status === 'DONE',
+                          ).length;
+                          return (
+                            <tr
+                              key={scenario.id}
+                              onClick={() => setSelectedScenarioId(scenario.id)}
+                              className={`cursor-pointer text-xs transition ${
+                                selectedScenarioId === scenario.id
+                                  ? 'bg-indigo-50/60'
+                                  : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <td className="px-4 py-3">
+                                <p className="max-w-52 truncate font-black text-slate-800">
+                                  {scenario.name}
+                                </p>
+                                <p className="mt-0.5 text-[9px] text-slate-400">
+                                  {SCENARIO_TYPES.find((item) => item.value === scenario.scenario_type)?.label
+                                    || scenario.scenario_type}
+                                </p>
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-3 text-[10px] font-bold text-slate-500">
+                                {formatDate(scenario.start_date, { day: '2-digit', month: 'short' })}
+                                {' — '}
+                                {formatDate(scenario.end_date, { day: '2-digit', month: 'short' })}
+                              </td>
+                              <td className={`whitespace-nowrap px-3 py-3 font-black ${
+                                Number(scenario.adjustment_percent) >= 0
+                                  ? 'text-emerald-600'
+                                  : 'text-rose-600'
+                              }`}>
+                                {Number(scenario.adjustment_percent) > 0 ? '+' : ''}
+                                {Number(scenario.adjustment_percent).toFixed(1)}%
+                              </td>
+                              <td className={`whitespace-nowrap px-3 py-3 font-black ${
+                                Number(scenario.incremental_sales) >= 0
+                                  ? 'text-emerald-600'
+                                  : 'text-rose-600'
+                              }`}>
+                                {Number(scenario.incremental_sales) > 0 ? '+' : ''}
+                                {format(Number(scenario.incremental_sales))}
+                              </td>
+                              <td className="px-3 py-3">
+                                <span className={`rounded-full border px-2 py-1 text-[9px] font-black ${
+                                  scenarioStatusCopy[scenario.status].classes
+                                }`}>
+                                  {scenarioStatusCopy[scenario.status].label}
+                                </span>
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-3 text-right text-[10px] font-bold text-slate-500">
+                                {doneActions}/{scenario.actions?.length || 0}
+                                <Eye size={14} className="ml-2 inline text-indigo-500" />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="grid min-h-56 place-items-center p-6 text-center">
+                    <div>
+                      <Target size={28} className="mx-auto text-slate-300" />
+                      <p className="mt-3 text-sm font-black text-slate-700">
+                        Aún no hay escenarios guardados
+                      </p>
+                      <p className="mt-1 max-w-sm text-xs leading-5 text-slate-500">
+                        Simula una promoción, actividad o cambio operativo y compáralo
+                        con la predicción base antes de aprobarlo.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </article>
+
+              <aside className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                {selectedScenario ? (
+                  <>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-600">
+                          Ficha del escenario
+                        </p>
+                        <h3 className="mt-1 truncate text-base font-black text-slate-900">
+                          {selectedScenario.name}
+                        </h3>
+                      </div>
+                      <span className={`shrink-0 rounded-full border px-2 py-1 text-[9px] font-black ${
+                        scenarioStatusCopy[selectedScenario.status].classes
+                      }`}>
+                        {scenarioStatusCopy[selectedScenario.status].label}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="rounded-xl bg-slate-50 p-3">
+                        <p className="text-[9px] font-black uppercase text-slate-400">Base</p>
+                        <p className="mt-1 text-sm font-black text-slate-800">
+                          {format(Number(selectedScenario.baseline_sales))}
+                        </p>
+                      </div>
+                      <div className="rounded-xl bg-indigo-50 p-3">
+                        <p className="text-[9px] font-black uppercase text-indigo-400">Escenario</p>
+                        <p className="mt-1 text-sm font-black text-indigo-900">
+                          {format(Number(selectedScenario.scenario_sales))}
+                        </p>
+                      </div>
+                    </div>
+                    <p className="mt-2 rounded-xl border border-slate-100 px-3 py-2 text-[10px] leading-4 text-slate-500">
+                      Rango de planificación: {format(Number(selectedScenario.lower_bound))}
+                      {' — '}
+                      {format(Number(selectedScenario.upper_bound))}. Confianza{' '}
+                      {predictionConfidenceCopy[selectedScenario.confidence].label.toLowerCase()}.
+                    </p>
+
+                    <div className="mt-4 flex items-center justify-between">
+                      <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-slate-500">
+                        <ClipboardList size={14} /> Plan de acción
+                      </p>
+                      <span className="text-[9px] font-bold text-slate-400">
+                        {selectedScenario.actions?.length || 0} tarea(s)
+                      </span>
+                    </div>
+                    <div className="mt-2 max-h-52 space-y-2 overflow-y-auto">
+                      {(selectedScenario.actions || []).map((action) => (
+                        <div key={action.id} className="rounded-xl border border-slate-100 p-2.5">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className={`text-xs font-black ${
+                                action.status === 'DONE'
+                                  ? 'text-slate-400 line-through'
+                                  : 'text-slate-700'
+                              }`}>
+                                {action.title}
+                              </p>
+                              <p className="mt-0.5 text-[9px] text-slate-400">
+                                {action.owner_name || 'Sin responsable'}
+                                {action.due_date
+                                  ? ` · ${formatDate(action.due_date, { day: '2-digit', month: 'short' })}`
+                                  : ''}
+                              </p>
+                            </div>
+                            {(isAdmin || isTic) ? (
+                              <select
+                                value={action.status}
+                                disabled={scenarioWorkflowBusy}
+                                onChange={(event) => updateScenarioActionStatus(
+                                  action.id,
+                                  event.target.value as BigDataScenarioActionStatus,
+                                )}
+                                className="max-w-24 rounded-lg border border-slate-200 bg-white px-1.5 py-1 text-[9px] font-bold text-slate-600"
+                              >
+                                {(Object.keys(actionStatusCopy) as BigDataScenarioActionStatus[]).map((status) => (
+                                  <option key={status} value={status}>{actionStatusCopy[status]}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <span className="text-[9px] font-bold text-slate-400">
+                                {actionStatusCopy[action.status]}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {!selectedScenario.actions?.length && (
+                        <p className="rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-500">
+                          Este escenario no tiene acciones asignadas.
+                        </p>
+                      )}
+                    </div>
+
+                    {(isAdmin || isTic)
+                      && !['COMPLETED', 'CANCELLED'].includes(selectedScenario.status) && (
+                      <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+                        {nextScenarioStatus[selectedScenario.status] && (
+                          <button
+                            type="button"
+                            disabled={scenarioWorkflowBusy}
+                            onClick={() => updateScenarioStatus(
+                              selectedScenario,
+                              nextScenarioStatus[selectedScenario.status]!,
+                            )}
+                            className="flex-1 rounded-xl bg-indigo-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50"
+                          >
+                            {selectedScenario.status === 'DRAFT'
+                              ? 'Aprobar'
+                              : selectedScenario.status === 'APPROVED'
+                              ? 'Iniciar'
+                              : 'Completar'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={scenarioWorkflowBusy}
+                          onClick={() => updateScenarioStatus(selectedScenario, 'CANCELLED')}
+                          className="rounded-xl border border-rose-200 px-3 py-2 text-xs font-black text-rose-600 disabled:opacity-50"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="grid min-h-72 place-items-center text-center">
+                    <div>
+                      <ClipboardList size={28} className="mx-auto text-slate-300" />
+                      <p className="mt-3 text-sm font-black text-slate-700">
+                        Selecciona un escenario
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Aquí verás su supuesto, rango y plan de ejecución.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </aside>
+            </div>
           </section>
           )}
 
@@ -2089,6 +2702,333 @@ export const BigDataDashboard: React.FC = () => {
               </div>
             )}
           </aside>
+        </div>
+      )}
+
+      {showScenarioForm && (
+        <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/60 p-4 backdrop-blur-sm">
+          <form
+            onSubmit={simulateScenario}
+            className="mx-auto my-4 w-full max-w-5xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4">
+              <div>
+                <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
+                  <Target size={16} /> Big Data · Fase 3B
+                </p>
+                <h3 className="mt-1 text-xl font-black text-slate-900">
+                  Simular una decisión comercial
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  Compara un supuesto explícito contra la predicción base antes de aprobar recursos o comprometer resultados.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowScenarioForm(false)}
+                className="rounded-xl border border-slate-200 p-2 text-slate-400 hover:text-slate-700"
+                aria-label="Cerrar simulador"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="grid lg:grid-cols-[1fr_0.9fr]">
+              <div className="border-b border-slate-100 p-5 lg:border-b-0 lg:border-r">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="sm:col-span-2">
+                    <span className="text-xs font-bold text-slate-600">Nombre del escenario</span>
+                    <input
+                      required
+                      minLength={2}
+                      maxLength={160}
+                      value={scenarioForm.name}
+                      onChange={(event) => updateScenarioForm({ name: event.target.value })}
+                      placeholder="Ej. Semana de moda agosto"
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                    />
+                  </label>
+                  <label>
+                    <span className="text-xs font-bold text-slate-600">Tipo</span>
+                    <select
+                      value={scenarioForm.scenario_type}
+                      onChange={(event) => updateScenarioForm({
+                        scenario_type: event.target.value as BigDataScenarioType,
+                      })}
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                    >
+                      {SCENARIO_TYPES.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="text-xs font-bold text-slate-600">
+                      Supuesto de impacto
+                    </span>
+                    <div className="relative mt-1.5">
+                      <input
+                        required
+                        type="number"
+                        min={-60}
+                        max={80}
+                        step={0.5}
+                        value={scenarioForm.adjustment_percent}
+                        onChange={(event) => updateScenarioForm({
+                          adjustment_percent: Number(event.target.value),
+                        })}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 pr-8 text-sm outline-none focus:border-indigo-400"
+                      />
+                      <span className="absolute right-3 top-2.5 text-sm font-black text-slate-400">%</span>
+                    </div>
+                  </label>
+                  <label>
+                    <span className="text-xs font-bold text-slate-600">Desde</span>
+                    <input
+                      required
+                      type="date"
+                      value={scenarioForm.start_date}
+                      min={initialScenarioForm().start_date}
+                      max={scenarioForm.end_date}
+                      onChange={(event) => updateScenarioForm({
+                        start_date: event.target.value,
+                        end_date: event.target.value > scenarioForm.end_date
+                          ? event.target.value
+                          : scenarioForm.end_date,
+                      })}
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                    />
+                  </label>
+                  <label>
+                    <span className="text-xs font-bold text-slate-600">Hasta</span>
+                    <input
+                      required
+                      type="date"
+                      value={scenarioForm.end_date}
+                      min={scenarioForm.start_date}
+                      onChange={(event) => updateScenarioForm({ end_date: event.target.value })}
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                    />
+                  </label>
+                  <label className="sm:col-span-2">
+                    <span className="text-xs font-bold text-slate-600">Supuestos y notas</span>
+                    <textarea
+                      rows={2}
+                      maxLength={2000}
+                      value={scenarioForm.notes || ''}
+                      onChange={(event) => updateScenarioForm({ notes: event.target.value })}
+                      placeholder="Presupuesto, alcance, locales participantes u otra condición necesaria."
+                      className="mt-1.5 w-full resize-none rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                    />
+                  </label>
+                </div>
+
+                {(isAdmin || isTic) && (
+                  <div className="mt-5 border-t border-slate-100 pt-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="flex items-center gap-2 text-xs font-black text-slate-700">
+                          <ClipboardList size={15} /> Plan de acción inicial
+                        </p>
+                        <p className="mt-0.5 text-[10px] text-slate-400">
+                          Opcional. Define responsables y fechas antes de aprobar.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setScenarioActions((current) => [
+                          ...current,
+                          { title: '', owner_name: '', due_date: '', notes: '' },
+                        ])}
+                        disabled={scenarioActions.length >= 20}
+                        className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 px-2.5 py-1.5 text-[10px] font-black text-indigo-600 disabled:opacity-40"
+                      >
+                        <Plus size={12} /> Acción
+                      </button>
+                    </div>
+                    <div className="mt-3 max-h-52 space-y-2 overflow-y-auto pr-1">
+                      {scenarioActions.map((action, index) => (
+                        <div key={index} className="grid gap-2 rounded-xl bg-slate-50 p-2.5 sm:grid-cols-[1.3fr_0.8fr_0.75fr_auto]">
+                          <input
+                            maxLength={200}
+                            value={action.title}
+                            onChange={(event) => setScenarioActions((current) => current.map(
+                              (item, position) => position === index
+                                ? { ...item, title: event.target.value }
+                                : item,
+                            ))}
+                            placeholder="Acción a ejecutar"
+                            className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs outline-none focus:border-indigo-400"
+                          />
+                          <input
+                            maxLength={120}
+                            value={action.owner_name}
+                            onChange={(event) => setScenarioActions((current) => current.map(
+                              (item, position) => position === index
+                                ? { ...item, owner_name: event.target.value }
+                                : item,
+                            ))}
+                            placeholder="Responsable"
+                            className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs outline-none focus:border-indigo-400"
+                          />
+                          <input
+                            type="date"
+                            value={action.due_date}
+                            onChange={(event) => setScenarioActions((current) => current.map(
+                              (item, position) => position === index
+                                ? { ...item, due_date: event.target.value }
+                                : item,
+                            ))}
+                            className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-[10px] outline-none focus:border-indigo-400"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setScenarioActions((current) => (
+                              current.length === 1
+                                ? [{ title: '', owner_name: '', due_date: '', notes: '' }]
+                                : current.filter((_, position) => position !== index)
+                            ))}
+                            className="rounded-lg p-2 text-slate-300 hover:bg-rose-50 hover:text-rose-500"
+                            aria-label={`Eliminar acción ${index + 1}`}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-slate-50/70 p-5">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
+                  Comparación calculada
+                </p>
+                {!scenarioSimulation && !scenarioSimulating && (
+                  <div className="mt-4 grid min-h-72 place-items-center rounded-2xl border border-dashed border-slate-200 bg-white p-6 text-center">
+                    <div>
+                      <Play size={28} className="mx-auto text-indigo-300" />
+                      <p className="mt-3 text-sm font-black text-slate-700">
+                        Define el supuesto y ejecuta la simulación
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        La base proviene de Fase 3A; este cálculo no modifica el calendario ni las ventas.
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {scenarioSimulating && (
+                  <div className="mt-4 grid min-h-72 place-items-center rounded-2xl bg-white">
+                    <div className="text-center text-sm font-bold text-slate-500">
+                      <Loader2 size={24} className="mx-auto animate-spin text-indigo-500" />
+                      <p className="mt-3">Comparando contra la predicción base…</p>
+                    </div>
+                  </div>
+                )}
+                {scenarioSimulation && (
+                  <div className="mt-4 space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <article className="rounded-xl border border-slate-200 bg-white p-3">
+                        <p className="text-[9px] font-black uppercase text-slate-400">Predicción base</p>
+                        <p className="mt-1 text-lg font-black text-slate-900">
+                          {format(scenarioSimulation.result.baseline_sales)}
+                        </p>
+                      </article>
+                      <article className="rounded-xl bg-slate-950 p-3 text-white">
+                        <p className="text-[9px] font-black uppercase text-slate-400">Con escenario</p>
+                        <p className="mt-1 text-lg font-black">
+                          {format(scenarioSimulation.result.scenario_sales)}
+                        </p>
+                      </article>
+                    </div>
+                    <article className={`rounded-xl border p-3 ${
+                      scenarioSimulation.result.incremental_sales >= 0
+                        ? 'border-emerald-200 bg-emerald-50'
+                        : 'border-rose-200 bg-rose-50'
+                    }`}>
+                      <p className="text-[9px] font-black uppercase text-slate-500">Impacto potencial</p>
+                      <p className={`mt-1 text-2xl font-black ${
+                        scenarioSimulation.result.incremental_sales >= 0
+                          ? 'text-emerald-700'
+                          : 'text-rose-700'
+                      }`}>
+                        {scenarioSimulation.result.incremental_sales > 0 ? '+' : ''}
+                        {format(scenarioSimulation.result.incremental_sales)}
+                      </p>
+                      <p className="mt-1 text-[10px] text-slate-500">
+                        {scenarioSimulation.period.affected_days} día(s) · rango{' '}
+                        {format(scenarioSimulation.result.lower_bound)} —{' '}
+                        {format(scenarioSimulation.result.upper_bound)}
+                      </p>
+                    </article>
+                    {scenarioSimulation.assumption.historical_reference?.applied && (
+                      <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-xs leading-5 text-indigo-900">
+                        Referencia histórica: {scenarioSimulation.assumption.historical_reference.observations}{' '}
+                        observaciones comparables con ajuste mediano de{' '}
+                        {scenarioSimulation.assumption.historical_reference.adjustment_percent > 0 ? '+' : ''}
+                        {scenarioSimulation.assumption.historical_reference.adjustment_percent.toFixed(1)}%.
+                      </div>
+                    )}
+                    {scenarioSimulation.warnings.map((warning) => (
+                      <div key={warning} className="flex gap-2 rounded-xl border border-amber-100 bg-amber-50 p-3 text-[10px] leading-4 text-amber-800">
+                        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                        {warning}
+                      </div>
+                    ))}
+                    <p className="text-[9px] leading-4 text-slate-400">
+                      {scenarioSimulation.methodology}
+                    </p>
+                  </div>
+                )}
+
+                {scenarioFormError && (
+                  <p className="mt-3 rounded-xl border border-rose-100 bg-rose-50 p-3 text-xs leading-5 text-rose-700">
+                    {scenarioFormError}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-4">
+              <p className="text-[10px] text-slate-400">
+                {(isAdmin || isTic)
+                  ? 'Guardar crea un borrador; aprobarlo requiere una acción separada.'
+                  : 'Puedes simular. Guardar y aprobar requiere rol administrador o IT.'}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowScenarioForm(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-600"
+                >
+                  Cerrar
+                </button>
+                <button
+                  type="submit"
+                  disabled={scenarioSimulating || scenarioSaving}
+                  className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 bg-white px-4 py-2.5 text-sm font-black text-indigo-700 disabled:opacity-50"
+                >
+                  {scenarioSimulating
+                    ? <Loader2 size={16} className="animate-spin" />
+                    : <Play size={16} />}
+                  Simular
+                </button>
+                {(isAdmin || isTic) && (
+                  <button
+                    type="button"
+                    disabled={!scenarioSimulation || scenarioSaving || scenarioSimulating}
+                    onClick={saveScenario}
+                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-black text-white disabled:opacity-40"
+                  >
+                    {scenarioSaving
+                      ? <Loader2 size={16} className="animate-spin" />
+                      : <Save size={16} />}
+                    Guardar borrador
+                  </button>
+                )}
+              </div>
+            </div>
+          </form>
         </div>
       )}
 

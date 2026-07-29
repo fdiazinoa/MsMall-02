@@ -303,6 +303,95 @@ export interface BigDataPhaseTwoDiagnostic {
   generated_at: string;
 }
 
+export interface BigDataPhaseThreePrediction {
+  mall_id: string;
+  status: 'OK' | 'INSUFFICIENT_DATA';
+  period: {
+    history_start: string;
+    as_of: string;
+    forecast_end: string;
+  };
+  quality: {
+    score: number;
+    status: 'RELIABLE' | 'REVIEW' | 'LOW_CONFIDENCE';
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+    expected_days: number;
+    days_with_data: number;
+    coverage_percent: number;
+    last_data_date?: string | null;
+    stale_days?: number | null;
+    residual_variation_percent: number;
+    reasons: string[];
+  };
+  horizons: Array<{
+    days: 7 | 30 | 90;
+    start_date: string;
+    end_date: string;
+    expected_sales: number;
+    lower_bound: number;
+    upper_bound: number;
+    average_daily_sales: number;
+    comparison_recent_average_percent?: number | null;
+    weekend_share_percent: number;
+    known_context_days: number;
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  }>;
+  daily: Array<{
+    date: string;
+    weekday: number;
+    weekday_label: string;
+    expected_sales: number;
+    lower_bound: number;
+    upper_bound: number;
+    baseline_sales: number;
+    adjustment_percent: number;
+    adjustments: Array<{
+      source: 'RECENT_TREND' | 'HOLIDAY' | 'CALENDAR_EVENT';
+      label: string;
+      event_type?: string;
+      percent: number;
+      observations: number;
+      applied: boolean;
+    }>;
+    is_weekend: boolean;
+    is_holiday: boolean;
+    holiday_name?: string | null;
+    events: BigDataCalendarEvent[];
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  }>;
+  drivers: {
+    trend_percent: number;
+    trend_window_days?: number;
+    weekday_pattern: Array<{
+      weekday: number;
+      label: string;
+      is_weekend: boolean;
+      baseline_sales: number;
+      days_observed: number;
+    }>;
+    event_adjustments: Array<{
+      event_type: string;
+      event_type_label: string;
+      observations: number;
+      adjustment_percent: number;
+      applied: boolean;
+    }>;
+    holiday_adjustment: {
+      observations: number;
+      adjustment_percent: number;
+      applied: boolean;
+    };
+  };
+  calendar_context: {
+    country_code?: string | null;
+    holiday_source?: string | null;
+    registered_events: BigDataCalendarEvent[];
+  };
+  methodology: string;
+  version: string;
+  generated_at: string;
+}
+
 export interface BigDataForecast {
   mall_id: string;
   grain: 'mall' | 'category' | 'local';

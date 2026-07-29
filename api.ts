@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataPhaseTwoDiagnostic, BigDataPhaseThreePrediction, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataPhaseTwoDiagnostic, BigDataPhaseThreePrediction, BigDataScenario, BigDataScenarioAction, BigDataScenarioActionStatus, BigDataScenarioInput, BigDataScenarioSimulation, BigDataScenarioStatus, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -794,6 +794,111 @@ export const ApiService = {
       startDate,
       endDate,
       token
+    );
+  },
+
+  async simulateBigDataScenario(
+    mallId: string,
+    historyStart: string,
+    asOf: string,
+    payload: BigDataScenarioInput,
+    token: string
+  ): Promise<BigDataScenarioSimulation> {
+    const params = new URLSearchParams({
+      mall_id: mallId,
+      history_start: historyStart,
+      as_of: asOf,
+    });
+    return fetchJsonWithBaseFallback<BigDataScenarioSimulation>(
+      `/big-data/intelligence/phase-three-b/simulate?${params.toString()}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+      },
+      'No se pudo simular el escenario comercial'
+    );
+  },
+
+  async getBigDataScenarios(
+    mallId: string,
+    token: string
+  ): Promise<{ data: BigDataScenario[]; limit: number; updated_at: string }> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<{
+      data: BigDataScenario[];
+      limit: number;
+      updated_at: string;
+    }>(
+      `/big-data/intelligence/phase-three-b/scenarios?${params.toString()}`,
+      { headers: withAuthHeaders(token, { Accept: 'application/json' }) },
+      'No se pudieron consultar los escenarios comerciales'
+    );
+  },
+
+  async createBigDataScenario(
+    mallId: string,
+    historyStart: string,
+    asOf: string,
+    payload: BigDataScenarioInput & {
+      actions: Array<{
+        title: string;
+        owner_name?: string;
+        due_date?: string;
+        notes?: string;
+      }>;
+    },
+    token: string
+  ): Promise<BigDataScenario> {
+    const params = new URLSearchParams({
+      mall_id: mallId,
+      history_start: historyStart,
+      as_of: asOf,
+    });
+    return fetchJsonWithBaseFallback<BigDataScenario>(
+      `/big-data/intelligence/phase-three-b/scenarios?${params.toString()}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+      },
+      'No se pudo guardar el escenario comercial'
+    );
+  },
+
+  async updateBigDataScenarioStatus(
+    mallId: string,
+    scenarioId: string,
+    status: Exclude<BigDataScenarioStatus, 'DRAFT'>,
+    token: string
+  ): Promise<BigDataScenario> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<BigDataScenario>(
+      `/big-data/intelligence/phase-three-b/scenarios/${encodeURIComponent(scenarioId)}/status?${params.toString()}`,
+      {
+        method: 'PATCH',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ status }),
+      },
+      'No se pudo actualizar el estado del escenario'
+    );
+  },
+
+  async updateBigDataScenarioActionStatus(
+    mallId: string,
+    actionId: string,
+    status: BigDataScenarioActionStatus,
+    token: string
+  ): Promise<BigDataScenarioAction> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<BigDataScenarioAction>(
+      `/big-data/intelligence/phase-three-b/actions/${encodeURIComponent(actionId)}/status?${params.toString()}`,
+      {
+        method: 'PATCH',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ status }),
+      },
+      'No se pudo actualizar la acción'
     );
   },
 

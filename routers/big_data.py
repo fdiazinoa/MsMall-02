@@ -13,6 +13,7 @@ from supabase import create_client
 from services.big_data_phase_one_service import BigDataPhaseOneService
 from services.big_data_phase_two_service import BigDataPhaseTwoService
 from services.big_data_phase_three_service import BigDataPhaseThreeService
+from services.big_data_phase_three_b_service import BigDataPhaseThreeBService
 from services.big_data_sprint2_service import BigDataSprint2Service
 
 router = APIRouter(prefix="/api/v1/big-data", tags=["Big Data"])
@@ -94,6 +95,41 @@ class CalendarEventPayload(BaseModel):
     end_date: date
     expected_impact: Literal["UP", "DOWN", "NEUTRAL"] = "UP"
     notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class ScenarioActionPayload(BaseModel):
+    title: str = Field(min_length=2, max_length=200)
+    owner_name: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    due_date: Optional[date] = None
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class ScenarioPayload(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    scenario_type: Literal[
+        "PROMOTION",
+        "HALLWAY_SALE",
+        "MALL_ACTIVITY",
+        "HOLIDAY",
+        "EXTENDED_HOURS",
+        "OTHER",
+    ]
+    start_date: date
+    end_date: date
+    adjustment_percent: float = Field(ge=-60, le=80)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ScenarioCreatePayload(ScenarioPayload):
+    actions: list[ScenarioActionPayload] = Field(default_factory=list, max_length=20)
+
+
+class ScenarioStatusPayload(BaseModel):
+    status: Literal["APPROVED", "ACTIVE", "COMPLETED", "CANCELLED"]
+
+
+class ScenarioActionStatusPayload(BaseModel):
+    status: Literal["PENDING", "IN_PROGRESS", "DONE", "CANCELLED"]
 
 
 def _require_big_data_manager(mall_id: str, user: dict) -> None:
@@ -348,6 +384,27 @@ def _capability_context(mall_id: str, user: dict, feature: str) -> None:
     _require_feature(mall_id, feature)
 
 
+def _raise_scenario_storage_error(exc: Exception) -> None:
+    message = str(exc).lower()
+    if "big_data_scenarios" in message or "big_data_scenario_actions" in message:
+        if (
+            "does not exist" in message
+            or "schema cache" in message
+            or "permission denied" in message
+        ):
+            raise HTTPException(
+                503,
+                "La base de datos no está actualizada: aplique la migración "
+                "big_data_phase_3b_scenarios.",
+            ) from exc
+    if "duplicate" in message or "23505" in message:
+        raise HTTPException(
+            409,
+            "Ya existe un escenario abierto con ese nombre y rango.",
+        ) from exc
+    raise exc
+
+
 @router.get("/intelligence/phase-three-a/prediction")
 async def phase_three_a_prediction(
     mall_id: str,
@@ -361,6 +418,130 @@ async def phase_three_a_prediction(
     if start_date > date.today():
         raise HTTPException(422, "La historia de predicción no puede iniciar en el futuro")
     return BigDataPhaseThreeService(db).prediction(mall_id, start_date, end_date)
+
+
+@router.post("/intelligence/phase-three-b/simulate")
+async def phase_three_b_simulate(
+    mall_id: str,
+    history_start: date,
+    as_of: date,
+    payload: ScenarioPayload,
+    user: dict = Depends(current_user),
+):
+    """Estimate a planning scenario without persisting it."""
+    _date_range(history_start, as_of)
+    _capability_context(mall_id, user, "BIG_DATA_FORECAST")
+    try:
+        return BigDataPhaseThreeBService(db).simulate(
+            mall_id=mall_id,
+            history_start=history_start,
+            as_of=as_of,
+            name=payload.name,
+            scenario_type=payload.scenario_type,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            adjustment_percent=payload.adjustment_percent,
+            notes=payload.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/intelligence/phase-three-b/scenarios")
+async def phase_three_b_scenarios(
+    mall_id: str,
+    user: dict = Depends(current_user),
+):
+    """List the latest mall scenarios and their bounded action plans."""
+    _capability_context(mall_id, user, "BIG_DATA_FORECAST")
+    try:
+        return BigDataPhaseThreeBService(db).list_scenarios(mall_id)
+    except Exception as exc:
+        _raise_scenario_storage_error(exc)
+
+
+@router.post("/intelligence/phase-three-b/scenarios")
+async def phase_three_b_create_scenario(
+    mall_id: str,
+    history_start: date,
+    as_of: date,
+    payload: ScenarioCreatePayload,
+    user: dict = Depends(current_user),
+):
+    """Persist a reviewed simulation and its initial action plan."""
+    _date_range(history_start, as_of)
+    _require_big_data_manager(mall_id, user)
+    _require_feature(mall_id, "BIG_DATA_FORECAST")
+    try:
+        return BigDataPhaseThreeBService(db).create_scenario(
+            mall_id=mall_id,
+            user_id=user["id"],
+            history_start=history_start,
+            as_of=as_of,
+            name=payload.name,
+            scenario_type=payload.scenario_type,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            adjustment_percent=payload.adjustment_percent,
+            notes=payload.notes,
+            actions=[
+                {
+                    "title": action.title,
+                    "owner_name": action.owner_name,
+                    "due_date": action.due_date,
+                    "notes": action.notes,
+                }
+                for action in payload.actions
+            ],
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        _raise_scenario_storage_error(exc)
+
+
+@router.patch("/intelligence/phase-three-b/scenarios/{scenario_id}/status")
+async def phase_three_b_update_scenario_status(
+    scenario_id: str,
+    mall_id: str,
+    payload: ScenarioStatusPayload,
+    user: dict = Depends(current_user),
+):
+    """Advance one scenario through its explicit approval workflow."""
+    _require_big_data_manager(mall_id, user)
+    _require_feature(mall_id, "BIG_DATA_FORECAST")
+    try:
+        return BigDataPhaseThreeBService(db).update_scenario_status(
+            mall_id, scenario_id, payload.status
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        _raise_scenario_storage_error(exc)
+
+
+@router.patch("/intelligence/phase-three-b/actions/{action_id}/status")
+async def phase_three_b_update_action_status(
+    action_id: str,
+    mall_id: str,
+    payload: ScenarioActionStatusPayload,
+    user: dict = Depends(current_user),
+):
+    """Track execution of one action without rewriting the scenario snapshot."""
+    _require_big_data_manager(mall_id, user)
+    _require_feature(mall_id, "BIG_DATA_FORECAST")
+    try:
+        return BigDataPhaseThreeBService(db).update_action_status(
+            mall_id, action_id, payload.status
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        _raise_scenario_storage_error(exc)
 
 
 def _operational_query(

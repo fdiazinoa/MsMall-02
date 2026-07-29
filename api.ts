@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataPhaseTwoDiagnostic, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -758,6 +758,27 @@ export const ApiService = {
       startDate,
       endDate,
       token
+    );
+  },
+
+  async getBigDataPhaseTwoDiagnostic(
+    mallId: string,
+    localId: string,
+    startDate: string,
+    endDate: string,
+    targetDate: string,
+    token: string
+  ): Promise<BigDataPhaseTwoDiagnostic> {
+    const params = new URLSearchParams({
+      mall_id: mallId,
+      start_date: startDate,
+      end_date: endDate,
+      target_date: targetDate,
+    });
+    return fetchJsonWithBaseFallback<BigDataPhaseTwoDiagnostic>(
+      `/big-data/intelligence/phase-two/stores/${encodeURIComponent(localId)}?${params.toString()}`,
+      { headers: withAuthHeaders(token, { Accept: 'application/json' }) },
+      'No se pudo construir el diagnóstico 360°'
     );
   },
 

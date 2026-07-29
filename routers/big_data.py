@@ -522,6 +522,25 @@ async def phase_three_b_update_scenario_status(
         _raise_scenario_storage_error(exc)
 
 
+@router.delete("/intelligence/phase-three-b/scenarios/{scenario_id}")
+async def phase_three_b_delete_scenario(
+    scenario_id: str,
+    mall_id: str,
+    user: dict = Depends(current_user),
+):
+    """Delete an accidental draft or cancelled scenario."""
+    _require_big_data_manager(mall_id, user)
+    _require_feature(mall_id, "BIG_DATA_FORECAST")
+    try:
+        return BigDataPhaseThreeBService(db).delete_scenario(mall_id, scenario_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        _raise_scenario_storage_error(exc)
+
+
 @router.patch("/intelligence/phase-three-b/actions/{action_id}/status")
 async def phase_three_b_update_action_status(
     action_id: str,

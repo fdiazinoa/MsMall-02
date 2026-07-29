@@ -233,11 +233,10 @@ export const BigDataDashboard: React.FC = () => {
     [data?.calendar, selectedMonth],
   );
 
-  const calendarLeadingSpaces = useMemo(() => {
-    if (!selectedMonth) return 0;
-    const sundayBased = safeDate(`${selectedMonth}-01`).getDay();
-    return (sundayBased + 6) % 7;
-  }, [selectedMonth]);
+  const calendarLeadingSpaces = useMemo(
+    () => visibleCalendar[0]?.weekday ?? 0,
+    [visibleCalendar],
+  );
 
   const anomalyRows = useMemo<AnomalyListRow[]>(() => {
     if (!data) return [];

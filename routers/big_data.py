@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from supabase import create_client
 
 from services.big_data_phase_one_service import BigDataPhaseOneService
+from services.big_data_phase_two_service import BigDataPhaseTwoService
 from services.big_data_sprint2_service import BigDataSprint2Service
 
 router = APIRouter(prefix="/api/v1/big-data", tags=["Big Data"])
@@ -182,6 +183,30 @@ async def phase_one_intelligence(
     """Calendar, seasonality, explainable anomalies and data confidence."""
     _context(mall_id, start_date, end_date, user)
     return BigDataPhaseOneService(db).intelligence(mall_id, start_date, end_date)
+
+
+@router.get("/intelligence/phase-two/stores/{local_id}")
+async def phase_two_store_diagnostic(
+    local_id: str,
+    mall_id: str,
+    start_date: date,
+    end_date: date,
+    target_date: date,
+    user: dict = Depends(current_user),
+):
+    """Explain a local contribution with peers and import evidence."""
+    _context(mall_id, start_date, end_date, user)
+    analysis_end = min(end_date, date.today())
+    if target_date < start_date or target_date > analysis_end:
+        raise HTTPException(
+            422, "La fecha de diagnóstico debe pertenecer al período analizado"
+        )
+    diagnostic = BigDataPhaseTwoService(db).diagnostic(
+        mall_id, local_id, start_date, end_date, target_date
+    )
+    if not diagnostic:
+        raise HTTPException(404, "Local no encontrado en el mall seleccionado")
+    return diagnostic
 
 
 @router.post("/calendar-events")

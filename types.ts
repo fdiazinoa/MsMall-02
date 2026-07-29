@@ -69,6 +69,152 @@ export interface BigDataSummary {
 export interface BigDataCategory { category_id?: string; category_name: string; sales_net: number; transactions: number; share_percent: number; }
 export interface BigDataRanking { local_id: string; name: string; sales_net: number; transactions: number; ticket_average: number; }
 
+export type BigDataCalendarEventType =
+  | 'PROMOTION'
+  | 'HALLWAY_SALE'
+  | 'MALL_ACTIVITY'
+  | 'HOLIDAY'
+  | 'OTHER';
+
+export interface BigDataCalendarEvent {
+  id: string;
+  name: string;
+  event_type: BigDataCalendarEventType;
+  event_type_label: string;
+  start_date: string;
+  end_date: string;
+  expected_impact: 'UP' | 'DOWN' | 'NEUTRAL';
+  notes?: string | null;
+}
+
+export interface BigDataCalendarDay {
+  date: string;
+  weekday: number;
+  weekday_label: string;
+  sales_net: number | null;
+  transactions: number;
+  expected_sales: number | null;
+  deviation_percent: number | null;
+  impact: number | null;
+  is_weekend: boolean;
+  is_holiday: boolean;
+  holiday_name?: string | null;
+  has_known_event: boolean;
+  events: BigDataCalendarEvent[];
+  status: 'NORMAL' | 'WEEKEND' | 'HOLIDAY' | 'EXPLAINED_EVENT' | 'ANOMALY' | 'MISSING';
+  coverage_status?: string | null;
+}
+
+export interface BigDataWeekdayPattern {
+  weekday: number;
+  label: string;
+  is_weekend: boolean;
+  average_sales: number;
+  median_sales: number;
+  days_observed: number;
+  variation_vs_daily_average_percent: number;
+}
+
+export interface BigDataAnomalyContributor {
+  local_id: string;
+  local_name: string;
+  observed_sales: number;
+  expected_sales: number;
+  contribution: number;
+  peer_days: number;
+  impact_share_percent: number;
+}
+
+export interface BigDataPhaseOneAnomaly {
+  date: string;
+  direction: 'UP' | 'DOWN';
+  severity: 'HIGH' | 'WARNING';
+  observed_sales: number;
+  expected_sales: number;
+  impact: number;
+  deviation_percent: number;
+  weekday_label: string;
+  holiday_name?: string | null;
+  is_weekend: boolean;
+  confidence: number;
+  explanation: string;
+  recommendation: string;
+  contributors: BigDataAnomalyContributor[];
+}
+
+export interface BigDataExplainedEvent {
+  date: string;
+  direction: 'UP' | 'DOWN';
+  observed_sales: number;
+  expected_sales: number;
+  impact: number;
+  deviation_percent: number;
+  weekday_label: string;
+  confidence: number;
+  events: BigDataCalendarEvent[];
+  holiday_name?: string | null;
+  explanation: string;
+  contributors: BigDataAnomalyContributor[];
+}
+
+export interface BigDataPhaseOneQuality {
+  score: number;
+  status: 'RELIABLE' | 'REVIEW' | 'LOW_CONFIDENCE';
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  day_coverage_percent: number;
+  store_day_coverage_percent: number;
+  expected_days: number;
+  days_with_data: number;
+  missing_days: number;
+  missing_dates: string[];
+  active_local_count: number;
+  reporting_local_count: number;
+  failed_imports: number;
+  failed_import_percent: number;
+  partial_imports: number;
+  partial_import_percent: number;
+  imports_evaluated: number;
+  last_processed_sale_date?: string | null;
+  last_analytics_update?: string | null;
+  stale_days?: number | null;
+  coverage_window: { start: string; end: string };
+  blockers: string[];
+}
+
+export interface BigDataPhaseOne {
+  mall_id: string;
+  period: { start: string; end: string; analysis_end: string };
+  general_status: 'NORMAL' | 'ATTENTION_REQUIRED' | 'DATA_INCOMPLETE';
+  quality: BigDataPhaseOneQuality;
+  calendar: BigDataCalendarDay[];
+  weekday_pattern: BigDataWeekdayPattern[];
+  seasonality: {
+    weekend_average_sales: number;
+    weekday_average_sales: number;
+    weekend_lift_percent?: number | null;
+    best_weekday?: BigDataWeekdayPattern | null;
+    holiday_days_observed: number;
+  };
+  anomalies: BigDataPhaseOneAnomaly[];
+  explained_events: BigDataExplainedEvent[];
+  insights: Array<{
+    type: string;
+    tone: 'positive' | 'negative' | 'warning' | 'neutral';
+    title: string;
+    statement: string;
+    metric: number;
+    metric_suffix: string;
+  }>;
+  calendar_context: {
+    country_code?: string | null;
+    holiday_source?: string | null;
+    registered_events: BigDataCalendarEvent[];
+  };
+  methodology: string;
+  version: string;
+  generated_at: string;
+}
+
 export interface BigDataForecast {
   mall_id: string;
   grain: 'mall' | 'category' | 'local';

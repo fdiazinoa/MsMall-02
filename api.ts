@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -744,6 +744,61 @@ export const ApiService = {
       this.getBigData<any>('quality', mallId, startDate, endDate, token)
     ]);
     return { summary, daily, categories, ranking, quality };
+  },
+
+  async getBigDataPhaseOne(
+    mallId: string,
+    startDate: string,
+    endDate: string,
+    token: string
+  ): Promise<BigDataPhaseOne> {
+    return this.getBigData<BigDataPhaseOne>(
+      'intelligence/phase-one',
+      mallId,
+      startDate,
+      endDate,
+      token
+    );
+  },
+
+  async createBigDataCalendarEvent(
+    mallId: string,
+    payload: {
+      name: string;
+      event_type: BigDataCalendarEventType;
+      start_date: string;
+      end_date: string;
+      expected_impact: 'UP' | 'DOWN' | 'NEUTRAL';
+      notes?: string;
+    },
+    token: string
+  ): Promise<BigDataCalendarEvent> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<BigDataCalendarEvent>(
+      `/big-data/calendar-events?${params.toString()}`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+      },
+      'No se pudo registrar el contexto comercial'
+    );
+  },
+
+  async deleteBigDataCalendarEvent(
+    mallId: string,
+    eventId: string,
+    token: string
+  ): Promise<{ status: string; id: string }> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<{ status: string; id: string }>(
+      `/big-data/calendar-events/${encodeURIComponent(eventId)}?${params.toString()}`,
+      {
+        method: 'DELETE',
+        headers: withAuthHeaders(token, { Accept: 'application/json' }),
+      },
+      'No se pudo eliminar el contexto comercial'
+    );
   },
 
   async getBigDataForecast(mallId: string, asOf: string, token: string): Promise<BigDataForecast> {

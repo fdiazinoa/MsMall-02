@@ -1,8 +1,10 @@
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 from services.big_data_phase_three_b_service import (
+    BigDataPhaseThreeBService,
     PHASE_THREE_B_VERSION,
     build_phase_three_b_simulation,
 )
@@ -38,6 +40,49 @@ def _prediction(as_of: date, *, status: str = "OK"):
             ]
         },
     }
+
+
+class _ScenarioQuery:
+    def __init__(self, rows):
+        self.rows = rows
+        self.filters = {}
+        self.mode = "select"
+
+    def select(self, *_args):
+        self.mode = "select"
+        return self
+
+    def delete(self):
+        self.mode = "delete"
+        return self
+
+    def eq(self, key, value):
+        self.filters[key] = value
+        return self
+
+    def maybe_single(self):
+        return self
+
+    def execute(self):
+        matches = [
+            row
+            for row in self.rows
+            if all(row.get(key) == value for key, value in self.filters.items())
+        ]
+        if self.mode == "select":
+            return SimpleNamespace(data=dict(matches[0]) if matches else None)
+        for row in matches:
+            self.rows.remove(row)
+        return SimpleNamespace(data=[dict(row) for row in matches])
+
+
+class _ScenarioSupabase:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def table(self, name):
+        assert name == "big_data_scenarios"
+        return _ScenarioQuery(self.rows)
 
 
 def test_phase_three_b_compares_manual_scenario_against_base_forecast():
@@ -132,3 +177,43 @@ def test_phase_three_b_requires_a_valid_phase_three_a_prediction():
             end_date=as_of + timedelta(days=2),
             adjustment_percent=5,
         )
+
+
+@pytest.mark.parametrize("status", ["DRAFT", "CANCELLED"])
+def test_phase_three_b_deletes_only_accidental_or_cancelled_scenarios(status):
+    rows = [
+        {
+            "id": "scenario-1",
+            "mall_id": "mall-1",
+            "name": "Prueba",
+            "status": status,
+        }
+    ]
+    service = BigDataPhaseThreeBService(_ScenarioSupabase(rows))
+
+    result = service.delete_scenario("mall-1", "scenario-1")
+
+    assert result == {
+        "id": "scenario-1",
+        "name": "Prueba",
+        "status": status,
+        "deleted": True,
+    }
+    assert rows == []
+
+
+def test_phase_three_b_preserves_approved_scenario_traceability():
+    rows = [
+        {
+            "id": "scenario-1",
+            "mall_id": "mall-1",
+            "name": "Aprobado",
+            "status": "APPROVED",
+        }
+    ]
+    service = BigDataPhaseThreeBService(_ScenarioSupabase(rows))
+
+    with pytest.raises(ValueError, match="borrador o cancelados"):
+        service.delete_scenario("mall-1", "scenario-1")
+
+    assert rows[0]["status"] == "APPROVED"

@@ -24,6 +24,9 @@ relación causal ni una garantía comercial.
 6. El escenario avanza por el flujo:
    `DRAFT → APPROVED → ACTIVE → COMPLETED`.
 7. Un escenario abierto también puede pasar a `CANCELLED`.
+8. Los escenarios `DRAFT` o `CANCELLED` creados por error pueden eliminarse
+   definitivamente, junto con sus acciones. Los estados aprobados, activos y
+   completados se conservan para mantener la trazabilidad.
 
 ## Contratos API
 
@@ -34,10 +37,11 @@ Todos los contratos requieren usuario autenticado, acceso al mall,
 - `GET /api/v1/big-data/intelligence/phase-three-b/scenarios`
 - `POST /api/v1/big-data/intelligence/phase-three-b/scenarios`
 - `PATCH /api/v1/big-data/intelligence/phase-three-b/scenarios/{id}/status`
+- `DELETE /api/v1/big-data/intelligence/phase-three-b/scenarios/{id}`
 - `PATCH /api/v1/big-data/intelligence/phase-three-b/actions/{id}/status`
 
-Simular y consultar requieren acceso al mall. Guardar o modificar el flujo
-requiere rol administrador o IT.
+Simular y consultar requieren acceso al mall. Guardar, modificar el flujo o
+eliminar requiere rol administrador o IT.
 
 ## Persistencia y seguridad
 
@@ -52,6 +56,8 @@ Las tablas:
 - están aisladas por `mall_id`;
 - aplican una llave foránea compuesta para impedir acciones asociadas a un
   escenario de otro mall;
+- eliminan en cascada las acciones cuando se borra un borrador o escenario
+  cancelado;
 - tienen RLS habilitado y forzado;
 - revocan acceso directo a `anon` y `authenticated`;
 - conceden privilegios explícitos únicamente a `service_role`;

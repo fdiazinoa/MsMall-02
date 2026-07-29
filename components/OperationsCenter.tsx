@@ -17,6 +17,20 @@ const formatDate = (value?: string) => {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 };
 
+const formatInputDate = (value: Date) => [
+  value.getFullYear(),
+  String(value.getMonth() + 1).padStart(2, '0'),
+  String(value.getDate()).padStart(2, '0'),
+].join('-');
+
+const currentMonthToDate = () => {
+  const today = new Date();
+  return {
+    start_date: formatInputDate(new Date(today.getFullYear(), today.getMonth(), 1)),
+    end_date: formatInputDate(today),
+  };
+};
+
 export const OperationsCenter: React.FC<{ onOpenBigData?: () => void }> = ({ onOpenBigData }) => {
   const { currentMall, session } = useAuth();
   const token = session?.access_token || '';
@@ -28,9 +42,9 @@ export const OperationsCenter: React.FC<{ onOpenBigData?: () => void }> = ({ onO
   const [comment, setComment] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [collection, setCollection] = useState<OperationsCollectionName>('findings');
-  const [filters, setFilters] = useState({
-    severity: '', status: 'OPEN', type: '', source: '', local_id: '', start_date: '', end_date: '',
-  });
+  const [filters, setFilters] = useState(() => ({
+    severity: '', status: 'OPEN', type: '', source: '', local_id: '', ...currentMonthToDate(),
+  }));
 
   const load = async () => {
     const mallId = currentMall?.id;

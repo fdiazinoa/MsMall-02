@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from services.big_data_phase_one_service import (
     PHASE_ONE_VERSION,
     attach_anomaly_reviews,
+    build_calendar_day_store_breakdown,
     build_phase_one_intelligence,
     country_holiday_map,
 )
@@ -207,6 +208,113 @@ def test_human_reviews_attach_to_matching_anomaly_dates():
 
     assert result["anomalies"][0]["review"]["id"] == "review-1"
     assert result["explained_events"][0]["review"]["id"] == "review-2"
+
+
+def test_calendar_day_breakdown_explains_store_share_and_historical_variation():
+    target = date(2026, 7, 29)  # Wednesday
+    mall_rows = [
+        {
+            "period_date": target.isoformat(),
+            "sales_net": 1000,
+            "transaction_count": 20,
+        },
+        {
+            "period_date": (target - timedelta(days=7)).isoformat(),
+            "sales_net": 900,
+        },
+        {
+            "period_date": (target - timedelta(days=14)).isoformat(),
+            "sales_net": 800,
+        },
+    ]
+    local_rows = [
+        {
+            "period_date": target.isoformat(),
+            "local_id": "local-a",
+            "sales_net": 600,
+            "transaction_count": 12,
+            "coverage_status": "COMPLETE",
+        },
+        {
+            "period_date": (target - timedelta(days=7)).isoformat(),
+            "local_id": "local-a",
+            "sales_net": 500,
+        },
+        {
+            "period_date": (target - timedelta(days=14)).isoformat(),
+            "local_id": "local-a",
+            "sales_net": 400,
+        },
+        {
+            "period_date": target.isoformat(),
+            "local_id": "local-b",
+            "sales_net": 400,
+            "transaction_count": 8,
+        },
+        {
+            "period_date": (target - timedelta(days=7)).isoformat(),
+            "local_id": "local-b",
+            "sales_net": 400,
+        },
+        {
+            "period_date": (target - timedelta(days=14)).isoformat(),
+            "local_id": "local-b",
+            "sales_net": 400,
+        },
+    ]
+
+    result = build_calendar_day_store_breakdown(
+        mall_id="mall-1",
+        target_date=target,
+        mall_rows=mall_rows,
+        local_rows=local_rows,
+        local_metadata={
+            "local-a": {"name": "Local A", "business_type": "RETAIL"},
+            "local-b": {"name": "Local B", "business_type": "FOOD"},
+        },
+        active_local_count=3,
+    )
+
+    assert result["summary"]["sales_net"] == 1000
+    assert result["summary"]["expected_sales"] == 850
+    assert result["summary"]["variation_amount"] == 150
+    assert result["summary"]["deviation_percent"] == 17.6
+    assert result["summary"]["stores_with_sales"] == 2
+    assert result["summary"]["active_stores"] == 3
+    assert result["summary"]["local_coverage_percent"] == 100
+    assert result["stores"][0]["local_name"] == "Local A"
+    assert result["stores"][0]["share_percent"] == 60
+    assert result["stores"][0]["expected_sales"] == 450
+    assert result["stores"][0]["variation_amount"] == 150
+    assert result["stores"][0]["variation_share_percent"] == 100
+    assert result["stores"][1]["share_percent"] == 40
+    assert result["stores"][1]["variation_amount"] == 0
+    assert "no demuestra causalidad" in result["methodology"]
+
+
+def test_calendar_day_breakdown_requires_two_historical_peers():
+    target = date(2026, 7, 29)
+    result = build_calendar_day_store_breakdown(
+        mall_id="mall-1",
+        target_date=target,
+        mall_rows=[{"period_date": target.isoformat(), "sales_net": 100}],
+        local_rows=[
+            {
+                "period_date": target.isoformat(),
+                "local_id": "local-a",
+                "sales_net": 100,
+            },
+            {
+                "period_date": (target - timedelta(days=7)).isoformat(),
+                "local_id": "local-a",
+                "sales_net": 80,
+            },
+        ],
+    )
+
+    assert result["summary"]["expected_sales"] is None
+    assert result["stores"][0]["expected_sales"] is None
+    assert result["stores"][0]["variation_amount"] is None
 
 
 def test_dominican_calendar_uses_observed_public_holidays():

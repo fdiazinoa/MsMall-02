@@ -24,6 +24,9 @@ WEEKDAY_LABELS = (
 PHASE_ONE_VERSION = "big-data-intelligence-phase-one-v1"
 CONTRIBUTOR_WINDOW_DAYS = 42
 QUALITY_WINDOW_DAYS = 63
+CALENDAR_BREAKDOWN_PEER_WEEKS = 8
+CALENDAR_BREAKDOWN_PAGE_SIZE = 1000
+CALENDAR_BREAKDOWN_MAX_ROWS = 5000
 EVENT_TYPE_LABELS = {
     "PROMOTION": "Promoción",
     "HALLWAY_SALE": "Venta de pasillo",
@@ -312,6 +315,160 @@ def _build_contributors(
             abs(row["contribution"]) / denominator * 100, 1
         ) if denominator else 0.0
     return selected
+
+
+def build_calendar_day_store_breakdown(
+    *,
+    mall_id: str,
+    target_date: date,
+    mall_rows: Iterable[Mapping[str, Any]],
+    local_rows: Iterable[Mapping[str, Any]],
+    local_metadata: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    active_local_count: int = 0,
+) -> dict[str, Any]:
+    """Explain the composition of one day without claiming causal attribution."""
+    metadata = local_metadata or {}
+    comparable_dates = [
+        target_date - timedelta(days=7 * offset)
+        for offset in range(CALENDAR_BREAKDOWN_PEER_WEEKS + 1)
+    ]
+    historical_dates = comparable_dates[1:]
+
+    mall_by_date = _normalize_mall_rows(mall_rows)
+    local_sales: dict[str, dict[date, float]] = defaultdict(dict)
+    local_transactions: dict[str, dict[date, int]] = defaultdict(dict)
+    local_coverage: dict[str, dict[date, Optional[str]]] = defaultdict(dict)
+    for row in local_rows:
+        local_id = str(row.get("local_id") or row.get("dimension_key") or "")
+        if not local_id or not row.get("period_date"):
+            continue
+        row_date = _day(row["period_date"])
+        local_sales[local_id][row_date] = (
+            local_sales[local_id].get(row_date, 0.0)
+            + _number(row.get("sales_net"))
+        )
+        local_transactions[local_id][row_date] = (
+            local_transactions[local_id].get(row_date, 0)
+            + int(_number(row.get("transaction_count") or row.get("records_processed")))
+        )
+        if row.get("coverage_status"):
+            local_coverage[local_id][row_date] = str(row.get("coverage_status"))
+
+    target_local_ids = [
+        local_id
+        for local_id, values_by_date in local_sales.items()
+        if target_date in values_by_date
+        and _number(values_by_date[target_date]) != 0
+    ]
+    local_total = sum(local_sales[local_id][target_date] for local_id in target_local_ids)
+    mall_target = mall_by_date.get(target_date)
+    observed_total = (
+        _number(mall_target.get("sales_net"))
+        if mall_target is not None
+        else local_total
+    )
+    transaction_total = (
+        int(mall_target.get("transactions") or 0)
+        if mall_target is not None
+        else sum(
+            local_transactions[local_id].get(target_date, 0)
+            for local_id in target_local_ids
+        )
+    )
+
+    mall_peers = [
+        _number(mall_by_date[peer_date].get("sales_net"))
+        for peer_date in historical_dates
+        if peer_date in mall_by_date
+    ]
+    mall_expected = _median(mall_peers) if len(mall_peers) >= 2 else None
+    mall_variation = (
+        observed_total - mall_expected if mall_expected is not None else None
+    )
+
+    stores: list[dict[str, Any]] = []
+    for local_id in target_local_ids:
+        observed = local_sales[local_id][target_date]
+        peers = [
+            local_sales[local_id][peer_date]
+            for peer_date in historical_dates
+            if peer_date in local_sales[local_id]
+        ]
+        expected = _median(peers) if len(peers) >= 2 else None
+        variation = observed - expected if expected is not None else None
+        store_metadata = metadata.get(local_id, {})
+        stores.append(
+            {
+                "local_id": local_id,
+                "local_name": str(store_metadata.get("name") or "Local"),
+                "business_type": store_metadata.get("business_type"),
+                "sales_net": round(observed, 2),
+                "transactions": local_transactions[local_id].get(target_date, 0),
+                "share_percent": round(
+                    observed / observed_total * 100, 1
+                ) if observed_total else 0.0,
+                "expected_sales": round(expected, 2) if expected is not None else None,
+                "variation_amount": round(variation, 2) if variation is not None else None,
+                "deviation_percent": (
+                    round(_percent_change(observed, expected), 1)
+                    if expected not in (None, 0)
+                    else None
+                ),
+                "variation_share_percent": None,
+                "peer_days": len(peers),
+                "coverage_status": local_coverage[local_id].get(target_date),
+            }
+        )
+
+    absolute_variation_total = sum(
+        abs(_number(store["variation_amount"]))
+        for store in stores
+        if store["variation_amount"] is not None
+    )
+    for store in stores:
+        variation = store["variation_amount"]
+        if variation is not None:
+            store["variation_share_percent"] = round(
+                abs(_number(variation)) / absolute_variation_total * 100, 1
+            ) if absolute_variation_total else 0.0
+    stores.sort(key=lambda item: _number(item["sales_net"]), reverse=True)
+
+    local_coverage_percent = (
+        local_total / observed_total * 100 if observed_total else 0.0
+    )
+    return {
+        "version": f"{PHASE_ONE_VERSION}-calendar-day-v1",
+        "mall_id": mall_id,
+        "date": target_date.isoformat(),
+        "weekday_label": WEEKDAY_LABELS[target_date.weekday()],
+        "summary": {
+            "sales_net": round(observed_total, 2),
+            "transactions": transaction_total,
+            "stores_with_sales": len(target_local_ids),
+            "active_stores": active_local_count,
+            "expected_sales": (
+                round(mall_expected, 2) if mall_expected is not None else None
+            ),
+            "variation_amount": (
+                round(mall_variation, 2) if mall_variation is not None else None
+            ),
+            "deviation_percent": (
+                round(_percent_change(observed_total, mall_expected), 1)
+                if mall_expected not in (None, 0)
+                else None
+            ),
+            "peer_days": len(mall_peers),
+            "local_coverage_percent": round(local_coverage_percent, 1),
+        },
+        "stores": stores,
+        "methodology": (
+            "La participación representa qué proporción de la venta observada del mall "
+            "corresponde a cada local. La referencia es la mediana de hasta ocho fechas "
+            "anteriores con el mismo día de semana. El aporte vs. referencia es una "
+            "diferencia matemática y no demuestra causalidad."
+        ),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def build_phase_one_intelligence(
@@ -745,6 +902,80 @@ class BigDataPhaseOneService:
 
     def __init__(self, supabase_client: Any):
         self.supabase = supabase_client
+
+    def calendar_day_breakdown(
+        self, mall_id: str, target_date: date
+    ) -> dict[str, Any]:
+        """Load one day plus a bounded same-weekday history from aggregates."""
+        comparable_dates = [
+            (target_date - timedelta(days=7 * offset)).isoformat()
+            for offset in range(CALENDAR_BREAKDOWN_PEER_WEEKS + 1)
+        ]
+
+        local_rows: list[dict[str, Any]] = []
+        offset = 0
+        while offset < CALENDAR_BREAKDOWN_MAX_ROWS:
+            page = (
+                self.supabase.table("big_data_daily_aggregates")
+                .select(
+                    "period_date,dimension_key,local_id,sales_net,"
+                    "transaction_count,records_processed,coverage_status"
+                )
+                .eq("mall_id", mall_id)
+                .eq("grain", "local")
+                .in_("period_date", comparable_dates)
+                .order("period_date")
+                .order("dimension_key")
+                .range(offset, offset + CALENDAR_BREAKDOWN_PAGE_SIZE - 1)
+                .execute()
+                .data
+                or []
+            )
+            local_rows.extend(page)
+            if len(page) < CALENDAR_BREAKDOWN_PAGE_SIZE:
+                break
+            offset += CALENDAR_BREAKDOWN_PAGE_SIZE
+
+        mall_rows = (
+            self.supabase.table("big_data_daily_aggregates")
+            .select(
+                "period_date,sales_net,transaction_count,records_processed,"
+                "coverage_status,updated_at"
+            )
+            .eq("mall_id", mall_id)
+            .eq("grain", "mall")
+            .in_("period_date", comparable_dates)
+            .order("period_date")
+            .limit(CALENDAR_BREAKDOWN_PEER_WEEKS + 1)
+            .execute()
+            .data
+            or []
+        )
+        locals_rows = (
+            self.supabase.table("locales")
+            .select("id,nombre,tipo_negocio,activo")
+            .eq("mall_id", mall_id)
+            .limit(1000)
+            .execute()
+            .data
+            or []
+        )
+        return build_calendar_day_store_breakdown(
+            mall_id=mall_id,
+            target_date=target_date,
+            mall_rows=mall_rows,
+            local_rows=local_rows,
+            local_metadata={
+                str(row.get("id")): {
+                    "name": str(row.get("nombre") or "Local"),
+                    "business_type": row.get("tipo_negocio"),
+                }
+                for row in locals_rows
+            },
+            active_local_count=sum(
+                1 for row in locals_rows if row.get("activo") is True
+            ),
+        )
 
     def intelligence(
         self, mall_id: str, start_date: date, end_date: date

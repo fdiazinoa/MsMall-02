@@ -800,6 +800,15 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     resetManualExecutionState();
   };
 
+  const closeProgressResult = () => {
+    if (progressStep !== 'complete' && progressStep !== 'error') return;
+    setShowProgressModal(false);
+    setExecutingFile(null);
+    if (activeConfigId) {
+      void refreshFileList(activeConfigId);
+    }
+  };
+
   const handleTestConnection = async () => {
     if (testingConnection) return;
     console.log("Iniciando prueba de conexión...");
@@ -3402,12 +3411,24 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
       {/* Progress Modal */}
       {showProgressModal && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closeProgressResult();
+          }}
+        >
+          <div
+            className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="import-progress-title"
+          >
             <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white">
-              <h3 className="text-xl font-bold flex items-center gap-2">
+              <h3 id="import-progress-title" className="text-xl font-bold flex items-center gap-2">
                 <Database size={24} />
-                Procesando Importación
+                {progressStep === 'complete' || progressStep === 'error'
+                  ? 'Resultado de Importación'
+                  : 'Procesando Importación'}
               </h3>
             </div>
 
@@ -3453,10 +3474,19 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
               {/* Result Message */}
               {(progressStep === 'complete' || progressStep === 'error') && (
-                <div className={`mt-6 p-4 rounded-xl border-2 ${progressStep === 'complete' ? 'bg-green-50 border-green-200' : 'bg-rose-50 border-rose-200'} animate-in fade-in slide-in-from-bottom-2`}>
-                  <p className={`text-sm font-bold ${progressStep === 'complete' ? 'text-green-700' : 'text-rose-700'}`}>
-                    {progressMessage}
-                  </p>
+                <div className="mt-6 space-y-4">
+                  <div className={`p-4 rounded-xl border-2 ${progressStep === 'complete' ? 'bg-green-50 border-green-200' : 'bg-rose-50 border-rose-200'} animate-in fade-in slide-in-from-bottom-2`}>
+                    <p className={`text-sm font-bold ${progressStep === 'complete' ? 'text-green-700' : 'text-rose-700'}`}>
+                      {progressMessage}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeProgressResult}
+                    className="w-full px-5 py-3 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-indigo-600 transition-colors"
+                  >
+                    Cerrar resultado
+                  </button>
                 </div>
               )}
             </div>

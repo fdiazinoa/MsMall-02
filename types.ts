@@ -105,6 +105,42 @@ export interface BigDataCalendarDay {
   coverage_status?: string | null;
 }
 
+export interface BigDataCalendarStoreBreakdownRow {
+  local_id: string;
+  local_name: string;
+  business_type?: string | null;
+  sales_net: number;
+  transactions: number;
+  share_percent: number;
+  expected_sales: number | null;
+  variation_amount: number | null;
+  deviation_percent: number | null;
+  variation_share_percent: number | null;
+  peer_days: number;
+  coverage_status?: string | null;
+}
+
+export interface BigDataCalendarDayBreakdown {
+  version: string;
+  mall_id: string;
+  date: string;
+  weekday_label: string;
+  summary: {
+    sales_net: number;
+    transactions: number;
+    stores_with_sales: number;
+    active_stores: number;
+    expected_sales: number | null;
+    variation_amount: number | null;
+    deviation_percent: number | null;
+    peer_days: number;
+    local_coverage_percent: number;
+  };
+  stores: BigDataCalendarStoreBreakdownRow[];
+  methodology: string;
+  generated_at: string;
+}
+
 export interface BigDataWeekdayPattern {
   weekday: number;
   label: string;

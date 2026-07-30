@@ -119,6 +119,30 @@ def test_partial_month_calendar_aligns_from_the_first_visible_date():
     assert 'safeDate(`${selectedMonth}-01`).getDay()' not in dashboard
 
 
+def test_calendar_day_opens_bounded_store_breakdown_on_demand():
+    router = (ROOT / "routers" / "big_data.py").read_text(encoding="utf-8")
+    service = (
+        ROOT / "services" / "big_data_phase_one_service.py"
+    ).read_text(encoding="utf-8")
+    api = (ROOT / "api.ts").read_text(encoding="utf-8")
+    dashboard = (ROOT / "components" / "BigDataDashboard.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert '@router.get("/intelligence/phase-one/calendar/{target_date}/stores")' in router
+    assert "calendar_day_breakdown" in router
+    assert "CALENDAR_BREAKDOWN_PEER_WEEKS = 8" in service
+    assert '.in_("period_date", comparable_dates)' in service
+    assert '.eq("grain", "local")' in service
+    assert "CALENDAR_BREAKDOWN_MAX_ROWS = 5000" in service
+    assert "getBigDataCalendarDayBreakdown" in api
+    assert "openCalendarDayBreakdown(day)" in dashboard
+    assert 'aria-label="Desglose de locales del día"' in dashboard
+    assert "Participación del día" in dashboard
+    assert "Aporte vs. referencia" in dashboard
+    assert "no demuestra causalidad" in service
+
+
 def test_phase_one_queries_are_batched_and_bounded():
     service = (
         ROOT / "services" / "big_data_phase_one_service.py"

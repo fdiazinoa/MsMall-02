@@ -48,7 +48,10 @@ import { useFormatCurrency } from '../hooks/useFormatCurrency';
 import {
   BigDataCalendarDay,
   BigDataCalendarEventType,
+  BigDataAnomalyCauseType,
   BigDataAnomalyContributor,
+  BigDataAnomalyReview,
+  BigDataAnomalyReviewStatus,
   BigDataPhaseOne,
   BigDataPhaseTwoDiagnostic,
   BigDataPhaseThreePrediction,
@@ -77,6 +80,8 @@ type PredictionHorizon = 7 | 30 | 90;
 interface AnomalyListRow {
   id: string;
   status: AnomalyView;
+  reviewStatus: 'OPEN' | BigDataAnomalyReviewStatus;
+  review?: BigDataAnomalyReview | null;
   date: string;
   direction: 'UP' | 'DOWN';
   deviationPercent: number;
@@ -91,44 +96,51 @@ interface AnomalyListRow {
 }
 
 const ANOMALY_TABLE_COLUMNS = [
-  { key: 'date', label: 'Fecha' },
+  { key: 'date', label: 'Fecha', width: 'w-[102px]' },
   {
     key: 'status',
     label: 'Estado',
     help: 'Por explicar significa que todavía no existe un contexto comercial registrado que coincida con el movimiento.',
+    width: 'w-[90px]',
   },
-  { key: 'direction', label: 'Dirección' },
+  { key: 'direction', label: 'Dirección', width: 'w-[72px]' },
   {
     key: 'deviation',
     label: 'Desviación',
     help: 'Porcentaje de diferencia entre la venta real del mall y su referencia histórica.',
+    width: 'w-[68px]',
   },
   {
     key: 'observed',
     label: 'Venta real del mall',
     help: 'Venta neta total registrada por el mall durante esa fecha.',
+    width: 'w-[104px]',
   },
   {
     key: 'expected',
     label: 'Referencia histórica',
     help: 'Mediana de otros días del mismo tipo dentro del período, excluyendo feriados y eventos registrados.',
+    width: 'w-[104px]',
   },
   {
     key: 'impact',
     label: 'Diferencia vs. referencia',
     help: 'Venta real del mall menos la referencia histórica. No representa venta causada por un local.',
+    width: 'w-[110px]',
   },
   {
     key: 'confidence',
     label: 'Confianza',
     help: 'Solidez de la comparación según los días comparables disponibles y la calidad de los datos.',
+    width: 'w-[66px]',
   },
   {
     key: 'contributor',
     label: 'Principal local asociado',
     help: 'Local con la mayor contribución matemática al movimiento. Es una asociación, no una causa comprobada.',
+    width: 'w-[150px]',
   },
-  { key: 'action', label: '' },
+  { key: 'action', label: '', width: 'w-[82px]' },
 ] as const;
 
 const INTELLIGENCE_TABS: Array<{
@@ -151,6 +163,26 @@ const EVENT_TYPES: Array<{ value: BigDataCalendarEventType; label: string }> = [
   { value: 'HOLIDAY', label: 'Feriado especial' },
   { value: 'OTHER', label: 'Otro evento' },
 ];
+const ANOMALY_CAUSES: Array<{ value: BigDataAnomalyCauseType; label: string }> = [
+  { value: 'UNKNOWN', label: 'Por determinar' },
+  { value: 'COMMERCIAL_EVENT', label: 'Promoción o actividad comercial' },
+  { value: 'DATA_IMPORT', label: 'Importación o archivo' },
+  { value: 'STORE_ACTIVITY', label: 'Situación de un local' },
+  { value: 'OPERATIONS', label: 'Operación del mall' },
+  { value: 'EXTERNAL_FACTOR', label: 'Factor externo' },
+  { value: 'DATA_CORRECTION', label: 'Corrección de datos' },
+  { value: 'FALSE_POSITIVE', label: 'Falso positivo' },
+  { value: 'OTHER', label: 'Otra causa' },
+];
+const anomalyReviewCopy: Record<'OPEN' | BigDataAnomalyReviewStatus, {
+  label: string;
+  classes: string;
+}> = {
+  OPEN: { label: 'Por explicar', classes: 'bg-amber-50 text-amber-700' },
+  IN_REVIEW: { label: 'En revisión', classes: 'bg-indigo-50 text-indigo-700' },
+  EXPLAINED: { label: 'Explicada', classes: 'bg-emerald-50 text-emerald-700' },
+  DISMISSED: { label: 'Descartada', classes: 'bg-slate-100 text-slate-600' },
+};
 const SCENARIO_TYPES: Array<{ value: BigDataScenarioType; label: string }> = [
   { value: 'PROMOTION', label: 'Promoción' },
   { value: 'HALLWAY_SALE', label: 'Venta de pasillo' },
@@ -358,6 +390,21 @@ export const BigDataDashboard: React.FC = () => {
     expected_impact: 'UP' as 'UP' | 'DOWN' | 'NEUTRAL',
     notes: '',
   });
+  const [showAnomalyReviewForm, setShowAnomalyReviewForm] = useState(false);
+  const [anomalyReviewTarget, setAnomalyReviewTarget] =
+    useState<AnomalyListRow | null>(null);
+  const [anomalyReviewSaving, setAnomalyReviewSaving] = useState(false);
+  const [anomalyReviewError, setAnomalyReviewError] = useState<string | null>(null);
+  const [anomalyReviewForm, setAnomalyReviewForm] = useState({
+    status: 'IN_REVIEW' as BigDataAnomalyReviewStatus,
+    cause_type: 'UNKNOWN' as BigDataAnomalyCauseType,
+    explanation: '',
+    evidence: '',
+    owner_name: '',
+    add_to_calendar: false,
+    calendar_name: '',
+    calendar_event_type: 'MALL_ACTIVITY' as BigDataCalendarEventType,
+  });
   const requestVersion = useRef(0);
   const diagnosticRequestVersion = useRef(0);
   const predictionRequestVersion = useRef(0);
@@ -557,7 +604,11 @@ export const BigDataDashboard: React.FC = () => {
     if (!data) return [];
     const pending: AnomalyListRow[] = data.anomalies.map((anomaly) => ({
       id: `pending-${anomaly.date}`,
-      status: 'pending',
+      status: ['EXPLAINED', 'DISMISSED'].includes(anomaly.review?.status || '')
+        ? 'explained'
+        : 'pending',
+      reviewStatus: anomaly.review?.status || 'OPEN',
+      review: anomaly.review,
       date: anomaly.date,
       direction: anomaly.direction,
       deviationPercent: anomaly.deviation_percent,
@@ -573,7 +624,9 @@ export const BigDataDashboard: React.FC = () => {
     }));
     const explained: AnomalyListRow[] = data.explained_events.map((movement) => ({
       id: `explained-${movement.date}`,
-      status: 'explained',
+      status: movement.review?.status === 'IN_REVIEW' ? 'pending' : 'explained',
+      reviewStatus: movement.review?.status || 'EXPLAINED',
+      review: movement.review,
       date: movement.date,
       direction: movement.direction,
       deviationPercent: movement.deviation_percent,
@@ -732,18 +785,108 @@ export const BigDataDashboard: React.FC = () => {
     }
   };
 
-  const explainAnomaly = (anomaly: AnomalyListRow) => {
-    setEventError(null);
-    setEventForm({
-      name: '',
-      event_type: 'MALL_ACTIVITY',
-      start_date: anomaly.date,
-      end_date: anomaly.date,
-      expected_impact: anomaly.direction,
-      notes: '',
+  const openAnomalyReview = (anomaly: AnomalyListRow) => {
+    const existing = anomaly.review;
+    setAnomalyReviewError(null);
+    setAnomalyReviewTarget(anomaly);
+    setAnomalyReviewForm({
+      status: existing?.status || 'IN_REVIEW',
+      cause_type: existing?.cause_type || 'UNKNOWN',
+      explanation: existing?.explanation || '',
+      evidence: existing?.evidence || '',
+      owner_name: existing?.owner_name || '',
+      add_to_calendar: false,
+      calendar_name: '',
+      calendar_event_type: 'MALL_ACTIVITY',
     });
     setSelectedAnomalyId(null);
-    setShowEventForm(true);
+    setShowAnomalyReviewForm(true);
+  };
+
+  const saveAnomalyReview = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (
+      !currentMall?.id
+      || !session?.access_token
+      || !anomalyReviewTarget
+      || !data
+    ) return;
+    if (
+      ['EXPLAINED', 'DISMISSED'].includes(anomalyReviewForm.status)
+      && anomalyReviewForm.cause_type === 'UNKNOWN'
+    ) {
+      setAnomalyReviewError('Selecciona una causa antes de cerrar la investigación.');
+      return;
+    }
+    if (
+      anomalyReviewForm.add_to_calendar
+      && anomalyReviewForm.cause_type !== 'COMMERCIAL_EVENT'
+    ) {
+      setAnomalyReviewError(
+        'Solo las promociones o actividades comerciales se agregan al calendario.',
+      );
+      return;
+    }
+    setAnomalyReviewSaving(true);
+    setAnomalyReviewError(null);
+    let investigationSaved = false;
+    try {
+      await ApiService.upsertBigDataAnomalyReview(
+        currentMall.id,
+        anomalyReviewTarget.date,
+        {
+          status: anomalyReviewForm.status,
+          cause_type: anomalyReviewForm.cause_type,
+          explanation: anomalyReviewForm.explanation.trim(),
+          evidence: anomalyReviewForm.evidence.trim() || undefined,
+          owner_name: anomalyReviewForm.owner_name.trim() || undefined,
+          snapshot: {
+            direction: anomalyReviewTarget.direction,
+            observed_sales: anomalyReviewTarget.observedSales,
+            expected_sales: anomalyReviewTarget.expectedSales,
+            impact: anomalyReviewTarget.impact,
+            deviation_percent: anomalyReviewTarget.deviationPercent,
+            confidence: anomalyReviewTarget.confidence,
+            model_version: data.version,
+          },
+        },
+        session.access_token,
+      );
+      investigationSaved = true;
+      if (anomalyReviewForm.add_to_calendar) {
+        await ApiService.createBigDataCalendarEvent(
+          currentMall.id,
+          {
+            name: anomalyReviewForm.calendar_name.trim(),
+            event_type: anomalyReviewForm.calendar_event_type,
+            start_date: anomalyReviewTarget.date,
+            end_date: anomalyReviewTarget.date,
+            expected_impact: anomalyReviewTarget.direction,
+            notes: [
+              anomalyReviewForm.explanation.trim(),
+              anomalyReviewForm.evidence.trim(),
+            ].filter(Boolean).join('\n\n'),
+          },
+          session.access_token,
+        );
+      }
+      setShowAnomalyReviewForm(false);
+      setAnomalyReviewTarget(null);
+      setReloadKey((value) => value + 1);
+    } catch (saveError: any) {
+      if (investigationSaved) {
+        setReloadKey((value) => value + 1);
+        setAnomalyReviewError(
+          'La investigación quedó guardada, pero no se pudo agregar al calendario. Puedes intentarlo nuevamente.',
+        );
+      } else {
+        setAnomalyReviewError(
+          saveError?.message || 'No se pudo guardar la investigación.',
+        );
+      }
+    } finally {
+      setAnomalyReviewSaving(false);
+    }
   };
 
   const removeCalendarEvent = async (eventId: string, eventName: string) => {
@@ -2072,7 +2215,7 @@ export const BigDataDashboard: React.FC = () => {
                   anomalyView === 'pending' ? 'bg-slate-900 text-white' : 'text-slate-500'
                 }`}
               >
-                Por investigar · {data.anomalies.length}
+                Por investigar · {anomalyRows.filter((row) => row.status === 'pending').length}
               </button>
               <button
                 type="button"
@@ -2083,7 +2226,7 @@ export const BigDataDashboard: React.FC = () => {
                   anomalyView === 'explained' ? 'bg-sky-600 text-white' : 'text-slate-500'
                 }`}
               >
-                Explicadas · {data.explained_events.length}
+                Revisadas · {anomalyRows.filter((row) => row.status === 'explained').length}
               </button>
             </div>
           )}
@@ -2094,7 +2237,7 @@ export const BigDataDashboard: React.FC = () => {
                 <div>
                   <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
                     <AlertTriangle size={16} />
-                    {anomalyView === 'pending' ? 'Anomalías por investigar' : 'Movimientos explicados'}
+                    {anomalyView === 'pending' ? 'Anomalías por investigar' : 'Investigaciones revisadas'}
                   </p>
                   <h3 className="mt-1 text-lg font-black text-slate-900">
                     Compara el impacto y abre la ficha para profundizar
@@ -2137,7 +2280,7 @@ export const BigDataDashboard: React.FC = () => {
               {visibleAnomalyRows.length > 0 ? (
                 <>
                   <div className="hidden overflow-x-auto md:block">
-                    <table className="min-w-[1180px] w-full border-collapse text-left">
+                    <table className="min-w-[980px] w-full table-fixed border-collapse text-left">
                       <caption className="sr-only">
                         La venta real, la referencia histórica y su diferencia corresponden
                         al mall; el principal local asociado es una atribución matemática,
@@ -2146,9 +2289,16 @@ export const BigDataDashboard: React.FC = () => {
                       <thead className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-400">
                         <tr>
                           {ANOMALY_TABLE_COLUMNS.map((column) => (
-                            <th key={column.key} className="whitespace-nowrap px-3 py-2.5">
+                            <th
+                              key={column.key}
+                              className={`${column.width} px-2 py-2.5 ${
+                                column.key === 'action'
+                                  ? 'sticky right-0 z-10 bg-slate-50'
+                                  : ''
+                              }`}
+                            >
                               <span
-                                className="inline-flex items-center gap-1"
+                                className="inline-flex items-center gap-1 leading-tight"
                                 title={'help' in column ? column.help : undefined}
                               >
                                 {column.label}
@@ -2168,20 +2318,18 @@ export const BigDataDashboard: React.FC = () => {
                         {visibleAnomalyRows.map((row) => {
                           const contributor = row.contributors[0];
                           return (
-                            <tr key={row.id} className="text-xs text-slate-600 hover:bg-indigo-50/30">
-                              <td className="whitespace-nowrap px-3 py-3 font-black capitalize text-slate-800">
+                            <tr key={row.id} className="group text-xs text-slate-600 hover:bg-indigo-50/30">
+                              <td className="whitespace-nowrap px-2 py-2.5 font-black capitalize text-slate-800">
                                 {formatDate(row.date, { day: '2-digit', month: 'short', year: 'numeric' })}
                               </td>
-                              <td className="px-3 py-3">
-                                <span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${
-                                  row.status === 'pending'
-                                    ? 'bg-amber-50 text-amber-700'
-                                    : 'bg-sky-50 text-sky-700'
+                              <td className="px-2 py-2.5">
+                                <span className={`inline-block rounded-full px-1.5 py-1 text-[8px] font-black uppercase leading-tight ${
+                                  anomalyReviewCopy[row.reviewStatus].classes
                                 }`}>
-                                  {row.status === 'pending' ? 'Por explicar' : 'Explicada'}
+                                  {anomalyReviewCopy[row.reviewStatus].label}
                                 </span>
                               </td>
-                              <td className="px-3 py-3">
+                              <td className="px-2 py-2.5">
                                 <span className={`inline-flex items-center gap-1 font-black ${
                                   row.direction === 'UP' ? 'text-emerald-600' : 'text-rose-600'
                                 }`}>
@@ -2189,20 +2337,20 @@ export const BigDataDashboard: React.FC = () => {
                                   {row.direction === 'UP' ? 'Pico' : 'Caída'}
                                 </span>
                               </td>
-                              <td className={`px-3 py-3 font-black ${
+                              <td className={`px-2 py-2.5 font-black ${
                                 row.direction === 'UP' ? 'text-emerald-600' : 'text-rose-600'
                               }`}>
                                 {row.deviationPercent > 0 ? '+' : ''}{row.deviationPercent.toFixed(1)}%
                               </td>
-                              <td className="whitespace-nowrap px-3 py-3 font-bold text-slate-800">{format(row.observedSales)}</td>
-                              <td className="whitespace-nowrap px-3 py-3">{format(row.expectedSales)}</td>
-                              <td className={`whitespace-nowrap px-3 py-3 font-black ${
+                              <td className="whitespace-nowrap px-2 py-2.5 font-bold text-slate-800">{format(row.observedSales)}</td>
+                              <td className="whitespace-nowrap px-2 py-2.5">{format(row.expectedSales)}</td>
+                              <td className={`whitespace-nowrap px-2 py-2.5 font-black ${
                                 row.impact >= 0 ? 'text-emerald-600' : 'text-rose-600'
                               }`}>
                                 {row.impact > 0 ? '+' : ''}{format(row.impact)}
                               </td>
-                              <td className="px-3 py-3 font-bold">{(row.confidence * 100).toFixed(0)}%</td>
-                              <td className="max-w-48 px-3 py-3">
+                              <td className="px-2 py-2.5 font-bold">{(row.confidence * 100).toFixed(0)}%</td>
+                              <td className="max-w-36 px-2 py-2.5">
                                 {contributor ? (
                                   <>
                                     <p className="truncate font-black text-slate-700">
@@ -2223,11 +2371,11 @@ export const BigDataDashboard: React.FC = () => {
                                   <span className="font-bold text-slate-500">Sin atribución</span>
                                 )}
                               </td>
-                              <td className="px-3 py-3 text-right">
+                              <td className="sticky right-0 bg-white px-2 py-2.5 text-right group-hover:bg-indigo-50">
                                 <button
                                   type="button"
                                   onClick={() => setSelectedAnomalyId(row.id)}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-indigo-100 px-2.5 py-1.5 text-[10px] font-black text-indigo-600 hover:bg-indigo-50"
+                                  className="inline-flex whitespace-nowrap items-center gap-1 rounded-lg border border-indigo-100 bg-white px-2 py-1.5 text-[9px] font-black text-indigo-600 hover:bg-indigo-50"
                                 >
                                   <Eye size={13} /> Ver ficha
                                 </button>
@@ -2357,11 +2505,9 @@ export const BigDataDashboard: React.FC = () => {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${
-                    selectedAnomaly.status === 'pending'
-                      ? 'bg-amber-50 text-amber-700'
-                      : 'bg-sky-50 text-sky-700'
+                    anomalyReviewCopy[selectedAnomaly.reviewStatus].classes
                   }`}>
-                    {selectedAnomaly.status === 'pending' ? 'Por explicar' : 'Movimiento explicado'}
+                    {anomalyReviewCopy[selectedAnomaly.reviewStatus].label}
                   </span>
                   <h3 className="mt-2 text-xl font-black capitalize text-slate-900">
                     {formatDate(selectedAnomaly.date, {
@@ -2433,18 +2579,43 @@ export const BigDataDashboard: React.FC = () => {
                   Contexto de la fecha
                 </p>
                 <p className="mt-1 text-sm font-bold text-sky-900">{selectedAnomaly.context}</p>
-                {selectedAnomaly.status === 'pending' && (isAdmin || isTic) && (
+                {selectedAnomaly.review && (
+                  <div className="mt-3 space-y-2 border-t border-sky-100 pt-3 text-xs text-sky-950">
+                    <div className="flex flex-wrap gap-x-5 gap-y-1">
+                      <p>
+                        <span className="font-black">Causa:</span>{' '}
+                        {ANOMALY_CAUSES.find(
+                          (cause) => cause.value === selectedAnomaly.review?.cause_type,
+                        )?.label || 'Por determinar'}
+                      </p>
+                      {selectedAnomaly.review.owner_name && (
+                        <p>
+                          <span className="font-black">Responsable:</span>{' '}
+                          {selectedAnomaly.review.owner_name}
+                        </p>
+                      )}
+                    </div>
+                    <p className="leading-5">{selectedAnomaly.review.explanation}</p>
+                    {selectedAnomaly.review.evidence && (
+                      <p className="leading-5 text-sky-800">
+                        <span className="font-black">Evidencia:</span>{' '}
+                        {selectedAnomaly.review.evidence}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {(isAdmin || isTic) && (
                   <div className="mt-3 border-t border-sky-100 pt-3">
                     <button
                       type="button"
-                      onClick={() => explainAnomaly(selectedAnomaly)}
+                      onClick={() => openAnomalyReview(selectedAnomaly)}
                       className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-3 py-2.5 text-xs font-black text-white hover:bg-sky-700"
                     >
-                      <CalendarPlus size={15} />
-                      Explicar movimiento
+                      <ClipboardList size={15} />
+                      {selectedAnomaly.review ? 'Editar investigación' : 'Investigar movimiento'}
                     </button>
                     <p className="mt-1.5 text-[10px] leading-4 text-sky-700">
-                      Registrarás una promoción, actividad u otro contexto con la fecha y dirección precargadas.
+                      Documenta causa, explicación, evidencia y responsable. El calendario es opcional.
                     </p>
                   </div>
                 )}
@@ -3164,6 +3335,216 @@ export const BigDataDashboard: React.FC = () => {
                   </button>
                 )}
               </div>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {showAnomalyReviewForm && anomalyReviewTarget && (
+        <div className="fixed inset-0 z-[60] grid place-items-center overflow-y-auto bg-slate-950/55 p-4 backdrop-blur-sm">
+          <form
+            onSubmit={saveAnomalyReview}
+            className="my-6 w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-indigo-600">
+                  Investigación de anomalía
+                </p>
+                <h3 className="mt-1 text-xl font-black capitalize text-slate-900">
+                  {formatDate(anomalyReviewTarget.date, {
+                    weekday: 'long',
+                    day: 'numeric',
+                    month: 'long',
+                    year: 'numeric',
+                  })}
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  Documenta la conclusión sin depender de una actividad del calendario.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAnomalyReviewForm(false);
+                  setAnomalyReviewTarget(null);
+                }}
+                className="rounded-xl border border-slate-200 p-2 text-slate-400 hover:text-slate-700"
+                aria-label="Cerrar"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <label>
+                <span className="text-xs font-bold text-slate-600">Estado</span>
+                <select
+                  value={anomalyReviewForm.status}
+                  onChange={(event) => setAnomalyReviewForm({
+                    ...anomalyReviewForm,
+                    status: event.target.value as BigDataAnomalyReviewStatus,
+                  })}
+                  className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                >
+                  <option value="IN_REVIEW">En revisión</option>
+                  <option value="EXPLAINED">Explicada</option>
+                  <option value="DISMISSED">Descartada</option>
+                </select>
+              </label>
+              <label>
+                <span className="text-xs font-bold text-slate-600">Causa</span>
+                <select
+                  value={anomalyReviewForm.cause_type}
+                  onChange={(event) => {
+                    const cause = event.target.value as BigDataAnomalyCauseType;
+                    setAnomalyReviewForm({
+                      ...anomalyReviewForm,
+                      cause_type: cause,
+                      add_to_calendar: cause === 'COMMERCIAL_EVENT'
+                        ? anomalyReviewForm.add_to_calendar
+                        : false,
+                    });
+                  }}
+                  className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                >
+                  {ANOMALY_CAUSES.map((cause) => (
+                    <option key={cause.value} value={cause.value}>{cause.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="sm:col-span-2">
+                <span className="text-xs font-bold text-slate-600">Explicación</span>
+                <textarea
+                  required
+                  minLength={5}
+                  maxLength={2000}
+                  rows={4}
+                  value={anomalyReviewForm.explanation}
+                  onChange={(event) => setAnomalyReviewForm({
+                    ...anomalyReviewForm,
+                    explanation: event.target.value,
+                  })}
+                  placeholder="Describe qué ocurrió, qué se verificó y cuál es la conclusión."
+                  className="mt-1.5 w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                />
+              </label>
+              <label>
+                <span className="text-xs font-bold text-slate-600">Evidencia (opcional)</span>
+                <textarea
+                  minLength={2}
+                  maxLength={2000}
+                  rows={3}
+                  value={anomalyReviewForm.evidence}
+                  onChange={(event) => setAnomalyReviewForm({
+                    ...anomalyReviewForm,
+                    evidence: event.target.value,
+                  })}
+                  placeholder="Archivo, ticket, llamada o validación realizada."
+                  className="mt-1.5 w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                />
+              </label>
+              <label>
+                <span className="text-xs font-bold text-slate-600">Responsable (opcional)</span>
+                <input
+                  minLength={2}
+                  maxLength={120}
+                  value={anomalyReviewForm.owner_name}
+                  onChange={(event) => setAnomalyReviewForm({
+                    ...anomalyReviewForm,
+                    owner_name: event.target.value,
+                  })}
+                  placeholder="Nombre o equipo responsable"
+                  className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                />
+              </label>
+            </div>
+
+            {anomalyReviewForm.cause_type === 'COMMERCIAL_EVENT' && (
+              <div className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+                <label className="flex cursor-pointer items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={anomalyReviewForm.add_to_calendar}
+                    onChange={(event) => setAnomalyReviewForm({
+                      ...anomalyReviewForm,
+                      add_to_calendar: event.target.checked,
+                    })}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600"
+                  />
+                  <span>
+                    <span className="block text-xs font-black text-indigo-900">
+                      Agregar también al calendario comercial
+                    </span>
+                    <span className="mt-0.5 block text-[10px] leading-4 text-indigo-700">
+                      Úsalo si fue una promoción o actividad que debe reconocerse en futuros análisis.
+                    </span>
+                  </span>
+                </label>
+                {anomalyReviewForm.add_to_calendar && (
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <label>
+                      <span className="text-xs font-bold text-slate-600">Nombre del evento</span>
+                      <input
+                        required
+                        minLength={2}
+                        maxLength={160}
+                        value={anomalyReviewForm.calendar_name}
+                        onChange={(event) => setAnomalyReviewForm({
+                          ...anomalyReviewForm,
+                          calendar_name: event.target.value,
+                        })}
+                        placeholder="Ej. Actividad de temporada"
+                        className="mt-1.5 w-full rounded-xl border border-indigo-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                      />
+                    </label>
+                    <label>
+                      <span className="text-xs font-bold text-slate-600">Tipo</span>
+                      <select
+                        value={anomalyReviewForm.calendar_event_type}
+                        onChange={(event) => setAnomalyReviewForm({
+                          ...anomalyReviewForm,
+                          calendar_event_type: event.target.value as BigDataCalendarEventType,
+                        })}
+                        className="mt-1.5 w-full rounded-xl border border-indigo-100 bg-white px-3 py-2.5 text-sm outline-none focus:border-indigo-400"
+                      >
+                        {EVENT_TYPES.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {anomalyReviewError && (
+              <p className="mt-4 rounded-xl border border-rose-100 bg-rose-50 p-3 text-xs text-rose-700">
+                {anomalyReviewError}
+              </p>
+            )}
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAnomalyReviewForm(false);
+                  setAnomalyReviewTarget(null);
+                }}
+                className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-600"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={anomalyReviewSaving}
+                className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-black text-white disabled:opacity-50"
+              >
+                {anomalyReviewSaving
+                  ? <Loader2 size={16} className="animate-spin" />
+                  : <Save size={16} />}
+                {anomalyReviewSaving ? 'Guardando…' : 'Guardar investigación'}
+              </button>
             </div>
           </form>
         </div>

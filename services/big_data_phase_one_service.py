@@ -724,6 +724,22 @@ def country_holiday_map(
     }
 
 
+def attach_anomaly_reviews(
+    intelligence: dict[str, Any],
+    reviews: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Attach one mall-scoped human review to each analytical date."""
+    reviews_by_date = {
+        str(review.get("anomaly_date"))[:10]: dict(review)
+        for review in reviews
+        if review.get("anomaly_date")
+    }
+    for collection in ("anomalies", "explained_events"):
+        for item in intelligence.get(collection, []):
+            item["review"] = reviews_by_date.get(str(item.get("date"))[:10])
+    return intelligence
+
+
 class BigDataPhaseOneService:
     """Bounded Supabase adapter for the Phase 1 intelligence contract."""
 
@@ -829,7 +845,22 @@ class BigDataPhaseOneService:
             .data
             or []
         )
-        return build_phase_one_intelligence(
+        anomaly_reviews = (
+            self.supabase.table("big_data_anomaly_reviews")
+            .select(
+                "id,anomaly_date,status,cause_type,explanation,evidence,"
+                "owner_name,anomaly_snapshot,created_at,updated_at,resolved_at"
+            )
+            .eq("mall_id", mall_id)
+            .gte("anomaly_date", start_date.isoformat())
+            .lte("anomaly_date", analysis_end.isoformat())
+            .order("anomaly_date")
+            .limit(500)
+            .execute()
+            .data
+            or []
+        )
+        intelligence = build_phase_one_intelligence(
             mall_id=mall_id,
             start_date=start_date,
             end_date=end_date,
@@ -847,3 +878,4 @@ class BigDataPhaseOneService:
             last_analytics_update=watermark.get("last_successful_refresh_at"),
             country_code=country_code,
         )
+        return attach_anomaly_reviews(intelligence, anomaly_reviews)

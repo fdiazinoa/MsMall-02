@@ -97,6 +97,35 @@ class CalendarEventPayload(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=1000)
 
 
+class AnomalySnapshotPayload(BaseModel):
+    direction: Literal["UP", "DOWN"]
+    observed_sales: float
+    expected_sales: float
+    impact: float
+    deviation_percent: float
+    confidence: float = Field(ge=0, le=1)
+    model_version: str = Field(min_length=2, max_length=120)
+
+
+class AnomalyReviewPayload(BaseModel):
+    status: Literal["IN_REVIEW", "EXPLAINED", "DISMISSED"]
+    cause_type: Literal[
+        "UNKNOWN",
+        "COMMERCIAL_EVENT",
+        "DATA_IMPORT",
+        "STORE_ACTIVITY",
+        "OPERATIONS",
+        "EXTERNAL_FACTOR",
+        "DATA_CORRECTION",
+        "FALSE_POSITIVE",
+        "OTHER",
+    ]
+    explanation: str = Field(min_length=5, max_length=2000)
+    evidence: Optional[str] = Field(default=None, min_length=2, max_length=2000)
+    owner_name: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    snapshot: AnomalySnapshotPayload
+
+
 class ScenarioActionPayload(BaseModel):
     title: str = Field(min_length=2, max_length=200)
     owner_name: Optional[str] = Field(default=None, min_length=2, max_length=120)
@@ -152,7 +181,7 @@ def _require_big_data_manager(mall_id: str, user: dict) -> None:
         "tic",
     }:
         raise HTTPException(
-            403, "El calendario comercial requiere rol administrador o IT"
+            403, "Esta acción de Big Data requiere rol administrador o IT"
         )
 
 
@@ -219,7 +248,111 @@ async def phase_one_intelligence(
 ):
     """Calendar, seasonality, explainable anomalies and data confidence."""
     _context(mall_id, start_date, end_date, user)
-    return BigDataPhaseOneService(db).intelligence(mall_id, start_date, end_date)
+    try:
+        return BigDataPhaseOneService(db).intelligence(
+            mall_id, start_date, end_date
+        )
+    except Exception as exc:
+        message = str(exc).lower()
+        if "big_data_anomaly_reviews" in message and (
+            "does not exist" in message
+            or "schema cache" in message
+            or "permission denied" in message
+        ):
+            raise HTTPException(
+                503,
+                "La base de datos no está actualizada: aplique la migración "
+                "big_data_anomaly_reviews.",
+            ) from exc
+        raise
+
+
+@router.put("/intelligence/phase-one/anomalies/{anomaly_date}/review")
+async def upsert_phase_one_anomaly_review(
+    anomaly_date: date,
+    mall_id: str,
+    payload: AnomalyReviewPayload,
+    user: dict = Depends(current_user),
+):
+    """Persist the human investigation without requiring a calendar event."""
+    _require_big_data_manager(mall_id, user)
+    _require_core(mall_id)
+    if anomaly_date > date.today():
+        raise HTTPException(422, "No se puede investigar una fecha futura.")
+    if (
+        payload.status in {"EXPLAINED", "DISMISSED"}
+        and payload.cause_type == "UNKNOWN"
+    ):
+        raise HTTPException(
+            422,
+            "Seleccione una causa antes de cerrar la investigación.",
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    values = {
+        "status": payload.status,
+        "cause_type": payload.cause_type,
+        "explanation": payload.explanation.strip(),
+        "evidence": payload.evidence.strip() if payload.evidence else None,
+        "owner_name": payload.owner_name.strip() if payload.owner_name else None,
+        "anomaly_snapshot": payload.snapshot.dict(),
+        "updated_by": user["id"],
+        "updated_at": now,
+        "resolved_at": (
+            now if payload.status in {"EXPLAINED", "DISMISSED"} else None
+        ),
+    }
+    try:
+        current = (
+            db.table("big_data_anomaly_reviews")
+            .select("id")
+            .eq("mall_id", mall_id)
+            .eq("anomaly_date", anomaly_date.isoformat())
+            .maybe_single()
+            .execute()
+            .data
+        )
+        if current:
+            rows = (
+                db.table("big_data_anomaly_reviews")
+                .update(values)
+                .eq("id", current["id"])
+                .eq("mall_id", mall_id)
+                .execute()
+                .data
+                or []
+            )
+        else:
+            rows = (
+                db.table("big_data_anomaly_reviews")
+                .insert(
+                    {
+                        **values,
+                        "mall_id": mall_id,
+                        "anomaly_date": anomaly_date.isoformat(),
+                        "created_by": user["id"],
+                    }
+                )
+                .execute()
+                .data
+                or []
+            )
+        if not rows:
+            raise RuntimeError("No se pudo guardar la investigación.")
+        return rows[0]
+    except Exception as exc:
+        message = str(exc).lower()
+        if "big_data_anomaly_reviews" in message and (
+            "does not exist" in message
+            or "schema cache" in message
+            or "permission denied" in message
+        ):
+            raise HTTPException(
+                503,
+                "La base de datos no está actualizada: aplique la migración "
+                "big_data_anomaly_reviews.",
+            ) from exc
+        raise
 
 
 @router.get("/intelligence/phase-two/stores/{local_id}")

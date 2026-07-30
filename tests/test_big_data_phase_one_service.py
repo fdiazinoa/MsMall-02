@@ -2,6 +2,7 @@ from datetime import date, timedelta
 
 from services.big_data_phase_one_service import (
     PHASE_ONE_VERSION,
+    attach_anomaly_reviews,
     build_phase_one_intelligence,
     country_holiday_map,
 )
@@ -180,6 +181,32 @@ def test_phase_one_caps_future_ranges_at_today(monkeypatch):
 
     assert result["period"]["analysis_end"] == date.today().isoformat()
     assert result["quality"]["expected_days"] == 3
+
+
+def test_human_reviews_attach_to_matching_anomaly_dates():
+    intelligence = {
+        "anomalies": [{"date": "2026-07-25"}],
+        "explained_events": [{"date": "2026-07-26"}],
+    }
+    reviews = [
+        {
+            "id": "review-1",
+            "anomaly_date": "2026-07-25",
+            "status": "IN_REVIEW",
+            "cause_type": "DATA_IMPORT",
+        },
+        {
+            "id": "review-2",
+            "anomaly_date": "2026-07-26",
+            "status": "EXPLAINED",
+            "cause_type": "COMMERCIAL_EVENT",
+        },
+    ]
+
+    result = attach_anomaly_reviews(intelligence, reviews)
+
+    assert result["anomalies"][0]["review"]["id"] == "review-1"
+    assert result["explained_events"][0]["review"]["id"] == "review-2"
 
 
 def test_dominican_calendar_uses_observed_public_holidays():

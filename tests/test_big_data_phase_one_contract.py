@@ -31,7 +31,7 @@ def test_phase_one_is_intelligence_first_not_a_dashboard_clone():
 
     assert "Calendario de comportamiento" in dashboard
     assert "Anomalías por investigar" in dashboard
-    assert "Movimientos explicados" in dashboard
+    assert "Investigaciones revisadas" in dashboard
     assert "Calidad y trazabilidad" in dashboard
     assert "Patrón semanal" in dashboard
     assert 'label="Ventas netas"' not in dashboard
@@ -73,12 +73,41 @@ def test_anomalies_use_comparable_list_and_open_detail_sheet():
     assert "Referencia histórica" in dashboard
     assert "Diferencia vs. referencia" in dashboard
     assert "Principal local asociado" in dashboard
-    assert "Explicar movimiento" in dashboard
-    assert "expected_impact: anomaly.direction" in dashboard
+    assert "Investigar movimiento" in dashboard
+    assert "Editar investigación" in dashboard
+    assert "expected_impact: anomalyReviewTarget.direction" in dashboard
     assert "contributor.impact_share_percent.toFixed(1)" in dashboard
     assert "Confianza analítica" in dashboard
     assert "closeOnEscape" in dashboard
     assert "anomalyCopy" not in dashboard
+
+
+def test_anomaly_review_is_independent_and_grid_keeps_detail_visible():
+    router = (ROOT / "routers" / "big_data.py").read_text(encoding="utf-8")
+    api = (ROOT / "api.ts").read_text(encoding="utf-8")
+    dashboard = (ROOT / "components" / "BigDataDashboard.tsx").read_text(
+        encoding="utf-8"
+    )
+    migration = next(
+        (ROOT / "supabase" / "migrations").glob(
+            "*_big_data_anomaly_reviews.sql"
+        )
+    ).read_text(encoding="utf-8")
+
+    assert '@router.put("/intelligence/phase-one/anomalies/{anomaly_date}/review")' in router
+    assert "upsertBigDataAnomalyReview" in api
+    assert "Guardar investigación" in dashboard
+    assert "Agregar también al calendario comercial" in dashboard
+    assert "cause_type !== 'COMMERCIAL_EVENT'" in dashboard
+    assert "min-w-[980px]" in dashboard
+    assert "sticky right-0" in dashboard
+    assert "table-fixed" in dashboard
+    assert "create table public.big_data_anomaly_reviews" in migration
+    assert "unique (mall_id, anomaly_date)" in migration
+    assert "enable row level security" in migration
+    assert "force row level security" in migration
+    assert "revoke all on table public.big_data_anomaly_reviews" in migration
+    assert "to service_role" in migration
 
 
 def test_partial_month_calendar_aligns_from_the_first_visible_date():

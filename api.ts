@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataPhaseTwoDiagnostic, BigDataPhaseThreePrediction, BigDataScenario, BigDataScenarioAction, BigDataScenarioActionStatus, BigDataScenarioInput, BigDataScenarioSimulation, BigDataScenarioStatus, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataAnomalyReview, BigDataAnomalyReviewStatus, BigDataAnomalyCauseType, BigDataPhaseTwoDiagnostic, BigDataPhaseThreePrediction, BigDataScenario, BigDataScenarioAction, BigDataScenarioActionStatus, BigDataScenarioInput, BigDataScenarioSimulation, BigDataScenarioStatus, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -758,6 +758,42 @@ export const ApiService = {
       startDate,
       endDate,
       token
+    );
+  },
+
+  async upsertBigDataAnomalyReview(
+    mallId: string,
+    anomalyDate: string,
+    payload: {
+      status: BigDataAnomalyReviewStatus;
+      cause_type: BigDataAnomalyCauseType;
+      explanation: string;
+      evidence?: string;
+      owner_name?: string;
+      snapshot: {
+        direction: 'UP' | 'DOWN';
+        observed_sales: number;
+        expected_sales: number;
+        impact: number;
+        deviation_percent: number;
+        confidence: number;
+        model_version: string;
+      };
+    },
+    token: string
+  ): Promise<BigDataAnomalyReview> {
+    const params = new URLSearchParams({ mall_id: mallId });
+    return fetchJsonWithBaseFallback<BigDataAnomalyReview>(
+      `/big-data/intelligence/phase-one/anomalies/${encodeURIComponent(anomalyDate)}/review?${params.toString()}`,
+      {
+        method: 'PUT',
+        headers: withAuthHeaders(token, {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify(payload),
+      },
+      'No se pudo guardar la investigación'
     );
   },
 

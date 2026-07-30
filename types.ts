@@ -125,6 +125,44 @@ export interface BigDataAnomalyContributor {
   impact_share_percent: number;
 }
 
+export type BigDataAnomalyReviewStatus =
+  | 'IN_REVIEW'
+  | 'EXPLAINED'
+  | 'DISMISSED';
+
+export type BigDataAnomalyCauseType =
+  | 'UNKNOWN'
+  | 'COMMERCIAL_EVENT'
+  | 'DATA_IMPORT'
+  | 'STORE_ACTIVITY'
+  | 'OPERATIONS'
+  | 'EXTERNAL_FACTOR'
+  | 'DATA_CORRECTION'
+  | 'FALSE_POSITIVE'
+  | 'OTHER';
+
+export interface BigDataAnomalyReview {
+  id: string;
+  anomaly_date: string;
+  status: BigDataAnomalyReviewStatus;
+  cause_type: BigDataAnomalyCauseType;
+  explanation: string;
+  evidence?: string | null;
+  owner_name?: string | null;
+  anomaly_snapshot: {
+    direction: 'UP' | 'DOWN';
+    observed_sales: number;
+    expected_sales: number;
+    impact: number;
+    deviation_percent: number;
+    confidence: number;
+    model_version: string;
+  };
+  created_at: string;
+  updated_at: string;
+  resolved_at?: string | null;
+}
+
 export interface BigDataPhaseOneAnomaly {
   date: string;
   direction: 'UP' | 'DOWN';
@@ -140,6 +178,7 @@ export interface BigDataPhaseOneAnomaly {
   explanation: string;
   recommendation: string;
   contributors: BigDataAnomalyContributor[];
+  review?: BigDataAnomalyReview | null;
 }
 
 export interface BigDataExplainedEvent {
@@ -155,6 +194,7 @@ export interface BigDataExplainedEvent {
   holiday_name?: string | null;
   explanation: string;
   contributors: BigDataAnomalyContributor[];
+  review?: BigDataAnomalyReview | null;
 }
 
 export interface BigDataPhaseOneQuality {

@@ -1,4 +1,10 @@
-from worker_importacion import _map_studio_g_sale, _studio_g_date_range
+import urllib.parse
+
+from worker_importacion import (
+    _map_studio_g_sale,
+    _studio_g_date_range,
+    fetch_studio_g_sales_detailed,
+)
 import pytest
 
 
@@ -103,6 +109,180 @@ def test_studio_g_custom_date_range_normalizes_reversed_dates():
     assert _studio_g_date_range(config) == ("2026-07-01", "2026-07-12")
 
 
+def test_studio_g_range_500_falls_back_to_days_and_reports_failures(monkeypatch):
+    import worker_importacion
+
+    config = {
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "sftp_protocol": "API",
+        "sftp_host": "https://studio.example.test",
+        "sftp_user": "client",
+        "sftp_pass": "secret",
+        "sftp_path": "AFB",
+        "constants_config": {
+            "_studio_g_date_mode": "custom",
+            "_studio_g_fecha_inicio": "2026-07-11",
+            "_studio_g_fecha_fin": "2026-07-13",
+        },
+    }
+    calls = []
+    monkeypatch.setattr(
+        worker_importacion,
+        "_studio_g_authorize",
+        lambda config, constants: "token",
+    )
+
+    def fake_request(method, url, **kwargs):
+        params = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        start = params["FechaInicio"][0]
+        end = params["FechaFin"][0]
+        calls.append((start, end))
+        if start != end or start == "2026-07-12":
+            raise RuntimeError(
+                'API HTTP 500: {"message":"error consultando ventas","status":"error"}'
+            )
+        return {
+            "ventas": [{
+                "IDTransaccion": start,
+                "Fecha": f"{start}T10:00:00",
+                "TotalBruto": 100,
+                "TotalImpuestos": 18,
+                "TotalNeto": 118,
+            }]
+        }
+
+    monkeypatch.setattr(worker_importacion, "_api_json_request", fake_request)
+
+    rows, source_name, failures = fetch_studio_g_sales_detailed(config)
+
+    assert [row["fecha"] for row in rows] == ["2026-07-11", "2026-07-13"]
+    assert source_name.endswith("(recuperacion diaria)")
+    assert failures == [{
+        "fecha": "2026-07-12",
+        "error": 'API HTTP 500: {"message":"error consultando ventas","status":"error"}',
+    }]
+    assert calls == [
+        ("2026-07-11", "2026-07-13"),
+        ("2026-07-11", "2026-07-11"),
+        ("2026-07-12", "2026-07-12"),
+        ("2026-07-13", "2026-07-13"),
+    ]
+
+
+def test_studio_g_does_not_split_network_or_single_day_failures(monkeypatch):
+    import worker_importacion
+
+    config = {
+        "sftp_host": "https://studio.example.test",
+        "sftp_user": "client",
+        "sftp_pass": "secret",
+        "sftp_path": "AFB",
+        "constants_config": {
+            "_studio_g_date_mode": "custom",
+            "_studio_g_fecha_inicio": "2026-07-11",
+            "_studio_g_fecha_fin": "2026-07-13",
+        },
+    }
+    calls = []
+    monkeypatch.setattr(
+        worker_importacion,
+        "_studio_g_authorize",
+        lambda config, constants: "token",
+    )
+
+    def fail_network(method, url, **kwargs):
+        calls.append(url)
+        raise RuntimeError("<urlopen error [Errno 113] No route to host>")
+
+    monkeypatch.setattr(worker_importacion, "_api_json_request", fail_network)
+
+    with pytest.raises(RuntimeError, match="No route to host"):
+        fetch_studio_g_sales_detailed(config)
+
+    assert len(calls) == 1
+
+
+def test_studio_g_daily_fallback_fails_when_no_day_can_be_queried(monkeypatch):
+    import worker_importacion
+
+    config = {
+        "sftp_host": "https://studio.example.test",
+        "sftp_user": "client",
+        "sftp_pass": "secret",
+        "sftp_path": "AFB",
+        "constants_config": {
+            "_studio_g_date_mode": "custom",
+            "_studio_g_fecha_inicio": "2026-07-11",
+            "_studio_g_fecha_fin": "2026-07-12",
+        },
+    }
+    calls = []
+    monkeypatch.setattr(
+        worker_importacion,
+        "_studio_g_authorize",
+        lambda config, constants: "token",
+    )
+
+    def fail_sales_query(method, url, **kwargs):
+        calls.append(url)
+        raise RuntimeError(
+            'API HTTP 500: {"message":"error consultando ventas","status":"error"}'
+        )
+
+    monkeypatch.setattr(worker_importacion, "_api_json_request", fail_sales_query)
+
+    with pytest.raises(RuntimeError, match="ninguno de los 2 dias"):
+        fetch_studio_g_sales_detailed(config)
+
+    assert len(calls) == 3
+
+
+def test_studio_g_partial_result_is_logged_with_failed_dates(monkeypatch):
+    import worker_importacion
+
+    logs = []
+    monkeypatch.setattr(
+        worker_importacion,
+        "fetch_studio_g_sales_detailed",
+        lambda config: (
+            [{"fecha": "2026-07-11"}],
+            "Studio G AFB 2026-07-11..2026-07-13 (recuperacion diaria)",
+            [{"fecha": "2026-07-12", "error": "API HTTP 500"}],
+        ),
+    )
+    monkeypatch.setattr(
+        worker_importacion,
+        "_insert_studio_g_sales",
+        lambda config, rows: (1, 0),
+    )
+    monkeypatch.setattr(
+        worker_importacion,
+        "insert_load_log",
+        lambda *args, **kwargs: logs.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        worker_importacion,
+        "run_local_risk_analysis_if_possible",
+        lambda *args, **kwargs: None,
+    )
+
+    result = worker_importacion.process_studio_g_api({
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "nombre": "STUDIO G",
+    })
+
+    assert result["ok"] is True
+    assert result["status"] == "partial"
+    assert result["records_processed"] == 1
+    assert result["failed_dates"] == ["2026-07-12"]
+    assert result["details"][0]["tipo"] == "studio_g_date_error"
+    assert logs[0][0][2] == "parcial"
+    assert logs[0][1]["error_count"] == 1
+    assert logs[0][1]["metadata"]["fallback_strategy"] == "daily"
+
+
 def test_automatic_studio_g_config_routes_through_api_import(monkeypatch):
     import worker_importacion
 
@@ -165,6 +345,69 @@ def test_studio_g_preview_uses_history_before_sample(monkeypatch):
     assert calls[1][0] < calls[1][1]
 
 
+def test_studio_g_preview_continues_when_current_day_query_fails(monkeypatch):
+    import main
+
+    calls = []
+    historical_row = {"fecha": "2026-07-11", "factura_no": "F-1"}
+
+    def fake_fetch(config):
+        calls.append(config["constants_config"])
+        if len(calls) == 1:
+            raise RuntimeError(
+                'API HTTP 500: {"message":"error consultando ventas","status":"error"}'
+            )
+        return [historical_row], "Studio G history"
+
+    monkeypatch.setattr(main, "fetch_studio_g_sales", fake_fetch)
+
+    rows = main._studio_g_preview_rows(
+        main.RemoteRequest(
+            protocolo="API",
+            host="https://studio.example.test",
+            usuario="user",
+            password="secret",
+            ruta="AFB",
+            tipo_archivo="JSON",
+        )
+    )
+
+    assert rows == [historical_row]
+    assert len(calls) == 2
+
+
+def test_studio_g_connection_test_validates_sales_query(monkeypatch):
+    import main
+
+    received = []
+    monkeypatch.setattr(
+        main,
+        "fetch_studio_g_sales",
+        lambda config: received.append(config) or (
+            [{"fecha": "2026-07-29"}],
+            "Studio G AFB",
+        ),
+    )
+
+    result = main._test_remote_connection_sync(
+        main.RemoteRequest(
+            protocolo="API",
+            host="https://studio.example.test",
+            usuario="user",
+            password="secret",
+            ruta="AFB",
+            tipo_archivo="JSON",
+        )
+    )
+
+    assert result["status"] == "success"
+    assert "consulta de ventas validada" in result["message"]
+    assert received[0]["sftp_path"] == "AFB"
+    constants = received[0]["constants_config"]
+    assert constants["_studio_g_fecha_inicio"] == constants["_studio_g_fecha_fin"]
+    assert received[0]["_webservice_timeout_seconds"] == "20"
+
+
 def test_runtime_import_overrides_sync_constants_config():
     import main
 
@@ -196,8 +439,12 @@ def test_studio_g_api_can_defer_load_log_to_manual_endpoint(monkeypatch):
     logs = []
     monkeypatch.setattr(
         worker_importacion,
-        "fetch_studio_g_sales",
-        lambda config: ([{"fecha": "2026-07-01"}], "Studio G AFB 2026-07-01..2026-07-01"),
+        "fetch_studio_g_sales_detailed",
+        lambda config: (
+            [{"fecha": "2026-07-01"}],
+            "Studio G AFB 2026-07-01..2026-07-01",
+            [],
+        ),
     )
     monkeypatch.setattr(worker_importacion, "_insert_studio_g_sales", lambda config, rows: (1, 0))
     monkeypatch.setattr(worker_importacion, "insert_load_log", lambda *args, **kwargs: logs.append((args, kwargs)))
@@ -225,6 +472,8 @@ def test_manual_api_webservice_endpoint_owns_monitor_log_contract():
     assert '"source": "manual_api_webservice_import"' in main_py
     assert "insert_load_log(" in main_py
     assert "trigger=\"manual_api_webservice_import\"" in main_py
+    assert 'status_value == "partial"' in main_py
+    assert '"failed_dates": result.get("failed_dates") or []' in main_py
 
 
 def test_specific_schedule_persists_visible_default_time():

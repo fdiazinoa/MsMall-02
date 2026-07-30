@@ -57,6 +57,7 @@ else:
 
 AUTO_SUCCESS_PREFIX = "PR_"
 AUTO_ERROR_PREFIX = "ERR_"
+STUDIO_G_DAILY_FALLBACK_MAX_DAYS = 62
 
 
 def _read_bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -1265,7 +1266,47 @@ def _map_studio_g_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str)
     return {key: value for key, value in payload.items() if value not in (None, "")}
 
 
-def fetch_studio_g_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+def _is_studio_g_sales_query_failure(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return "api http 500" in message and "error consultando ventas" in message
+
+
+def _studio_g_query_sales(
+    config: Dict[str, Any],
+    *,
+    token: str,
+    id_tpv: str,
+    fecha_inicio: str,
+    fecha_fin: str,
+    timeout: int,
+) -> List[Dict[str, Any]]:
+    query = urllib.parse.urlencode({
+        "idTpv": id_tpv,
+        "FechaInicio": fecha_inicio,
+        "FechaFin": fecha_fin,
+    })
+    response = _api_json_request(
+        "GET",
+        f"{_api_base_url(config)}/ventas?{query}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=timeout,
+    )
+    sales = response.get("ventas") or []
+    if not isinstance(sales, list):
+        raise RuntimeError("Respuesta Studio G invalida: ventas no es una lista")
+    return [
+        mapped
+        for sale in sales
+        if isinstance(sale, dict)
+        for mapped in [_map_studio_g_sale(config, sale, id_tpv)]
+        if mapped
+    ]
+
+
+def fetch_studio_g_sales_detailed(
+    config: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], str, List[Dict[str, str]]]:
+    """Fetch a range, falling back to isolated days only for Studio G query 500s."""
     config = _normalize_worker_import_config(config)
     constants = _webservice_constants(config)
     id_tpv = str(
@@ -1295,29 +1336,79 @@ def fetch_studio_g_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], 
             "timeout_seconds",
         ),
     )
-    query = urllib.parse.urlencode({
-        "idTpv": id_tpv,
-        "FechaInicio": fecha_inicio,
-        "FechaFin": fecha_fin,
-    })
-    response = _api_json_request(
-        "GET",
-        f"{_api_base_url(config)}/ventas?{query}",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=timeout,
-    )
-    sales = response.get("ventas") or []
-    if not isinstance(sales, list):
-        raise RuntimeError("Respuesta Studio G invalida: ventas no es una lista")
+    source_name = f"Studio G {id_tpv} {fecha_inicio}..{fecha_fin}"
+    try:
+        rows = _studio_g_query_sales(
+            config,
+            token=token,
+            id_tpv=id_tpv,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            timeout=timeout,
+        )
+        return rows, source_name, []
+    except Exception as range_error:
+        start_day = date.fromisoformat(fecha_inicio)
+        end_day = date.fromisoformat(fecha_fin)
+        day_count = (end_day - start_day).days + 1
+        if (
+            not _is_studio_g_sales_query_failure(range_error)
+            or day_count <= 1
+            or day_count > STUDIO_G_DAILY_FALLBACK_MAX_DAYS
+        ):
+            raise
 
-    rows = [
-        mapped
-        for sale in sales
-        if isinstance(sale, dict)
-        for mapped in [_map_studio_g_sale(config, sale, id_tpv)]
-        if mapped
-    ]
-    return rows, f"Studio G {id_tpv} {fecha_inicio}..{fecha_fin}"
+        logger.warning(
+            "Studio G fallo para el rango %s..%s; reintentando %s dia(s) por separado.",
+            fecha_inicio,
+            fecha_fin,
+            day_count,
+        )
+        recovered_rows: List[Dict[str, Any]] = []
+        failed_dates: List[Dict[str, str]] = []
+        successful_days = 0
+        for offset in range(day_count):
+            target_date = (start_day + timedelta(days=offset)).isoformat()
+            try:
+                recovered_rows.extend(
+                    _studio_g_query_sales(
+                        config,
+                        token=token,
+                        id_tpv=id_tpv,
+                        fecha_inicio=target_date,
+                        fecha_fin=target_date,
+                        timeout=timeout,
+                    )
+                )
+                successful_days += 1
+            except Exception as day_error:
+                failed_dates.append({
+                    "fecha": target_date,
+                    "error": sanitize_error_text(day_error),
+                })
+
+        if successful_days == 0:
+            raise RuntimeError(
+                f"Studio G no pudo consultar ninguno de los {day_count} dias del rango. "
+                f"Error inicial: {sanitize_error_text(range_error)}"
+            ) from range_error
+
+        logger.warning(
+            "Studio G recuperacion diaria: dias_ok=%s dias_error=%s ventas=%s.",
+            successful_days,
+            len(failed_dates),
+            len(recovered_rows),
+        )
+        return (
+            recovered_rows,
+            f"{source_name} (recuperacion diaria)",
+            failed_dates,
+        )
+
+
+def fetch_studio_g_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+    rows, source_name, _ = fetch_studio_g_sales_detailed(config)
+    return rows, source_name
 
 
 def _insert_studio_g_sales(config: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[int, int]:
@@ -1342,36 +1433,57 @@ def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True)
     local_name = config.get("nombre") or "Studio G"
     batch_id = str(uuid.uuid4())
     try:
-        rows, source_name = fetch_studio_g_sales(config)
+        rows, source_name, failed_dates = fetch_studio_g_sales_detailed(config)
         inserted, skipped = _insert_studio_g_sales(config, rows)
         message = f"API Studio G: {inserted} ventas importadas"
         if skipped:
             message += f", {skipped} duplicadas omitidas"
         if not rows:
             message = "API Studio G: 0 ventas encontradas para el rango"
+        details = [
+            {
+                "linea": 0,
+                "fecha": item["fecha"],
+                "tipo": "studio_g_date_error",
+                "error": item["error"],
+            }
+            for item in failed_dates
+        ]
+        status = "partial" if failed_dates else "success"
+        if failed_dates:
+            failed_labels = ", ".join(item["fecha"] for item in failed_dates[:10])
+            if len(failed_dates) > 10:
+                failed_labels += f" y {len(failed_dates) - 10} mas"
+            message += (
+                f". Importacion parcial: {len(failed_dates)} fecha(s) pendientes "
+                f"de reintento ({failed_labels})"
+            )
         if write_load_log:
             insert_load_log(
                 local_name,
                 source_name,
-                "exito",
+                "parcial" if failed_dates else "exito",
                 message,
                 batch_id,
+                details,
                 mall_id=config.get("mall_id"),
                 local_id=config.get("id"),
                 canal="API",
                 records_processed=inserted,
-                error_count=0,
+                error_count=len(failed_dates),
                 metadata={
                     "source": "worker_studio_g_api",
                     "records_received": len(rows),
                     "duplicate_skipped": skipped,
+                    "fallback_strategy": "daily" if failed_dates else None,
+                    "failed_dates": [item["fecha"] for item in failed_dates],
                 },
             )
         if inserted > 0 and write_load_log:
             run_local_risk_analysis_if_possible(config, trigger="worker_studio_g_api")
         return {
             "ok": True,
-            "status": "success",
+            "status": status,
             "message": message,
             "records_processed": inserted,
             "source_name": source_name,
@@ -1379,10 +1491,11 @@ def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True)
             "records_received": len(rows),
             "duplicate_skipped": skipped,
             "processed_files": 1 if rows else 0,
-            "failed_files": 0,
+            "failed_files": len(failed_dates),
             "total_pending": len(rows),
             "batch_size": 1 if rows else 0,
-            "details": [],
+            "failed_dates": [item["fecha"] for item in failed_dates],
+            "details": details,
         }
     except Exception as exc:
         message = f"Fallo API Studio G: {sanitize_error_text(exc)}"

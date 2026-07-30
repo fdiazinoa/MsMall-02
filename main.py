@@ -2497,44 +2497,28 @@ def _is_webservice_protocol(value: Any) -> bool:
     return str(value or "").strip().upper() in {"API", "WEBSERVICE"}
 
 
-def _api_base_url(host: str) -> str:
-    normalized = str(host or "").strip()
-    if not normalized:
-        raise ValueError("URL base API requerida")
-    if not re.match(r"^https?://", normalized, flags=re.IGNORECASE):
-        normalized = f"https://{normalized}"
-    return normalized.rstrip("/")
-
-
-def _test_api_authorization(host: str, client_id: str, client_secret: Optional[str]) -> None:
-    if not client_id or not client_secret:
-        raise ValueError("Client ID y Client Secret requeridos para probar API")
-    payload = json.dumps({
-        "client_id": client_id,
-        "client_secret": client_secret,
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        f"{_api_base_url(host)}/authorization",
-        data=payload,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=25) as response:
-        raw = response.read().decode("utf-8-sig", errors="replace")
-    result = json.loads(raw or "{}")
-    if not result.get("access_token"):
-        raise ValueError("La API no devolvió access_token")
-
-
 def _test_remote_connection_sync(req: RemoteRequest):
     logger.info(f"Probando conexión remota sync a {req.host}:{req.puerto} ({req.protocolo})")
     start_time = time.time()
     try:
         protocol = str(req.protocolo or "").strip().upper()
         if protocol == "API":
-            _test_api_authorization(req.host, req.usuario, req.password)
+            previous_day = date.today() - timedelta(days=1)
+            rows, _ = fetch_studio_g_sales(
+                _studio_g_config_from_remote_request(
+                    req,
+                    previous_day.isoformat(),
+                    previous_day.isoformat(),
+                )
+            )
             duration = time.time() - start_time
-            return {"status": "success", "message": f"API autenticada correctamente ({duration:.2f}s)"}
+            return {
+                "status": "success",
+                "message": (
+                    "API autenticada y consulta de ventas validada "
+                    f"({len(rows)} registro(s), {duration:.2f}s)"
+                ),
+            }
         if protocol == "SFTP":
             ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
             sftp.close()
@@ -2568,6 +2552,7 @@ def _studio_g_config_from_remote_request(
         "sftp_user": req.usuario,
         "sftp_pass": req.password,
         "sftp_path": req.ruta,
+        "_webservice_timeout_seconds": "20",
         "constants_config": {
             "provider": "studio_g",
             "_studio_g_fecha_inicio": fecha_inicio or today,
@@ -2578,9 +2563,16 @@ def _studio_g_config_from_remote_request(
 
 def _studio_g_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
     today = date.today()
-    rows, _ = fetch_studio_g_sales(
-        _studio_g_config_from_remote_request(req, today.isoformat(), today.isoformat())
-    )
+    try:
+        rows, _ = fetch_studio_g_sales(
+            _studio_g_config_from_remote_request(req, today.isoformat(), today.isoformat())
+        )
+    except Exception as exc:
+        logger.warning(
+            "Studio G no pudo consultar la fecha actual para vista previa: %s",
+            sanitize_sensitive_ops_error(exc),
+        )
+        rows = []
     if rows:
         return rows
 
@@ -4230,7 +4222,9 @@ async def _execute_manual_endpoint_impl(
             details = result.get("details") or []
             error_count = len(details)
             log_status = (
-                "parcial" if records_processed > 0 and error_count > 0
+                "parcial"
+                if status_value == "partial"
+                or (error_count > 0 and records_processed > 0)
                 else "exito" if status_value in {"success", "ok"} or result.get("ok")
                 else "error"
             )
@@ -4253,6 +4247,8 @@ async def _execute_manual_endpoint_impl(
                     "worker_source": "worker_studio_g_api",
                     "records_received": result.get("records_received"),
                     "duplicate_skipped": result.get("duplicate_skipped"),
+                    "fallback_strategy": "daily" if result.get("failed_dates") else None,
+                    "failed_dates": result.get("failed_dates") or [],
                 },
             )
             risk_snapshot = None

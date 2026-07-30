@@ -2,6 +2,7 @@ import urllib.parse
 
 from worker_importacion import (
     _map_studio_g_sale,
+    _studio_g_probe_dates,
     _studio_g_date_range,
     fetch_studio_g_sales_detailed,
 )
@@ -170,6 +171,18 @@ def test_studio_g_range_500_falls_back_to_days_and_reports_failures(monkeypatch)
     ]
 
 
+def test_studio_g_probe_dates_cover_large_range():
+    from datetime import date
+
+    assert _studio_g_probe_dates(date(2026, 7, 1), 30) == [
+        "2026-07-01",
+        "2026-07-08",
+        "2026-07-15",
+        "2026-07-23",
+        "2026-07-30",
+    ]
+
+
 def test_studio_g_does_not_split_network_or_single_day_failures(monkeypatch):
     import worker_importacion
 
@@ -232,10 +245,45 @@ def test_studio_g_daily_fallback_fails_when_no_day_can_be_queried(monkeypatch):
 
     monkeypatch.setattr(worker_importacion, "_api_json_request", fail_sales_query)
 
-    with pytest.raises(RuntimeError, match="ninguno de los 2 dias"):
+    with pytest.raises(RuntimeError, match="autenticacion fue correcta"):
         fetch_studio_g_sales_detailed(config)
 
     assert len(calls) == 3
+
+
+def test_studio_g_global_outage_stops_after_representative_probes(monkeypatch):
+    import worker_importacion
+
+    config = {
+        "sftp_host": "https://studio.example.test",
+        "sftp_user": "client",
+        "sftp_pass": "secret",
+        "sftp_path": "AFB",
+        "constants_config": {
+            "_studio_g_date_mode": "custom",
+            "_studio_g_fecha_inicio": "2026-07-01",
+            "_studio_g_fecha_fin": "2026-07-30",
+        },
+    }
+    calls = []
+    monkeypatch.setattr(
+        worker_importacion,
+        "_studio_g_authorize",
+        lambda config, constants: "token",
+    )
+
+    def fail_sales_query(method, url, **kwargs):
+        calls.append(url)
+        raise RuntimeError(
+            'API HTTP 500: {"message":"error consultando ventas","status":"error"}'
+        )
+
+    monkeypatch.setattr(worker_importacion, "_api_json_request", fail_sales_query)
+
+    with pytest.raises(RuntimeError, match="5 fecha\\(s\\) representativa"):
+        fetch_studio_g_sales_detailed(config)
+
+    assert len(calls) == 6
 
 
 def test_studio_g_partial_result_is_logged_with_failed_dates(monkeypatch):
@@ -501,5 +549,8 @@ def test_studio_g_api_configuration_is_available_in_import_manager():
     assert "Periodo de consulta API" in manager_source
     assert "ID TPV" in manager_source
     assert "constants.provider = 'studio_g'" in manager_source
+    assert "const closeProgressResult = () =>" in manager_source
+    assert "Cerrar resultado" in manager_source
+    assert "role=\"dialog\"" in manager_source
     assert "if (config.protocolo === 'API') return true" in manager_source
     assert "Consultar y Procesar API" in manager_source

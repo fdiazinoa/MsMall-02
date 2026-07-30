@@ -58,6 +58,11 @@ else:
 AUTO_SUCCESS_PREFIX = "PR_"
 AUTO_ERROR_PREFIX = "ERR_"
 STUDIO_G_DAILY_FALLBACK_MAX_DAYS = 62
+STUDIO_G_OUTAGE_PROBE_DAYS = 5
+
+
+class StudioGSalesUnavailable(RuntimeError):
+    """Studio G authenticated, but its sales endpoint is unavailable."""
 
 
 def _read_bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -1271,6 +1276,18 @@ def _is_studio_g_sales_query_failure(exc: Exception) -> bool:
     return "api http 500" in message and "error consultando ventas" in message
 
 
+def _studio_g_probe_dates(start_day: date, day_count: int) -> List[str]:
+    probe_count = min(max(day_count, 1), STUDIO_G_OUTAGE_PROBE_DAYS)
+    if probe_count == 1:
+        offsets = [0]
+    else:
+        offsets = sorted({
+            round(index * (day_count - 1) / (probe_count - 1))
+            for index in range(probe_count)
+        })
+    return [(start_day + timedelta(days=offset)).isoformat() for offset in offsets]
+
+
 def _studio_g_query_sales(
     config: Dict[str, Any],
     *,
@@ -1364,34 +1381,63 @@ def fetch_studio_g_sales_detailed(
             fecha_fin,
             day_count,
         )
-        recovered_rows: List[Dict[str, Any]] = []
-        failed_dates: List[Dict[str, str]] = []
-        successful_days = 0
-        for offset in range(day_count):
-            target_date = (start_day + timedelta(days=offset)).isoformat()
-            try:
-                recovered_rows.extend(
-                    _studio_g_query_sales(
-                        config,
-                        token=token,
-                        id_tpv=id_tpv,
-                        fecha_inicio=target_date,
-                        fecha_fin=target_date,
-                        timeout=timeout,
-                    )
-                )
-                successful_days += 1
-            except Exception as day_error:
-                failed_dates.append({
-                    "fecha": target_date,
-                    "error": sanitize_error_text(day_error),
-                })
+        all_dates = [
+            (start_day + timedelta(days=offset)).isoformat()
+            for offset in range(day_count)
+        ]
+        rows_by_date: Dict[str, List[Dict[str, Any]]] = {}
+        errors_by_date: Dict[str, str] = {}
 
+        def query_day(target_date: str) -> None:
+            try:
+                rows_by_date[target_date] = _studio_g_query_sales(
+                    config,
+                    token=token,
+                    id_tpv=id_tpv,
+                    fecha_inicio=target_date,
+                    fecha_fin=target_date,
+                    timeout=timeout,
+                )
+            except Exception as day_error:
+                errors_by_date[target_date] = sanitize_error_text(day_error)
+
+        probe_dates = _studio_g_probe_dates(start_day, day_count)
+        for target_date in probe_dates:
+            query_day(target_date)
+
+        if not rows_by_date and all(
+            _is_studio_g_sales_query_failure(RuntimeError(errors_by_date.get(target_date, "")))
+            for target_date in probe_dates
+        ):
+            probe_labels = ", ".join(probe_dates)
+            raise StudioGSalesUnavailable(
+                "Servicio de ventas Studio G no disponible: la autenticacion fue correcta, "
+                f"pero /ventas devolvio HTTP 500 para {len(probe_dates)} fecha(s) "
+                f"representativa(s) del rango ({probe_labels}). "
+                "El proveedor debe revisar su consulta de ventas."
+            ) from range_error
+
+        for target_date in all_dates:
+            if target_date not in rows_by_date and target_date not in errors_by_date:
+                query_day(target_date)
+
+        successful_days = len(rows_by_date)
         if successful_days == 0:
             raise RuntimeError(
                 f"Studio G no pudo consultar ninguno de los {day_count} dias del rango. "
                 f"Error inicial: {sanitize_error_text(range_error)}"
             ) from range_error
+
+        recovered_rows = [
+            row
+            for target_date in all_dates
+            for row in rows_by_date.get(target_date, [])
+        ]
+        failed_dates = [
+            {"fecha": target_date, "error": errors_by_date[target_date]}
+            for target_date in all_dates
+            if target_date in errors_by_date
+        ]
 
         logger.warning(
             "Studio G recuperacion diaria: dias_ok=%s dias_error=%s ventas=%s.",
@@ -1499,6 +1545,12 @@ def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True)
         }
     except Exception as exc:
         message = f"Fallo API Studio G: {sanitize_error_text(exc)}"
+        error_type = (
+            "studio_g_sales_unavailable"
+            if isinstance(exc, StudioGSalesUnavailable)
+            else "studio_g_api_error"
+        )
+        details = [{"linea": 0, "tipo": error_type, "error": message}]
         if write_load_log:
             insert_load_log(
                 local_name,
@@ -1511,7 +1563,11 @@ def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True)
                 canal="API",
                 records_processed=0,
                 error_count=1,
-                metadata={"source": "worker_studio_g_api", "exception": sanitize_error_text(exc)},
+                metadata={
+                    "source": "worker_studio_g_api",
+                    "exception": sanitize_error_text(exc),
+                    "error_type": error_type,
+                },
             )
         return {
             "ok": False,
@@ -1520,7 +1576,8 @@ def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True)
             "records_processed": 0,
             "source_name": "Studio G API",
             "canal": "API",
-            "details": [{"linea": 0, "error": message}],
+            "error_type": error_type,
+            "details": details,
         }
 
 

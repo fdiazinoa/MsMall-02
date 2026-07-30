@@ -47,6 +47,7 @@ import { useAuth } from '../context/AuthProvider';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 import {
   BigDataCalendarDay,
+  BigDataCalendarDayBreakdown,
   BigDataCalendarEventType,
   BigDataAnomalyCauseType,
   BigDataAnomalyContributor,
@@ -378,6 +379,14 @@ export const BigDataDashboard: React.FC = () => {
   const [scenarioFormError, setScenarioFormError] = useState<string | null>(null);
   const [scenarioWorkflowBusy, setScenarioWorkflowBusy] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState('');
+  const [selectedCalendarDay, setSelectedCalendarDay] =
+    useState<BigDataCalendarDay | null>(null);
+  const [calendarBreakdown, setCalendarBreakdown] =
+    useState<BigDataCalendarDayBreakdown | null>(null);
+  const [calendarBreakdownLoading, setCalendarBreakdownLoading] = useState(false);
+  const [calendarBreakdownError, setCalendarBreakdownError] =
+    useState<string | null>(null);
+  const [calendarStoreSearch, setCalendarStoreSearch] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [showEventForm, setShowEventForm] = useState(false);
   const [eventSaving, setEventSaving] = useState(false);
@@ -407,6 +416,7 @@ export const BigDataDashboard: React.FC = () => {
   });
   const requestVersion = useRef(0);
   const diagnosticRequestVersion = useRef(0);
+  const calendarBreakdownRequestVersion = useRef(0);
   const predictionRequestVersion = useRef(0);
   const scenarioRequestVersion = useRef(0);
   const requestGate = useRef(createBigDataRequestGate());
@@ -558,10 +568,29 @@ export const BigDataDashboard: React.FC = () => {
     [data?.calendar, selectedMonth],
   );
 
+  const visibleCalendarStores = useMemo(() => {
+    const normalizedSearch = calendarStoreSearch.trim().toLocaleLowerCase('es');
+    if (!normalizedSearch) return calendarBreakdown?.stores || [];
+    return (calendarBreakdown?.stores || []).filter((store) => (
+      `${store.local_name} ${store.business_type || ''}`
+        .toLocaleLowerCase('es')
+        .includes(normalizedSearch)
+    ));
+  }, [calendarBreakdown?.stores, calendarStoreSearch]);
+
   const calendarLeadingSpaces = useMemo(
     () => visibleCalendar[0]?.weekday ?? 0,
     [visibleCalendar],
   );
+
+  useEffect(() => {
+    calendarBreakdownRequestVersion.current += 1;
+    setSelectedCalendarDay(null);
+    setCalendarBreakdown(null);
+    setCalendarBreakdownError(null);
+    setCalendarBreakdownLoading(false);
+    setCalendarStoreSearch('');
+  }, [currentMall?.id, dates.start, dates.end]);
 
   const selectedPrediction = useMemo(
     () => prediction?.horizons.find((item) => item.days === predictionHorizon) || null,
@@ -699,6 +728,21 @@ export const BigDataDashboard: React.FC = () => {
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [diagnosticLocalId, selectedAnomalyId]);
 
+  useEffect(() => {
+    if (!selectedCalendarDay) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      calendarBreakdownRequestVersion.current += 1;
+      setSelectedCalendarDay(null);
+      setCalendarBreakdown(null);
+      setCalendarBreakdownError(null);
+      setCalendarBreakdownLoading(false);
+      setCalendarStoreSearch('');
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [selectedCalendarDay]);
+
   const openDiagnostic = async (contributor: BigDataAnomalyContributor) => {
     if (!currentMall?.id || !session?.access_token || !selectedAnomaly) return;
     const localId = contributor.local_id;
@@ -748,6 +792,51 @@ export const BigDataDashboard: React.FC = () => {
     const index = availableMonths.indexOf(selectedMonth);
     const next = availableMonths[index + direction];
     if (next) setSelectedMonth(next);
+  };
+
+  const closeCalendarDayBreakdown = () => {
+    calendarBreakdownRequestVersion.current += 1;
+    setSelectedCalendarDay(null);
+    setCalendarBreakdown(null);
+    setCalendarBreakdownError(null);
+    setCalendarBreakdownLoading(false);
+    setCalendarStoreSearch('');
+  };
+
+  const openCalendarDayBreakdown = async (day: BigDataCalendarDay) => {
+    const mallId = currentMall?.id;
+    const token = session?.access_token;
+    if (!mallId || !token || day.sales_net == null) return;
+    const version = ++calendarBreakdownRequestVersion.current;
+    setSelectedCalendarDay(day);
+    setCalendarBreakdown(null);
+    setCalendarBreakdownError(null);
+    setCalendarStoreSearch('');
+    setCalendarBreakdownLoading(true);
+    try {
+      const response = await ApiService.getBigDataCalendarDayBreakdown(
+        mallId,
+        day.date,
+        token,
+      );
+      if (
+        calendarBreakdownRequestVersion.current === version
+        && response.mall_id === mallId
+        && response.date === day.date
+      ) {
+        setCalendarBreakdown(response);
+      }
+    } catch (requestError: any) {
+      if (calendarBreakdownRequestVersion.current === version) {
+        setCalendarBreakdownError(
+          requestError?.message || 'No se pudo cargar el desglose diario.',
+        );
+      }
+    } finally {
+      if (calendarBreakdownRequestVersion.current === version) {
+        setCalendarBreakdownLoading(false);
+      }
+    }
   };
 
   const applyQuickRange = (days: number) => {
@@ -2075,9 +2164,21 @@ export const BigDataDashboard: React.FC = () => {
                   <div key={`empty-${index}`} />
                 ))}
                 {visibleCalendar.map((day) => (
-                  <div
+                  <button
+                    type="button"
                     key={day.date}
-                    className={`min-h-[72px] rounded-lg border p-2 transition-colors ${calendarCellClasses(day)}`}
+                    disabled={day.sales_net == null}
+                    onClick={() => openCalendarDayBreakdown(day)}
+                    aria-label={
+                      day.sales_net == null
+                        ? `${formatDate(day.date)} sin datos`
+                        : `Ver locales del ${formatDate(day.date, {
+                          weekday: 'long',
+                          day: 'numeric',
+                          month: 'long',
+                        })}`
+                    }
+                    className={`min-h-[72px] w-full rounded-lg border p-2 text-left transition-all focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-1 disabled:cursor-default ${day.sales_net == null ? '' : 'cursor-pointer hover:-translate-y-0.5 hover:shadow-md'} ${calendarCellClasses(day)}`}
                     title={[
                       formatDate(day.date, { weekday: 'long', day: 'numeric', month: 'long' }),
                       day.sales_net == null ? 'Sin datos' : `Venta: ${format(day.sales_net)}`,
@@ -2111,9 +2212,12 @@ export const BigDataDashboard: React.FC = () => {
                         {day.events[0].name}
                       </p>
                     )}
-                  </div>
+                  </button>
                 ))}
               </div>
+              <p className="mt-3 text-[10px] font-semibold text-indigo-600">
+                Selecciona un día con ventas para ver qué locales conforman el resultado.
+              </p>
               <div className="mt-4 flex flex-wrap gap-3 text-[10px] font-semibold text-slate-500">
                 <span className="flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded bg-emerald-200" /> Pico</span>
                 <span className="flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded bg-rose-200" /> Caída</span>
@@ -2485,6 +2589,286 @@ export const BigDataDashboard: React.FC = () => {
           </footer>
           )}
         </>
+      )}
+
+      {selectedCalendarDay && (
+        <div className="fixed inset-0 z-50">
+          <button
+            type="button"
+            aria-label="Cerrar desglose diario"
+            onClick={closeCalendarDayBreakdown}
+            className="absolute inset-0 bg-slate-950/45 backdrop-blur-sm"
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Desglose de locales del día"
+            className="absolute inset-y-0 right-0 w-full max-w-4xl overflow-y-auto bg-slate-50 shadow-2xl"
+          >
+            <div className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-indigo-600">
+                    <Store size={14} /> Desglose del día
+                  </p>
+                  <h3 className="mt-1 text-xl font-black capitalize text-slate-900">
+                    {formatDate(selectedCalendarDay.date, {
+                      weekday: 'long',
+                      day: 'numeric',
+                      month: 'long',
+                      year: 'numeric',
+                    })}
+                  </h3>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {selectedCalendarDay.is_weekend && (
+                      <span className="rounded-full bg-amber-100 px-2 py-1 text-[9px] font-black text-amber-800">
+                        Fin de semana
+                      </span>
+                    )}
+                    {selectedCalendarDay.holiday_name && (
+                      <span className="rounded-full bg-violet-100 px-2 py-1 text-[9px] font-black text-violet-800">
+                        {selectedCalendarDay.holiday_name}
+                      </span>
+                    )}
+                    {selectedCalendarDay.events.map((event) => (
+                      <span
+                        key={event.id}
+                        className="rounded-full bg-sky-100 px-2 py-1 text-[9px] font-black text-sky-800"
+                      >
+                        {event.event_type_label}: {event.name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeCalendarDayBreakdown}
+                  className="rounded-xl border border-slate-200 bg-white p-2 text-slate-400 hover:text-slate-700"
+                  aria-label="Cerrar"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {calendarBreakdownLoading && (
+              <div className="grid min-h-[420px] place-items-center px-6 text-center">
+                <div>
+                  <Loader2 size={28} className="mx-auto animate-spin text-indigo-500" />
+                  <p className="mt-3 text-sm font-black text-slate-700">
+                    Comparando los locales…
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Consultamos únicamente esta fecha y sus días comparables.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {!calendarBreakdownLoading && calendarBreakdownError && (
+              <div className="m-5 rounded-2xl border border-rose-200 bg-rose-50 p-5 text-rose-800">
+                <p className="flex items-center gap-2 text-sm font-black">
+                  <AlertTriangle size={18} /> No pudimos abrir el desglose
+                </p>
+                <p className="mt-2 text-xs leading-5">{calendarBreakdownError}</p>
+                <button
+                  type="button"
+                  onClick={() => openCalendarDayBreakdown(selectedCalendarDay)}
+                  className="mt-4 rounded-xl bg-rose-600 px-4 py-2 text-xs font-black text-white"
+                >
+                  Reintentar
+                </button>
+              </div>
+            )}
+
+            {!calendarBreakdownLoading && calendarBreakdown && (
+              <div className="space-y-4 p-5">
+                <section className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-slate-400">
+                      Venta del mall
+                    </p>
+                    <p className="mt-2 truncate text-lg font-black text-slate-900">
+                      {format(calendarBreakdown.summary.sales_net)}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-slate-400">
+                      Locales con venta
+                    </p>
+                    <p className="mt-2 text-lg font-black text-slate-900">
+                      {calendarBreakdown.summary.stores_with_sales}
+                      <span className="text-xs text-slate-400">
+                        {' '}/ {calendarBreakdown.summary.active_stores} activos
+                      </span>
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-slate-400">
+                      Transacciones
+                    </p>
+                    <p className="mt-2 text-lg font-black text-slate-900">
+                      {calendarBreakdown.summary.transactions.toLocaleString('es-DO')}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-slate-400">
+                      Diferencia vs. referencia
+                    </p>
+                    {calendarBreakdown.summary.variation_amount == null ? (
+                      <p className="mt-2 text-sm font-black text-slate-400">Sin base suficiente</p>
+                    ) : (
+                      <>
+                        <p className={`mt-2 truncate text-lg font-black ${
+                          calendarBreakdown.summary.variation_amount >= 0
+                            ? 'text-emerald-600'
+                            : 'text-rose-600'
+                        }`}>
+                          {calendarBreakdown.summary.variation_amount > 0 ? '+' : ''}
+                          {format(calendarBreakdown.summary.variation_amount)}
+                        </p>
+                        <p className="mt-0.5 text-[9px] font-bold text-slate-400">
+                          {calendarBreakdown.summary.deviation_percent == null
+                            ? 'Referencia igual a cero'
+                            : `${calendarBreakdown.summary.deviation_percent > 0 ? '+' : ''}${calendarBreakdown.summary.deviation_percent.toFixed(1)}%`}
+                        </p>
+                      </>
+                    )}
+                  </div>
+                </section>
+
+                {Math.abs(calendarBreakdown.summary.local_coverage_percent - 100) > 1 && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">
+                    Los agregados por local representan{' '}
+                    <strong>{calendarBreakdown.summary.local_coverage_percent.toFixed(1)}%</strong>{' '}
+                    de la venta agregada del mall. Revisa cobertura antes de atribuir el saldo.
+                  </div>
+                )}
+
+                <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-xs font-black text-slate-900">Locales que conforman la venta</p>
+                      <p className="mt-0.5 text-[10px] text-slate-500">
+                        Ordenados por venta neta observada.
+                      </p>
+                    </div>
+                    <label className="relative block w-full sm:w-72">
+                      <Search
+                        size={14}
+                        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                      />
+                      <input
+                        value={calendarStoreSearch}
+                        onChange={(event) => setCalendarStoreSearch(event.target.value)}
+                        placeholder="Buscar local o tipo de negocio"
+                        className="w-full rounded-xl border border-slate-200 py-2 pl-9 pr-3 text-xs outline-none focus:border-indigo-400"
+                      />
+                    </label>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[780px] table-fixed">
+                      <thead className="bg-slate-50 text-left">
+                        <tr className="text-[9px] font-black uppercase tracking-wide text-slate-400">
+                          <th className="w-[25%] px-4 py-3">Local</th>
+                          <th className="w-[16%] px-3 py-3 text-right">Venta</th>
+                          <th className="w-[18%] px-3 py-3 text-right">Participación del día</th>
+                          <th className="w-[18%] px-3 py-3 text-right">Referencia histórica</th>
+                          <th className="w-[23%] px-4 py-3 text-right">Aporte vs. referencia</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {visibleCalendarStores.map((store) => (
+                          <tr key={store.local_id} className="text-xs text-slate-600 hover:bg-indigo-50/30">
+                            <td className="px-4 py-3">
+                              <p className="truncate font-black text-slate-900">{store.local_name}</p>
+                              <p className="mt-0.5 truncate text-[9px] text-slate-400">
+                                {store.business_type || 'Sin tipo de negocio'}
+                                {store.transactions > 0
+                                  ? ` · ${store.transactions.toLocaleString('es-DO')} transacciones`
+                                  : ''}
+                              </p>
+                            </td>
+                            <td className="px-3 py-3 text-right font-black text-slate-900">
+                              {format(store.sales_net)}
+                            </td>
+                            <td className="px-3 py-3 text-right">
+                              <span className="font-black text-indigo-600">
+                                {store.share_percent.toFixed(1)}%
+                              </span>
+                            </td>
+                            <td className="px-3 py-3 text-right">
+                              {store.expected_sales == null ? (
+                                <span className="text-slate-400">Sin base</span>
+                              ) : (
+                                <>
+                                  <span className="block font-bold text-slate-700">
+                                    {format(store.expected_sales)}
+                                  </span>
+                                  <span className="mt-0.5 block text-[9px] text-slate-400">
+                                    {store.peer_days} días comparables
+                                  </span>
+                                </>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              {store.variation_amount == null ? (
+                                <span className="text-slate-400">Sin base</span>
+                              ) : (
+                                <>
+                                  <span className={`block font-black ${
+                                    store.variation_amount >= 0
+                                      ? 'text-emerald-600'
+                                      : 'text-rose-600'
+                                  }`}>
+                                    {store.variation_amount > 0 ? '+' : ''}
+                                    {format(store.variation_amount)}
+                                  </span>
+                                  <span className="mt-0.5 block text-[9px] text-slate-400">
+                                    {store.deviation_percent == null
+                                      ? 'Referencia igual a cero'
+                                      : `${store.deviation_percent > 0 ? '+' : ''}${store.deviation_percent.toFixed(1)}%`}
+                                    {store.variation_share_percent == null
+                                      ? ''
+                                      : ` · ${store.variation_share_percent.toFixed(1)}% del movimiento`}
+                                  </span>
+                                </>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {visibleCalendarStores.length === 0 && (
+                    <div className="grid min-h-40 place-items-center px-5 text-center">
+                      <div>
+                        <Store size={24} className="mx-auto text-slate-300" />
+                        <p className="mt-2 text-sm font-black text-slate-600">
+                          {calendarBreakdown.stores.length
+                            ? 'No hay locales que coincidan'
+                            : 'No hay agregados por local para esta fecha'}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          {calendarBreakdown.stores.length
+                            ? 'Ajusta la búsqueda para volver a ver el desglose.'
+                            : 'La venta del mall existe, pero no puede distribuirse por local.'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-3">
+                  <p className="flex items-start gap-2 text-[10px] leading-5 text-indigo-900">
+                    <Info size={14} className="mt-0.5 shrink-0 text-indigo-500" />
+                    <span>{calendarBreakdown.methodology}</span>
+                  </p>
+                </div>
+              </div>
+            )}
+          </aside>
+        </div>
       )}
 
       {selectedAnomaly && (

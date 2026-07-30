@@ -4249,6 +4249,7 @@ async def _execute_manual_endpoint_impl(
                     "duplicate_skipped": result.get("duplicate_skipped"),
                     "fallback_strategy": "daily" if result.get("failed_dates") else None,
                     "failed_dates": result.get("failed_dates") or [],
+                    "error_type": result.get("error_type"),
                 },
             )
             risk_snapshot = None

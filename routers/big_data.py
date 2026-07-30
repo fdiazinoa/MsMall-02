@@ -267,6 +267,22 @@ async def phase_one_intelligence(
         raise
 
 
+@router.get("/intelligence/phase-one/calendar/{target_date}/stores")
+async def phase_one_calendar_day_stores(
+    target_date: date,
+    mall_id: str,
+    user: dict = Depends(current_user),
+):
+    """Store composition and historical comparison for one calendar day."""
+    _authorize(mall_id, user)
+    _require_core(mall_id)
+    if target_date > date.today():
+        raise HTTPException(422, "No se puede analizar una fecha futura.")
+    return BigDataPhaseOneService(db).calendar_day_breakdown(
+        mall_id, target_date
+    )
+
+
 @router.put("/intelligence/phase-one/anomalies/{anomaly_date}/review")
 async def upsert_phase_one_anomaly_review(
     anomaly_date: date,

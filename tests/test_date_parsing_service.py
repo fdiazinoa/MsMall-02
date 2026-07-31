@@ -17,3 +17,14 @@ def test_normalize_sale_date_preserves_existing_supported_formats():
 
 def test_normalize_sale_date_rejects_invalid_calendar_values():
     assert normalize_sale_date("2026-02-30 00:00:00", "YYYY-MM-DD") is None
+
+
+def test_normalize_spanish_excel_meridiem_with_non_breaking_space():
+    assert normalize_sale_date("7/5/2026 12:00:00 a.\u00a0m.") == "2026-05-07"
+    assert normalize_sale_date("7/5/2026 1:05:06 p. m.") == "2026-05-07"
+
+
+def test_normalize_spanish_excel_meridiem_respects_selected_date_order():
+    value = "7/5/2026 12:00:00 a. m."
+    assert normalize_sale_date(value, "DD/MM/YYYY") == "2026-05-07"
+    assert normalize_sale_date(value, "MM/DD/YYYY") == "2026-07-05"

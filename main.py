@@ -2983,10 +2983,10 @@ def _read_remote_headers_sync(req: RemoteRequest):
             bio = io.BytesIO()
             ftp.retrbinary(f"RETR {req.ruta.split('/')[-1]}", bio.write)
             bio.seek(0)
-            content = bio.read().decode('utf-8') 
+            content = bio.read().decode('utf-8')
         finally:
             ftp.quit()
-    
+
     headers = []
     if req.tipo_archivo in ["CSV", "TXT"]:
             # logic ...
@@ -2994,7 +2994,7 @@ def _read_remote_headers_sync(req: RemoteRequest):
                 dialect = csv.Sniffer().sniff(content)
                 reader = csv.reader(io.StringIO(content), dialect)
             except:
-                reader = csv.reader(io.StringIO(content)) 
+                reader = csv.reader(io.StringIO(content))
             headers = next(reader)
             
     elif req.tipo_archivo == "JSON":

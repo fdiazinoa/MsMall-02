@@ -1,5 +1,8 @@
+"""Shared normalization for sale-date values received from import sources."""
+
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Dict, Optional, Sequence
 
@@ -24,8 +27,19 @@ _COMPACT_DATE_TIME_FORMATS: Sequence[str] = (
     "%Y%m%dT%H:%M",
 )
 
+_DDMM_MERIDIEM_DATE_TIME_FORMATS: Sequence[str] = (
+    "%d/%m/%Y %I:%M:%S %p",
+    "%d/%m/%Y %I:%M %p",
+)
+
+_MMDD_MERIDIEM_DATE_TIME_FORMATS: Sequence[str] = (
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %I:%M %p",
+)
+
 _FORMAT_GROUPS: Dict[str, Sequence[str]] = {
     "DD/MM/YYYY": (
+        *_DDMM_MERIDIEM_DATE_TIME_FORMATS,
         "%d/%m/%Y %H:%M:%S.%f",
         "%d/%m/%Y %H:%M:%S",
         "%d/%m/%Y",
@@ -34,6 +48,7 @@ _FORMAT_GROUPS: Dict[str, Sequence[str]] = {
     "DDmmYYYY": ("%d%m%Y",),
     "YYYYmmDD": (*_COMPACT_DATE_TIME_FORMATS, "%Y%m%d"),
     "MM/DD/YYYY": (
+        *_MMDD_MERIDIEM_DATE_TIME_FORMATS,
         "%m/%d/%Y %H:%M:%S.%f",
         "%m/%d/%Y %H:%M:%S",
         "%m/%d/%Y",
@@ -50,12 +65,14 @@ _FORMAT_GROUPS: Dict[str, Sequence[str]] = {
 
 _AUTO_FORMATS: Sequence[str] = (
     *_ISO_DATE_TIME_FORMATS,
+    *_DDMM_MERIDIEM_DATE_TIME_FORMATS,
     "%Y-%m-%d",
     "%d/%m/%Y %H:%M:%S",
     "%d/%m/%Y",
     "%d%m%Y",
     *_COMPACT_DATE_TIME_FORMATS,
     "%Y%m%d",
+    *_MMDD_MERIDIEM_DATE_TIME_FORMATS,
     "%m/%d/%Y %H:%M:%S",
     "%m/%d/%Y",
     "%d-%m-%Y",
@@ -66,12 +83,20 @@ _AUTO_FORMATS: Sequence[str] = (
 )
 
 
+def _normalize_meridiem(value: str) -> str:
+    """Convert Spanish Excel/Windows AM/PM markers into strptime-compatible text."""
+    normalized = value.replace("\u00a0", " ")
+    normalized = re.sub(r"(?i)\ba\s*\.\s*m\s*\.?(?=\s|$)", "AM", normalized)
+    normalized = re.sub(r"(?i)\bp\s*\.\s*m\s*\.?(?=\s|$)", "PM", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def normalize_sale_date(value: Any, explicit_format: Any = "auto") -> Optional[str]:
     """Normalize supported sale date and datetime values to YYYY-MM-DD."""
     if value in (None, ""):
         return None
 
-    raw_date = str(value).strip().strip("'\"")
+    raw_date = _normalize_meridiem(str(value).strip().strip("'\""))
     if not raw_date:
         return None
 

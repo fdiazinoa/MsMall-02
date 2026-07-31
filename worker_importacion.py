@@ -14,6 +14,7 @@ import csv
 import json
 import posixpath
 from typing import Optional
+from services.date_parsing_service import normalize_sale_date
 
 # Setup Logging
 logging.basicConfig(
@@ -82,36 +83,8 @@ def insert_load_log(
         logger.error(f"Error inserting load log: {e}")
 
 def normalize_date(date_str):
-    """
-    Attempts to parse a date string into YYYY-MM-DD format.
-    Supports: DD/MM/YYYY, YYYY-MM-DD, MM/DD/YYYY, DD-MM-YYYY, YYYY/MM/DD,
-    YYYYmmDD and YYYYmmDD with time.
-    """
-    if not date_str:
-        return None
-        
-    raw_date = str(date_str).strip().strip("'\"")
-    # Try common formats
-    for fmt in [
-        '%d/%m/%Y',
-        '%Y-%m-%d',
-        '%m/%d/%Y',
-        '%d-%m-%Y',
-        '%Y/%m/%d',
-        '%Y%m%d',
-        '%Y%m%d %H:%M:%S',
-        '%Y%m%d %H:%M',
-        '%Y%m%d %H:%M:%S.%f',
-        '%Y%m%dT%H:%M:%S',
-        '%Y%m%dT%H:%M',
-        '%Y%m%dT%H:%M:%S.%f',
-    ]:
-        try:
-            parsed_date = datetime.strptime(raw_date, fmt)
-            return parsed_date.strftime('%Y-%m-%d')
-        except ValueError:
-            continue
-    return None
+    """Backward-compatible entry point for the shared date parser."""
+    return normalize_sale_date(date_str)
 
 def _clean_csv_header_name(name) -> str:
     return str(name or "").replace("\ufeff", "").strip()

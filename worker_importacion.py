@@ -1,10 +1,12 @@
 import os
+import socket
 import stat
 import logging
 import uuid
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import paramiko
@@ -13,8 +15,20 @@ import io
 import csv
 import json
 import posixpath
-from typing import Optional
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+from services.big_data_analytics_service import BigDataAnalyticsService
+from services.big_data_sprint2_service import BigDataSprint2Service
+from services.connection_monitor_service import ConnectionMonitorService
 from services.date_parsing_service import normalize_sale_date
+from services.load_log_service import build_load_log_payload, insert_load_log_row
+from services.missing_days_email_service import run_missing_days_email_scheduler
+from services.sensitive_ops_service import sanitize_error_text
+from services.operations_agent_service import OperationsAgentWorker
+from analytics_service import run_local_risk_analysis
 
 # Setup Logging
 logging.basicConfig(
@@ -27,6 +41,7 @@ logger = logging.getLogger("import-worker")
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
+DEFAULT_WORKER_TIMEZONE = "America/Santo_Domingo"
 
 supabase: Optional[Client] = None
 
@@ -40,6 +55,54 @@ else:
     except Exception as e:
         logger.error(f"Failed to initialize Supabase client: {e}")
 
+AUTO_SUCCESS_PREFIX = "PR_"
+AUTO_ERROR_PREFIX = "ERR_"
+STUDIO_G_DAILY_FALLBACK_MAX_DAYS = 62
+STUDIO_G_OUTAGE_PROBE_DAYS = 5
+
+
+class StudioGSalesUnavailable(RuntimeError):
+    """Studio G authenticated, but its sales endpoint is unavailable."""
+
+
+def _read_bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(str(os.getenv(name) or default).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+WEBSERVICE_TIMEOUT_SECONDS = _read_bounded_int_env("WEBSERVICE_TIMEOUT_SECONDS", 45, 5, 180)
+
+def _connection_monitor_service() -> ConnectionMonitorService:
+    return ConnectionMonitorService(supabase, logger)
+
+
+def run_local_risk_analysis_if_possible(config, trigger: str) -> Optional[dict]:
+    local_id = config.get("id")
+    if not supabase or not local_id:
+        return None
+    try:
+        snapshot = run_local_risk_analysis(
+            local_id,
+            supabase_client=supabase,
+            logger=logger,
+            trigger=trigger,
+        )
+        summary = snapshot.get("summary") or {}
+        logger.info(
+            "Semaforo IA actualizado para %s: state=%s alerts=%s score=%s",
+            config.get("nombre") or local_id,
+            summary.get("risk_state"),
+            summary.get("alerts_count"),
+            summary.get("risk_score"),
+        )
+        return snapshot
+    except Exception as exc:
+        logger.error("Fallo actualizando semaforo IA para %s: %s", config.get("nombre") or local_id, exc)
+        return None
+
 def insert_load_log(
     local_nombre: str,
     archivo: str,
@@ -48,43 +111,114 @@ def insert_load_log(
     batch_id: str = None,
     detalles: list = None,
     mall_id: str = None,
-    local_id: str = None
+    local_id: str = None,
+    mall_nombre: str = None,
+    canal: str = None,
+    records_processed: Optional[int] = None,
+    error_count: Optional[int] = None,
+    metadata: Optional[dict] = None,
 ):
     """Inserts a log into Supabase 'logs_carga' table."""
     if not supabase:
         logger.warning("Skipping load log insert: Supabase client not initialized.")
         return
     try:
-        log_data = {
-            "fecha_hora": datetime.now().isoformat(),
-            "local_nombre": local_nombre,
-            "archivo": archivo,
-            "estado": estado,
-            "mensaje": mensaje,
-            "batch_id": batch_id,
-            "detalles": detalles or []
-        }
-        if mall_id:
-            log_data["mall_id"] = mall_id
-        if local_id:
-            log_data["local_id"] = local_id
-
-        try:
-            supabase.table("logs_carga").insert(log_data).execute()
-        except Exception as insert_err:
-            err_txt = str(insert_err).lower()
-            if ("mall_id" in err_txt or "local_id" in err_txt) and ("column" in err_txt or "schema" in err_txt):
-                legacy_payload = {k: v for k, v in log_data.items() if k not in {"mall_id", "local_id"}}
-                supabase.table("logs_carga").insert(legacy_payload).execute()
-            else:
-                raise
+        log_data = build_load_log_payload(
+            local_nombre=local_nombre,
+            archivo=archivo,
+            estado=estado,
+            mensaje=mensaje,
+            batch_id=batch_id,
+            detalles=detalles,
+            mall_id=mall_id,
+            mall_nombre=mall_nombre,
+            local_id=local_id,
+            canal=canal,
+            records_processed=records_processed,
+            error_count=error_count,
+            metadata=metadata,
+        )
+        insert_load_log_row(supabase, log_data, logger=logger)
         logger.info(f"Log registrado: {mensaje}")
     except Exception as e:
         logger.error(f"Error inserting load log: {e}")
 
-def normalize_date(date_str):
-    """Backward-compatible entry point for the shared date parser."""
-    return normalize_sale_date(date_str)
+def normalize_date(date_str, explicit_format: Any = "auto"):
+    """
+    Attempts to parse a date string into YYYY-MM-DD format.
+    Supports configured sale date formats, including ISO dates with time.
+    """
+    return normalize_sale_date(date_str, explicit_format)
+
+
+def _split_transform_fields(raw_fields: Any) -> List[str]:
+    if isinstance(raw_fields, list):
+        return [str(field).strip() for field in raw_fields if str(field or "").strip()]
+    return [part.strip() for part in str(raw_fields or "").split(",") if part.strip()]
+
+
+def _clean_generated_invoice_piece(value: Any) -> str:
+    text = str(value or "").strip().strip("'\"")
+    text = " ".join(text.split())
+    return text.replace(" ", "").replace("/", "").replace("\\", "").replace("-", "")
+
+
+def _format_generated_invoice(local_code: Any, sale_date: Any, sequence: int) -> str:
+    local_part = _clean_generated_invoice_piece(local_code)
+    date_part = _clean_generated_invoice_piece(str(sale_date or "").replace("-", ""))
+    return f"{local_part}{date_part}{sequence:04d}"
+
+
+def _parse_mapped_decimal(value: Any, decimal_separator: Any = ".") -> float:
+    if value is None:
+        return 0.0
+
+    text = str(value).strip().strip("'\"")
+    if not text:
+        return 0.0
+
+    text = re.sub(r"\s+", "", text)
+    text = text.replace("$", "").replace("RD", "").replace("rd", "")
+    if decimal_separator == ",":
+        text = text.replace(".", "")
+        if text.count(",") > 1:
+            sign = "-" if text.startswith("-") else ""
+            unsigned = text[1:] if sign else text
+            parts = unsigned.split(",")
+            if len(parts) >= 3 and all(len(part) == 3 for part in parts[-2:]):
+                digits = "".join(parts)
+                if len(digits) > 6:
+                    text = f"{sign}{digits[:-6]}.{digits[-6:]}"
+                else:
+                    text = f"{sign}0.{digits.zfill(6)}"
+            else:
+                text = "".join(parts[:-1]) + "." + parts[-1]
+                if sign and not text.startswith("-"):
+                    text = f"-{text}"
+        else:
+            text = text.replace(",", ".")
+    else:
+        text = text.replace(",", "")
+
+    try:
+        return float(text)
+    except Exception:
+        return 0.0
+
+
+def _parse_import_cutoff_date(raw: Any) -> Optional[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _is_import_date_closed(sale_date: str, cutoff_date: Optional[str]) -> bool:
+    return bool(sale_date and cutoff_date and sale_date <= cutoff_date)
+
 
 def _clean_csv_header_name(name) -> str:
     return str(name or "").replace("\ufeff", "").strip()
@@ -111,21 +245,151 @@ def _clean_cell_value(value):
         return cleaned
     return value
 
+
+def _normalize_text_for_csv(content: str) -> str:
+    text = str(content or "")
+    text = text.replace("\x00", "")
+    text = text.replace("\u2028", "\n").replace("\u2029", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    for sep in ["\x1e", "\x1d", "\x1c", "\x85", "\x0b", "\x0c"]:
+        text = text.replace(sep, "\n")
+    if "\n" not in text and text.count("\\n") >= 1:
+        text = text.replace("\\n", "\n")
+    return text
+
+
+def _detect_delimiter(content: str) -> str:
+    lines = [line for line in _normalize_text_for_csv(content).split("\n") if line.strip()]
+    first = lines[0] if lines else ""
+    return max([",", ";", "\t", "|"], key=lambda delimiter: first.count(delimiter))
+
+
+def _decode_worker_text(raw_bytes: bytes, is_json: bool = False) -> str:
+    if raw_bytes is None:
+        return ""
+
+    candidates = []
+    for enc in ["utf-8-sig", "utf-8", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1"]:
+        try:
+            decoded = raw_bytes.decode(enc)
+        except Exception:
+            continue
+
+        replacement_count = decoded.count("�")
+        if is_json:
+            stripped = decoded.lstrip()
+            json_hint = 1 if (stripped.startswith("{") or stripped.startswith("[")) else 0
+            score = (json_hint, -replacement_count, len(decoded), -abs(len(raw_bytes) - len(decoded)))
+        else:
+            normalized = _normalize_text_for_csv(decoded)
+            lines = [line for line in normalized.split("\n") if line.strip()]
+            first = lines[0] if lines else ""
+            max_delim = max([first.count(delimiter) for delimiter in [",", ";", "\t", "|"]], default=0)
+            structured = sum(
+                1 for line in lines[:500]
+                if max([line.count(delimiter) for delimiter in [",", ";", "\t", "|"]], default=0) >= 1
+            )
+            score = (structured, len(lines), max_delim, -replacement_count)
+
+        candidates.append((score, decoded, enc))
+
+    if not candidates:
+        return raw_bytes.decode("utf-8", errors="replace")
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_decoded, best_enc = candidates[0]
+    logger.info(f"Worker decodificación seleccionada: {best_enc} score={best_score} bytes={len(raw_bytes)}")
+    return best_decoded
+
+
+def _normalize_remote_host(host: str) -> str:
+    normalized = (host or "").strip()
+    if normalized.startswith("sftp://"):
+        normalized = normalized[len("sftp://"):]
+    elif normalized.startswith("ftp://"):
+        normalized = normalized[len("ftp://"):]
+    if "/" in normalized:
+        normalized = normalized.split("/", 1)[0]
+    return normalized
+
+
+def _candidate_hosts(host: str) -> List[str]:
+    normalized = _normalize_remote_host(host)
+    if not normalized:
+        return []
+    candidates = [normalized]
+    if normalized.startswith("www.") and len(normalized) > 4:
+        candidates.append(normalized[4:])
+    return candidates
+
+
 def get_sftp_client(host, port, user, password):
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(host, port=port, username=user, password=password, timeout=10)
-    transport = ssh.get_transport()
-    if transport:
-        transport.set_keepalive(30)
-    return ssh, ssh.open_sftp()
+    last_error = None
+    for candidate in _candidate_hosts(host):
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            ssh.connect(
+                candidate,
+                port=int(port),
+                username=user,
+                password=password,
+                timeout=10,
+                banner_timeout=10,
+                auth_timeout=10,
+                look_for_keys=False,
+                allow_agent=False,
+            )
+            transport = ssh.get_transport()
+            if transport:
+                transport.set_keepalive(30)
+            return ssh, ssh.open_sftp()
+        except Exception as exc:
+            last_error = exc
+            try:
+                ssh.close()
+            except Exception:
+                pass
+            logger.warning(f"SFTP connect failed for host '{candidate}': {exc}")
+    if last_error:
+        raise last_error
+    raise ValueError("Host remoto inválido o vacío para conexión SFTP")
+
+
+def _friendly_sftp_connection_error(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    normalized = message.lower()
+    if "no existing session" in normalized or "error reading ssh protocol banner" in normalized:
+        return (
+            "El puerto responde, pero el servidor no completa la negociación SSH. "
+            "Revise o reinicie el servicio SSH/SFTP y sus límites de sesiones."
+        )
+    if isinstance(exc, paramiko.AuthenticationException) or "authentication failed" in normalized:
+        return "Autenticación rechazada. Verifique usuario y contraseña SFTP."
+    if isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in normalized:
+        return "El servidor no respondió durante la negociación SSH/SFTP."
+    return message or type(exc).__name__
+
 
 def get_ftp_client(host, port, user, password):
-    ftp = FTP()
-    ftp.connect(host, port, timeout=10)
-    ftp.login(user, password)
-    ftp.set_pasv(True)
-    return ftp
+    last_error = None
+    for candidate in _candidate_hosts(host):
+        ftp = FTP()
+        try:
+            ftp.connect(candidate, int(port), timeout=10)
+            ftp.login(user, password)
+            ftp.set_pasv(True)
+            return ftp
+        except Exception as exc:
+            last_error = exc
+            try:
+                ftp.close()
+            except Exception:
+                pass
+            logger.warning(f"FTP connect failed for host '{candidate}': {exc}")
+    if last_error:
+        raise last_error
+    raise ValueError("Host remoto inválido o vacío para conexión FTP")
 
 def connect_with_retries(connector, attempts=3, base_delay=2):
     last_error = None
@@ -141,6 +405,356 @@ def connect_with_retries(connector, attempts=3, base_delay=2):
             time.sleep(delay)
     raise last_error
 
+def _normalize_prefix_value(prefix: Optional[str]) -> str:
+    value = str(prefix or "").strip()
+    return value if value else ""
+
+def _build_marked_filename(filename: str, prefix: str, extra_prefixes: Sequence[str] = ()) -> str:
+    base_name = posixpath.basename(str(filename or "").strip())
+    if not base_name:
+        return base_name
+
+    candidates = [
+        AUTO_SUCCESS_PREFIX,
+        AUTO_ERROR_PREFIX,
+        "PW_",
+        *[_normalize_prefix_value(item) for item in extra_prefixes],
+    ]
+    normalized_candidates = []
+    for candidate in candidates:
+        if candidate and candidate not in normalized_candidates:
+            normalized_candidates.append(candidate)
+
+    upper_name = base_name.upper()
+    changed = True
+    while changed:
+        changed = False
+        for candidate in normalized_candidates:
+            if not candidate:
+                continue
+            candidate_upper = candidate.upper()
+            if upper_name.startswith(candidate_upper):
+                base_name = base_name[len(candidate):]
+                upper_name = base_name.upper()
+                changed = True
+                break
+
+    return f"{prefix}{base_name}"
+
+def _parse_worker_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "si", "sí", "on"}
+
+
+def _moving_window_enabled(constants: Dict[str, Any]) -> bool:
+    return _parse_worker_bool(constants.get("_moving_window_mode"))
+
+
+def _special_char_cleanup_enabled(constants: Dict[str, Any]) -> bool:
+    return _parse_worker_bool(constants.get("_remove_special_chars"))
+
+
+def _split_special_chars_to_remove(value: Any) -> List[str]:
+    raw_value = str(value or "")
+    if not raw_value:
+        return []
+
+    if "," in raw_value:
+        raw_parts = [part.strip() for part in raw_value.split(",")]
+    else:
+        raw_parts = [part for part in raw_value if not part.isspace()]
+
+    chars: List[str] = []
+    aliases = {
+        "\\t": "\t",
+        "\\n": "\n",
+        "\\r": "\r",
+        "tab": "\t",
+        "<tab>": "\t",
+        "space": " ",
+        "<space>": " ",
+    }
+    for part in raw_parts:
+        if not part:
+            continue
+        normalized = aliases.get(part.lower(), part)
+        if normalized not in chars:
+            chars.append(normalized)
+    return chars
+
+
+def _remove_configured_special_chars(value: Any, chars_to_remove: Sequence[str]) -> Any:
+    if value is None or not isinstance(value, str) or not chars_to_remove:
+        return value
+
+    cleaned = value
+    for char in chars_to_remove:
+        if char:
+            cleaned = cleaned.replace(char, "")
+    return cleaned.strip()
+
+
+def _format_worker_range_date(value: Any) -> Optional[str]:
+    parsed = _format_worker_date_for_message(value)
+    if parsed:
+        return parsed
+    normalized = normalize_date(str(value or ""))
+    if normalized:
+        try:
+            return datetime.strptime(normalized, "%Y-%m-%d").strftime("%d/%m/%Y")
+        except ValueError:
+            return normalized
+    return None
+
+
+def _format_moving_window_message(count: int, stats: Dict[str, Any], errors: list) -> str:
+    duplicate_skipped = int(stats.get("duplicate_skipped") or 0)
+    processing_error_count = int(stats.get("processing_error_count") or 0)
+    date_min = _format_worker_range_date(stats.get("date_min"))
+    date_max = _format_worker_range_date(stats.get("date_max"))
+    range_text = f" Rango detectado: {date_min} - {date_max}." if date_min and date_max else ""
+    message = (
+        f"Archivo de ventana móvil procesado.{range_text} "
+        f"{count} registros nuevos insertados. "
+        f"{duplicate_skipped} registros ya existentes omitidos."
+    )
+    if processing_error_count:
+        message += f" Se encontraron {processing_error_count} errores parciales."
+    return message
+
+
+def _format_standard_worker_message(count: int, stats: Dict[str, Any]) -> str:
+    duplicate_skipped = int(stats.get("duplicate_skipped") or 0)
+    processing_error_count = int(stats.get("processing_error_count") or 0)
+    if count > 0:
+        message = f"Worker: Inserción confirmada de {count} registros nuevos."
+    else:
+        message = "Worker: Archivo procesado sin registros nuevos."
+    if duplicate_skipped:
+        message += f" {duplicate_skipped} registros duplicados omitidos y documentados."
+    if processing_error_count:
+        message += f" Se encontraron {processing_error_count} errores parciales."
+    return message
+
+
+def _resolve_worker_processing_outcome(count: int, errors: list, stats: Optional[Dict[str, Any]] = None) -> Tuple[str, str, bool]:
+    stats = stats or {}
+    duplicate_skipped = int(stats.get("duplicate_skipped") or 0)
+    processing_error_count = int(
+        stats.get("processing_error_count")
+        if stats.get("processing_error_count") is not None
+        else sum(
+            1
+            for detail in errors or []
+            if not isinstance(detail, dict) or detail.get("tipo") != "duplicado"
+        )
+    )
+    stats["processing_error_count"] = processing_error_count
+    if isinstance(count, int) and (count > 0 or duplicate_skipped > 0):
+        has_partial_result = processing_error_count > 0 or (count > 0 and duplicate_skipped > 0)
+        estado = "parcial" if has_partial_result else "exito"
+        mensaje = (
+            _format_moving_window_message(count, stats, errors)
+            if stats.get("moving_window_mode")
+            else _format_standard_worker_message(count, stats)
+        )
+        return estado, mensaje, True
+
+    if _is_empty_file_outcome(errors):
+        return "error", "Archivo leido con 0 Datos", False
+
+    mensaje = "Worker: No se confirmó inserción en BD."
+    if errors:
+        mensaje += f" Se encontraron {len(errors)} errores."
+    else:
+        mensaje += " El archivo se marcará con error para revisión."
+    return "error", mensaje, False
+
+
+def _is_empty_file_outcome(errors: Optional[list]) -> bool:
+    if not errors:
+        return False
+    empty_markers = ("archivo vacio", "archivo vacío", "sin datos validos", "sin datos válidos")
+    for error in errors:
+        text = str((error or {}).get("error") if isinstance(error, dict) else error).strip().lower()
+        if all(marker in text for marker in ("archivo", "sin datos")):
+            return True
+        if any(marker in text for marker in empty_markers):
+            return True
+    return False
+
+
+def _unpack_process_file_result(result: Any) -> Tuple[int, list, Dict[str, Any]]:
+    if isinstance(result, tuple) and len(result) >= 3:
+        return result[0], result[1], result[2] or {}
+    if isinstance(result, tuple) and len(result) >= 2:
+        return result[0], result[1], {}
+    return 0, [{"linea": 0, "error": "Resultado de procesamiento inválido."}], {}
+
+
+def _format_worker_date_for_message(value: Any) -> Optional[str]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = f"{raw[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    if parsed.tzinfo:
+        parsed = parsed.astimezone(_worker_timezone())
+    return parsed.strftime("%d/%m/%Y")
+
+
+def _last_successful_import_date(config: Dict[str, Any]) -> Optional[str]:
+    if not supabase:
+        return None
+    local_id = str(config.get("id") or "").strip()
+    if not local_id:
+        return None
+
+    try:
+        response = (
+            supabase.table("logs_carga")
+            .select("fecha_hora,archivo,estado,records_processed")
+            .eq("local_id", local_id)
+            .order("fecha_hora", desc=True)
+            .limit(25)
+            .execute()
+        )
+        for row in response.data or []:
+            archivo = str(row.get("archivo") or "").strip()
+            estado = str(row.get("estado") or "").strip().lower()
+            processed = row.get("records_processed")
+            try:
+                processed_count = int(processed) if processed is not None else None
+            except (TypeError, ValueError):
+                processed_count = None
+
+            has_real_file = bool(archivo) and archivo.upper() != "N/A"
+            has_success_status = estado in {"exito", "parcial"}
+            has_inserted_rows = processed_count is None or processed_count > 0
+            if has_real_file and has_success_status and has_inserted_rows:
+                formatted = _format_worker_date_for_message(row.get("fecha_hora"))
+                if formatted:
+                    return formatted
+    except Exception as exc:
+        logger.warning("No se pudo consultar ultimo archivo importado para %s: %s", local_id, exc)
+
+    return None
+
+
+def _build_no_new_file_message(config: Dict[str, Any]) -> str:
+    last_import_date = _last_successful_import_date(config)
+    if last_import_date:
+        return f"Archivo nuevo no encontrado, ultimo archivo importado fecha {last_import_date}"
+    return "Archivo nuevo no encontrado, sin importaciones previas"
+
+
+def _duplicate_sale_detail(
+    row: Dict[str, Any],
+    line_no: int,
+    source: str,
+) -> Dict[str, Any]:
+    factura = str(row.get("factura_no") or "").strip()
+    fecha = str(row.get("fecha") or "").strip()
+    return {
+        "linea": line_no,
+        "tipo": "duplicado",
+        "accion": "omitido",
+        "origen": source,
+        "local_id": row.get("local_id"),
+        "fecha": fecha,
+        "factura_no": factura,
+        "error": f"Registro duplicado omitido: factura {factura}, fecha {fecha}.",
+    }
+
+
+def _filter_existing_sale_rows(
+    rows: List[Dict[str, Any]],
+    line_numbers: List[int],
+    local_id: str,
+) -> Tuple[List[Dict[str, Any]], List[int], List[Dict[str, Any]]]:
+    if not rows or not supabase:
+        return rows, line_numbers, []
+
+    candidate_keys = [
+        (
+            str(row.get("fecha") or "").strip(),
+            str(row.get("factura_no") or "").strip(),
+        )
+        for row in rows
+        if row.get("fecha") and row.get("factura_no")
+    ]
+    candidate_keys = [(fecha, factura) for fecha, factura in candidate_keys if fecha and factura]
+    if not candidate_keys:
+        return rows, line_numbers, []
+
+    existing: set[Tuple[str, str]] = set()
+    unique_facturas = list(dict.fromkeys(factura for _, factura in candidate_keys))
+    unique_dates = list(dict.fromkeys(fecha for fecha, _ in candidate_keys))
+    chunk_size = 300
+    for start in range(0, len(unique_facturas), chunk_size):
+        chunk = unique_facturas[start:start + chunk_size]
+        try:
+            response = (
+                supabase.table("ventas")
+                .select("fecha,factura_no")
+                .eq("local_id", local_id)
+                .in_("fecha", unique_dates)
+                .in_("factura_no", chunk)
+                .execute()
+            )
+            for item in response.data or []:
+                factura = str(item.get("factura_no") or "").strip()
+                fecha = str(item.get("fecha") or "").strip()
+                if factura and fecha:
+                    existing.add((fecha, factura))
+        except Exception as exc:
+            logger.warning("No se pudo consultar duplicados para %s: %s", local_id, exc)
+            return rows, line_numbers, []
+
+    filtered_rows: List[Dict[str, Any]] = []
+    filtered_lines: List[int] = []
+    seen_in_file: set[Tuple[str, str]] = set()
+    duplicate_details: List[Dict[str, Any]] = []
+    for row, line_no in zip(rows, line_numbers):
+        factura = str(row.get("factura_no") or "").strip()
+        fecha = str(row.get("fecha") or "").strip()
+        key = (fecha, factura)
+        if fecha and factura and key in existing:
+            duplicate_details.append(_duplicate_sale_detail(row, line_no, "base_datos"))
+            continue
+        if fecha and factura and key in seen_in_file:
+            duplicate_details.append(_duplicate_sale_detail(row, line_no, "archivo"))
+            continue
+        if fecha and factura:
+            seen_in_file.add(key)
+        filtered_rows.append(row)
+        filtered_lines.append(line_no)
+
+    return filtered_rows, filtered_lines, duplicate_details
+
+
+def _flatten_json_record(record: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    flattened: Dict[str, Any] = {}
+    for key, value in record.items():
+        flat_key = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            flattened.update(_flatten_json_record(value, flat_key))
+        else:
+            flattened[flat_key] = value
+    return flattened
+
+
 def process_file_logic(config, filename, content):
     """
     Process file content (CSV or JSON) and insert to database.
@@ -148,6 +762,13 @@ def process_file_logic(config, filename, content):
     logger.info(f"Procesando contenido de {filename} para {config['nombre']}")
     detalles = []
     registros_exito = 0
+    stats: Dict[str, Any] = {
+        "moving_window_mode": False,
+        "duplicate_skipped": 0,
+        "processing_error_count": 0,
+        "date_min": None,
+        "date_max": None,
+    }
     
     try:
         file_type = config.get("file_type", "CSV").upper()
@@ -167,27 +788,54 @@ def process_file_logic(config, filename, content):
                             break
                     if not raw_records:
                         raw_records = [data] # Single object
+                raw_records = [
+                    _flatten_json_record(record)
+                    for record in raw_records
+                    if isinstance(record, dict)
+                ]
             except Exception as e:
-                return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}]
+                return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}], stats
         else:
             # Default to CSV/TXT
-            reader = csv.DictReader(io.StringIO(content), skipinitialspace=True)
+            normalized_content = _normalize_text_for_csv(content)
+            reader = csv.DictReader(
+                io.StringIO(normalized_content),
+                delimiter=_detect_delimiter(normalized_content),
+                skipinitialspace=True
+            )
             raw_records = [_normalize_csv_row_keys(r) for r in reader]
             
         if not raw_records:
-            return 0, [{"linea": 0, "error": "Archivo vacío o sin datos válidos"}]
+            return 0, [{"linea": 0, "error": "Archivo vacío o sin datos válidos"}], stats
             
         # Get store ID and Mall ID
         local_id = config.get('id')
         mall_id = config.get('mall_id')
         
         if not local_id:
-            return 0, [{"linea": 0, "error": "No se pudo determinar el local_id"}]
+            return 0, [{"linea": 0, "error": "No se pudo determinar el local_id"}], stats
         if not mall_id:
-            return 0, [{"linea": 0, "error": "La configuración no tiene mall_id. Importación cancelada para evitar mezcla entre malls."}]
+            return 0, [{"linea": 0, "error": "La configuración no tiene mall_id. Importación cancelada para evitar mezcla entre malls."}], stats
             
         # Get mapping
         mapping = config.get('mapping_config') or {}
+        constants = config.get('constants_config') or config.get('constants') or {}
+        decimal_separator = constants.get("_decimal_separator", ".")
+        moving_window_mode = _moving_window_enabled(constants)
+        chars_to_remove = (
+            _split_special_chars_to_remove(constants.get("_special_chars_to_remove"))
+            if _special_char_cleanup_enabled(constants)
+            else []
+        )
+        stats["moving_window_mode"] = moving_window_mode
+        import_cutoff_date = _parse_import_cutoff_date(config.get("fecha_corte_importacion"))
+        configured_local_code = (
+            config.get('codigo_interno')
+            or config.get('local_codigo')
+            or config.get('codigo')
+            or config.get('nombre')
+            or local_id
+        )
         
         valid_rows = []
         valid_line_numbers = []
@@ -199,16 +847,21 @@ def process_file_logic(config, filename, content):
 
                 def pick_value(mapped_header, fallback_header=""):
                     key = _clean_csv_header_name(mapped_header)
+                    value = ""
                     if key and key in normalized_row:
-                        return _clean_cell_value(normalized_row[key])
-                    if key and key.lower() in lowered_row:
-                        return _clean_cell_value(lowered_row[key.lower()])
-                    fallback = _clean_csv_header_name(fallback_header)
-                    if fallback and fallback in normalized_row:
-                        return _clean_cell_value(normalized_row[fallback])
-                    if fallback and fallback.lower() in lowered_row:
-                        return _clean_cell_value(lowered_row[fallback.lower()])
-                    return ""
+                        value = normalized_row[key]
+                    elif key and key.lower() in lowered_row:
+                        value = lowered_row[key.lower()]
+                    else:
+                        fallback = _clean_csv_header_name(fallback_header)
+                        if fallback and fallback in normalized_row:
+                            value = normalized_row[fallback]
+                        elif fallback and fallback.lower() in lowered_row:
+                            value = lowered_row[fallback.lower()]
+                    return _remove_configured_special_chars(
+                        _clean_cell_value(value),
+                        chars_to_remove,
+                    )
 
                 # Map fields using mapping_config
                 # mapping_config usually translates system_field -> file_header
@@ -216,26 +869,71 @@ def process_file_logic(config, filename, content):
                 factura_no = pick_value(mapping.get('factura_numero', 'factura_numero'), 'factura_no')
                 
                 # Check for direct key matches if mapping fails
-                fecha_venta = normalize_date(fecha_venta_raw)
+                fecha_venta = normalize_date(
+                    fecha_venta_raw,
+                    constants.get("_date_format", "auto"),
+                )
                 
                 if fecha_venta_raw and not fecha_venta:
                      detalles.append({"linea": i, "error": f"Formato de fecha inválido: {fecha_venta_raw}"})
                      continue
 
+                if _is_import_date_closed(fecha_venta, import_cutoff_date):
+                    detalles.append({
+                        "linea": i,
+                        "error": f"Fecha {fecha_venta} pertenece a un periodo cerrado (cierre hasta {import_cutoff_date})."
+                    })
+                    continue
+
+                def resolve_transform_value(part: str) -> str:
+                    clean_part = str(part or "").strip()
+                    if clean_part in ("numero_registro", "linea", "_line_number"):
+                        return f"{i - 1:04d}"
+                    if clean_part == "local_codigo":
+                        return str(configured_local_code or "")
+                    if clean_part == "fecha_venta" and fecha_venta:
+                        return fecha_venta.replace("-", "")
+
+                    if clean_part in mapping:
+                        return str(pick_value(mapping.get(clean_part), clean_part) or "")
+
+                    return str(pick_value(clean_part, clean_part) or "")
+
+                transform_mode = constants.get("_factura_numero_mode")
+                if transform_mode == "generated_sequence":
+                    factura_no = _format_generated_invoice(configured_local_code, fecha_venta, i - 1)
+                elif transform_mode == "concat":
+                    transform_fields = _split_transform_fields(constants.get("_factura_numero_concat_fields"))
+                    separator = str(constants.get("_factura_numero_concat_separator", "-"))
+                    values = [
+                        _clean_generated_invoice_piece(resolve_transform_value(part))
+                        for part in transform_fields
+                    ]
+                    values = [value for value in values if value]
+                    if values:
+                        factura_no = separator.join(values)
+
                 # Normalización Numérica
                 def clean_float(val):
-                    if val is None: return 0.0
-                    try:
-                        return float(str(val).replace(',', '').strip().strip("'\""))
-                    except:
-                        return 0.0
+                    return _parse_mapped_decimal(val, decimal_separator)
 
                 total_bruto = clean_float(pick_value(mapping.get('total_bruto', 'total_bruto')))
                 total_impuestos = clean_float(pick_value(mapping.get('total_impuestos', 'total_impuestos')))
                 total_neto = clean_float(pick_value(mapping.get('total_neto', 'total_neto')))
                 
-                if not fecha_venta or total_bruto == 0:
-                    detalles.append({"linea": i, "error": "Datos incompletos (Fecha o Total Bruto faltante/cero)"})
+                if not fecha_venta:
+                    detalles.append({"linea": i, "error": "Datos incompletos (Fecha faltante)"})
+                    continue
+
+                if total_bruto == 0 and (total_impuestos != 0 or total_neto != 0):
+                    detalles.append({
+                        "linea": i,
+                        "error": "Datos inconsistentes (Total Bruto cero con impuestos o total neto distinto de cero)"
+                    })
+                    continue
+
+                if moving_window_mode and not factura_no:
+                    detalles.append({"linea": i, "error": "Datos incompletos (ID_Documento o No. Factura faltante)"})
                     continue
                 
                 payload = {
@@ -252,10 +950,31 @@ def process_file_logic(config, filename, content):
 
                 valid_rows.append(payload)
                 valid_line_numbers.append(i)
+                if fecha_venta:
+                    stats["date_min"] = min(stats["date_min"], fecha_venta) if stats["date_min"] else fecha_venta
+                    stats["date_max"] = max(stats["date_max"], fecha_venta) if stats["date_max"] else fecha_venta
                 
             except Exception as e:
                 detalles.append({"linea": i, "error": str(e)})
                 logger.error(f"Error en línea {i}: {e}")
+
+        stats["processing_error_count"] = len(detalles)
+
+        if valid_rows:
+            valid_rows, valid_line_numbers, duplicate_details = _filter_existing_sale_rows(
+                valid_rows,
+                valid_line_numbers,
+                local_id,
+            )
+            detalles.extend(duplicate_details)
+            stats["duplicate_skipped"] = len(duplicate_details)
+            if duplicate_details:
+                logger.info(
+                    "%s: se omitieron y documentaron %s registros duplicados en %s",
+                    config.get("nombre"),
+                    len(duplicate_details),
+                    filename,
+                )
 
         # Bulk insert for better throughput; fallback to row insert if a chunk fails.
         BATCH_SIZE = 500
@@ -274,15 +993,615 @@ def process_file_logic(config, filename, content):
                     except Exception as row_error:
                         detalles.append({"linea": line_no, "error": str(row_error)})
                         logger.error(f"Error insertando línea {line_no}: {row_error}")
+
+        stats["processing_error_count"] = sum(
+            1
+            for detail in detalles
+            if not isinstance(detail, dict) or detail.get("tipo") != "duplicado"
+        )
                 
     except Exception as e:
         logger.error(f"Error general procesando archivo: {e}")
-        return 0, [{"linea": 0, "error": str(e)}]
+        return 0, [{"linea": 0, "error": str(e)}], stats
             
-    return registros_exito, detalles
+    return registros_exito, detalles, stats
+
+
+def _normalize_worker_import_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(config or {})
+    if not normalized.get("mapping_config"):
+        normalized["mapping_config"] = normalized.get("mapping") or {}
+    if not normalized.get("constants_config"):
+        normalized["constants_config"] = normalized.get("constants") or {}
+    if not normalized.get("file_type"):
+        normalized["file_type"] = normalized.get("tipo_archivo", "JSON")
+    return normalized
+
+
+def _webservice_constants(config: Dict[str, Any]) -> Dict[str, Any]:
+    return dict((config or {}).get("constants_config") or (config or {}).get("constants") or {})
+
+
+def _webservice_config_value(config: Dict[str, Any], constants: Dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if constants.get(key) not in (None, ""):
+            return constants.get(key)
+        if config.get(key) not in (None, ""):
+            return config.get(key)
+    return None
+
+
+def _webservice_int_value(config: Dict[str, Any], constants: Dict[str, Any], default: int, *keys: str) -> int:
+    raw = _webservice_config_value(config, constants, *keys)
+    try:
+        return int(str(raw).strip()) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _now_local() -> datetime:
+    return datetime.now(_worker_timezone())
+
+
+def _api_base_url(config: Dict[str, Any]) -> str:
+    host = str(
+        _webservice_config_value(
+            config,
+            _webservice_constants(config),
+            "host",
+            "sftp_host",
+            "api_url",
+            "endpoint_url",
+        )
+        or ""
+    ).strip()
+    if not host:
+        raise ValueError("URL base API requerida")
+    if not re.match(r"^https?://", host, flags=re.IGNORECASE):
+        host = f"https://{host}"
+    return host.rstrip("/")
+
+
+def _is_studio_g_config(config: Dict[str, Any], constants: Optional[Dict[str, Any]] = None) -> bool:
+    constants = constants or _webservice_constants(config)
+    provider = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "provider",
+            "_provider",
+            "api_provider",
+            "_api_provider",
+        )
+        or ""
+    ).strip().lower()
+    host = str(config.get("sftp_host") or config.get("host") or "").strip().lower()
+    return provider in {"studio_g", "studiog", "sales_tap", "salestap"} or "alcagora.ddns.net" in host
+
+
+def _api_json_request(
+    method: str,
+    url: str,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    body: Optional[Dict[str, Any]] = None,
+    timeout: int = WEBSERVICE_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    payload = None
+    request_headers = {"Accept": "application/json", **(headers or {})}
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=payload, headers=request_headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            parsed = json.loads(_decode_worker_text(raw, is_json=True) or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = _decode_worker_text(exc.read(), is_json=True)
+        raise RuntimeError(f"API HTTP {exc.code}: {detail or exc.reason}") from exc
+
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Respuesta API inesperada: se esperaba objeto JSON")
+    return parsed
+
+
+def _studio_g_authorize(config: Dict[str, Any], constants: Dict[str, Any]) -> str:
+    client_id = str(
+        _webservice_config_value(config, constants, "client_id", "_client_id", "usuario", "sftp_user")
+        or ""
+    ).strip()
+    client_secret = str(
+        _webservice_config_value(config, constants, "client_secret", "_client_secret", "password", "sftp_pass")
+        or ""
+    ).strip()
+    if not client_id or not client_secret:
+        raise ValueError("Client ID y Client Secret requeridos para Studio G")
+
+    response = _api_json_request(
+        "POST",
+        f"{_api_base_url(config)}/authorization",
+        body={"client_id": client_id, "client_secret": client_secret},
+        timeout=max(
+            5,
+            _webservice_int_value(
+                config,
+                constants,
+                WEBSERVICE_TIMEOUT_SECONDS,
+                "_webservice_timeout_seconds",
+                "timeout_seconds",
+            ),
+        ),
+    )
+    token = str(response.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Studio G no devolvio access_token")
+    return token
+
+
+def _parse_api_date(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return normalize_date(text)
+
+
+def _parse_api_time(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.time().replace(microsecond=0).isoformat()
+    except ValueError:
+        pass
+
+    match = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b", text)
+    if not match:
+        return None
+    parts = match.group(1).split(":")
+    if len(parts) == 2:
+        return f"{int(parts[0]):02d}:{parts[1]}:00"
+    return f"{int(parts[0]):02d}:{parts[1]}:{parts[2]}"
+
+
+def _studio_g_value(row: Dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in row:
+            return row.get(key)
+    normalized = {
+        re.sub(r"[^a-z0-9]", "", str(key).lower()): value
+        for key, value in row.items()
+    }
+    for key in keys:
+        lookup = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if lookup in normalized:
+            return normalized.get(lookup)
+    return None
+
+
+def _studio_g_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
+    constants = _webservice_constants(config)
+    today = _now_local().date()
+    mode = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "studio_g_date_mode",
+            "_studio_g_date_mode",
+            "date_mode",
+        )
+        or ""
+    ).strip().lower()
+    fecha_inicio = _webservice_config_value(
+        config,
+        constants,
+        "studio_g_fecha_inicio",
+        "_studio_g_fecha_inicio",
+        "fecha_inicio",
+        "FechaInicio",
+    )
+    fecha_fin = _webservice_config_value(
+        config,
+        constants,
+        "studio_g_fecha_fin",
+        "_studio_g_fecha_fin",
+        "fecha_fin",
+        "FechaFin",
+    )
+
+    if mode in {"today", "hoy"}:
+        start = end = today.isoformat()
+    elif mode in {"yesterday", "ayer", "previous_day"}:
+        previous = today - timedelta(days=1)
+        start = end = previous.isoformat()
+    elif mode in {"current_month", "mes_actual", "month"}:
+        start = today.replace(day=1).isoformat()
+        end = today.isoformat()
+    elif mode in {"last_30_days", "ultimos_30_dias", "last_month"}:
+        start = (today - timedelta(days=29)).isoformat()
+        end = today.isoformat()
+    elif mode in {"custom", "range", "rango"}:
+        start = normalize_date(fecha_inicio) if fecha_inicio else None
+        end = normalize_date(fecha_fin) if fecha_fin else None
+    else:
+        today_text = today.isoformat()
+        start = normalize_date(fecha_inicio) if fecha_inicio else today_text
+        end = normalize_date(fecha_fin) if fecha_fin else start
+
+    if not start or not end:
+        raise ValueError("Rango de fechas Studio G invalido")
+    if start > end:
+        logger.warning("Rango Studio G invertido; normalizando %s..%s.", start, end)
+        start, end = end, start
+    return start, end
+
+
+def _map_studio_g_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str) -> Optional[Dict[str, Any]]:
+    raw_fecha = _studio_g_value(row, "Fecha", "FECHA")
+    fecha = _parse_api_date(raw_fecha)
+    if not fecha:
+        return None
+
+    transaction_id = _studio_g_value(row, "IDTransaccion", "ID_TRANSACCION")
+    ncf = str(_studio_g_value(row, "NCF") or "").strip()
+    factura_no = ncf or (f"STUDIOG-{id_tpv}-{transaction_id}" if transaction_id not in (None, "") else "")
+    if not factura_no:
+        return None
+
+    payload = {
+        "local_id": config.get("id"),
+        "mall_id": config.get("mall_id"),
+        "fecha": fecha,
+        "factura_no": factura_no,
+        "comprobante": ncf or None,
+        "hora_transaccion": _parse_api_time(_studio_g_value(row, "Hora", "HORA") or raw_fecha),
+        "total_bruto": _parse_mapped_decimal(_studio_g_value(row, "TotalBruto", "TOTALBRUTO"), "."),
+        "total_impuestos": _parse_mapped_decimal(_studio_g_value(row, "TotalImpuestos", "TOTALIMPUESTOS"), "."),
+        "total_neto": _parse_mapped_decimal(_studio_g_value(row, "TotalNeto", "TOTALNETO"), "."),
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def _is_studio_g_sales_query_failure(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return "api http 500" in message and "error consultando ventas" in message
+
+
+def _studio_g_probe_dates(start_day: date, day_count: int) -> List[str]:
+    probe_count = min(max(day_count, 1), STUDIO_G_OUTAGE_PROBE_DAYS)
+    if probe_count == 1:
+        offsets = [0]
+    else:
+        offsets = sorted({
+            round(index * (day_count - 1) / (probe_count - 1))
+            for index in range(probe_count)
+        })
+    return [(start_day + timedelta(days=offset)).isoformat() for offset in offsets]
+
+
+def _studio_g_query_sales(
+    config: Dict[str, Any],
+    *,
+    token: str,
+    id_tpv: str,
+    fecha_inicio: str,
+    fecha_fin: str,
+    timeout: int,
+) -> List[Dict[str, Any]]:
+    query = urllib.parse.urlencode({
+        "idTpv": id_tpv,
+        "FechaInicio": fecha_inicio,
+        "FechaFin": fecha_fin,
+    })
+    response = _api_json_request(
+        "GET",
+        f"{_api_base_url(config)}/ventas?{query}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=timeout,
+    )
+    sales = response.get("ventas") or []
+    if not isinstance(sales, list):
+        raise RuntimeError("Respuesta Studio G invalida: ventas no es una lista")
+    return [
+        mapped
+        for sale in sales
+        if isinstance(sale, dict)
+        for mapped in [_map_studio_g_sale(config, sale, id_tpv)]
+        if mapped
+    ]
+
+
+def fetch_studio_g_sales_detailed(
+    config: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], str, List[Dict[str, str]]]:
+    """Fetch a range, falling back to isolated days only for Studio G query 500s."""
+    config = _normalize_worker_import_config(config)
+    constants = _webservice_constants(config)
+    id_tpv = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "idTpv",
+            "id_tpv",
+            "_studio_g_id_tpv",
+            "ruta_remota",
+            "sftp_path",
+        )
+        or ""
+    ).strip()
+    if not id_tpv or id_tpv == ".":
+        raise ValueError("idTpv requerido en Ruta Remota para Studio G")
+
+    fecha_inicio, fecha_fin = _studio_g_date_range(config)
+    token = _studio_g_authorize(config, constants)
+    timeout = max(
+        5,
+        _webservice_int_value(
+            config,
+            constants,
+            WEBSERVICE_TIMEOUT_SECONDS,
+            "_webservice_timeout_seconds",
+            "timeout_seconds",
+        ),
+    )
+    source_name = f"Studio G {id_tpv} {fecha_inicio}..{fecha_fin}"
+    try:
+        rows = _studio_g_query_sales(
+            config,
+            token=token,
+            id_tpv=id_tpv,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            timeout=timeout,
+        )
+        return rows, source_name, []
+    except Exception as range_error:
+        start_day = date.fromisoformat(fecha_inicio)
+        end_day = date.fromisoformat(fecha_fin)
+        day_count = (end_day - start_day).days + 1
+        if (
+            not _is_studio_g_sales_query_failure(range_error)
+            or day_count <= 1
+            or day_count > STUDIO_G_DAILY_FALLBACK_MAX_DAYS
+        ):
+            raise
+
+        logger.warning(
+            "Studio G fallo para el rango %s..%s; reintentando %s dia(s) por separado.",
+            fecha_inicio,
+            fecha_fin,
+            day_count,
+        )
+        all_dates = [
+            (start_day + timedelta(days=offset)).isoformat()
+            for offset in range(day_count)
+        ]
+        rows_by_date: Dict[str, List[Dict[str, Any]]] = {}
+        errors_by_date: Dict[str, str] = {}
+
+        def query_day(target_date: str) -> None:
+            try:
+                rows_by_date[target_date] = _studio_g_query_sales(
+                    config,
+                    token=token,
+                    id_tpv=id_tpv,
+                    fecha_inicio=target_date,
+                    fecha_fin=target_date,
+                    timeout=timeout,
+                )
+            except Exception as day_error:
+                errors_by_date[target_date] = sanitize_error_text(day_error)
+
+        probe_dates = _studio_g_probe_dates(start_day, day_count)
+        for target_date in probe_dates:
+            query_day(target_date)
+
+        if not rows_by_date and all(
+            _is_studio_g_sales_query_failure(RuntimeError(errors_by_date.get(target_date, "")))
+            for target_date in probe_dates
+        ):
+            probe_labels = ", ".join(probe_dates)
+            raise StudioGSalesUnavailable(
+                "Servicio de ventas Studio G no disponible: la autenticacion fue correcta, "
+                f"pero /ventas devolvio HTTP 500 para {len(probe_dates)} fecha(s) "
+                f"representativa(s) del rango ({probe_labels}). "
+                "El proveedor debe revisar su consulta de ventas."
+            ) from range_error
+
+        for target_date in all_dates:
+            if target_date not in rows_by_date and target_date not in errors_by_date:
+                query_day(target_date)
+
+        successful_days = len(rows_by_date)
+        if successful_days == 0:
+            raise RuntimeError(
+                f"Studio G no pudo consultar ninguno de los {day_count} dias del rango. "
+                f"Error inicial: {sanitize_error_text(range_error)}"
+            ) from range_error
+
+        recovered_rows = [
+            row
+            for target_date in all_dates
+            for row in rows_by_date.get(target_date, [])
+        ]
+        failed_dates = [
+            {"fecha": target_date, "error": errors_by_date[target_date]}
+            for target_date in all_dates
+            if target_date in errors_by_date
+        ]
+
+        logger.warning(
+            "Studio G recuperacion diaria: dias_ok=%s dias_error=%s ventas=%s.",
+            successful_days,
+            len(failed_dates),
+            len(recovered_rows),
+        )
+        return (
+            recovered_rows,
+            f"{source_name} (recuperacion diaria)",
+            failed_dates,
+        )
+
+
+def fetch_studio_g_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+    rows, source_name, _ = fetch_studio_g_sales_detailed(config)
+    return rows, source_name
+
+
+def _insert_studio_g_sales(config: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[int, int]:
+    if not rows:
+        return 0, 0
+    if not supabase:
+        raise ValueError("Supabase no configurado")
+
+    line_numbers = list(range(1, len(rows) + 1))
+    filtered_rows, _, duplicate_details = _filter_existing_sale_rows(
+        rows,
+        line_numbers,
+        str(config.get("id") or ""),
+    )
+    if filtered_rows:
+        supabase.table("ventas").insert(filtered_rows).execute()
+    return len(filtered_rows), len(duplicate_details)
+
+
+def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
+    config = _normalize_worker_import_config(config)
+    local_name = config.get("nombre") or "Studio G"
+    batch_id = str(uuid.uuid4())
+    try:
+        rows, source_name, failed_dates = fetch_studio_g_sales_detailed(config)
+        inserted, skipped = _insert_studio_g_sales(config, rows)
+        message = f"API Studio G: {inserted} ventas importadas"
+        if skipped:
+            message += f", {skipped} duplicadas omitidas"
+        if not rows:
+            message = "API Studio G: 0 ventas encontradas para el rango"
+        details = [
+            {
+                "linea": 0,
+                "fecha": item["fecha"],
+                "tipo": "studio_g_date_error",
+                "error": item["error"],
+            }
+            for item in failed_dates
+        ]
+        status = "partial" if failed_dates else "success"
+        if failed_dates:
+            failed_labels = ", ".join(item["fecha"] for item in failed_dates[:10])
+            if len(failed_dates) > 10:
+                failed_labels += f" y {len(failed_dates) - 10} mas"
+            message += (
+                f". Importacion parcial: {len(failed_dates)} fecha(s) pendientes "
+                f"de reintento ({failed_labels})"
+            )
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                source_name,
+                "parcial" if failed_dates else "exito",
+                message,
+                batch_id,
+                details,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal="API",
+                records_processed=inserted,
+                error_count=len(failed_dates),
+                metadata={
+                    "source": "worker_studio_g_api",
+                    "records_received": len(rows),
+                    "duplicate_skipped": skipped,
+                    "fallback_strategy": "daily" if failed_dates else None,
+                    "failed_dates": [item["fecha"] for item in failed_dates],
+                },
+            )
+        if inserted > 0 and write_load_log:
+            run_local_risk_analysis_if_possible(config, trigger="worker_studio_g_api")
+        return {
+            "ok": True,
+            "status": status,
+            "message": message,
+            "records_processed": inserted,
+            "source_name": source_name,
+            "canal": "API",
+            "records_received": len(rows),
+            "duplicate_skipped": skipped,
+            "processed_files": 1 if rows else 0,
+            "failed_files": len(failed_dates),
+            "total_pending": len(rows),
+            "batch_size": 1 if rows else 0,
+            "failed_dates": [item["fecha"] for item in failed_dates],
+            "details": details,
+        }
+    except Exception as exc:
+        message = f"Fallo API Studio G: {sanitize_error_text(exc)}"
+        error_type = (
+            "studio_g_sales_unavailable"
+            if isinstance(exc, StudioGSalesUnavailable)
+            else "studio_g_api_error"
+        )
+        details = [{"linea": 0, "tipo": error_type, "error": message}]
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                "Studio G API",
+                "error",
+                message,
+                batch_id,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal="API",
+                records_processed=0,
+                error_count=1,
+                metadata={
+                    "source": "worker_studio_g_api",
+                    "exception": sanitize_error_text(exc),
+                    "error_type": error_type,
+                },
+            )
+        return {
+            "ok": False,
+            "status": "error",
+            "message": message,
+            "records_processed": 0,
+            "source_name": "Studio G API",
+            "canal": "API",
+            "error_type": error_type,
+            "details": details,
+        }
+
+
+def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
+    normalized = _normalize_worker_import_config(config)
+    protocol = str(normalized.get("sftp_protocol") or normalized.get("protocolo") or "").strip().upper()
+    if protocol == "API" and _is_studio_g_config(normalized):
+        return process_studio_g_api(normalized, write_load_log=write_load_log)
+    message = f"Proveedor {protocol or 'API'} no soportado por este importador."
+    return {
+        "ok": False,
+        "status": "error",
+        "message": message,
+        "records_processed": 0,
+        "canal": protocol or "API",
+        "details": [{"linea": 0, "error": message}],
+    }
+
 
 def process_local_files(config):
-    protocol = config.get("sftp_protocol", "SFTP")
+    protocol = str(config.get("sftp_protocol", "SFTP") or "SFTP").strip().upper()
+    if protocol == "API":
+        return process_webservice_import(config)
+
     host = config.get("sftp_host")
     port = config.get("sftp_port", 22)
     user = config.get("sftp_user")
@@ -291,6 +1610,7 @@ def process_local_files(config):
     file_type = config.get("file_type", "CSV")
     post_action = config.get("accion_post_procesado", "NINGUNA")
     backup_prefix = config.get("prefijo_backup", "PR_")
+    custom_backup_prefix = _normalize_prefix_value(backup_prefix)
     
     ext = f".{file_type.lower()}"
     processed_suffix = ".procesado"
@@ -302,9 +1622,15 @@ def process_local_files(config):
         try:
             ssh, sftp = connect_with_retries(lambda: get_sftp_client(host, port, user, password))
         except Exception as ce:
+            friendly_error = _friendly_sftp_connection_error(ce)
             insert_load_log(
-                config['nombre'], "N/A", "error", f"Fallo conexión SFTP: {str(ce)}",
-                mall_id=config.get("mall_id"), local_id=config.get("id")
+                config['nombre'], "N/A", "error", f"Fallo conexión SFTP: {friendly_error}",
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal=protocol,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_auto_import", "connection_error": friendly_error},
             )
             return
 
@@ -326,7 +1652,12 @@ def process_local_files(config):
                 
                 filename = item.filename
                 is_processed = processed_suffix in filename
-                is_backup = filename.startswith(backup_prefix) or filename.startswith("PR_") or filename.startswith("PW_")
+                is_backup = (
+                    (custom_backup_prefix and filename.startswith(custom_backup_prefix))
+                    or filename.startswith(AUTO_SUCCESS_PREFIX)
+                    or filename.startswith(AUTO_ERROR_PREFIX)
+                    or filename.startswith("PW_")
+                )
                 is_match = filename.lower().endswith(ext)
                 is_error = ".error" in filename
                 
@@ -344,9 +1675,15 @@ def process_local_files(config):
             
             if total_pending == 0:
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
+                message = _build_no_new_file_message(config)
                 insert_load_log(
-                    config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 pendientes.",
-                    mall_id=config.get("mall_id"), local_id=config.get("id")
+                    config['nombre'], "N/A", "exito", message,
+                    mall_id=config.get("mall_id"),
+                    local_id=config.get("id"),
+                    canal=protocol,
+                    records_processed=0,
+                    error_count=0,
+                    metadata={"source": "worker_auto_import", "pending_files": 0, "reason": "no_new_file"},
                 )
                 return
 
@@ -360,42 +1697,79 @@ def process_local_files(config):
                 logger.info(f"🔄 [{processed_count + 1}/{len(batch_files)}] Procesando SFTP: {filename}")
                 
                 try:
-                    with sftp.open(f"{remote_path}/{filename}", 'r') as f:
-                        # Use utf-8-sig to handle BOM if present
-                        content = f.read().decode('utf-8-sig', errors='replace')
+                    with sftp.open(f"{remote_path}/{filename}", 'rb') as f:
+                        content = _decode_worker_text(
+                            f.read(),
+                            is_json=str(filename or "").lower().endswith(".json")
+                        )
                     
-                    count, errors = process_file_logic(config, filename, content)
-                    
-                    if count > 0 or (count == 0 and not errors):
-                        # SUCCESS case
-                        estado = "exito"
-                        mensaje = f"Worker: Procesado {count} registros."
-                        if errors: mensaje += f" {len(errors)} errores parciales."
-                        
+                    count, errors, stats = _unpack_process_file_result(
+                        process_file_logic(config, filename, content)
+                    )
+
+                    estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors, stats)
+
+                    if insert_confirmed:
                         insert_load_log(
                             config['nombre'], filename, estado, mensaje, batch_id, errors,
-                            mall_id=config.get("mall_id"), local_id=config.get("id")
+                            mall_id=config.get("mall_id"),
+                            local_id=config.get("id"),
+                            canal=protocol,
+                            records_processed=count,
+                            error_count=int((stats or {}).get("processing_error_count") or 0),
+                            metadata={"source": "worker_auto_import", **(stats or {})},
                         )
-                        handle_post_process_sftp(sftp, remote_path, filename, post_action, processed_suffix, backup_prefix)
+                        if post_action == "RENOMBRAR_BACKUP":
+                            handle_post_process_sftp(
+                                sftp,
+                                remote_path,
+                                filename,
+                                post_action,
+                                processed_suffix,
+                                AUTO_SUCCESS_PREFIX,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
+                        else:
+                            handle_post_process_sftp(
+                                sftp,
+                                remote_path,
+                                filename,
+                                post_action,
+                                processed_suffix,
+                                custom_backup_prefix,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
                     else:
-                        # LOGIC ERROR case (empty file or parse error)
-                        raise Exception(f"Fallo lógico: {errors[0]['error'] if errors else 'Desconocido'}")
+                        raise Exception(mensaje)
                         
                     processed_count += 1
                     
                 except Exception as fe:
-                    # SAFETY NET: Rename to .error so it doesn't block the queue
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
                         config['nombre'], filename, "error", str(fe), batch_id,
-                        mall_id=config.get("mall_id"), local_id=config.get("id")
+                        mall_id=config.get("mall_id"),
+                        local_id=config.get("id"),
+                        canal=protocol,
+                        records_processed=0,
+                        error_count=1,
+                        metadata={"source": "worker_auto_import", "exception": str(fe)},
                     )
                     try:
-                        error_name = f"{remote_path}/{filename}.error"
-                        sftp.rename(f"{remote_path}/{filename}", error_name)
+                        handle_post_process_sftp(
+                            sftp,
+                            remote_path,
+                            filename,
+                            "RENOMBRAR_BACKUP",
+                            processed_suffix,
+                            AUTO_ERROR_PREFIX,
+                            strip_prefixes=(custom_backup_prefix,)
+                        )
                     except: pass
             
             logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{len(batch_files)} archivos procesados exitosamente.")
+            if processed_count > 0:
+                run_local_risk_analysis_if_possible(config, trigger="worker_auto_import")
 
         finally:
             if 'sftp' in locals(): sftp.close()
@@ -407,7 +1781,12 @@ def process_local_files(config):
         except Exception as ce:
             insert_load_log(
                 config['nombre'], "N/A", "error", f"Fallo conexión FTP: {str(ce)}",
-                mall_id=config.get("mall_id"), local_id=config.get("id")
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal=protocol,
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_auto_import", "connection_error": str(ce)},
             )
             return
 
@@ -425,7 +1804,12 @@ def process_local_files(config):
             
             for filename in files:
                 is_processed = processed_suffix in filename
-                is_backup = filename.startswith(backup_prefix) or filename.startswith("PR_") or filename.startswith("PW_")
+                is_backup = (
+                    (custom_backup_prefix and filename.startswith(custom_backup_prefix))
+                    or filename.startswith(AUTO_SUCCESS_PREFIX)
+                    or filename.startswith(AUTO_ERROR_PREFIX)
+                    or filename.startswith("PW_")
+                )
                 is_match = filename.lower().endswith(ext)
                 is_error = ".error" in filename
                 
@@ -443,9 +1827,15 @@ def process_local_files(config):
             
             if total_pending == 0:
                 logger.info(f"📍 {config['nombre']}: No hay archivos pendientes.")
+                message = _build_no_new_file_message(config)
                 insert_load_log(
-                    config['nombre'], "N/A", "exito", f"Conexión exitosa: 0 pendientes.",
-                    mall_id=config.get("mall_id"), local_id=config.get("id")
+                    config['nombre'], "N/A", "exito", message,
+                    mall_id=config.get("mall_id"),
+                    local_id=config.get("id"),
+                    canal=protocol,
+                    records_processed=0,
+                    error_count=0,
+                    metadata={"source": "worker_auto_import", "pending_files": 0, "reason": "no_new_file"},
                 )
                 return
 
@@ -461,41 +1851,79 @@ def process_local_files(config):
                     bio = io.BytesIO()
                     ftp.retrbinary(f"RETR {filename}", bio.write)
                     bio.seek(0)
-                    # Use utf-8-sig to handle BOM if present
-                    content = bio.read().decode('utf-8-sig', errors='replace')
+                    content = _decode_worker_text(
+                        bio.read(),
+                        is_json=str(filename or "").lower().endswith(".json")
+                    )
                     
-                    count, errors = process_file_logic(config, filename, content)
-                    
-                    if count > 0 or (count == 0 and not errors):
-                        estado = "exito"
-                        mensaje = f"Worker: Procesado {count} registros."
-                        if errors: mensaje += f" {len(errors)} errores parciales."
-                        
+                    count, errors, stats = _unpack_process_file_result(
+                        process_file_logic(config, filename, content)
+                    )
+
+                    estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors, stats)
+
+                    if insert_confirmed:
                         insert_load_log(
                             config['nombre'], filename, estado, mensaje, batch_id, errors,
-                            mall_id=config.get("mall_id"), local_id=config.get("id")
+                            mall_id=config.get("mall_id"),
+                            local_id=config.get("id"),
+                            canal=protocol,
+                            records_processed=count,
+                            error_count=int((stats or {}).get("processing_error_count") or 0),
+                            metadata={"source": "worker_auto_import", **(stats or {})},
                         )
-                        handle_post_process_ftp(ftp, filename, post_action, processed_suffix, backup_prefix)
+                        if post_action == "RENOMBRAR_BACKUP":
+                            handle_post_process_ftp(
+                                ftp,
+                                filename,
+                                post_action,
+                                processed_suffix,
+                                AUTO_SUCCESS_PREFIX,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
+                        else:
+                            handle_post_process_ftp(
+                                ftp,
+                                filename,
+                                post_action,
+                                processed_suffix,
+                                custom_backup_prefix,
+                                strip_prefixes=(custom_backup_prefix,)
+                            )
                     else:
-                         raise Exception(f"Fallo lógico: {errors[0]['error'] if errors else 'Desconocido'}")
+                         raise Exception(mensaje)
                          
                     processed_count += 1
                 except Exception as fe:
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
                         config['nombre'], filename, "error", str(fe), batch_id,
-                        mall_id=config.get("mall_id"), local_id=config.get("id")
+                        mall_id=config.get("mall_id"),
+                        local_id=config.get("id"),
+                        canal=protocol,
+                        records_processed=0,
+                        error_count=1,
+                        metadata={"source": "worker_auto_import", "exception": str(fe)},
                     )
                     try:
-                        ftp.rename(filename, f"{filename}.error")
+                        handle_post_process_ftp(
+                            ftp,
+                            filename,
+                            "RENOMBRAR_BACKUP",
+                            processed_suffix,
+                            AUTO_ERROR_PREFIX,
+                            strip_prefixes=(custom_backup_prefix,)
+                        )
                     except: pass
             
             logger.info(f"✅ {config['nombre']}: Lote completado. {processed_count}/{len(batch_files)} archivos procesados exitosamente.")
+            if processed_count > 0:
+                run_local_risk_analysis_if_possible(config, trigger="worker_auto_import")
             
         finally:
             if 'ftp' in locals(): ftp.quit()
 
-def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix=""):
+def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix="", strip_prefixes: Sequence[str] = ()):
     full_path = f"{path}/{filename}"
     if action == "ELIMINAR":
         logger.info(f"Eliminando archivo remoto: {filename}")
@@ -505,12 +1933,12 @@ def handle_post_process_sftp(sftp, path, filename, action, suffix, prefix=""):
         logger.info(f"Renombrando archivo remoto a: {new_name}")
         sftp.rename(full_path, new_name)
     elif action == "RENOMBRAR_BACKUP":
-        new_filename = f"{prefix}{filename}"
+        new_filename = _build_marked_filename(filename, prefix, strip_prefixes)
         new_full_path = f"{path}/{new_filename}"
         logger.info(f"Renombrando (Backup) archivo remoto a: {new_full_path}")
         sftp.rename(full_path, new_full_path)
 
-def handle_post_process_ftp(ftp, filename, action, suffix, prefix=""):
+def handle_post_process_ftp(ftp, filename, action, suffix, prefix="", strip_prefixes: Sequence[str] = ()):
     if action == "ELIMINAR":
         logger.info(f"Eliminando archivo remoto FTP: {filename}")
         ftp.delete(filename)
@@ -519,7 +1947,7 @@ def handle_post_process_ftp(ftp, filename, action, suffix, prefix=""):
         logger.info(f"Renombrando archivo remoto FTP a: {new_name}")
         ftp.rename(filename, new_name)
     elif action == "RENOMBRAR_BACKUP":
-        new_name = f"{prefix}{filename}"
+        new_name = _build_marked_filename(filename, prefix, strip_prefixes)
         logger.info(f"Renombrando (Backup) archivo remoto FTP a: {new_name}")
         ftp.rename(filename, new_name)
 
@@ -532,9 +1960,9 @@ async def mark_local_status(local_id: str, status: str):
             "processing_status": status
         }
         if status == 'BUSY':
-            payload["processing_started_at"] = datetime.now().isoformat()
+            payload["processing_started_at"] = datetime.now(_worker_timezone()).isoformat()
         elif status == 'IDLE':
-            payload["ultima_ejecucion"] = datetime.now().isoformat()
+            payload["ultima_ejecucion"] = datetime.now(_worker_timezone()).isoformat()
             
         await asyncio.to_thread(
             lambda: supabase.table("locales").update(payload).eq("id", local_id).execute()
@@ -547,6 +1975,94 @@ def _sanitize_health_error(value: object) -> str:
     if len(text) > 500:
         text = f"{text[:497]}..."
     return text or "unknown_error"
+
+
+def _worker_timezone() -> ZoneInfo:
+    configured = (
+        os.getenv("WORKER_TIMEZONE")
+        or DEFAULT_WORKER_TIMEZONE
+    ).strip() or DEFAULT_WORKER_TIMEZONE
+    try:
+        return ZoneInfo(configured)
+    except ZoneInfoNotFoundError:
+        logger.warning(
+            "Zona horaria del worker invalida '%s'. Usando %s.",
+            configured,
+            DEFAULT_WORKER_TIMEZONE,
+        )
+        return ZoneInfo(DEFAULT_WORKER_TIMEZONE)
+
+
+def _parse_worker_datetime(value: Any, tz: ZoneInfo) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
+
+
+def _parse_scheduled_time(value: Any) -> Optional[Tuple[int, int]]:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parts = raw.split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except (TypeError, ValueError):
+        return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour, minute
+
+
+def _schedule_slot_for_local(local: Dict[str, Any], now: datetime) -> Optional[datetime]:
+    frecuencia = str(local.get("frecuencia_cron") or "manual").strip().lower()
+    if frecuencia == "manual":
+        return None
+
+    if frecuencia == "cada_hora":
+        return now.replace(minute=0, second=0, microsecond=0)
+
+    if frecuencia == "cada_2_horas":
+        slot_hour = now.hour - (now.hour % 2)
+        return now.replace(hour=slot_hour, minute=0, second=0, microsecond=0)
+
+    if frecuencia == "hora_especifica":
+        scheduled_time = _parse_scheduled_time(local.get("hora_especifica"))
+        if not scheduled_time:
+            return None
+        hour, minute = scheduled_time
+        slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now < slot:
+            return None
+        return slot
+
+    return None
+
+
+def should_run_scheduled_local(local: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    tz = _worker_timezone()
+    current_time = now.astimezone(tz) if now else datetime.now(tz)
+    slot = _schedule_slot_for_local(local, current_time)
+    if not slot:
+        return False
+
+    last_run = _parse_worker_datetime(local.get("ultima_ejecucion"), tz)
+    if last_run and last_run >= slot:
+        return False
+
+    return True
 
 async def _upsert_system_health_value(key: str, value: str):
     if not supabase:
@@ -586,6 +2102,43 @@ async def clear_cron_error():
         await _upsert_system_health_value("CRON_LAST_ERROR", "")
     except Exception as e:
         logger.error(f"Error clearing CRON_LAST_ERROR: {e}")
+
+async def run_connection_monitor_nightly_if_due():
+    if not supabase:
+        return {"executed": False, "reason": "supabase_not_configured"}
+    try:
+        result = await asyncio.to_thread(_connection_monitor_service().run_nightly_monitor_if_due)
+        if result.get("executed"):
+            summary = (result.get("summary") or {})
+            logger.info(
+                "🔎 Connection monitor nightly executed total=%s ok=%s fail=%s partial=%s",
+                summary.get("total", 0),
+                summary.get("ok", 0),
+                summary.get("fail", 0),
+                summary.get("partial", 0),
+            )
+        else:
+            logger.info("🔎 Connection monitor nightly skipped: %s", result.get("reason"))
+        return result
+    except Exception as e:
+        logger.error(f"Connection monitor nightly failed: {sanitize_error_text(e)}")
+        return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
+
+async def run_missing_days_email_scheduler_if_due():
+    if not supabase:
+        return {"executed": False, "reason": "supabase_not_configured"}
+    try:
+        result = await asyncio.to_thread(
+            lambda: run_missing_days_email_scheduler(supabase, logger=logger)
+        )
+        if result.get("executed"):
+            logger.info("📬 Missing-days email scheduler executed: %s", result.get("runs"))
+        else:
+            logger.info("📬 Missing-days email scheduler skipped: %s", result)
+        return result
+    except Exception as e:
+        logger.error(f"Missing-days email scheduler failed: {sanitize_error_text(e)}")
+        return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
 
 async def process_local_safe(local, semaphore):
     """
@@ -646,7 +2199,12 @@ async def process_local_safe(local, semaphore):
             logger.error(f"❌ [Error] Processing {local_name}: {e}")
             insert_load_log(
                 local_name, "SYSTEM", "error", f"Async processing failed: {str(e)}",
-                mall_id=local.get("mall_id"), local_id=local.get("id")
+                mall_id=local.get("mall_id"),
+                local_id=local.get("id"),
+                canal=local.get("sftp_protocol"),
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_async_wrapper", "exception": str(e)},
             )
             
             # Increment Failures
@@ -699,6 +2257,88 @@ async def cleanup_zombies():
     except Exception as e:
         logger.error(f"Error cleaning zombies: {e}")
 
+def run_deferred_big_data_jobs() -> None:
+    """Run bounded analytics only after the import priority lane has completed."""
+    analytics_result = BigDataAnalyticsService(supabase, logger).process_pending_refreshes()
+    if analytics_result["processed"] or analytics_result["failed"]:
+        logger.info("Big Data aggregate queue: %s", analytics_result)
+
+    # No row means disabled. This also keeps deployments safe before the Sprint 2
+    # migration because the old constraint cannot contain BIG_DATA_OPERATIONS.
+    try:
+        enabled_rows = (
+            supabase.table("mall_feature_flags")
+            .select("mall_id")
+            .eq("feature_key", "BIG_DATA_OPERATIONS")
+            .eq("enabled", True)
+            .limit(100)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        # Backward-compatible before the Sprint 2 migration and in reduced
+        # worker smoke environments.
+        logger.info("Sprint 2 operations lane unavailable: %s", str(exc)[:180])
+        return
+    if not enabled_rows:
+        return
+
+    service = BigDataSprint2Service(supabase)
+    period_end = date.today()
+    period_start = period_end - timedelta(days=30)
+    for flag in enabled_rows:
+        mall_id = flag.get("mall_id")
+        if not mall_id:
+            continue
+        core_enabled = supabase.rpc(
+            "is_mall_feature_enabled",
+            {"requested_mall_id": mall_id, "requested_feature": "BIG_DATA_CORE"},
+        ).execute().data
+        if core_enabled is not True:
+            continue
+        started = time.monotonic()
+        run_row = {
+            "mall_id": mall_id,
+            "job_type": "ANOMALY_DETECTION",
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "status": "RUNNING",
+        }
+        run_id = None
+        try:
+            saved = supabase.table("big_data_operations_runs").insert(run_row).execute().data or []
+            run_id = saved[0].get("id") if saved else None
+            findings = service.detect_and_persist_anomalies(
+                mall_id, period_start, period_end
+            )
+            changes = {
+                "status": "COMPLETED",
+                "items_generated": len(findings),
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if run_id:
+                supabase.table("big_data_operations_runs").update(changes).eq(
+                    "id", run_id
+                ).execute()
+        except Exception as exc:
+            logger.exception("Sprint 2 anomaly job failed mall=%s", mall_id)
+            if run_id:
+                supabase.table("big_data_operations_runs").update(
+                    {
+                        "status": "FAILED",
+                        "error": str(exc)[:1000],
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                ).eq("id", run_id).execute()
+
+    operations_result = OperationsAgentWorker(supabase, logger).process_pending_events()
+    if operations_result["processed"] or operations_result["failed"]:
+        logger.info("Operations event queue: %s", operations_result)
+
+
 async def run_worker_async():
     logger.info("🚀 Iniciando Worker de Importación (Async/Concurrent v2)...")
     if not supabase:
@@ -721,36 +2361,19 @@ async def run_worker_async():
             .execute()
             
         locales = [loc for loc in (response.data or []) if loc.get("mall_id")]
-        current_hour = datetime.now().hour
+        current_time = datetime.now(_worker_timezone())
         
         tasks_to_run = []
         
         for local in locales:
-            # Frequency Check Logic
-            frecuencia = local.get("frecuencia_cron", "manual")
-            if frecuencia == "manual": continue
-            
-            should_run = False
-            if frecuencia == "cada_hora":
-                should_run = True
-            elif frecuencia == "cada_2_horas":
-                if current_hour % 2 == 0: should_run = True
-            elif frecuencia == "hora_especifica":
-                hora_esp = local.get("hora_especifica")
-                if hora_esp:
-                    try:
-                        esp_hour = int(hora_esp.split(":")[0])
-                        if current_hour == esp_hour: should_run = True
-                    except: pass
-            
-            if should_run:
+            if should_run_scheduled_local(local, current_time):
                 tasks_to_run.append(local)
-            else:
-                 # Debug check
-                 pass
 
         if not tasks_to_run:
             logger.info("😴 No active tasks for this hour.")
+            run_deferred_big_data_jobs()
+            await run_missing_days_email_scheduler_if_due()
+            await run_connection_monitor_nightly_if_due()
             await update_cron_success()
             await clear_cron_error()
             return
@@ -763,8 +2386,13 @@ async def run_worker_async():
         
         tasks = [process_local_safe(local, semaphore) for local in tasks_to_run]
         await asyncio.gather(*tasks)
-        
+
+        # Imports are always the priority lane. Aggregate refreshes, anomaly
+        # detection and operational observations only run after ingestion settles.
+        run_deferred_big_data_jobs()
         logger.info("🏁 Cycle finished.")
+        await run_missing_days_email_scheduler_if_due()
+        await run_connection_monitor_nightly_if_due()
         await update_cron_success()
         await clear_cron_error()
         

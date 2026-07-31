@@ -12,3 +12,6 @@ paramiko
 xmltodict
 openpyxl
 reportlab
+PyJWT
+pytest
+holidays==0.101

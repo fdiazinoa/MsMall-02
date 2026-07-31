@@ -39,9 +39,12 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
     const [analysis, setAnalysis] = useState<GapAnalysisResult | null>(null);
     const [loading, setLoading] = useState(false);
     const [expanded, setExpanded] = useState(false);
+    const [matrixPage, setMatrixPage] = useState(1);
+    const MATRIX_PAGE_SIZE = 10;
 
     useEffect(() => {
         if (!startDate || !endDate || !currentMall) return;
+        setMatrixPage(1);
 
         const fetchAnalysis = async () => {
             setLoading(true);
@@ -120,6 +123,10 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
     if (analysis.modo === 'global' && analysis.resumen) {
         const criticalItems = analysis.resumen.filter(i => i.dias_faltantes_count > 0);
         const completeCount = analysis.resumen.length - criticalItems.length;
+        const totalMatrixPages = Math.max(1, Math.ceil(criticalItems.length / MATRIX_PAGE_SIZE));
+        const currentMatrixPage = Math.min(matrixPage, totalMatrixPages);
+        const pageStart = (currentMatrixPage - 1) * MATRIX_PAGE_SIZE;
+        const paginatedCriticalItems = criticalItems.slice(pageStart, pageStart + MATRIX_PAGE_SIZE);
 
         if (criticalItems.length === 0) return null; // Todo perfecto (o mostrar banner verde global)
 
@@ -147,44 +154,59 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                            {criticalItems.map((item) => (
-                                <tr key={item.local_id} className="hover:bg-slate-50 transition-colors">
-                                    <td className="px-4 py-3">
-                                        <div className="font-medium text-slate-800">{item.nombre}</div>
-                                        <div className="text-xs text-slate-400">{item.rubro}</div>
-                                    </td>
-                                    <td className="px-4 py-3 text-center">
-                                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${item.estado === 'Crítico' ? 'bg-rose-100 text-rose-700' :
-                                            item.estado === 'Alerta' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
-                                            }`}>
-                                            {item.estado === 'Crítico' && <AlertTriangle size={12} className="mr-1" />}
-                                            {item.estado}
-                                        </span>
-                                    </td>
-                                    <td className="px-4 py-3 text-center font-mono font-bold text-slate-700">
-                                        {item.dias_faltantes_count} / {item.dias_totales_periodo}
-                                    </td>
-                                    <td className="px-4 py-3 text-center">
-                                        <div className="flex items-center gap-2 justify-center">
-                                            <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
-                                                <div
-                                                    className={`h-full ${item.porcentaje_cumplimiento < 80 ? 'bg-rose-500' : item.porcentaje_cumplimiento < 95 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                                                    style={{ width: `${item.porcentaje_cumplimiento}%` }}
-                                                ></div>
+                            {paginatedCriticalItems.map((item) => {
+                                const totalDays = item.dias_totales_periodo || 0;
+                                const missingDays = item.dias_faltantes_count || 0;
+                                const reportedDays = Math.max(0, totalDays - missingDays);
+                                const compliance = Number.isFinite(item.porcentaje_cumplimiento) ? item.porcentaje_cumplimiento : 0;
+
+                                return (
+                                    <tr key={item.local_id} className="hover:bg-slate-50 transition-colors">
+                                        <td className="px-4 py-3">
+                                            <div className="font-medium text-slate-800">{item.nombre}</div>
+                                            <div className="text-xs text-slate-400">{item.rubro}</div>
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${item.estado === 'Crítico' ? 'bg-rose-100 text-rose-700' :
+                                                item.estado === 'Alerta' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                                                }`}>
+                                                {item.estado === 'Crítico' && <AlertTriangle size={12} className="mr-1" />}
+                                                {item.estado}
+                                            </span>
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <div className="font-mono font-bold text-slate-700">
+                                                {missingDays} / {totalDays}
                                             </div>
-                                            <span className="text-xs font-medium text-slate-500">{item.porcentaje_cumplimiento}%</span>
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-3 text-right">
-                                        <button
-                                            onClick={() => onSelectLocal && onSelectLocal(item.local_id)}
-                                            className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 text-xs font-medium shadow-sm transition-all hover:border-indigo-300 hover:text-indigo-600"
-                                        >
-                                            <Eye size={14} /> Auditar
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
+                                            <div className="text-[11px] text-slate-400">
+                                                {reportedDays} días con venta
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <div className="flex items-center gap-2 justify-center">
+                                                <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
+                                                    <div
+                                                        className={`h-full ${compliance < 80 ? 'bg-rose-500' : compliance < 95 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                                        style={{ width: `${compliance}%` }}
+                                                    ></div>
+                                                </div>
+                                                <span className="text-xs font-medium text-slate-500">{compliance}%</span>
+                                            </div>
+                                            <div className="mt-1 text-[11px] text-slate-400">
+                                                {missingDays > 0 ? `${(100 - compliance).toFixed(1)}% de brecha` : '0% de brecha'}
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3 text-right">
+                                            <button
+                                                onClick={() => onSelectLocal && onSelectLocal(item.local_id)}
+                                                className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 text-xs font-medium shadow-sm transition-all hover:border-indigo-300 hover:text-indigo-600"
+                                            >
+                                                <Eye size={14} /> Auditar
+                                            </button>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
 
                             {completeCount > 0 && (
                                 <tr className="bg-slate-50/50">
@@ -196,6 +218,35 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                         </tbody>
                     </table>
                 </div>
+
+                {totalMatrixPages > 1 && (
+                    <div className="flex flex-col gap-3 border-t border-slate-100 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-xs text-slate-500">
+                            Mostrando {pageStart + 1}-{Math.min(pageStart + MATRIX_PAGE_SIZE, criticalItems.length)} de {criticalItems.length} locales con brechas
+                        </p>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setMatrixPage((page) => Math.max(1, page - 1))}
+                                disabled={currentMatrixPage === 1}
+                                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                Anterior
+                            </button>
+                            <span className="text-xs font-medium text-slate-500">
+                                Página {currentMatrixPage} de {totalMatrixPages}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setMatrixPage((page) => Math.min(totalMatrixPages, page + 1))}
+                                disabled={currentMatrixPage === totalMatrixPages}
+                                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-indigo-300 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                Siguiente
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
         );
     }

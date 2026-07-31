@@ -1,40 +1,85 @@
 """Shared normalization for sale-date values received from import sources."""
 
+from __future__ import annotations
+
 import re
 from datetime import datetime
 from typing import Any, Dict, Optional, Sequence
 
 
 _ISO_DATE_TIME_FORMATS: Sequence[str] = (
-    "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
-    "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ",
-    "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%dT%H:%M:%S.%fZ",
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M",
 )
+
 _COMPACT_DATE_TIME_FORMATS: Sequence[str] = (
-    "%Y%m%d %H:%M:%S.%f", "%Y%m%d %H:%M:%S", "%Y%m%d %H:%M",
-    "%Y%m%dT%H:%M:%S.%f", "%Y%m%dT%H:%M:%S", "%Y%m%dT%H:%M",
+    "%Y%m%d %H:%M:%S.%f",
+    "%Y%m%d %H:%M:%S",
+    "%Y%m%d %H:%M",
+    "%Y%m%dT%H:%M:%S.%f",
+    "%Y%m%dT%H:%M:%S",
+    "%Y%m%dT%H:%M",
 )
-_MERIDIEM_DATE_TIME_FORMATS: Sequence[str] = (
-    "%d/%m/%Y %I:%M:%S %p", "%d/%m/%Y %I:%M %p",
-    "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p",
+
+_DDMM_MERIDIEM_DATE_TIME_FORMATS: Sequence[str] = (
+    "%d/%m/%Y %I:%M:%S %p",
+    "%d/%m/%Y %I:%M %p",
+)
+
+_MMDD_MERIDIEM_DATE_TIME_FORMATS: Sequence[str] = (
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %I:%M %p",
 )
 
 _FORMAT_GROUPS: Dict[str, Sequence[str]] = {
-    "DD/MM/YYYY": (*_MERIDIEM_DATE_TIME_FORMATS[:2], "%d/%m/%Y %H:%M:%S", "%d/%m/%Y", "%d-%m-%Y"),
+    "DD/MM/YYYY": (
+        *_DDMM_MERIDIEM_DATE_TIME_FORMATS,
+        "%d/%m/%Y %H:%M:%S.%f",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+    ),
     "DDmmYYYY": ("%d%m%Y",),
     "YYYYmmDD": (*_COMPACT_DATE_TIME_FORMATS, "%Y%m%d"),
-    "MM/DD/YYYY": (*_MERIDIEM_DATE_TIME_FORMATS[2:], "%m/%d/%Y %H:%M:%S", "%m/%d/%Y", "%m-%d-%Y"),
-    "YYYY/MM/DD": ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d"),
+    "MM/DD/YYYY": (
+        *_MMDD_MERIDIEM_DATE_TIME_FORMATS,
+        "%m/%d/%Y %H:%M:%S.%f",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y",
+        "%m-%d-%Y",
+    ),
+    "YYYY/MM/DD": (
+        "%Y/%m/%d %H:%M:%S.%f",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d",
+    ),
     "YYYY-MM-DD": (*_ISO_DATE_TIME_FORMATS, "%Y-%m-%d", "%Y/%m/%d"),
-    "timestamp": _ISO_DATE_TIME_FORMATS,
+    "timestamp": (*_ISO_DATE_TIME_FORMATS,),
 }
 
 _AUTO_FORMATS: Sequence[str] = (
     *_ISO_DATE_TIME_FORMATS,
-    *_MERIDIEM_DATE_TIME_FORMATS,
-    "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y", "%d%m%Y",
-    *_COMPACT_DATE_TIME_FORMATS, "%Y%m%d", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y",
-    "%d-%m-%Y", "%m-%d-%Y", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d", "%Y-%d-%m",
+    *_DDMM_MERIDIEM_DATE_TIME_FORMATS,
+    "%Y-%m-%d",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y",
+    "%d%m%Y",
+    *_COMPACT_DATE_TIME_FORMATS,
+    "%Y%m%d",
+    *_MMDD_MERIDIEM_DATE_TIME_FORMATS,
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y",
+    "%d-%m-%Y",
+    "%m-%d-%Y",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d",
+    "%Y-%d-%m",
 )
 
 
@@ -47,7 +92,7 @@ def _normalize_meridiem(value: str) -> str:
 
 
 def normalize_sale_date(value: Any, explicit_format: Any = "auto") -> Optional[str]:
-    """Normalize supported sale-date and datetime values to ``YYYY-MM-DD``."""
+    """Normalize supported sale date and datetime values to YYYY-MM-DD."""
     if value in (None, ""):
         return None
 
@@ -56,7 +101,8 @@ def normalize_sale_date(value: Any, explicit_format: Any = "auto") -> Optional[s
         return None
 
     format_name = str(explicit_format or "auto").strip()
-    for date_format in _FORMAT_GROUPS.get(format_name, _AUTO_FORMATS):
+    date_formats = _FORMAT_GROUPS.get(format_name, _AUTO_FORMATS)
+    for date_format in date_formats:
         try:
             return datetime.strptime(raw_date, date_format).strftime("%Y-%m-%d")
         except ValueError:

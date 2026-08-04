@@ -48,15 +48,55 @@ interface ProcessResult {
   local_nombre: string;
   status: "recovered" | "still_pending" | "error";
   message: string;
+  error_code?: "auth_error" | "timeout" | "endpoint_down" | "validation_error" | "unknown_error";
   processed_at?: string;
   file_found?: string;
 }
 
-const SUPABASE_URL = Bun.env.SUPABASE_URL!;
-const SUPABASE_KEY = Bun.env.SUPABASE_KEY!;
+interface TriggerResult {
+  ok: boolean;
+  status?: number;
+  detail: string;
+  error_code?: ProcessResult["error_code"];
+}
+
+function classifyRemoteError(message: string): ProcessResult["error_code"] {
+  const normalized = String(message || "").toLowerCase();
+  if (/auth|login|permission|530|credential/.test(normalized)) return "auth_error";
+  if (/timeout|timed out|etimedout/.test(normalized)) return "timeout";
+  if (/enotfound|econnrefused|econnreset|unreachable/.test(normalized)) return "endpoint_down";
+  if (/550|path|ruta|directory|directorio/.test(normalized)) return "validation_error";
+  return "unknown_error";
+}
+
+function requiredEnv(name: string): string {
+  const value = String(Bun.env[name] || "").trim();
+  if (!value) throw new Error(`Variable requerida no configurada: ${name}`);
+  return value;
+}
+
+function workerApiUrl(): string {
+  const raw = requiredEnv("WORKER_API_URL").replace(/\/+$/, "");
+  const parsed = new URL(raw);
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error("WORKER_API_URL debe usar HTTP o HTTPS.");
+  }
+  if (!parsed.pathname.replace(/\/+$/, "").endsWith("/api")) {
+    throw new Error("WORKER_API_URL debe terminar en /api.");
+  }
+  return raw;
+}
+
+const SUPABASE_URL = requiredEnv("SUPABASE_URL");
+const SUPABASE_KEY = requiredEnv("SUPABASE_KEY");
 const RESEND_API_KEY = Bun.env.RESEND_API_KEY!;
-const WORKER_API_URL = Bun.env.WORKER_API_URL || "http://localhost:3000/api";
+const WORKER_API_URL = workerApiUrl();
+const PENDING_IMPORT_MONITOR_TOKEN = requiredEnv("PENDING_IMPORT_MONITOR_TOKEN");
 const DOMINICAN_TIMEZONE = "America/Santo_Domingo";
+
+if (PENDING_IMPORT_MONITOR_TOKEN.length < 32) {
+  throw new Error("PENDING_IMPORT_MONITOR_TOKEN debe tener al menos 32 caracteres.");
+}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const resend = new Resend(RESEND_API_KEY);
@@ -120,7 +160,7 @@ async function findPendingImports(): Promise<PendingImport[]> {
     return pending;
   } catch (e) {
     console.error("Error fetching pending imports:", e);
-    return [];
+    throw e;
   }
 }
 
@@ -229,27 +269,56 @@ async function latestUnprocessedFile(config: LocalConfig): Promise<string | unde
 
 async function triggerManualImport(
   local_id: string,
-  filename: string
-): Promise<boolean> {
+  filename: string,
+  sourceLogId: string,
+): Promise<TriggerResult> {
   try {
-    // Llamar al endpoint del worker
-    const response = await fetch(`${WORKER_API_URL}/v1/remote/execute-manual`, {
+    const response = await fetch(`${WORKER_API_URL}/v1/remote/execute-manual/internal`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "X-MsMall-Internal-Token": PENDING_IMPORT_MONITOR_TOKEN,
       },
       body: JSON.stringify({
         config_id: local_id,
         filename: filename,
-        request_id: `pending-monitor-${Date.now()}`,
+        request_id: `pending-monitor-${sourceLogId}-${filename}`,
       }),
     });
 
-    return response.ok;
+    const rawBody = (await response.text()).replace(/\s+/g, " ").trim().slice(0, 500);
+    let detail = rawBody || `HTTP ${response.status}`;
+    let resultStatus = "";
+    try {
+      const parsed = JSON.parse(rawBody);
+      detail = String(parsed.detail || parsed.message || parsed.status || detail).slice(0, 500);
+      resultStatus = String(parsed.status || "").toLowerCase();
+    } catch {
+      // A non-JSON response is still useful for the audit trail.
+    }
+
+    if (!response.ok || resultStatus === "error") {
+      const errorCode: ProcessResult["error_code"] =
+        response.status === 401 || response.status === 403
+          ? "auth_error"
+          : response.status === 408 || response.status === 504
+          ? "timeout"
+          : response.status >= 500
+          ? "endpoint_down"
+          : "validation_error";
+      console.error(
+        `Worker rejected pending import local=${local_id} status=${response.status} detail=${detail}`
+      );
+      return { ok: false, status: response.status, detail, error_code: errorCode };
+    }
+
+    return { ok: true, status: response.status, detail };
   } catch (e) {
-    console.error(`Error triggering import for ${local_id}:`, e);
-    return false;
+    const detail = e instanceof Error ? e.message : "Error desconocido llamando al worker";
+    const errorCode: ProcessResult["error_code"] =
+      e instanceof Error && e.name === "TimeoutError" ? "timeout" : "endpoint_down";
+    console.error(`Error triggering import for ${local_id}: ${detail}`);
+    return { ok: false, detail: detail.slice(0, 500), error_code: errorCode };
   }
 }
 
@@ -261,13 +330,14 @@ async function logRetryAttempt(
   try {
     const completedAt = new Date().toISOString();
     const failed = result.status === "error";
+    const auditMessage = `[outcome=${result.status}] ${result.message} [source_log=${pending.log_id}]`.slice(0, 500);
     const run = {
       mall_id: pending.mall_id,
       local_id: pending.local_id,
       run_type: "scheduled",
       status: failed ? "fail" : "ok",
-      error_code: failed ? "unknown_error" : null,
-      error_message: failed ? result.message.slice(0, 500) : null,
+      error_code: failed ? (result.error_code || "unknown_error") : null,
+      error_message: failed ? auditMessage : null,
       started_at: new Date(startedAt).toISOString(),
       finished_at: completedAt,
       duration_ms: Math.max(0, Date.now() - startedAt),
@@ -283,8 +353,8 @@ async function logRetryAttempt(
       connection_run_id: connectionRun.id,
       attempt_no: 1,
       status: failed ? "fail" : "ok",
-      error_code: failed ? "unknown_error" : null,
-      error_message: `${result.message} [source_log=${pending.log_id}]`.slice(0, 500),
+      error_code: failed ? (result.error_code || "unknown_error") : null,
+      error_message: auditMessage,
       attempted_at: completedAt,
       duration_ms: Math.max(0, Date.now() - startedAt),
       mall_id: pending.mall_id,
@@ -460,23 +530,26 @@ async function runMonitor(): Promise<void> {
         local_nombre: p.local_nombre,
         status: "error",
         message: "No se pudo cargar configuración del local",
+        error_code: "validation_error",
       };
       results.push(result);
       await logRetryAttempt(p, result, startedAt);
       continue;
     }
 
-    console.log(`\n🔎 Checking ${config.local_nombre}...`);
+    console.log(`\n🔎 Checking ${config.nombre}...`);
 
     let filename: string | undefined;
     try {
       filename = await latestUnprocessedFile(config);
     } catch (error) {
+      const detail = error instanceof Error ? error.message : "error desconocido";
       const result: ProcessResult = {
         local_id: config.id,
         local_nombre: config.nombre,
         status: "error",
-        message: `No se pudo revisar el servidor remoto: ${error instanceof Error ? error.message : "error desconocido"}`,
+        message: `No se pudo revisar el servidor remoto: ${detail}`,
+        error_code: classifyRemoteError(detail),
       };
       results.push(result);
       await logRetryAttempt(p, result, startedAt);
@@ -485,9 +558,9 @@ async function runMonitor(): Promise<void> {
 
     if (filename) {
       console.log(`  📁 File found: ${filename}`);
-      const success = await triggerManualImport(config.id, filename);
+      const trigger = await triggerManualImport(config.id, filename, p.log_id);
 
-      if (success) {
+      if (trigger.ok) {
         const result: ProcessResult = {
           local_id: config.id,
           local_nombre: config.nombre,
@@ -503,7 +576,8 @@ async function runMonitor(): Promise<void> {
           local_id: config.id,
           local_nombre: config.nombre,
           status: "error",
-          message: `Archivo encontrado pero error al procesar: ${filename}`,
+          message: `Archivo encontrado pero el worker no lo procesó: ${filename}. HTTP ${trigger.status || "sin respuesta"}: ${trigger.detail}`,
+          error_code: trigger.error_code || "unknown_error",
         };
         results.push(result);
         await logRetryAttempt(p, result, startedAt);

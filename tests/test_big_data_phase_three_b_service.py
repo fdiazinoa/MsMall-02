@@ -85,6 +85,16 @@ class _ScenarioSupabase:
         return _ScenarioQuery(self.rows)
 
 
+class _ScenarioResultSupabase:
+    def __init__(self, refreshed=0):
+        self.refreshed = refreshed
+        self.calls = []
+
+    def rpc(self, name, payload):
+        self.calls.append((name, payload))
+        return SimpleNamespace(execute=lambda: SimpleNamespace(data=self.refreshed))
+
+
 def test_phase_three_b_compares_manual_scenario_against_base_forecast():
     as_of = date(2026, 7, 29)
     result = build_phase_three_b_simulation(
@@ -177,6 +187,23 @@ def test_phase_three_b_requires_a_valid_phase_three_a_prediction():
             end_date=as_of + timedelta(days=2),
             adjustment_percent=5,
         )
+
+
+def test_phase_three_b_refreshes_finished_results_with_a_bounded_rpc():
+    supabase = _ScenarioResultSupabase(refreshed=2)
+    service = BigDataPhaseThreeBService(supabase)
+
+    refreshed = service.refresh_scenario_results(
+        "mall-1", as_of=date(2026, 8, 4)
+    )
+
+    assert refreshed == 2
+    assert supabase.calls == [
+        (
+            "refresh_big_data_scenario_results",
+            {"p_mall_id": "mall-1", "p_as_of": "2026-08-04"},
+        )
+    ]
 
 
 @pytest.mark.parametrize("status", ["DRAFT", "CANCELLED"])

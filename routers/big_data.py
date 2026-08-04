@@ -535,7 +535,11 @@ def _capability_context(mall_id: str, user: dict, feature: str) -> None:
 
 def _raise_scenario_storage_error(exc: Exception) -> None:
     message = str(exc).lower()
-    if "big_data_scenarios" in message or "big_data_scenario_actions" in message:
+    if (
+        "big_data_scenarios" in message
+        or "big_data_scenario_actions" in message
+        or "refresh_big_data_scenario_results" in message
+    ):
         if (
             "does not exist" in message
             or "schema cache" in message
@@ -544,7 +548,7 @@ def _raise_scenario_storage_error(exc: Exception) -> None:
             raise HTTPException(
                 503,
                 "La base de datos no está actualizada: aplique la migración "
-                "big_data_phase_3b_scenarios.",
+                "de escenarios y evaluación de resultados de Big Data.",
             ) from exc
     if "duplicate" in message or "23505" in message:
         raise HTTPException(

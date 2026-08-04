@@ -203,3 +203,33 @@ def test_worker_two_hour_schedule_uses_even_hour_slot(monkeypatch):
         "frecuencia_cron": "cada_2_horas",
         "ultima_ejecucion": "2026-06-01T14:01:00-04:00",
     }, now) is False
+
+
+def test_worker_importer_audit_reports_suspended_and_invalid_schedules(monkeypatch):
+    worker = _load_worker(monkeypatch)
+
+    audit = worker._build_importer_audit([
+        {
+            "id": "ftp-suspended",
+            "nombre": "FTP suspendido",
+            "processing_status": "SUSPENDED_AUTH_ERROR",
+            "sftp_protocol": "FTP",
+            "frecuencia_cron": "hora_especifica",
+            "hora_especifica": "08:00:00",
+        },
+        {
+            "id": "invalid-schedule",
+            "nombre": "Sin hora",
+            "processing_status": "IDLE",
+            "sftp_protocol": "SFTP",
+            "frecuencia_cron": "hora_especifica",
+            "hora_especifica": None,
+        },
+    ])
+
+    assert audit["automatic_total"] == 2
+    assert audit["idle_total"] == 1
+    assert audit["suspended_total"] == 1
+    assert audit["suspended_ftp"] == 1
+    assert audit["invalid_schedule_total"] == 1
+    assert audit["invalid_schedules"][0]["id"] == "invalid-schedule"

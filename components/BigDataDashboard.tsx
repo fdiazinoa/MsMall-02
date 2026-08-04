@@ -58,6 +58,7 @@ import {
   BigDataPhaseThreePrediction,
   BigDataScenario,
   BigDataScenarioActionStatus,
+  BigDataScenarioResultStatus,
   BigDataScenarioInput,
   BigDataScenarioSimulation,
   BigDataScenarioStatus,
@@ -202,6 +203,28 @@ const scenarioStatusCopy: Record<BigDataScenarioStatus, {
   ACTIVE: { label: 'En ejecución', classes: 'border-amber-200 bg-amber-50 text-amber-700' },
   COMPLETED: { label: 'Completado', classes: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
   CANCELLED: { label: 'Cancelado', classes: 'border-rose-200 bg-rose-50 text-rose-600' },
+};
+
+const scenarioResultCopy: Record<BigDataScenarioResultStatus, {
+  label: string;
+  classes: string;
+  description: string;
+}> = {
+  ABOVE_RANGE: {
+    label: 'Superó el rango',
+    classes: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    description: 'La venta real quedó por encima del límite superior proyectado.',
+  },
+  WITHIN_RANGE: {
+    label: 'Dentro del rango',
+    classes: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+    description: 'La venta real terminó dentro del rango esperado por el escenario.',
+  },
+  BELOW_RANGE: {
+    label: 'Debajo del rango',
+    classes: 'border-rose-200 bg-rose-50 text-rose-700',
+    description: 'La venta real quedó por debajo del límite inferior proyectado.',
+  },
 };
 
 const actionStatusCopy: Record<BigDataScenarioActionStatus, string> = {
@@ -610,6 +633,10 @@ export const BigDataDashboard: React.FC = () => {
   const selectedScenario = useMemo(
     () => scenarios.find((scenario) => scenario.id === selectedScenarioId) || null,
     [scenarios, selectedScenarioId],
+  );
+
+  const selectedScenarioPeriodEnded = Boolean(
+    selectedScenario && selectedScenario.end_date < toIsoDate(new Date()),
   );
 
   const scenarioSummary = useMemo(() => {
@@ -1858,6 +1885,7 @@ export const BigDataDashboard: React.FC = () => {
                           <th className="px-3 py-2.5">Supuesto</th>
                           <th className="px-3 py-2.5">Impacto potencial</th>
                           <th className="px-3 py-2.5">Estado</th>
+                          <th className="px-3 py-2.5">Resultado real</th>
                           <th className="px-3 py-2.5 text-right">Plan</th>
                         </tr>
                       </thead>
@@ -1866,6 +1894,10 @@ export const BigDataDashboard: React.FC = () => {
                           const doneActions = (scenario.actions || []).filter(
                             (action) => action.status === 'DONE',
                           ).length;
+                          const resultStatus = scenario.evaluation?.result_status;
+                          const resultMeta = resultStatus
+                            ? scenarioResultCopy[resultStatus]
+                            : null;
                           return (
                             <tr
                               key={scenario.id}
@@ -1912,6 +1944,27 @@ export const BigDataDashboard: React.FC = () => {
                                 }`}>
                                   {scenarioStatusCopy[scenario.status].label}
                                 </span>
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-3">
+                                {resultMeta ? (
+                                  <span className={`rounded-full border px-2 py-1 text-[9px] font-black ${
+                                    resultMeta.classes
+                                  }`}>
+                                    {resultMeta.label}
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] font-bold text-slate-400">
+                                    {scenario.evaluation?.status === 'NO_DATA'
+                                      ? 'Sin datos'
+                                      : scenario.evaluation?.status === 'INCOMPLETE_DATA'
+                                      ? 'Datos incompletos'
+                                      : scenario.status === 'CANCELLED'
+                                      ? 'No evaluado'
+                                      : ['DRAFT', 'APPROVED'].includes(scenario.status)
+                                      ? 'No iniciado'
+                                      : 'Pendiente'}
+                                  </span>
+                                )}
                               </td>
                               <td className="whitespace-nowrap px-3 py-3 text-right text-[10px] font-bold text-slate-500">
                                 {doneActions}/{scenario.actions?.length || 0}
@@ -1978,6 +2031,88 @@ export const BigDataDashboard: React.FC = () => {
                       {format(Number(selectedScenario.upper_bound))}. Confianza{' '}
                       {predictionConfidenceCopy[selectedScenario.confidence].label.toLowerCase()}.
                     </p>
+
+                    {selectedScenario.evaluation?.status === 'READY'
+                      && selectedScenario.evaluation.result_status ? (
+                      <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">
+                              Resultado observado
+                            </p>
+                            <p className="mt-1 text-xs font-bold leading-5 text-slate-700">
+                              {scenarioResultCopy[selectedScenario.evaluation.result_status].description}
+                            </p>
+                          </div>
+                          <span className={`shrink-0 rounded-full border px-2 py-1 text-[9px] font-black ${
+                            scenarioResultCopy[selectedScenario.evaluation.result_status].classes
+                          }`}>
+                            {scenarioResultCopy[selectedScenario.evaluation.result_status].label}
+                          </span>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <div className="rounded-xl bg-white p-2.5">
+                            <p className="text-[8px] font-black uppercase text-slate-400">Venta real neta</p>
+                            <p className="mt-1 text-sm font-black text-slate-900">
+                              {format(Number(selectedScenario.evaluation.actual_sales || 0))}
+                            </p>
+                          </div>
+                          <div className="rounded-xl bg-white p-2.5">
+                            <p className="text-[8px] font-black uppercase text-slate-400">Cumplimiento</p>
+                            <p className="mt-1 text-sm font-black text-indigo-700">
+                              {Number(selectedScenario.evaluation.attainment_percent || 0).toFixed(1)}%
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-2 space-y-1 text-[10px] leading-4 text-slate-600">
+                          <p>
+                            Contra escenario:{' '}
+                            <span className="font-black">
+                              {Number(selectedScenario.evaluation.variance_to_scenario || 0) > 0 ? '+' : ''}
+                              {format(Number(selectedScenario.evaluation.variance_to_scenario || 0))}
+                              {' · '}
+                              {Number(selectedScenario.evaluation.variance_to_scenario_percent || 0) > 0 ? '+' : ''}
+                              {Number(selectedScenario.evaluation.variance_to_scenario_percent || 0).toFixed(1)}%
+                            </span>
+                          </p>
+                          <p>
+                            Contra predicción base:{' '}
+                            <span className="font-black">
+                              {Number(selectedScenario.evaluation.variance_to_baseline || 0) > 0 ? '+' : ''}
+                              {format(Number(selectedScenario.evaluation.variance_to_baseline || 0))}
+                              {' · '}
+                              {Number(selectedScenario.evaluation.variance_to_baseline_percent || 0) > 0 ? '+' : ''}
+                              {Number(selectedScenario.evaluation.variance_to_baseline_percent || 0).toFixed(1)}%
+                            </span>
+                          </p>
+                          <p className="text-slate-400">
+                            Días con venta: {selectedScenario.evaluation.days_with_sales}/
+                            {selectedScenario.evaluation.expected_days}. Actualizado{' '}
+                            {selectedScenario.evaluated_at
+                              ? formatDate(selectedScenario.evaluated_at)
+                              : 'automáticamente'}.
+                          </p>
+                        </div>
+                        <p className="mt-2 rounded-xl bg-amber-50 px-2.5 py-2 text-[9px] leading-4 text-amber-800">
+                          {selectedScenario.evaluation.causality_notice}
+                        </p>
+                      </div>
+                    ) : selectedScenario.evaluation ? (
+                      <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[10px] leading-4 text-amber-900">
+                        {selectedScenario.evaluation.status === 'NO_DATA'
+                          ? 'El período terminó, pero todavía no hay ventas agregadas para evaluarlo.'
+                          : `La evaluación espera datos completos: ${selectedScenario.evaluation.incomplete_days} día(s) están incompletos.`}
+                      </div>
+                    ) : selectedScenarioPeriodEnded
+                      && ['ACTIVE', 'COMPLETED'].includes(selectedScenario.status) ? (
+                      <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-[10px] leading-4 text-indigo-800">
+                        La evaluación automática está pendiente y se actualizará al consultar nuevamente los escenarios.
+                      </div>
+                    ) : ['ACTIVE', 'COMPLETED'].includes(selectedScenario.status) ? (
+                      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[10px] leading-4 text-slate-600">
+                        La comparación real vs. proyectado se calculará automáticamente después de finalizar el período.
+                      </div>
+                    ) : null}
 
                     <div className="mt-4 flex items-center justify-between">
                       <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-slate-500">

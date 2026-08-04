@@ -19,6 +19,15 @@ RUN_STATUSES = {"ok", "fail", "partial"}
 RETRY_STATUSES = {"ok", "fail"}
 
 
+def _first_response_row(response: Any) -> Dict[str, Any]:
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return dict(data)
+    if isinstance(data, list) and data:
+        return dict(data[0] or {})
+    return {}
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -251,8 +260,8 @@ class ConnectionMonitorService:
 
     def _insert_connection_run(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_supabase()
-        res = self.supabase.table("connection_runs").insert(payload).select().single().execute()
-        return dict(res.data or {})
+        res = self.supabase.table("connection_runs").insert(payload).select().execute()
+        return _first_response_row(res)
 
     def _update_connection_run(self, run_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_supabase()
@@ -261,15 +270,14 @@ class ConnectionMonitorService:
             .update(payload)
             .eq("id", run_id)
             .select()
-            .single()
             .execute()
         )
-        return dict(res.data or {})
+        return _first_response_row(res)
 
     def _insert_retry_attempt(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_supabase()
-        res = self.supabase.table("retry_attempts").insert(payload).select().single().execute()
-        return dict(res.data or {})
+        res = self.supabase.table("retry_attempts").insert(payload).select().execute()
+        return _first_response_row(res)
 
     def _recent_retry_attempts(self, connection_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         self._require_supabase()

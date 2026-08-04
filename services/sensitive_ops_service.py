@@ -338,6 +338,7 @@ class SensitiveOpsService:
         local_id: str,
         operator_ctx: Dict[str, Any],
         ensure_operator_can_access_mall: Callable[[Dict[str, Any], Optional[str]], None],
+        audit_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._require_supabase()
         res = self.supabase.table("locales").select("id, mall_id, nombre").eq("id", local_id).maybe_single().execute()
@@ -367,7 +368,7 @@ class SensitiveOpsService:
             mall_id=mall_id,
             action="LOCAL_REACTIVATE_PROCESSING",
             detail=f"Reactivated processing for local '{local_row.get('nombre')}'",
-            metadata={"local_id": local_id},
+            metadata={"local_id": local_id, **(audit_metadata or {})},
         )
         return {
             "status": "success",

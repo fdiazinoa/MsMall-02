@@ -694,6 +694,24 @@ async def require_it_or_admin_access(user_id: str = Depends(get_current_user_id)
         raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere rol IT o ADMIN.")
     return access_ctx
 
+def require_pending_import_monitor_access(
+    internal_token: Optional[str] = Header(default=None, alias="X-MsMall-Internal-Token")
+) -> Dict[str, Any]:
+    """Authenticate the Railway pending-import monitor with a dedicated secret."""
+    expected = str(os.getenv("PENDING_IMPORT_MONITOR_TOKEN") or "").strip()
+    if len(expected) < 32:
+        logger.error("PENDING_IMPORT_MONITOR_TOKEN is missing or shorter than 32 characters")
+        raise HTTPException(
+            status_code=503,
+            detail="Autenticación interna del monitor no configurada.",
+        )
+
+    provided = str(internal_token or "").strip()
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Credencial interna inválida.")
+
+    return {"source": "pending_import_monitor", "role": "internal_service"}
+
 async def require_audit_read_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
     access_ctx = await _get_access_context(user_id)
     if access_ctx["role"] not in {"admin", "it", "auditor"}:
@@ -771,6 +789,60 @@ def _load_local_config_for_exporter(local_id: str, exporter_ctx: TokenAuthContex
         exporter_ctx,
     )
     return local_cfg
+
+def _load_local_config_for_pending_monitor(local_id: str) -> Dict[str, Any]:
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase no configurado")
+    try:
+        res = (
+            supabase.table("locales")
+            .select("*")
+            .eq("id", local_id)
+            .maybe_single()
+            .execute()
+        )
+        local_cfg = res.data
+    except Exception as e:
+        logger.error("Error consultando local para pending monitor %s: %s", local_id, e)
+        raise HTTPException(status_code=500, detail="Error consultando configuración del local")
+
+    if not local_cfg:
+        raise HTTPException(status_code=404, detail="Configuración no encontrada")
+    if str(local_cfg.get("tipo_ejecucion") or "").strip().upper() != "AUTOMATICO":
+        raise HTTPException(
+            status_code=409,
+            detail="El monitor solo puede ejecutar importadores automáticos.",
+        )
+    return local_cfg
+
+def _reactivate_local_after_success(config_data: Dict[str, Any], *, source: str) -> None:
+    """Reactivate only a local whose remote import has just proven successful."""
+    status_value = str(config_data.get("processing_status") or "").strip().upper()
+    failure_count = int(config_data.get("consecutive_failures") or 0)
+    if status_value != "SUSPENDED_AUTH_ERROR" and failure_count < 5:
+        return
+
+    local_id = config_data.get("id")
+    if not local_id:
+        return
+    try:
+        _sensitive_ops_service().reactivate_local_processing(
+            local_id=str(local_id),
+            operator_ctx={"user_id": None, "role": "admin"},
+            ensure_operator_can_access_mall=_ensure_operator_can_access_mall,
+            audit_metadata={"source": source, "automatic_reactivation": True},
+        )
+        logger.info(
+            "Local %s reactivated after successful import source=%s",
+            local_id,
+            source,
+        )
+    except Exception as e:
+        logger.warning(
+            "Successful import could not reactivate local %s: %s",
+            local_id,
+            sanitize_sensitive_ops_error(e),
+        )
 
 def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config: Optional[Any]) -> Dict[str, Any]:
     if not runtime_config:
@@ -4160,9 +4232,17 @@ async def list_files_endpoint(
 async def _execute_manual_endpoint_impl(
     req: ExecuteManualRequest,
     operator_ctx: Optional[Dict[str, Any]] = None,
-    exporter_ctx: Optional[TokenAuthContext] = None
+    exporter_ctx: Optional[TokenAuthContext] = None,
+    internal_ctx: Optional[Dict[str, Any]] = None,
 ):
     logger.info(f"Ejecutando manual para {req.config_id} - Archivo: {req.filename}")
+    execution_source = (
+        "manual_remote_import_exporter"
+        if exporter_ctx
+        else "pending_import_monitor"
+        if internal_ctx
+        else "manual_remote_import"
+    )
     batch_id = str(uuid4())
     request_id = (req.request_id or "").strip() if req.request_id else None
     request_cache_key = f"manual_exec:{request_id}" if request_id else None
@@ -4192,6 +4272,13 @@ async def _execute_manual_endpoint_impl(
         # Source of truth: config del local desde DB + overrides permitidos del request.
         if exporter_ctx:
             config_data = _load_local_config_for_exporter(req.config_id, exporter_ctx)
+        elif internal_ctx:
+            if req.config is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="El monitor interno no admite sobrescribir la configuración del local.",
+                )
+            config_data = _load_local_config_for_pending_monitor(req.config_id)
         else:
             if not operator_ctx:
                 raise HTTPException(status_code=401, detail="Se requiere autenticación para ejecutar importación manual")
@@ -4254,6 +4341,7 @@ async def _execute_manual_endpoint_impl(
             )
             risk_snapshot = None
             if records_processed > 0:
+                _reactivate_local_after_success(config_data, source=execution_source)
                 risk_snapshot = await _run_local_risk_analysis_async(
                     config_data.get("id"),
                     trigger="manual_api_webservice_import",
@@ -4394,7 +4482,7 @@ async def _execute_manual_endpoint_impl(
                 canal=protocolo,
                 records_processed=0,
                 error_count=1,
-                metadata={"source": "manual_remote_import", "connection_error": error_msg},
+                metadata={"source": execution_source, "connection_error": error_msg},
             )
             raise HTTPException(status_code=500, detail=f"Error de conexión remota ({protocolo}): {error_msg}")
 
@@ -4413,7 +4501,7 @@ async def _execute_manual_endpoint_impl(
                 canal=protocolo,
                 records_processed=0,
                 error_count=len(detalles_errores),
-                metadata={"source": "manual_remote_import", "empty_payload": True},
+                metadata={"source": execution_source, "empty_payload": True},
             )
             renaming_error = None
             try:
@@ -4461,14 +4549,15 @@ async def _execute_manual_endpoint_impl(
             canal=protocolo,
             records_processed=registros_exito,
             error_count=len(detalles_errores or []),
-            metadata={"source": "manual_remote_import"},
+            metadata={"source": execution_source},
         )
 
         risk_snapshot = None
         if registros_exito > 0:
+            _reactivate_local_after_success(config_data, source=execution_source)
             risk_snapshot = await _run_local_risk_analysis_async(
                 config_data.get("id"),
-                trigger="manual_remote_import",
+                trigger=execution_source,
             )
 
         # 5. Renombrar resultado: PR_ (éxito con registros) o ERR_ (fallo/no-data)
@@ -4510,7 +4599,7 @@ async def _execute_manual_endpoint_impl(
                 canal=protocolo if 'protocolo' in locals() else None,
                 records_processed=0,
                 error_count=1,
-                metadata={"source": "manual_remote_import", "exception": str(e)},
+                metadata={"source": execution_source, "exception": str(e)},
             )
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -4535,6 +4624,14 @@ async def execute_manual_exporter_endpoint(
     )
 ):
     return await _execute_manual_endpoint_impl(req=req, exporter_ctx=exporter_ctx)
+
+
+@app.post("/api/v1/remote/execute-manual/internal")
+async def execute_manual_internal_endpoint(
+    req: ExecuteManualRequest,
+    internal_ctx: Dict[str, Any] = Depends(require_pending_import_monitor_access),
+):
+    return await _execute_manual_endpoint_impl(req=req, internal_ctx=internal_ctx)
 
 
 @app.post("/api/v1/analytics/cubo")

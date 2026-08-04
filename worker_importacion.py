@@ -2064,6 +2064,48 @@ def should_run_scheduled_local(local: Dict[str, Any], now: Optional[datetime] = 
 
     return True
 
+def _schedule_validation_error(local: Dict[str, Any]) -> Optional[str]:
+    frecuencia = str(local.get("frecuencia_cron") or "manual").strip().lower()
+    if frecuencia == "hora_especifica" and not _parse_scheduled_time(local.get("hora_especifica")):
+        return "hora_especifica ausente o inválida"
+    if frecuencia not in {"manual", "cada_hora", "cada_2_horas", "hora_especifica"}:
+        return f"frecuencia_cron no soportada: {frecuencia or 'vacía'}"
+    return None
+
+def _build_importer_audit(locales: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    suspended = [
+        local for local in locales
+        if str(local.get("processing_status") or "").strip().upper() == "SUSPENDED_AUTH_ERROR"
+    ]
+    invalid = []
+    for local in locales:
+        error = _schedule_validation_error(local)
+        if error:
+            invalid.append({
+                "id": local.get("id"),
+                "nombre": local.get("nombre"),
+                "error": error,
+            })
+    return {
+        "automatic_total": len(locales),
+        "idle_total": sum(
+            1 for local in locales
+            if str(local.get("processing_status") or "").strip().upper() == "IDLE"
+        ),
+        "suspended_total": len(suspended),
+        "suspended_ftp": sum(
+            1 for local in suspended
+            if str(local.get("sftp_protocol") or "").strip().upper() == "FTP"
+        ),
+        "suspended_sftp": sum(
+            1 for local in suspended
+            if str(local.get("sftp_protocol") or "").strip().upper() == "SFTP"
+        ),
+        "invalid_schedule_total": len(invalid),
+        "invalid_schedules": invalid[:50],
+        "audited_at": datetime.now(timezone.utc).isoformat(),
+    }
+
 async def _upsert_system_health_value(key: str, value: str):
     if not supabase:
         return
@@ -2352,15 +2394,30 @@ async def run_worker_async():
     await update_heartbeat()
     
     try:
-        # 2. Fetch Tasks (IDLE + AUTOMATIC)
-        # Note: We need to filter by IDLE to avoid double execution if previous job is running
+        # 2. Fetch all automatic importers so suspended/invalid schedules are visible.
         response = supabase.table("locales")\
             .select("*")\
             .eq("tipo_ejecucion", "AUTOMATICO")\
-            .eq("processing_status", "IDLE")\
             .execute()
-            
-        locales = [loc for loc in (response.data or []) if loc.get("mall_id")]
+
+        automatic_locales = [loc for loc in (response.data or []) if loc.get("mall_id")]
+        importer_audit = _build_importer_audit(automatic_locales)
+        await _upsert_system_health_value(
+            "CRON_IMPORTER_AUDIT",
+            json.dumps(importer_audit, ensure_ascii=False, separators=(",", ":")),
+        )
+        if importer_audit["suspended_total"] or importer_audit["invalid_schedule_total"]:
+            logger.warning(
+                "Importer audit: suspended=%s invalid_schedules=%s",
+                importer_audit["suspended_total"],
+                importer_audit["invalid_schedule_total"],
+            )
+
+        # Only IDLE importers can enter the execution queue.
+        locales = [
+            loc for loc in automatic_locales
+            if str(loc.get("processing_status") or "").strip().upper() == "IDLE"
+        ]
         current_time = datetime.now(_worker_timezone())
         
         tasks_to_run = []

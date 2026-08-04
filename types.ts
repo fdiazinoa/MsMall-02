@@ -570,6 +570,42 @@ export interface BigDataScenarioAction {
   completed_at?: string | null;
 }
 
+export type BigDataScenarioEvaluationStatus =
+  | 'READY'
+  | 'NO_DATA'
+  | 'INCOMPLETE_DATA';
+
+export type BigDataScenarioResultStatus =
+  | 'ABOVE_RANGE'
+  | 'WITHIN_RANGE'
+  | 'BELOW_RANGE';
+
+export interface BigDataScenarioEvaluation {
+  status: BigDataScenarioEvaluationStatus;
+  result_status?: BigDataScenarioResultStatus | null;
+  actual_sales?: number | null;
+  actual_transactions: number;
+  scenario_sales: number;
+  baseline_sales: number;
+  variance_to_scenario?: number | null;
+  variance_to_scenario_percent?: number | null;
+  attainment_percent?: number | null;
+  variance_to_baseline?: number | null;
+  variance_to_baseline_percent?: number | null;
+  within_expected_range?: boolean | null;
+  lower_bound: number;
+  upper_bound: number;
+  expected_days: number;
+  days_with_sales: number;
+  days_with_sales_percent: number;
+  incomplete_days: number;
+  data_updated_at?: string | null;
+  evaluated_through: string;
+  sales_basis: 'NET';
+  methodology_version: string;
+  causality_notice: string;
+}
+
 export interface BigDataScenario {
   id: string;
   mall_id: string;
@@ -597,6 +633,8 @@ export interface BigDataScenario {
   notes?: string | null;
   created_at: string;
   updated_at: string;
+  evaluation?: BigDataScenarioEvaluation | null;
+  evaluated_at?: string | null;
   actions: BigDataScenarioAction[];
   simulation?: BigDataScenarioSimulation;
 }

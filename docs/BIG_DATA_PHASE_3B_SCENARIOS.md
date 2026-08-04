@@ -27,6 +27,12 @@ relación causal ni una garantía comercial.
 8. Los escenarios `DRAFT` o `CANCELLED` creados por error pueden eliminarse
    definitivamente, junto con sus acciones. Los estados aprobados, activos y
    completados se conservan para mantener la trazabilidad.
+9. Cuando termina el período de un escenario `ACTIVE` o `COMPLETED`, la consulta
+   de escenarios actualiza automáticamente su evaluación con las ventas netas
+   observadas en los agregados de Big Data.
+10. La ficha muestra venta real, cumplimiento porcentual, desviación contra el
+    escenario, desviación contra la predicción base y si el resultado quedó por
+    encima, dentro o debajo del rango proyectado.
 
 ## Contratos API
 
@@ -50,6 +56,11 @@ La migración
 
 - `big_data_scenarios`
 - `big_data_scenario_actions`
+
+La migración
+`supabase/migrations/20260804182808_evaluate_big_data_scenario_results.sql` agrega
+el snapshot `evaluation`, su fecha de actualización y la función privada
+`refresh_big_data_scenario_results`.
 
 Las tablas:
 
@@ -77,6 +88,15 @@ La migración es requerida antes de desplegar el backend de Fase 3B. No modifica
 - La confianza proviene de la calidad de la predicción base.
 - El escenario guarda un snapshot; cambios posteriores en ventas o calendario no
   reescriben automáticamente decisiones ya documentadas.
+- La evaluación sí se recalcula cuando cambian los agregados observados, para
+  incorporar importaciones tardías o correcciones sin alterar el escenario
+  original.
+- Solo se evalúan escenarios que realmente llegaron a `ACTIVE` o `COMPLETED` y
+  cuyo período ya finalizó; los borradores y cancelados no se presentan como
+  decisiones ejecutadas.
+- `ABOVE_RANGE`, `WITHIN_RANGE` y `BELOW_RANGE` describen la comparación contra
+  el rango proyectado. No prueban que la promoción o actividad haya causado el
+  resultado observado.
 
 ## Orden de despliegue
 

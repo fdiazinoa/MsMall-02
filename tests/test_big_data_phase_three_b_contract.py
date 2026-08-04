@@ -8,6 +8,12 @@ MIGRATION = (
     / "migrations"
     / "20260729190139_big_data_phase_3b_scenarios.sql"
 )
+RESULT_MIGRATION = (
+    ROOT
+    / "supabase"
+    / "migrations"
+    / "20260804182808_evaluate_big_data_scenario_results.sql"
+)
 
 
 def test_phase_three_b_has_authenticated_simulation_and_workflow_contracts():
@@ -44,6 +50,8 @@ def test_phase_three_b_has_authenticated_simulation_and_workflow_contracts():
     assert "updateBigDataScenarioActionStatus" in api
     assert "Simular una decisión comercial" in dashboard
     assert "Plan de acción" in dashboard
+    assert "Resultado observado" in dashboard
+    assert "Cumplimiento" in dashboard
     assert "Eliminar definitivamente" in dashboard
     assert "no es venta comprometida" in dashboard
 
@@ -73,3 +81,18 @@ def test_phase_three_b_does_not_claim_causality_or_query_raw_sales():
     assert 'table("ventas")' not in service
     assert ".limit(MAX_SCENARIOS)" in service
     assert ".limit(MAX_ACTIONS)" in service
+
+
+def test_phase_three_b_result_evaluation_is_private_and_aggregate_only():
+    migration = RESULT_MIGRATION.read_text(encoding="utf-8").lower()
+
+    assert "add column if not exists evaluation jsonb" in migration
+    assert "refresh_big_data_scenario_results" in migration
+    assert "security invoker" in migration
+    assert "from public, anon, authenticated" in migration
+    assert "to service_role" in migration
+    assert "public.big_data_daily_aggregates" in migration
+    assert "public.ventas" not in migration
+    assert "scenario.status in ('active', 'completed')" in migration
+    assert "'within_range'" in migration
+    assert "no demuestra" in migration

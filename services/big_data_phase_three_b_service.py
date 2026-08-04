@@ -228,7 +228,26 @@ class BigDataPhaseThreeBService:
             notes=notes,
         )
 
+    def refresh_scenario_results(
+        self, mall_id: str, as_of: Optional[date] = None
+    ) -> int:
+        """Persist observed results for active/completed scenarios that ended."""
+        response = self.supabase.rpc(
+            "refresh_big_data_scenario_results",
+            {
+                "p_mall_id": mall_id,
+                "p_as_of": (as_of or date.today()).isoformat(),
+            },
+        ).execute()
+        refreshed = getattr(response, "data", 0)
+        if isinstance(refreshed, list):
+            refreshed = refreshed[0] if refreshed else 0
+        return int(refreshed or 0)
+
     def list_scenarios(self, mall_id: str) -> dict[str, Any]:
+        # One set-based database operation keeps finished evaluations current,
+        # including late imports or corrected aggregate rows.
+        self.refresh_scenario_results(mall_id)
         scenarios = (
             self.supabase.table("big_data_scenarios")
             .select("*")

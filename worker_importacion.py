@@ -1124,7 +1124,14 @@ def _api_json_request(
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read()
-            parsed = json.loads(_decode_worker_text(raw, is_json=True) or "{}")
+            decoded = (_decode_worker_text(raw, is_json=True) or "").strip()
+            if not decoded:
+                parsed = {}
+            else:
+                try:
+                    parsed = json.loads(decoded)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("El proveedor API devolvio una respuesta que no es JSON valido") from exc
     except urllib.error.HTTPError as exc:
         detail = _decode_worker_text(exc.read(), is_json=True)
         raise RuntimeError(f"API HTTP {exc.code}: {detail or exc.reason}") from exc
@@ -1372,6 +1379,8 @@ def _bundaberg_query_sales(
         f"{_api_base_url(config)}?{query}",
         timeout=timeout,
     )
+    if not response:
+        return []
     sales = response.get("ventas")
     if sales is None:
         provider_message = str(response.get("message") or response.get("mensaje") or "").strip()

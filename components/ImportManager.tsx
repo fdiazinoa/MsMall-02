@@ -221,12 +221,17 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualFiles, setManualFiles] = useState<{ nombre: string, fecha: string, tamano: number }[]>([]);
   const [manualLoading, setManualLoading] = useState(false);
+  const [manualLoadError, setManualLoadError] = useState<string | null>(null);
   const [executingFile, setExecutingFile] = useState<string | null>(null);
   const [unmarkingFile, setUnmarkingFile] = useState<string | null>(null); // Track file being unmarked
   const [activeConfigId, setActiveConfigId] = useState<string | null>(null);
   const [fileStatuses, setFileStatuses] = useState<Record<string, 'success' | 'error' | 'idle'>>({});
   const [batchMask, setBatchMask] = useState<string>('*');
   const [batchLimit, setBatchLimit] = useState<number>(30);
+  const activeManualConfig = useMemo(
+    () => configs.find(config => config.id === activeConfigId) || null,
+    [configs, activeConfigId]
+  );
   const initialBatchProgress = {
     running: false,
     total: 0,
@@ -803,6 +808,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     batchCancelRef.current = false;
     setManualFiles([]);
     setManualLoading(false);
+    setManualLoadError(null);
     setExecutingFile(null);
     setUnmarkingFile(null);
     setFileStatuses({});
@@ -994,12 +1000,18 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     if (!config) return;
 
     setManualLoading(true);
+    setManualLoadError(null);
     try {
       const files = await ApiService.listRemoteFiles(config, authToken);
       setManualFiles(files);
     } catch (error: any) {
       console.error(error);
       setManualFiles([]);
+      setManualLoadError(
+        typeof error === 'string'
+          ? error
+          : (error?.message || 'No se pudo consultar la ruta remota guardada.')
+      );
     } finally {
       setManualLoading(false);
     }
@@ -3300,6 +3312,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   Ejecución de Importación Manual
                 </h3>
                 <p className="text-slate-400 text-xs mt-0.5">Seleccione un archivo del servidor remoto para procesar inmediatamente.</p>
+                <p className="text-slate-500 text-xs mt-1">
+                  Ruta activa: <code className="font-bold text-indigo-600">{activeManualConfig?.ruta_remota || '.'}</code>
+                </p>
               </div>
 	              <button
 	                onClick={closeManualModal}
@@ -3404,6 +3419,15 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 	                <div className="py-20 text-center">
 	                  <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
 	                  <p className="text-slate-500 font-medium">Buscando archivos en el servidor...</p>
+                </div>
+              ) : manualLoadError ? (
+                <div className="py-12 px-6 text-center bg-rose-50 border border-rose-100 rounded-2xl">
+                  <XCircle size={30} className="mx-auto text-rose-500 mb-3" />
+                  <h4 className="font-bold text-rose-800">No se pudo consultar la ruta remota</h4>
+                  <p className="text-rose-600 text-sm mt-1">{manualLoadError}</p>
+                  <p className="text-slate-500 text-xs mt-2">
+                    Ruta configurada: <code>{activeManualConfig?.ruta_remota || '.'}</code>
+                  </p>
                 </div>
               ) : manualFiles.length > 0 ? (
                 <div className="overflow-hidden rounded-2xl border border-slate-100">

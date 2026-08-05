@@ -4280,6 +4280,17 @@ def _list_remote_files(config: Dict[str, Any]):
             ftp.quit()
     return sorted(files, key=lambda x: x["fecha"], reverse=True)
 
+def _build_remote_listing_config(
+    request_config: Dict[str, Any],
+    stored_config: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    # Saved imports always use the database as the source of truth. Secrets are
+    # intentionally absent from the browser payload, and a stale/default path
+    # must not replace the route already configured for an automatic worker.
+    source = dict(stored_config) if stored_config else dict(request_config)
+    return _normalize_import_config_payload(source)
+
+
 @app.post("/api/v1/remote/list-files")
 async def list_files_endpoint(
     config: ImportConfigSchema,
@@ -4287,17 +4298,11 @@ async def list_files_endpoint(
 ):
     try:
         logger.info(f"Recibida solucitud de listado para: {config.host}:{config.puerto} (Protocolo: {config.protocolo})")
-        config_dict = config.dict()
+        request_config = config.dict()
         db_config = None
         if config.id:
             db_config = _load_local_config_with_access(config.id, operator_ctx)
-        
-        # Si tiene ID pero no host, intentar cargar de DB (enriquecer)
-        if db_config and not config.host:
-            # Merge data from DB if not provided in request
-            for k, v in db_config.items():
-                if not config_dict.get(k):
-                    config_dict[k] = v
+        config_dict = _build_remote_listing_config(request_config, db_config)
 
         loop = asyncio.get_event_loop()
         files = await asyncio.wait_for(

@@ -51,6 +51,14 @@ const specialCharsToRemoveKey = '_special_chars_to_remove';
 const studioGDateModeKey = '_studio_g_date_mode';
 const studioGStartDateKey = '_studio_g_fecha_inicio';
 const studioGEndDateKey = '_studio_g_fecha_fin';
+const bundabergEndpoint = 'https://sibs2.com/api_agora_inv/';
+
+const getApiProvider = (config: Partial<ImportConfig>) => {
+  const explicit = String(config.constants?.provider || '').trim().toLowerCase();
+  if (['bundaberg', 'agora', 'agora_bundaberg'].includes(explicit)) return 'bundaberg';
+  if (String(config.host || '').toLowerCase().includes('sibs2.com')) return 'bundaberg';
+  return 'studio_g';
+};
 
 const studioGDateModes = [
   { id: 'yesterday', label: 'Día anterior' },
@@ -178,6 +186,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const [configs, setConfigs] = useState<ImportConfig[]>([]);
   const [connectionSearchTerm, setConnectionSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+  const [configLoadError, setConfigLoadError] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -266,6 +275,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   } | null>(null);
 
   const [editingConfig, setEditingConfig] = useState<ImportConfig>(createDefaultImportConfig());
+  const selectedApiProvider = getApiProvider(editingConfig);
 
   const [availableStores, setAvailableStores] = useState<any[]>([]);
   const [exporterWsConfigs, setExporterWsConfigs] = useState<SecurityExporterWebserviceConfig[]>([]);
@@ -278,9 +288,16 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const loadConfigs = async () => {
     if (!currentMall?.id) return;
     setLoading(true);
-    const data = await ApiService.getImportConfigs(currentMall.id);
-    setConfigs(data);
-    setLoading(false);
+    setConfigLoadError(null);
+    try {
+      const data = await ApiService.getImportConfigs(currentMall.id);
+      setConfigs(data);
+    } catch (error: any) {
+      console.error("Error loading import configs:", error);
+      setConfigLoadError(error?.message || 'No se pudieron cargar las conexiones de importación.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const loadStores = async (mallId?: string) => {
@@ -937,6 +954,26 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       }
       if (startDate > endDate) {
         alert('La fecha inicio no puede ser posterior a la fecha fin.');
+        return;
+      }
+    }
+
+    if (editingConfig.protocolo === 'API') {
+      if (!editingConfig.host.trim()) {
+        alert('Indica el endpoint del proveedor API.');
+        return;
+      }
+      if (!editingConfig.ruta_remota.trim() || editingConfig.ruta_remota === '.') {
+        alert('Indica el ID TPV del proveedor API.');
+        return;
+      }
+      if (selectedApiProvider === 'studio_g' && !editingConfig.usuario.trim()) {
+        alert('Indica el Client ID de Studio G.');
+        return;
+      }
+      const existingApiConfig = configs.some(config => config.id === editingConfig.id && config.protocolo === 'API');
+      if (!existingApiConfig && !tempPassword.trim() && !editingConfig.password?.trim()) {
+        alert(selectedApiProvider === 'bundaberg' ? 'Indica la API key de Bundaberg.' : 'Indica el Client Secret de Studio G.');
         return;
       }
     }
@@ -2023,20 +2060,51 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                     )}
                   </div>
                   {editingConfig.protocolo !== 'LOCAL' && (
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                        {editingConfig.protocolo === 'API' ? 'URL Base API' : 'Host del Servidor'}
-                      </label>
-                      <div className="relative">
-                        <Globe size={18} className="absolute left-3.5 top-3 text-slate-300" />
-                        <input
-                          type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                          placeholder={editingConfig.protocolo === 'API' ? 'https://alcagora.ddns.net' : 'sftp.tu-tienda.com'}
-                          value={editingConfig.host}
-                          onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
-                        />
+                    <>
+                      {editingConfig.protocolo === 'API' && (
+                        <div className="mb-5">
+                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Proveedor API</label>
+                          <select
+                            className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none bg-white font-medium"
+                            value={selectedApiProvider}
+                            onChange={e => {
+                              const provider = e.target.value;
+                              const constants = { ...editingConfig.constants, provider };
+                              setEditingConfig({
+                                ...editingConfig,
+                                constants,
+                                host: provider === 'bundaberg'
+                                  ? bundabergEndpoint
+                                  : (editingConfig.host === bundabergEndpoint ? 'https://alcagora.ddns.net' : editingConfig.host),
+                                usuario: provider === 'bundaberg' ? '' : editingConfig.usuario,
+                                ruta_remota: provider === 'bundaberg' && (!editingConfig.ruta_remota || editingConfig.ruta_remota === '.')
+                                  ? '8906'
+                                  : editingConfig.ruta_remota
+                              });
+                            }}
+                          >
+                            <option value="studio_g">Studio G</option>
+                            <option value="bundaberg">Bundaberg / Ágora</option>
+                          </select>
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                          {editingConfig.protocolo === 'API' ? 'URL Base API' : 'Host del Servidor'}
+                        </label>
+                        <div className="relative">
+                          <Globe size={18} className="absolute left-3.5 top-3 text-slate-300" />
+                          <input
+                            type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
+                            placeholder={editingConfig.protocolo === 'API'
+                              ? (selectedApiProvider === 'bundaberg' ? bundabergEndpoint : 'https://alcagora.ddns.net')
+                              : 'sftp.tu-tienda.com'}
+                            value={editingConfig.host}
+                            onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
+                          />
+                        </div>
                       </div>
-                    </div>
+                    </>
                   )}
                   {editingConfig.protocolo !== 'API' && (
                   <div>
@@ -2105,9 +2173,12 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
                       <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                        {editingConfig.protocolo === 'API' ? 'Autenticación Client Credentials' : 'Credenciales de Acceso'}
+                        {editingConfig.protocolo === 'API'
+                          ? (selectedApiProvider === 'bundaberg' ? 'Autenticación API key' : 'Autenticación Client Credentials')
+                          : 'Credenciales de Acceso'}
                       </label>
                       <div className="space-y-3">
+                        {!(editingConfig.protocolo === 'API' && selectedApiProvider === 'bundaberg') && (
                         <div className="relative">
                           <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
@@ -2117,15 +2188,21 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
                           />
                         </div>
+                        )}
                         <div className="relative">
                           <Key size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="password" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder={editingConfig.protocolo === 'API' ? 'Client Secret' : 'Contraseña o Frase de paso SSH'}
+                            placeholder={editingConfig.protocolo === 'API'
+                              ? (selectedApiProvider === 'bundaberg' ? 'API key' : 'Client Secret')
+                              : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}
                           />
                         </div>
+                        {editingConfig.protocolo === 'API' && configs.some(config => config.id === editingConfig.id && config.protocolo === 'API') && (
+                          <p className="text-[11px] text-slate-500">Déjalo vacío para conservar el secreto guardado.</p>
+                        )}
                       </div>
                     </div>
                   )}
@@ -2136,7 +2213,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         <input
                           type="text"
                           className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                          placeholder="AFB"
+                          placeholder={selectedApiProvider === 'bundaberg' ? '8906' : 'AFB'}
                           value={editingConfig.ruta_remota}
                           onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
                         />
@@ -2144,7 +2221,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
                         <div>
                           <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Periodo de consulta API</p>
-                          <p className="text-xs text-cyan-700 mt-1">Define qué fechas pedirá Studio G al procesar esta conexión.</p>
+                          <p className="text-xs text-cyan-700 mt-1">
+                            Define qué fechas pedirá {selectedApiProvider === 'bundaberg' ? 'Bundaberg' : 'Studio G'} al procesar esta conexión.
+                          </p>
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                           {studioGDateModes.map((mode) => (
@@ -2821,7 +2900,20 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         </div>
       )}
 
-      {loading ? (
+      {configLoadError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center">
+          <AlertCircle className="mx-auto mb-3 text-rose-500" size={30} />
+          <h3 className="font-bold text-rose-800">No se pudieron mostrar las conexiones</h3>
+          <p className="mt-1 text-sm text-rose-700">{configLoadError}</p>
+          <button
+            type="button"
+            onClick={() => void loadConfigs()}
+            className="mt-4 rounded-xl bg-rose-600 px-5 py-2 text-sm font-bold text-white hover:bg-rose-700"
+          >
+            Reintentar
+          </button>
+        </div>
+      ) : loading ? (
         <div className="py-10 text-center">
           <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
           <p className="text-slate-400 font-medium">Cargando servicios de red...</p>

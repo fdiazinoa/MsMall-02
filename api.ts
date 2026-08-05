@@ -1099,7 +1099,7 @@ export const ApiService = {
     // Fetch only locals with configured SFTP host
     let query = supabase
       .from('locales')
-      .select('*')
+      .select('id,nombre,mall_id,sftp_host,sftp_port,sftp_user,sftp_path,sftp_protocol,file_type,frecuencia_cron,hora_especifica,accion_post_procesado,prefijo_backup,mapping_config,constants_config,fecha_corte_importacion,tipo_ejecucion,ultima_ejecucion')
       .not('sftp_host', 'is', null)
       .neq('sftp_host', ''); // Also exclude empty strings
 
@@ -1111,7 +1111,7 @@ export const ApiService = {
 
     if (error) {
       console.error("Error fetching configs:", error);
-      return [];
+      throw new Error("No se pudieron cargar las conexiones de importación.");
     }
 
     return (data || []).map((local: any) => ({
@@ -1121,7 +1121,7 @@ export const ApiService = {
       host: local.sftp_host || '',
       puerto: local.sftp_port || (local.sftp_protocol === 'API' ? 443 : 22),
       usuario: local.sftp_user || '',
-      password: local.sftp_pass || '',
+      password: '', // Los secretos solo se consumen en backend/worker.
       ruta_remota: local.sftp_path || '.',
       tipo_archivo: (local.file_type || 'CSV') as FileType,
       frecuencia: (local.frecuencia_cron || 'manual') as ImportFrequency,
@@ -1149,7 +1149,6 @@ export const ApiService = {
       sftp_host: config.host,
       sftp_port: config.puerto,
       sftp_user: config.usuario,
-      sftp_pass: config.password,
       sftp_protocol: config.protocolo,
       sftp_path: config.ruta_remota,
       file_type: config.tipo_archivo,
@@ -1164,6 +1163,9 @@ export const ApiService = {
       constants_config: config.constants,
       fecha_corte_importacion: config.fecha_corte_importacion || null
     };
+    if (config.password?.trim()) {
+      dbPayload.sftp_pass = config.password.trim();
+    }
 
     const { data: existing, error: lookupError } = await supabase
       .from('locales')
@@ -1347,7 +1349,8 @@ export const ApiService = {
       puerto: Number(config.puerto) || (config.protocolo === 'SFTP' ? 22 : config.protocolo === 'API' ? 443 : 21),
       usuario: config.usuario?.trim(),
       password,
-      ruta: config.ruta_remota || '.'
+      ruta: config.ruta_remota || '.',
+      provider: config.constants?.provider || ''
     });
     const bases = getApiBaseUrls();
     const orderedBases = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app')
@@ -1439,7 +1442,8 @@ export const ApiService = {
           usuario: config.usuario?.trim(),
           password: password || config.password,
           ruta: config.ruta_remota,
-          tipo_archivo: config.tipo_archivo
+          tipo_archivo: config.tipo_archivo,
+          provider: config.constants?.provider || ''
         })
       });
 
@@ -1481,7 +1485,8 @@ export const ApiService = {
           ruta: testFile || config.ruta_remota,
           tipo_archivo: config.tipo_archivo,
           has_header: hasHeader,
-          data_start_row: dataStartRow
+          data_start_row: dataStartRow,
+          provider: config.constants?.provider || ''
         })
       });
       if (!response.ok) {

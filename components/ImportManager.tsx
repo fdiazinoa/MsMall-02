@@ -281,6 +281,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
   const [editingConfig, setEditingConfig] = useState<ImportConfig>(createDefaultImportConfig());
   const selectedApiProvider = getApiProvider(editingConfig);
+  const hasStoredCredential = configs.some(
+    config => config.id === editingConfig.id && config.protocolo === editingConfig.protocolo
+  );
 
   const [availableStores, setAvailableStores] = useState<any[]>([]);
   const [exporterWsConfigs, setExporterWsConfigs] = useState<SecurityExporterWebserviceConfig[]>([]);
@@ -2209,14 +2212,16 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             type="password"
                             autoComplete="new-password"
                             className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder={editingConfig.protocolo === 'API'
-                              ? (selectedApiProvider === 'bundaberg' ? 'API key de Bundaberg' : 'Client Secret')
-                              : 'Contraseña o Frase de paso SSH'}
+                            placeholder={hasStoredCredential && !tempPassword
+                              ? '********'
+                              : editingConfig.protocolo === 'API'
+                                ? (selectedApiProvider === 'bundaberg' ? 'API key de Bundaberg' : 'Client Secret')
+                                : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}
                           />
                         </div>
-                        {configs.some(config => config.id === editingConfig.id && config.protocolo === editingConfig.protocolo) && (
+                        {hasStoredCredential && (
                           <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
                             Credencial guardada y protegida. Déjala vacía para conservarla; las pruebas usarán el secreto almacenado.
                           </p>

@@ -186,6 +186,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const [configs, setConfigs] = useState<ImportConfig[]>([]);
   const [connectionSearchTerm, setConnectionSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+  const [configLoadError, setConfigLoadError] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -287,9 +288,16 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const loadConfigs = async () => {
     if (!currentMall?.id) return;
     setLoading(true);
-    const data = await ApiService.getImportConfigs(currentMall.id);
-    setConfigs(data);
-    setLoading(false);
+    setConfigLoadError(null);
+    try {
+      const data = await ApiService.getImportConfigs(currentMall.id);
+      setConfigs(data);
+    } catch (error: any) {
+      console.error("Error loading import configs:", error);
+      setConfigLoadError(error?.message || 'No se pudieron cargar las conexiones de importación.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const loadStores = async (mallId?: string) => {
@@ -2892,7 +2900,20 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         </div>
       )}
 
-      {loading ? (
+      {configLoadError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center">
+          <AlertCircle className="mx-auto mb-3 text-rose-500" size={30} />
+          <h3 className="font-bold text-rose-800">No se pudieron mostrar las conexiones</h3>
+          <p className="mt-1 text-sm text-rose-700">{configLoadError}</p>
+          <button
+            type="button"
+            onClick={() => void loadConfigs()}
+            className="mt-4 rounded-xl bg-rose-600 px-5 py-2 text-sm font-bold text-white hover:bg-rose-700"
+          >
+            Reintentar
+          </button>
+        </div>
+      ) : loading ? (
         <div className="py-10 text-center">
           <RefreshCw className="animate-spin mx-auto text-indigo-400 mb-4" size={32} />
           <p className="text-slate-400 font-medium">Cargando servicios de red...</p>

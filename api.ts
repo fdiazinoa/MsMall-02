@@ -1099,7 +1099,7 @@ export const ApiService = {
     // Fetch only locals with configured SFTP host
     let query = supabase
       .from('locales')
-      .select('id,nombre,mall_id,sftp_host,sftp_port,sftp_user,sftp_path,sftp_protocol,file_type,frecuencia_cron,hora_especifica,accion_post_procesado,prefijo_backup,mapping_config,constants_config,fecha_corte_importacion,tipo_ejecucion,ultima_ejecucion,resultado_ultimo')
+      .select('id,nombre,mall_id,sftp_host,sftp_port,sftp_user,sftp_path,sftp_protocol,file_type,frecuencia_cron,hora_especifica,accion_post_procesado,prefijo_backup,mapping_config,constants_config,fecha_corte_importacion,tipo_ejecucion,ultima_ejecucion')
       .not('sftp_host', 'is', null)
       .neq('sftp_host', ''); // Also exclude empty strings
 
@@ -1111,7 +1111,7 @@ export const ApiService = {
 
     if (error) {
       console.error("Error fetching configs:", error);
-      return [];
+      throw new Error("No se pudieron cargar las conexiones de importación.");
     }
 
     return (data || []).map((local: any) => ({

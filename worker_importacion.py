@@ -1131,7 +1131,17 @@ def _api_json_request(
                 try:
                     parsed = json.loads(decoded)
                 except json.JSONDecodeError as exc:
-                    raise RuntimeError("El proveedor API devolvio una respuesta que no es JSON valido") from exc
+                    status = getattr(response, "status", None) or 200
+                    response_headers = getattr(response, "headers", None)
+                    content_type = (
+                        str(response_headers.get("Content-Type") or "desconocido").split(";", 1)[0].strip()
+                        if response_headers is not None
+                        else "desconocido"
+                    )
+                    raise RuntimeError(
+                        "El proveedor API devolvio una respuesta que no es JSON valido "
+                        f"(HTTP {status}, tipo {content_type})"
+                    ) from exc
     except urllib.error.HTTPError as exc:
         detail = _decode_worker_text(exc.read(), is_json=True)
         raise RuntimeError(f"API HTTP {exc.code}: {detail or exc.reason}") from exc
@@ -1374,9 +1384,16 @@ def _bundaberg_query_sales(
         query_params["fechaInicio"] = fecha_inicio
         query_params["fechaFin"] = fecha_fin
     query = urllib.parse.urlencode(query_params)
+    base_url = _api_base_url(config)
+    parsed_base_url = urllib.parse.urlsplit(base_url)
+    if (
+        parsed_base_url.netloc.lower().endswith("sibs2.com")
+        and parsed_base_url.path.rstrip("/") == "/api_agora_inv"
+    ):
+        base_url = f"{base_url}/"
     response = _api_json_request(
         "GET",
-        f"{_api_base_url(config)}?{query}",
+        f"{base_url}?{query}",
         timeout=timeout,
     )
     if not response:

@@ -1,4 +1,7 @@
 import urllib.parse
+
+import pytest
+
 import worker_importacion
 from worker_importacion import (
     _bundaberg_query_sales,
@@ -87,6 +90,56 @@ def test_bundaberg_range_uses_lower_camel_case_parameters(monkeypatch):
     assert params["fechaInicio"] == ["2026-06-01"]
     assert params["fechaFin"] == ["2026-06-17"]
     assert "fecha" not in params
+
+
+def test_bundaberg_empty_success_response_means_no_sales(monkeypatch):
+    monkeypatch.setattr(worker_importacion, "_api_json_request", lambda *args, **kwargs: {})
+
+    rows = _bundaberg_query_sales(
+        {"sftp_host": "https://provider.example/api.php"},
+        id_tpv="8906",
+        api_key="private-key",
+        fecha_inicio="2026-08-04",
+        fecha_fin="2026-08-04",
+        timeout=20,
+    )
+
+    assert rows == []
+
+
+def test_api_json_request_accepts_whitespace_only_body(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"  \n\t "
+
+    monkeypatch.setattr(worker_importacion.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+
+    assert worker_importacion._api_json_request("GET", "https://provider.example/api.php") == {}
+
+
+def test_api_json_request_reports_non_json_without_exposing_body(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"<html>provider failure with secret data</html>"
+
+    monkeypatch.setattr(worker_importacion.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(RuntimeError, match="no es JSON valido") as error:
+        worker_importacion._api_json_request("GET", "https://provider.example/api.php")
+
+    assert "secret data" not in str(error.value)
 
 
 def test_fetch_bundaberg_sales_uses_secret_and_id_tpv(monkeypatch):

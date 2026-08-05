@@ -28,6 +28,7 @@ La captura antigua muestra `https://sibs2.com/api_facturacion/api_agora_bundaber
 | `totalneto` | `total_neto` |
 
 Si `numserie` no está presente se usa `ncf`; como último recurso se genera `BUNDABERG-{idTpv}-{id_transaccion}`.
+Los tres totales monetarios se multiplican por `tasa` y se redondean a dos decimales. Si `tasa` no está presente, es cero o no es válida, se usa `1` para conservar los importes recibidos.
 
 ## Configuración en MsMall
 

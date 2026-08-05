@@ -1351,6 +1351,13 @@ def _map_bundaberg_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str
     if not factura_no:
         return None
 
+    exchange_rate = _parse_mapped_decimal(_studio_g_value(row, "tasa", "Tasa", "TASA"), ".")
+    if exchange_rate <= 0:
+        exchange_rate = 1.0
+
+    def converted_total(*keys: str) -> float:
+        return round(_parse_mapped_decimal(_studio_g_value(row, *keys), ".") * exchange_rate, 2)
+
     payload = {
         "local_id": config.get("id"),
         "mall_id": config.get("mall_id"),
@@ -1358,12 +1365,9 @@ def _map_bundaberg_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str
         "factura_no": factura_no,
         "comprobante": ncf or None,
         "hora_transaccion": _parse_api_time(_studio_g_value(row, "hora", "Hora") or raw_fecha),
-        "total_bruto": _parse_mapped_decimal(_studio_g_value(row, "totalbruto", "total_bruto"), "."),
-        "total_impuestos": _parse_mapped_decimal(
-            _studio_g_value(row, "totalimpuestos", "total_impuestos"),
-            ".",
-        ),
-        "total_neto": _parse_mapped_decimal(_studio_g_value(row, "totalneto", "total_neto"), "."),
+        "total_bruto": converted_total("totalbruto", "total_bruto"),
+        "total_impuestos": converted_total("totalimpuestos", "total_impuestos"),
+        "total_neto": converted_total("totalneto", "total_neto"),
     }
     return {key: value for key, value in payload.items() if value not in (None, "")}
 

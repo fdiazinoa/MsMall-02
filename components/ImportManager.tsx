@@ -2086,27 +2086,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             <option value="studio_g">Studio G</option>
                             <option value="bundaberg">Bundaberg / Ágora</option>
                           </select>
-                          {selectedApiProvider === 'bundaberg' && (
-                            <div>
-                              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                                Autenticación API key
-                              </label>
-                              <div className="relative">
-                                <Key size={18} className="absolute left-3.5 top-3 text-slate-300" />
-                                <input
-                                  type="password"
-                                  autoComplete="new-password"
-                                  className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                                  placeholder="API key de Bundaberg"
-                                  value={tempPassword}
-                                  onChange={e => setTempPassword(e.target.value)}
-                                />
-                              </div>
-                              {configs.some(config => config.id === editingConfig.id && config.protocolo === 'API') && (
-                                <p className="mt-1 text-[11px] text-slate-500">Déjalo vacío para conservar el secreto guardado.</p>
-                              )}
-                            </div>
-                          )}
                         </div>
                       )}
                       <div>
@@ -2191,7 +2170,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   </div>
                 </div>
                 <div className="space-y-5">
-                  {editingConfig.protocolo !== 'LOCAL' && !(editingConfig.protocolo === 'API' && selectedApiProvider === 'bundaberg') && (
+                  {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
                       <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
                         {editingConfig.protocolo === 'API'
@@ -2213,9 +2192,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         <div className="relative">
                           <Key size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
-                            type="password" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
+                            type="password"
+                            autoComplete="new-password"
+                            className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
                             placeholder={editingConfig.protocolo === 'API'
-                              ? (selectedApiProvider === 'bundaberg' ? 'API key' : 'Client Secret')
+                              ? (selectedApiProvider === 'bundaberg' ? 'API key de Bundaberg' : 'Client Secret')
                               : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}

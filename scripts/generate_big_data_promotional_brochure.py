@@ -70,11 +70,25 @@ def cropped_reader(filename, crop):
 
 
 def framed_image(c, reader, x, y, width, height, radius=13):
+    image_width, image_height = reader.getSize()
+    scale = max(width / image_width, height / image_height)
+    draw_width = image_width * scale
+    draw_height = image_height * scale
+    draw_x = x + (width - draw_width) / 2
+    draw_y = y + (height - draw_height) / 2
     c.saveState()
     path = c.beginPath()
     path.roundRect(x, y, width, height, radius)
     c.clipPath(path, stroke=0)
-    c.drawImage(reader, x, y, width, height, preserveAspectRatio=False, mask="auto")
+    c.drawImage(
+        reader,
+        draw_x,
+        draw_y,
+        draw_width,
+        draw_height,
+        preserveAspectRatio=True,
+        mask="auto",
+    )
     c.restoreState()
     c.setStrokeColor(colors.HexColor("#C9D4E3"))
     c.setLineWidth(0.9)
@@ -154,13 +168,16 @@ def cover_page(c):
     footer(c, 1)
 
 
-def capability_card(c, x, y, width, height, title, subtitle, image_reader, accent):
+def capability_card(c, x, y, width, height, title, subtitle, detail, image_reader, accent):
     rounded(c, x, y, width, height, fill=WHITE, stroke=LINE, radius=13)
     c.setFillColor(accent)
     c.roundRect(x, y + height - 6, width, 6, 3, fill=1, stroke=0)
     paragraph(c, title, x + 14, y + height - 20, width - 28, 10.5, 12.5, NAVY, True)
     paragraph(c, subtitle, x + 14, y + height - 39, width - 28, 7.2, 9, MUTED)
-    framed_image(c, image_reader, x + 12, y + 12, width - 24, height - 72, 8)
+    framed_image(c, image_reader, x + 12, y + 140, width - 24, 128, 8)
+    paragraph(c, detail, x + 14, y + 120, width - 28, 7.6, 10.5, INK, True)
+    paragraph(c, "Datos visibles del sistema", x + 14, y + 83, width - 28,
+              6.8, 8.5, MUTED)
 
 
 def capabilities_page(c):
@@ -172,38 +189,41 @@ def capabilities_page(c):
               "Tres momentos de decisión conectados por una misma experiencia visual.",
               470, H - 49, 335, 9.2, 12, MUTED)
 
-    prediction = cropped_reader("prediction.jpg", (210, 48, 1280, 720))
-    anomalies = cropped_reader("anomalies.jpg", (210, 48, 1280, 720))
-    simulator = cropped_reader("scenario-simulator.jpg", (95, 38, 1165, 720))
+    prediction = cropped_reader("prediction.jpg", (210, 48, 1280, 650))
+    anomalies = cropped_reader("anomalies.jpg", (210, 48, 1280, 650))
+    simulator = cropped_reader("scenario-simulator.jpg", (95, 38, 1165, 640))
 
     capability_card(
-        c, 34, 296, 500, 220,
+        c, 34, 164, 247, 350,
         "Pronósticos explicables",
-        "Proyección 7/30/90, rango esperado, confianza y motores del cálculo.",
+        "Proyección 7/30/90 con rango y confianza.",
+        "Venta proyectada  |  Rango esperado<br/>Confianza  |  Contexto futuro",
         prediction, TEAL,
     )
     capability_card(
-        c, 548, 296, 260, 220,
+        c, 297, 164, 247, 350,
         "Simulación comercial",
-        "Compara promociones y actividades antes de comprometer recursos.",
+        "Prueba decisiones antes de comprometer recursos.",
+        "Tipo e impacto  |  Fechas<br/>Supuestos  |  Plan de acción",
         simulator, INDIGO,
     )
     capability_card(
-        c, 34, 50, 500, 230,
-        "Anomalías que llevan a la acción",
-        "Picos y caídas ordenados por impacto, desviación, confianza y local asociado.",
+        c, 560, 164, 248, 350,
+        "Anomalías accionables",
+        "Prioriza picos y caídas relevantes.",
+        "Impacto  |  Desviación<br/>Confianza  |  Local asociado",
         anomalies, SKY,
     )
 
-    rounded(c, 548, 50, 260, 230, fill=NAVY, stroke=NAVY, radius=13)
-    paragraph(c, "UNA SOLA PLATAFORMA", 566, 255, 220, 7.2, 9, TEAL, True)
-    paragraph(c, "Más contexto.<br/>Menos intuición.", 566, 223, 220, 20, 24, WHITE, True)
+    rounded(c, 34, 50, 774, 93, fill=NAVY, stroke=NAVY, radius=13)
+    paragraph(c, "UNA SOLA PLATAFORMA", 54, 121, 180, 7.2, 9, TEAL, True)
+    paragraph(c, "Más contexto. Menos intuición.", 54, 98, 330, 16, 19, WHITE, True)
     paragraph(c,
               "Resumen, predicción, escenarios, calendario, anomalías y calidad trabajan juntos para que cada decisión sea trazable.",
-              566, 158, 210, 9, 12.5, colors.HexColor("#D5E1F3"))
+              410, 111, 370, 8.5, 11.5, colors.HexColor("#D5E1F3"))
     paragraph(c,
               "MsMall Big Data no reemplaza la operación: la convierte en inteligencia comercial.",
-              566, 97, 210, 8, 10.5, colors.HexColor("#9EDDD2"), True)
+              410, 74, 370, 7.5, 9.5, colors.HexColor("#9EDDD2"), True)
 
     footer(c, 2)
 

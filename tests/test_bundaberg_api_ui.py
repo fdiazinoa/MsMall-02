@@ -27,3 +27,8 @@ def test_import_manager_exposes_bundaberg_provider_fields():
     assert "configLoadError" in manager_source
     assert "No se pudieron mostrar las conexiones" in manager_source
     assert manager_source.index("Autenticación API key") < manager_source.index(">ID TPV</label>")
+    assert "Credencial guardada y protegida" in manager_source
+    assert "las pruebas usarán el secreto almacenado" in manager_source
+
+    api_source = (Path(__file__).resolve().parents[1] / "api.ts").read_text(encoding="utf-8")
+    assert "local_id: config.id || null" in api_source

@@ -1344,6 +1344,7 @@ export const ApiService = {
 
   async testConnection(config: Partial<ImportConfig>, password?: string, token?: string): Promise<{ success: boolean, message: string }> {
     const requestBody = JSON.stringify({
+      local_id: config.id || null,
       protocolo: config.protocolo,
       host: config.host?.trim(),
       puerto: Number(config.puerto) || (config.protocolo === 'SFTP' ? 22 : config.protocolo === 'API' ? 443 : 21),

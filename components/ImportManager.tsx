@@ -2202,8 +2202,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             onChange={e => setTempPassword(e.target.value)}
                           />
                         </div>
-                        {editingConfig.protocolo === 'API' && configs.some(config => config.id === editingConfig.id && config.protocolo === 'API') && (
-                          <p className="text-[11px] text-slate-500">Déjalo vacío para conservar el secreto guardado.</p>
+                        {configs.some(config => config.id === editingConfig.id && config.protocolo === editingConfig.protocolo) && (
+                          <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
+                            Credencial guardada y protegida. Déjala vacía para conservarla; las pruebas usarán el secreto almacenado.
+                          </p>
                         )}
                       </div>
                     </div>

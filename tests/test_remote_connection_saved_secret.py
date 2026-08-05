@@ -61,3 +61,41 @@ def test_remote_test_preserves_explicit_password(monkeypatch):
     hydrated = main._remote_request_with_saved_password(request, {"role": "admin"})
 
     assert hydrated.password == "new-secret"
+
+
+def test_saved_credentials_hydration_trims_connection_fields(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "_load_local_config_with_access",
+        lambda local_id, operator_ctx: {
+            "sftp_protocol": "SFTP",
+            "sftp_host": "sftp.example.com",
+            "sftp_pass": "stored-secret",
+        },
+    )
+    request = main.RemoteRequest(
+        local_id="local-1",
+        protocolo="SFTP",
+        host=" sftp.example.com ",
+        usuario=" user-with-space ",
+        password="",
+    )
+
+    hydrated = main._remote_request_with_saved_password(request, {"role": "admin"})
+
+    assert hydrated.host == "sftp.example.com"
+    assert hydrated.usuario == "user-with-space"
+    assert hydrated.password == "stored-secret"
+
+
+def test_all_remote_read_endpoints_hydrate_saved_password():
+    source = open(main.__file__, encoding="utf-8").read()
+
+    for endpoint in (
+        "async def list_remote_files(",
+        "async def read_remote_headers(",
+        "async def analyze_remote_mapping(",
+    ):
+        start = source.index(endpoint)
+        segment = source[start:start + 700]
+        assert "_remote_request_with_saved_password(req, operator_ctx)" in segment

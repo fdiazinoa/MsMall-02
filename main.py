@@ -1528,6 +1528,7 @@ class CopilotEmailSendRequest(BaseModel):
     draft_id: str
 
 class RemoteRequest(BaseModel):
+    local_id: Optional[str] = None
     protocolo: str = "SFTP"
     host: str
     puerto: int = 22
@@ -2728,11 +2729,29 @@ def _studio_g_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
     }]
 
 
+def _remote_request_with_saved_password(
+    req: RemoteRequest,
+    operator_ctx: Dict[str, Any],
+) -> RemoteRequest:
+    if not str(req.password or "").strip() and req.local_id:
+        stored_config = _load_local_config_with_access(req.local_id, operator_ctx)
+        stored_protocol = str(stored_config.get("sftp_protocol") or "").strip().upper()
+        requested_protocol = str(req.protocolo or "").strip().upper()
+        stored_host = str(stored_config.get("sftp_host") or "").strip().rstrip("/").lower()
+        requested_host = str(req.host or "").strip().rstrip("/").lower()
+        if stored_protocol == requested_protocol and stored_host == requested_host:
+            stored_password = str(stored_config.get("sftp_pass") or "")
+            if stored_password:
+                return req.model_copy(update={"password": stored_password})
+    return req
+
+
 @app.post("/api/v1/remote/test")
 async def test_remote_connection(
     req: RemoteRequest,
     operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
 ):
+    req = _remote_request_with_saved_password(req, operator_ctx)
     loop = asyncio.get_event_loop()
     try:
         # Timeout de 30s para no bloquear el worker de FastAPI indefinidamente

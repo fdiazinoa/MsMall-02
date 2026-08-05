@@ -1658,7 +1658,70 @@ def _insert_studio_g_sales(config: Dict[str, Any], rows: List[Dict[str, Any]]) -
 
 
 def _insert_bundaberg_sales(config: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[int, int]:
-    return _insert_studio_g_sales(config, rows)
+    if not rows:
+        return 0, 0
+    if not supabase:
+        raise ValueError("Supabase no configurado")
+
+    local_id = str(config.get("id") or "").strip()
+    if not local_id:
+        raise ValueError("local_id requerido para actualizar ventas Bundaberg")
+
+    valid_rows = [
+        row
+        for row in rows
+        if str(row.get("fecha") or "").strip() and str(row.get("factura_no") or "").strip()
+    ]
+    unique_dates = list(dict.fromkeys(str(row["fecha"]).strip() for row in valid_rows))
+    unique_invoices = list(dict.fromkeys(str(row["factura_no"]).strip() for row in valid_rows))
+    existing_by_key: Dict[Tuple[str, str], str] = {}
+    chunk_size = 300
+    for start in range(0, len(unique_invoices), chunk_size):
+        response = (
+            supabase.table("ventas")
+            .select("id,fecha,factura_no")
+            .eq("local_id", local_id)
+            .in_("fecha", unique_dates)
+            .in_("factura_no", unique_invoices[start:start + chunk_size])
+            .execute()
+        )
+        for item in response.data or []:
+            key = (
+                str(item.get("fecha") or "").strip(),
+                str(item.get("factura_no") or "").strip(),
+            )
+            sale_id = str(item.get("id") or "").strip()
+            if all(key) and sale_id:
+                existing_by_key[key] = sale_id
+
+    new_rows: List[Dict[str, Any]] = []
+    updated = 0
+    seen: set[Tuple[str, str]] = set()
+    refresh_fields = (
+        "comprobante",
+        "hora_transaccion",
+        "total_bruto",
+        "total_impuestos",
+        "total_neto",
+    )
+    for row in valid_rows:
+        key = (str(row["fecha"]).strip(), str(row["factura_no"]).strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        existing_id = existing_by_key.get(key)
+        if not existing_id:
+            new_rows.append(row)
+            continue
+
+        update_payload = {field: row.get(field) for field in refresh_fields if field in row}
+        if update_payload:
+            supabase.table("ventas").update(update_payload).eq("id", existing_id).execute()
+            updated += 1
+
+    if new_rows:
+        supabase.table("ventas").insert(new_rows).execute()
+    return len(new_rows), updated
 
 
 def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
@@ -1777,10 +1840,9 @@ def process_bundaberg_api(config: Dict[str, Any], *, write_load_log: bool = True
     batch_id = str(uuid.uuid4())
     try:
         rows, source_name = fetch_bundaberg_sales(config)
-        inserted, skipped = _insert_bundaberg_sales(config, rows)
-        message = f"API Bundaberg: {inserted} ventas importadas"
-        if skipped:
-            message += f", {skipped} duplicadas omitidas"
+        inserted, updated = _insert_bundaberg_sales(config, rows)
+        processed = inserted + updated
+        message = f"API Bundaberg: {inserted} nuevas, {updated} actualizadas"
         if not rows:
             message = "API Bundaberg: 0 ventas encontradas para el rango"
         if write_load_log:
@@ -1794,28 +1856,32 @@ def process_bundaberg_api(config: Dict[str, Any], *, write_load_log: bool = True
                 mall_id=config.get("mall_id"),
                 local_id=config.get("id"),
                 canal="API",
-                records_processed=inserted,
+                records_processed=processed,
                 error_count=0,
                 metadata={
                     "source": "worker_bundaberg_api",
                     "provider": "bundaberg",
                     "records_received": len(rows),
-                    "duplicate_skipped": skipped,
+                    "records_inserted": inserted,
+                    "records_updated": updated,
+                    "duplicate_skipped": 0,
                 },
             )
-        if inserted > 0 and write_load_log:
+        if processed > 0 and write_load_log:
             run_local_risk_analysis_if_possible(config, trigger="worker_bundaberg_api")
         return {
             "ok": True,
             "status": "success",
             "message": message,
-            "records_processed": inserted,
+            "records_processed": processed,
+            "records_inserted": inserted,
+            "records_updated": updated,
             "source_name": source_name,
             "canal": "API",
             "provider": "bundaberg",
             "worker_source": "worker_bundaberg_api",
             "records_received": len(rows),
-            "duplicate_skipped": skipped,
+            "duplicate_skipped": 0,
             "processed_files": 1 if rows else 0,
             "failed_files": 0,
             "total_pending": len(rows),

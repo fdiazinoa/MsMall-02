@@ -92,6 +92,26 @@ def test_bundaberg_range_uses_lower_camel_case_parameters(monkeypatch):
     assert "fecha" not in params
 
 
+def test_bundaberg_preserves_required_trailing_slash(monkeypatch):
+    received = []
+    monkeypatch.setattr(
+        worker_importacion,
+        "_api_json_request",
+        lambda method, url, **kwargs: received.append(url) or {"ventas": []},
+    )
+
+    _bundaberg_query_sales(
+        {"sftp_host": "https://sibs2.com/api_agora_inv/"},
+        id_tpv="8906",
+        api_key="private-key",
+        fecha_inicio="2026-08-04",
+        fecha_fin="2026-08-04",
+        timeout=20,
+    )
+
+    assert urllib.parse.urlsplit(received[0]).path == "/api_agora_inv/"
+
+
 def test_bundaberg_empty_success_response_means_no_sales(monkeypatch):
     monkeypatch.setattr(worker_importacion, "_api_json_request", lambda *args, **kwargs: {})
 

@@ -180,6 +180,23 @@ def capability_card(c, x, y, width, height, title, subtitle, detail, image_reade
               6.8, 8.5, MUTED)
 
 
+def primary_capability_card(c, x, y, width, height, title, subtitle, image_reader, accent):
+    rounded(c, x, y, width, height, fill=WHITE, stroke=LINE, radius=13)
+    c.setFillColor(accent)
+    c.roundRect(x, y + height - 6, width, 6, 3, fill=1, stroke=0)
+    paragraph(c, title, x + 14, y + height - 20, width - 28, 11.5, 13.5, NAVY, True)
+    paragraph(c, subtitle, x + 14, y + height - 41, width - 28, 7.6, 9.5, MUTED)
+    framed_image(c, image_reader, x + 14, y + 14, width - 28, 271, 9)
+
+
+def secondary_capability_card(c, x, y, width, height, title, image_reader, accent):
+    rounded(c, x, y, width, height, fill=WHITE, stroke=LINE, radius=13)
+    c.setFillColor(accent)
+    c.roundRect(x, y + height - 6, width, 6, 3, fill=1, stroke=0)
+    paragraph(c, title, x + 12, y + height - 18, width - 24, 9.2, 11, NAVY, True)
+    framed_image(c, image_reader, x + 12, y + 12, width - 24, 126, 8)
+
+
 def capabilities_page(c):
     c.setFillColor(PALE)
     c.rect(0, 0, W, H, fill=1, stroke=0)
@@ -193,25 +210,20 @@ def capabilities_page(c):
     anomalies = cropped_reader("anomalies.jpg", (210, 48, 1280, 650))
     simulator = cropped_reader("scenario-simulator.jpg", (95, 38, 1165, 640))
 
-    capability_card(
-        c, 34, 164, 247, 350,
+    primary_capability_card(
+        c, 34, 164, 510, 350,
         "Pronósticos explicables",
-        "Proyección 7/30/90 con rango y confianza.",
-        "Venta proyectada  |  Rango esperado<br/>Confianza  |  Contexto futuro",
+        "Venta proyectada, rango esperado, confianza y trayectoria diaria en una sola vista.",
         prediction, TEAL,
     )
-    capability_card(
-        c, 297, 164, 247, 350,
+    secondary_capability_card(
+        c, 560, 344, 248, 170,
         "Simulación comercial",
-        "Prueba decisiones antes de comprometer recursos.",
-        "Tipo e impacto  |  Fechas<br/>Supuestos  |  Plan de acción",
         simulator, INDIGO,
     )
-    capability_card(
-        c, 560, 164, 248, 350,
+    secondary_capability_card(
+        c, 560, 164, 248, 170,
         "Anomalías accionables",
-        "Prioriza picos y caídas relevantes.",
-        "Impacto  |  Desviación<br/>Confianza  |  Local asociado",
         anomalies, SKY,
     )
 

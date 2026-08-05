@@ -544,7 +544,8 @@ def test_studio_g_api_configuration_is_available_in_import_manager():
     types_source = (repo / "types.ts").read_text(encoding="utf-8")
 
     assert "'FTP' | 'SFTP' | 'LOCAL' | 'API'" in types_source
-    assert '<option value="API">API REST (Studio G)</option>' in manager_source
+    assert '<option value="API">API REST</option>' in manager_source
+    assert '<option value="studio_g">Studio G</option>' in manager_source
     assert "Autenticación Client Credentials" in manager_source
     assert "Periodo de consulta API" in manager_source
     assert "ID TPV" in manager_source

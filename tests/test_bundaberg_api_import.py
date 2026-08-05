@@ -5,8 +5,10 @@ import pytest
 import worker_importacion
 from worker_importacion import (
     _bundaberg_query_sales,
+    _insert_bundaberg_sales,
     _map_bundaberg_sale,
     fetch_bundaberg_sales,
+    process_bundaberg_api,
     process_webservice_import,
 )
 
@@ -206,6 +208,85 @@ def test_fetch_bundaberg_sales_uses_secret_and_id_tpv(monkeypatch):
     assert source == "Bundaberg 8906 2026-06-01..2026-06-17"
     assert received[0]["api_key"] == "private-key"
     assert received[0]["id_tpv"] == "8906"
+
+
+def test_insert_bundaberg_sales_updates_existing_and_inserts_new(monkeypatch):
+    class Result:
+        def __init__(self, data=None):
+            self.data = data or []
+
+    class FakeTable:
+        def __init__(self):
+            self.action = None
+            self.updated = []
+            self.inserted = []
+            self.filters = []
+
+        def select(self, *_args):
+            self.action = "select"
+            return self
+
+        def eq(self, field, value):
+            self.filters.append((field, value))
+            return self
+
+        def in_(self, *_args):
+            return self
+
+        def update(self, payload):
+            self.action = "update"
+            self.updated.append(payload)
+            return self
+
+        def insert(self, payload):
+            self.action = "insert"
+            self.inserted.extend(payload)
+            return self
+
+        def execute(self):
+            if self.action == "select":
+                return Result([{"id": "sale-1", "fecha": "2026-08-04", "factura_no": "735"}])
+            return Result()
+
+    fake_table = FakeTable()
+
+    class FakeSupabase:
+        def table(self, name):
+            assert name == "ventas"
+            return fake_table
+
+    monkeypatch.setattr(worker_importacion, "supabase", FakeSupabase())
+    inserted, updated = _insert_bundaberg_sales(
+        {"id": "local-1"},
+        [
+            {"fecha": "2026-08-04", "factura_no": "735", "total_neto": 6877.0},
+            {"fecha": "2026-08-04", "factura_no": "736", "total_neto": 1794.0},
+        ],
+    )
+
+    assert (inserted, updated) == (1, 1)
+    assert fake_table.updated == [{"total_neto": 6877.0}]
+    assert fake_table.inserted == [
+        {"fecha": "2026-08-04", "factura_no": "736", "total_neto": 1794.0}
+    ]
+    assert ("id", "sale-1") in fake_table.filters
+
+
+def test_process_bundaberg_reports_updated_sales(monkeypatch):
+    monkeypatch.setattr(
+        worker_importacion,
+        "fetch_bundaberg_sales",
+        lambda config: ([{"fecha": "2026-08-04", "factura_no": "735"}], "Bundaberg 8906"),
+    )
+    monkeypatch.setattr(worker_importacion, "_insert_bundaberg_sales", lambda config, rows: (0, 1))
+
+    result = process_bundaberg_api({"id": "local-1", "nombre": "ELIZE"}, write_load_log=False)
+
+    assert result["records_processed"] == 1
+    assert result["records_inserted"] == 0
+    assert result["records_updated"] == 1
+    assert result["duplicate_skipped"] == 0
+    assert "1 actualizadas" in result["message"]
 
 
 def test_webservice_dispatches_bundaberg_provider(monkeypatch):

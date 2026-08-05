@@ -43,6 +43,7 @@ Los tres totales monetarios se multiplican por `tasa` y se redondean a dos decim
 
 - Cada fila lleva el `mall_id` y `local_id` de la configuración seleccionada.
 - Los duplicados se omiten por `(local_id, fecha, factura_no)`.
+- Para Bundaberg, una venta existente con la misma `(local_id, fecha, factura_no)` conserva su identificador y actualiza comprobante, hora y totales con la respuesta más reciente del API.
 - Los resultados se registran en el monitor con canal `API` y proveedor `bundaberg`.
 - La API key no se devuelve al navegador cuando se listan configuraciones. Un campo secreto vacío al editar conserva la clave existente.
 - Los errores se sanitizan antes de escribirse en logs.

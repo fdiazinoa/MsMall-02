@@ -32,6 +32,8 @@ import stat
 import urllib.error
 import urllib.request
 from worker_importacion import (
+    api_provider_name,
+    fetch_bundaberg_sales,
     fetch_studio_g_sales,
     process_webservice_import,
     run_worker_async,
@@ -1529,12 +1531,13 @@ class RemoteRequest(BaseModel):
     protocolo: str = "SFTP"
     host: str
     puerto: int = 22
-    usuario: str
+    usuario: str = ""
     password: Optional[str] = None
     ruta: str = "/"
     tipo_archivo: str = "CSV"
     has_header: Optional[bool] = None
     data_start_row: Optional[int] = None
+    provider: Optional[str] = None
 
 class RemoteConnectionCreateRequest(BaseModel):
     mall_id: str
@@ -2576,18 +2579,22 @@ def _test_remote_connection_sync(req: RemoteRequest):
         protocol = str(req.protocolo or "").strip().upper()
         if protocol == "API":
             previous_day = date.today() - timedelta(days=1)
-            rows, _ = fetch_studio_g_sales(
-                _studio_g_config_from_remote_request(
-                    req,
-                    previous_day.isoformat(),
-                    previous_day.isoformat(),
-                )
+            api_config = _api_config_from_remote_request(
+                req,
+                previous_day.isoformat(),
+                previous_day.isoformat(),
+            )
+            provider = api_provider_name(api_config)
+            rows, _ = (
+                fetch_bundaberg_sales(api_config)
+                if provider == "bundaberg"
+                else fetch_studio_g_sales(api_config)
             )
             duration = time.time() - start_time
             return {
                 "status": "success",
                 "message": (
-                    "API autenticada y consulta de ventas validada "
+                    f"API {('Bundaberg' if provider == 'bundaberg' else 'Studio G')} autenticada y consulta de ventas validada "
                     f"({len(rows)} registro(s), {duration:.2f}s)"
                 ),
             }
@@ -2631,6 +2638,61 @@ def _studio_g_config_from_remote_request(
             "_studio_g_fecha_fin": fecha_fin or today,
         },
     }
+
+
+def _api_config_from_remote_request(
+    req: RemoteRequest,
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+) -> Dict[str, Any]:
+    provider = str(req.provider or "").strip().lower()
+    if provider in {"bundaberg", "agora", "agora_bundaberg"} or (
+        "sibs2.com" in req.host.lower() and "api_agora" in req.host.lower()
+    ):
+        today = date.today().isoformat()
+        return {
+            "id": "bundaberg-preview",
+            "mall_id": "00000000-0000-0000-0000-000000000000",
+            "nombre": "Bundaberg API",
+            "sftp_protocol": "API",
+            "sftp_host": req.host,
+            "sftp_user": "",
+            "sftp_pass": req.password,
+            "sftp_path": req.ruta,
+            "_webservice_timeout_seconds": "20",
+            "constants_config": {
+                "provider": "bundaberg",
+                "_api_fecha_inicio": fecha_inicio or today,
+                "_api_fecha_fin": fecha_fin or today,
+            },
+        }
+    return _studio_g_config_from_remote_request(req, fecha_inicio, fecha_fin)
+
+
+def _api_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
+    provider_config = _api_config_from_remote_request(req)
+    if api_provider_name(provider_config) != "bundaberg":
+        return _studio_g_preview_rows(req)
+
+    today = date.today()
+    try:
+        rows, _ = fetch_bundaberg_sales(
+            _api_config_from_remote_request(req, today.isoformat(), today.isoformat())
+        )
+    except Exception as exc:
+        logger.warning(
+            "Bundaberg no pudo consultar la fecha actual para vista previa: %s",
+            sanitize_sensitive_ops_error(exc),
+        )
+        rows = []
+    if rows:
+        return rows
+
+    history_start = today - timedelta(days=STUDIO_G_PREVIEW_HISTORY_DAYS)
+    rows, _ = fetch_bundaberg_sales(
+        _api_config_from_remote_request(req, history_start.isoformat(), today.isoformat())
+    )
+    return rows
 
 
 def _studio_g_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
@@ -2690,10 +2752,11 @@ async def test_remote_connection(
 def _list_remote_files_sync(req: RemoteRequest):
     try:
         if str(req.protocolo or "").strip().upper() == "API":
+            provider = api_provider_name(_api_config_from_remote_request(req))
             return {
                 "ruta_actual": req.ruta,
                 "items": [{
-                    "nombre": "STUDIO_G_API",
+                    "nombre": "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API",
                     "ruta": req.ruta,
                     "es_dir": False,
                 }],
@@ -3770,7 +3833,7 @@ async def analyze_remote_mapping(
             read_size = -1 if is_json else 32768 # Read all for JSON, 32KB for CSV (increased from 8KB)
 
             if str(req.protocolo or "").strip().upper() == "API":
-                return json.dumps(_studio_g_preview_rows(req), ensure_ascii=False)
+                return json.dumps(_api_preview_rows(req), ensure_ascii=False)
             if req.protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
                 try:
@@ -4090,8 +4153,9 @@ def _list_remote_files(config: Dict[str, Any]):
     tipo_archivo = config.get("tipo_archivo") or config.get("file_type", "CSV")
     logger.info(f"[DEBUG_AUTH] User: '{usuario}', PassLen: {len(password) if password else 0}, Host: '{host}', Port: {puerto}, Path: '{ruta}'")
     if str(protocolo or "").strip().upper() == "API":
+        provider = api_provider_name(config)
         return [{
-            "nombre": "STUDIO_G_API",
+            "nombre": "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API",
             "fecha": datetime.utcnow().isoformat(),
             "tamano": 0,
         }]
@@ -4316,7 +4380,7 @@ async def _execute_manual_endpoint_impl(
                 else "error"
             )
             log_channel = str(result.get("canal") or protocolo or "API").strip().upper()
-            log_source_name = result.get("source_name") or "Studio G API"
+            log_source_name = result.get("source_name") or "API ventas"
             insert_load_log(
                 local_nombre,
                 log_source_name,
@@ -4331,7 +4395,8 @@ async def _execute_manual_endpoint_impl(
                 error_count=error_count,
                 metadata={
                     "source": "manual_api_webservice_import",
-                    "worker_source": "worker_studio_g_api",
+                    "worker_source": result.get("worker_source") or "worker_api_import",
+                    "provider": result.get("provider") or api_provider_name(config_data),
                     "records_received": result.get("records_received"),
                     "duplicate_skipped": result.get("duplicate_skipped"),
                     "fallback_strategy": "daily" if result.get("failed_dates") else None,

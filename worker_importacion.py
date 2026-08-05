@@ -1079,6 +1079,33 @@ def _is_studio_g_config(config: Dict[str, Any], constants: Optional[Dict[str, An
     return provider in {"studio_g", "studiog", "sales_tap", "salestap"} or "alcagora.ddns.net" in host
 
 
+def _is_bundaberg_config(config: Dict[str, Any], constants: Optional[Dict[str, Any]] = None) -> bool:
+    constants = constants or _webservice_constants(config)
+    provider = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "provider",
+            "_provider",
+            "api_provider",
+            "_api_provider",
+        )
+        or ""
+    ).strip().lower()
+    host = str(config.get("sftp_host") or config.get("host") or "").strip().lower()
+    return provider in {"bundaberg", "agora_bundaberg", "agora"} or (
+        "sibs2.com" in host and "api_agora" in host
+    )
+
+
+def api_provider_name(config: Dict[str, Any]) -> str:
+    if _is_bundaberg_config(config):
+        return "bundaberg"
+    if _is_studio_g_config(config):
+        return "studio_g"
+    return ""
+
+
 def _api_json_request(
     method: str,
     url: str,
@@ -1101,6 +1128,8 @@ def _api_json_request(
     except urllib.error.HTTPError as exc:
         detail = _decode_worker_text(exc.read(), is_json=True)
         raise RuntimeError(f"API HTTP {exc.code}: {detail or exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"No se pudo conectar al proveedor API: {exc.reason}") from exc
 
     if not isinstance(parsed, dict):
         raise RuntimeError("Respuesta API inesperada: se esperaba objeto JSON")
@@ -1245,6 +1274,25 @@ def _studio_g_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
     return start, end
 
 
+def _bundaberg_date_range(config: Dict[str, Any]) -> Tuple[str, str]:
+    constants = _webservice_constants(config)
+    normalized = dict(config)
+    normalized_constants = dict(constants)
+    key_aliases = {
+        "_studio_g_date_mode": "_api_date_mode",
+        "_studio_g_fecha_inicio": "_api_fecha_inicio",
+        "_studio_g_fecha_fin": "_api_fecha_fin",
+    }
+    for studio_key, api_key in key_aliases.items():
+        if normalized_constants.get(studio_key) in (None, "") and normalized_constants.get(api_key) not in (None, ""):
+            normalized_constants[studio_key] = normalized_constants[api_key]
+    normalized["constants_config"] = normalized_constants
+    try:
+        return _studio_g_date_range(normalized)
+    except ValueError as exc:
+        raise ValueError(str(exc).replace("Studio G", "Bundaberg")) from exc
+
+
 def _map_studio_g_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str) -> Optional[Dict[str, Any]]:
     raw_fecha = _studio_g_value(row, "Fecha", "FECHA")
     fecha = _parse_api_date(raw_fecha)
@@ -1269,6 +1317,111 @@ def _map_studio_g_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str)
         "total_neto": _parse_mapped_decimal(_studio_g_value(row, "TotalNeto", "TOTALNETO"), "."),
     }
     return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def _map_bundaberg_sale(config: Dict[str, Any], row: Dict[str, Any], id_tpv: str) -> Optional[Dict[str, Any]]:
+    raw_fecha = _studio_g_value(row, "fecha", "Fecha")
+    fecha = _parse_api_date(raw_fecha)
+    if not fecha:
+        return None
+
+    transaction_id = _studio_g_value(row, "id_transaccion", "idTransaccion", "IDTransaccion")
+    ncf = str(_studio_g_value(row, "ncf", "NCF") or "").strip()
+    serial = str(_studio_g_value(row, "numserie", "num_serie", "numeroSerie") or "").strip()
+    factura_no = serial or ncf
+    if not factura_no and transaction_id not in (None, ""):
+        factura_no = f"BUNDABERG-{id_tpv}-{transaction_id}"
+    if not factura_no:
+        return None
+
+    payload = {
+        "local_id": config.get("id"),
+        "mall_id": config.get("mall_id"),
+        "fecha": fecha,
+        "factura_no": factura_no,
+        "comprobante": ncf or None,
+        "hora_transaccion": _parse_api_time(_studio_g_value(row, "hora", "Hora") or raw_fecha),
+        "total_bruto": _parse_mapped_decimal(_studio_g_value(row, "totalbruto", "total_bruto"), "."),
+        "total_impuestos": _parse_mapped_decimal(
+            _studio_g_value(row, "totalimpuestos", "total_impuestos"),
+            ".",
+        ),
+        "total_neto": _parse_mapped_decimal(_studio_g_value(row, "totalneto", "total_neto"), "."),
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def _bundaberg_query_sales(
+    config: Dict[str, Any],
+    *,
+    id_tpv: str,
+    api_key: str,
+    fecha_inicio: str,
+    fecha_fin: str,
+    timeout: int,
+) -> List[Dict[str, Any]]:
+    query_params = {"idTpv": id_tpv, "apiKey": api_key}
+    if fecha_inicio == fecha_fin:
+        query_params["fecha"] = fecha_inicio
+    else:
+        query_params["fechaInicio"] = fecha_inicio
+        query_params["fechaFin"] = fecha_fin
+    query = urllib.parse.urlencode(query_params)
+    response = _api_json_request(
+        "GET",
+        f"{_api_base_url(config)}?{query}",
+        timeout=timeout,
+    )
+    sales = response.get("ventas")
+    if sales is None:
+        provider_message = str(response.get("message") or response.get("mensaje") or "").strip()
+        raise RuntimeError(
+            f"Respuesta Bundaberg invalida: falta la lista ventas{': ' + provider_message if provider_message else ''}"
+        )
+    if not isinstance(sales, list):
+        raise RuntimeError("Respuesta Bundaberg invalida: ventas no es una lista")
+    return [
+        mapped
+        for sale in sales
+        if isinstance(sale, dict)
+        for mapped in [_map_bundaberg_sale(config, sale, id_tpv)]
+        if mapped
+    ]
+
+
+def fetch_bundaberg_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+    config = _normalize_worker_import_config(config)
+    constants = _webservice_constants(config)
+    id_tpv = str(
+        _webservice_config_value(config, constants, "idTpv", "id_tpv", "ruta_remota", "sftp_path")
+        or ""
+    ).strip()
+    api_key = str(config.get("password") or config.get("sftp_pass") or "").strip()
+    if not id_tpv or id_tpv == ".":
+        raise ValueError("idTpv requerido para Bundaberg")
+    if not api_key:
+        raise ValueError("API key requerida para Bundaberg")
+
+    fecha_inicio, fecha_fin = _bundaberg_date_range(config)
+    timeout = max(
+        5,
+        _webservice_int_value(
+            config,
+            constants,
+            WEBSERVICE_TIMEOUT_SECONDS,
+            "_webservice_timeout_seconds",
+            "timeout_seconds",
+        ),
+    )
+    rows = _bundaberg_query_sales(
+        config,
+        id_tpv=id_tpv,
+        api_key=api_key,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        timeout=timeout,
+    )
+    return rows, f"Bundaberg {id_tpv} {fecha_inicio}..{fecha_fin}"
 
 
 def _is_studio_g_sales_query_failure(exc: Exception) -> bool:
@@ -1474,6 +1627,10 @@ def _insert_studio_g_sales(config: Dict[str, Any], rows: List[Dict[str, Any]]) -
     return len(filtered_rows), len(duplicate_details)
 
 
+def _insert_bundaberg_sales(config: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[int, int]:
+    return _insert_studio_g_sales(config, rows)
+
+
 def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
     config = _normalize_worker_import_config(config)
     local_name = config.get("nombre") or "Studio G"
@@ -1534,6 +1691,8 @@ def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True)
             "records_processed": inserted,
             "source_name": source_name,
             "canal": "API",
+            "provider": "studio_g",
+            "worker_source": "worker_studio_g_api",
             "records_received": len(rows),
             "duplicate_skipped": skipped,
             "processed_files": 1 if rows else 0,
@@ -1577,6 +1736,96 @@ def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True)
             "source_name": "Studio G API",
             "canal": "API",
             "error_type": error_type,
+            "worker_source": "worker_studio_g_api",
+            "details": details,
+        }
+
+
+def process_bundaberg_api(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
+    config = _normalize_worker_import_config(config)
+    local_name = config.get("nombre") or "Bundaberg"
+    batch_id = str(uuid.uuid4())
+    try:
+        rows, source_name = fetch_bundaberg_sales(config)
+        inserted, skipped = _insert_bundaberg_sales(config, rows)
+        message = f"API Bundaberg: {inserted} ventas importadas"
+        if skipped:
+            message += f", {skipped} duplicadas omitidas"
+        if not rows:
+            message = "API Bundaberg: 0 ventas encontradas para el rango"
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                source_name,
+                "exito",
+                message,
+                batch_id,
+                [],
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal="API",
+                records_processed=inserted,
+                error_count=0,
+                metadata={
+                    "source": "worker_bundaberg_api",
+                    "provider": "bundaberg",
+                    "records_received": len(rows),
+                    "duplicate_skipped": skipped,
+                },
+            )
+        if inserted > 0 and write_load_log:
+            run_local_risk_analysis_if_possible(config, trigger="worker_bundaberg_api")
+        return {
+            "ok": True,
+            "status": "success",
+            "message": message,
+            "records_processed": inserted,
+            "source_name": source_name,
+            "canal": "API",
+            "provider": "bundaberg",
+            "worker_source": "worker_bundaberg_api",
+            "records_received": len(rows),
+            "duplicate_skipped": skipped,
+            "processed_files": 1 if rows else 0,
+            "failed_files": 0,
+            "total_pending": len(rows),
+            "batch_size": 1 if rows else 0,
+            "details": [],
+        }
+    except Exception as exc:
+        clean_error = sanitize_error_text(exc)
+        message = f"Fallo API Bundaberg: {clean_error}"
+        details = [{"linea": 0, "tipo": "bundaberg_api_error", "error": message}]
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                "Bundaberg API",
+                "error",
+                message,
+                batch_id,
+                details,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal="API",
+                records_processed=0,
+                error_count=1,
+                metadata={
+                    "source": "worker_bundaberg_api",
+                    "provider": "bundaberg",
+                    "exception": clean_error,
+                    "error_type": "bundaberg_api_error",
+                },
+            )
+        return {
+            "ok": False,
+            "status": "error",
+            "message": message,
+            "records_processed": 0,
+            "source_name": "Bundaberg API",
+            "canal": "API",
+            "provider": "bundaberg",
+            "worker_source": "worker_bundaberg_api",
+            "error_type": "bundaberg_api_error",
             "details": details,
         }
 
@@ -1584,6 +1833,8 @@ def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True)
 def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
     normalized = _normalize_worker_import_config(config)
     protocol = str(normalized.get("sftp_protocol") or normalized.get("protocolo") or "").strip().upper()
+    if protocol == "API" and _is_bundaberg_config(normalized):
+        return process_bundaberg_api(normalized, write_load_log=write_load_log)
     if protocol == "API" and _is_studio_g_config(normalized):
         return process_studio_g_api(normalized, write_load_log=write_load_log)
     message = f"Proveedor {protocol or 'API'} no soportado por este importador."

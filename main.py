@@ -1344,6 +1344,10 @@ STORE_WRITE_FIELDS = {
     "fecha_corte_importacion",
 }
 
+STORE_NUMERIC_FIELDS = {
+    "mts", "porciento_renta", "renta_fija", "breakpoint_venta", "porcentaje_variable",
+}
+
 
 def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: Optional[str] = None) -> Dict[str, Any]:
     data = {
@@ -1361,6 +1365,20 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
         data["email"] = None
     if data.get("email_secundario") == "":
         data["email_secundario"] = None
+    for field in STORE_NUMERIC_FIELDS:
+        if field not in data:
+            continue
+        raw_value = data.get(field)
+        if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+            data[field] = None
+            continue
+        try:
+            numeric_value = float(raw_value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{field} debe contener un número válido")
+        if numeric_value != numeric_value or numeric_value in (float("inf"), float("-inf")):
+            raise HTTPException(status_code=400, detail=f"{field} debe contener un número válido")
+        data[field] = numeric_value
     if "fecha_corte_importacion" in data:
         raw_cutoff = str(data.get("fecha_corte_importacion") or "").strip()
         if raw_cutoff:

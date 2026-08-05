@@ -698,6 +698,14 @@ const isMissingStoreEmailColumnError = (error: any): boolean => {
   );
 };
 
+const STORE_NUMERIC_FIELDS = [
+  'mts',
+  'porciento_renta',
+  'renta_fija',
+  'breakpoint_venta',
+  'porcentaje_variable',
+] as const;
+
 const normalizeStorePayload = (store: Partial<Store>): Record<string, any> => {
   const { id, created_at, ...storeData } = store as any;
   if ('email' in storeData) {
@@ -708,6 +716,19 @@ const normalizeStorePayload = (store: Partial<Store>): Record<string, any> => {
     const secondaryEmail = String(storeData.email_secundario || '').trim().toLowerCase();
     storeData.email_secundario = secondaryEmail || null;
   }
+  STORE_NUMERIC_FIELDS.forEach((field) => {
+    if (!(field in storeData)) return;
+    const rawValue = storeData[field];
+    if (rawValue === null || rawValue === undefined || String(rawValue).trim() === '') {
+      storeData[field] = null;
+      return;
+    }
+    const numericValue = Number(rawValue);
+    if (!Number.isFinite(numericValue)) {
+      throw new Error(`El campo ${field} debe contener un número válido.`);
+    }
+    storeData[field] = numericValue;
+  });
   return storeData;
 };
 

@@ -40,6 +40,26 @@ def test_map_bundaberg_sale_to_ventas_payload():
     }
 
 
+def test_map_bundaberg_sale_multiplies_totals_by_exchange_rate():
+    mapped = _map_bundaberg_sale(
+        {"id": "local-1", "mall_id": "mall-1"},
+        {
+            "id_transaccion": 13,
+            "numserie": 454,
+            "fecha": "2026-06-17",
+            "tasa": "60.20",
+            "totalbruto": "185.00",
+            "totalimpuestos": "28.22",
+            "totalneto": "156.78",
+        },
+        "8906",
+    )
+
+    assert mapped["total_bruto"] == 11137.0
+    assert mapped["total_impuestos"] == 1698.84
+    assert mapped["total_neto"] == 9438.16
+
+
 def test_bundaberg_single_date_uses_documented_query(monkeypatch):
     received = []
 

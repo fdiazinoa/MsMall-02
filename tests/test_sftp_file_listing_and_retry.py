@@ -56,6 +56,43 @@ def test_sftp_listing_recovers_size_when_directory_metadata_reports_zero(monkeyp
     assert fake_sftp.closed is True
 
 
+def test_saved_remote_listing_uses_database_secret_and_path():
+    merged = main._build_remote_listing_config(
+        {
+            "id": "local-1",
+            "host": "sftp.example.test",
+            "password": "",
+            "ruta_remota": ".",
+        },
+        {
+            "id": "local-1",
+            "sftp_protocol": "SFTP",
+            "sftp_host": "sftp.example.test",
+            "sftp_user": "saved-user",
+            "sftp_pass": "saved-secret",
+            "sftp_path": "/ventas/exportadas",
+            "file_type": "TXT",
+        },
+    )
+
+    assert merged["sftp_pass"] == "saved-secret"
+    assert merged["sftp_path"] == "/ventas/exportadas"
+    assert "password" not in merged
+    assert "ruta_remota" not in merged
+
+
+def test_manual_modal_shows_saved_route_and_listing_errors():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "components"
+        / "ImportManager.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "Ruta activa:" in source
+    assert "manualLoadError" in source
+    assert "No se pudo consultar la ruta remota" in source
+
+
 def test_manual_batch_accepts_error_files_and_quoted_wildcard_masks():
     source = (
         Path(__file__).resolve().parents[1]

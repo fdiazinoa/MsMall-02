@@ -22,7 +22,8 @@ def test_import_manager_exposes_bundaberg_provider_fields():
     assert '<option value="API">API REST</option>' in manager_source
     assert "https://sibs2.com/api_agora_inv/" in manager_source
     assert "Autenticación API key" in manager_source
-    assert 'placeholder="API key de Bundaberg"' in manager_source
+    assert "'API key de Bundaberg'" in manager_source
     assert "Indica la API key de Bundaberg" in manager_source
     assert "configLoadError" in manager_source
     assert "No se pudieron mostrar las conexiones" in manager_source
+    assert manager_source.index("Autenticación API key") < manager_source.index(">ID TPV</label>")

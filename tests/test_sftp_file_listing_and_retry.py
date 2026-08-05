@@ -37,6 +37,19 @@ class _FakeSSH:
         pass
 
 
+class _ReadableSFTP:
+    def stat(self, _path):
+        return SimpleNamespace(st_mode=stat.S_IFDIR)
+
+    def listdir(self, _path):
+        return ["Ventas 2026.CSV"]
+
+    def open(self, path, _mode):
+        assert path == "./Ventas 2026.CSV"
+        from io import BytesIO
+        return BytesIO(b"Fecha,Venta\n2026-08-04,100")
+
+
 def test_sftp_listing_recovers_size_when_directory_metadata_reports_zero(monkeypatch):
     fake_sftp = _FakeSFTP()
     monkeypatch.setattr(main, "get_sftp_client", lambda *_args: (_FakeSSH(), fake_sftp))
@@ -79,6 +92,25 @@ def test_saved_remote_listing_uses_database_secret_and_path():
     assert merged["sftp_path"] == "/ventas/exportadas"
     assert "password" not in merged
     assert "ruta_remota" not in merged
+
+
+def test_sftp_download_resolves_current_server_filename_before_opening():
+    payload, filename = main._download_sftp_file_bytes(
+        _ReadableSFTP(),
+        "ventas 2026.csv",
+        "./",
+    )
+
+    assert filename == "Ventas 2026.CSV"
+    assert payload.startswith(b"Fecha,Venta")
+
+
+def test_frontend_remote_reads_send_local_id_and_do_not_retry_regular_500():
+    source = (Path(__file__).resolve().parents[1] / "api.ts").read_text(encoding="utf-8")
+
+    assert source.count("local_id: config.id || null") >= 3
+    assert "local_id: localId || null" in source
+    assert "[502, 503, 504].includes(response.status)" in source
 
 
 def test_manual_modal_shows_saved_route_and_listing_errors():

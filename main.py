@@ -866,6 +866,9 @@ def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config:
 
 def _normalize_import_config_payload(config_data: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(config_data or {})
+    for key in ("host", "sftp_host", "usuario", "sftp_user"):
+        if key in normalized and normalized.get(key) is not None:
+            normalized[key] = str(normalized[key]).strip()
     if normalized.get("mapping"):
         normalized["mapping_config"] = dict(normalized["mapping"])
     else:
@@ -1344,6 +1347,10 @@ STORE_WRITE_FIELDS = {
     "fecha_corte_importacion",
 }
 
+STORE_NUMERIC_FIELDS = {
+    "mts", "porciento_renta", "renta_fija", "breakpoint_venta", "porcentaje_variable",
+}
+
 
 def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: Optional[str] = None) -> Dict[str, Any]:
     data = {
@@ -1361,6 +1368,20 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
         data["email"] = None
     if data.get("email_secundario") == "":
         data["email_secundario"] = None
+    for field in STORE_NUMERIC_FIELDS:
+        if field not in data:
+            continue
+        raw_value = data.get(field)
+        if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+            data[field] = None
+            continue
+        try:
+            numeric_value = float(raw_value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{field} debe contener un número válido")
+        if numeric_value != numeric_value or numeric_value in (float("inf"), float("-inf")):
+            raise HTTPException(status_code=400, detail=f"{field} debe contener un número válido")
+        data[field] = numeric_value
     if "fecha_corte_importacion" in data:
         raw_cutoff = str(data.get("fecha_corte_importacion") or "").strip()
         if raw_cutoff:
@@ -2733,6 +2754,10 @@ def _remote_request_with_saved_password(
     req: RemoteRequest,
     operator_ctx: Dict[str, Any],
 ) -> RemoteRequest:
+    updates: Dict[str, Any] = {
+        "host": str(req.host or "").strip(),
+        "usuario": str(req.usuario or "").strip(),
+    }
     if not str(req.password or "").strip() and req.local_id:
         stored_config = _load_local_config_with_access(req.local_id, operator_ctx)
         stored_protocol = str(stored_config.get("sftp_protocol") or "").strip().upper()
@@ -2742,8 +2767,8 @@ def _remote_request_with_saved_password(
         if stored_protocol == requested_protocol and stored_host == requested_host:
             stored_password = str(stored_config.get("sftp_pass") or "")
             if stored_password:
-                return req.model_copy(update={"password": stored_password})
-    return req
+                updates["password"] = stored_password
+    return req.model_copy(update=updates)
 
 
 @app.post("/api/v1/remote/test")
@@ -2848,6 +2873,7 @@ async def list_remote_files(
     operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
 ):
     try:
+        req = _remote_request_with_saved_password(req, operator_ctx)
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(executor, _list_remote_files_sync, req)
     except Exception as e:
@@ -3187,6 +3213,7 @@ async def read_remote_headers(
     operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
 ):
     try:
+        req = _remote_request_with_saved_password(req, operator_ctx)
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(executor, _read_remote_headers_sync, req)
     except Exception as e:
@@ -3842,6 +3869,7 @@ async def analyze_remote_mapping(
     Connects to SFTP/FTP, reads a sample of the file, and returns mapping suggestions.
     """
     try:
+        req = _remote_request_with_saved_password(req, operator_ctx)
         content = ""
         loop = asyncio.get_event_loop()
         analysis_timeout_seconds = _remote_analysis_timeout_seconds(req.ruta, req.tipo_archivo)
@@ -4008,6 +4036,47 @@ def _resolve_ftp_filename(ftp: FTP, requested_filename: str, remote_path: str) -
             return matches[0]
 
     return requested or remote_basename or ""
+
+
+def _download_sftp_file_bytes(
+    sftp: Any,
+    requested_filename: str,
+    remote_path: str,
+    max_bytes: Optional[int] = None,
+) -> Tuple[bytes, str]:
+    """Resolve the current server filename before opening a remote file."""
+    requested = posixpath.basename(str(requested_filename or "").strip().strip("'\""))
+    target_dir = str(remote_path or ".").strip() or "."
+    try:
+        target_stat = sftp.stat(target_dir)
+        if not stat.S_ISDIR(target_stat.st_mode):
+            target_dir = posixpath.dirname(target_dir) or "."
+    except Exception:
+        target_dir = posixpath.dirname(target_dir) or "."
+
+    try:
+        listed_names = [str(name) for name in (sftp.listdir(target_dir) or [])]
+    except Exception as exc:
+        raise FileNotFoundError(
+            f"No se pudo consultar la ruta SFTP '{target_dir}': {exc}"
+        ) from exc
+
+    resolved = next((name for name in listed_names if name == requested), None)
+    if not resolved:
+        requested_key = requested.strip().casefold()
+        matches = [name for name in listed_names if name.strip().casefold() == requested_key]
+        if len(matches) == 1:
+            resolved = matches[0]
+    if not resolved:
+        raise FileNotFoundError(
+            f"El archivo '{requested}' ya no está disponible en la ruta SFTP '{target_dir}'. "
+            "Actualice el listado antes de reintentar."
+        )
+
+    full_path = posixpath.join(target_dir, resolved)
+    with sftp.open(full_path, "rb") as remote_file:
+        payload = remote_file.read() if max_bytes is None else remote_file.read(max_bytes)
+    return payload, resolved
 
 def _download_ftp_file_bytes(
     ftp: FTP,
@@ -4514,26 +4583,19 @@ async def _execute_manual_endpoint_impl(
             if protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(host, puerto, usuario, password)
                 try:
-                    # Normalizar ruta: si es un archivo, usar el padre
-                    target_dir = ruta_remota
-                    try:
-                        st = sftp.stat(ruta_remota)
-                        if not stat.S_ISDIR(st.st_mode):
-                            target_dir = posixpath.dirname(ruta_remota) or "."
-                    except Exception as e:
-                        logger.warning(f"No se pudo determinar si la ruta es archivo/directorio: {e}")
-
-                    full_path = posixpath.join(target_dir, source_filename)
-                    logger.info(f"Intentando abrir archivo SFTP: {full_path}")
-                    with sftp.open(full_path, 'rb') as f:
-                        raw_bytes = f.read()
-                        content = _decode_remote_text(
-                            raw_bytes,
-                            is_json=source_filename.lower().endswith('.json')
-                        )
+                    raw_bytes, resolved_name = _download_sftp_file_bytes(
+                        sftp,
+                        source_filename,
+                        ruta_remota,
+                    )
+                    source_filename = resolved_name or source_filename
+                    content = _decode_remote_text(
+                        raw_bytes,
+                        is_json=source_filename.lower().endswith('.json')
+                    )
                     
                     # Log file size and first chars for verification
-                    logger.info(f"✅ Archivo leído: {full_path} | Tamaño: {len(content)} bytes | Primeros 100 chars: {content[:100]}")
+                    logger.info(f"✅ Archivo SFTP leído: {source_filename} | Tamaño: {len(content)} bytes | Primeros 100 chars: {content[:100]}")
                 finally:
                     sftp.close()
                     ssh.close()
@@ -4870,24 +4932,17 @@ async def analyze_remote_file(
             if protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(host, puerto, usuario, password)
                 try:
-                    # Normalize path
-                    target_dir = ruta_remota
-                    try:
-                        st = sftp.stat(ruta_remota)
-                        if not stat.S_ISDIR(st.st_mode):
-                            target_dir = posixpath.dirname(ruta_remota) or "."
-                    except:
-                        pass
-                    
-                    full_path = posixpath.join(target_dir, req.filename)
-                    with sftp.open(full_path, 'rb') as f:
-                        analysis_filename = req.filename
-                        # LEER TODO EL ARCHIVO SI ES JSON (necesario para parsear)
-                        if analysis_filename.lower().endswith('.json'):
-                            logger.info(f"Leyendo archivo COMPLETO (JSON): {analysis_filename}")
-                            return _decode_remote_text(f.read(), is_json=True)
-                        else:
-                            return _decode_remote_text(f.read(65536), is_json=False)
+                    is_json = req.filename.lower().endswith('.json')
+                    raw_bytes, resolved_name = _download_sftp_file_bytes(
+                        sftp,
+                        req.filename,
+                        ruta_remota,
+                        max_bytes=None if is_json else 65536,
+                    )
+                    analysis_filename = resolved_name or req.filename
+                    if is_json:
+                        logger.info(f"Leyendo archivo COMPLETO (JSON): {analysis_filename}")
+                    return _decode_remote_text(raw_bytes, is_json=is_json)
                 finally:
                     sftp.close()
                     ssh.close()

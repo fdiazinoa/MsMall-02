@@ -698,6 +698,14 @@ const isMissingStoreEmailColumnError = (error: any): boolean => {
   );
 };
 
+const STORE_NUMERIC_FIELDS = [
+  'mts',
+  'porciento_renta',
+  'renta_fija',
+  'breakpoint_venta',
+  'porcentaje_variable',
+] as const;
+
 const normalizeStorePayload = (store: Partial<Store>): Record<string, any> => {
   const { id, created_at, ...storeData } = store as any;
   if ('email' in storeData) {
@@ -708,6 +716,19 @@ const normalizeStorePayload = (store: Partial<Store>): Record<string, any> => {
     const secondaryEmail = String(storeData.email_secundario || '').trim().toLowerCase();
     storeData.email_secundario = secondaryEmail || null;
   }
+  STORE_NUMERIC_FIELDS.forEach((field) => {
+    if (!(field in storeData)) return;
+    const rawValue = storeData[field];
+    if (rawValue === null || rawValue === undefined || String(rawValue).trim() === '') {
+      storeData[field] = null;
+      return;
+    }
+    const numericValue = Number(rawValue);
+    if (!Number.isFinite(numericValue)) {
+      throw new Error(`El campo ${field} debe contener un número válido.`);
+    }
+    storeData[field] = numericValue;
+  });
   return storeData;
 };
 
@@ -1398,7 +1419,7 @@ export const ApiService = {
     return { success: false, message: lastMessage };
   },
 
-  async exploreDirectory(path: string, protocol?: string, host?: string, port?: number, user?: string, password?: string, token?: string): Promise<{ ruta_actual: string, items: { nombre: string, ruta: string, es_dir: boolean }[] }> {
+  async exploreDirectory(path: string, protocol?: string, host?: string, port?: number, user?: string, password?: string, token?: string, localId?: string): Promise<{ ruta_actual: string, items: { nombre: string, ruta: string, es_dir: boolean }[] }> {
     try {
       let response;
       if (protocol && protocol !== 'LOCAL') {
@@ -1406,6 +1427,7 @@ export const ApiService = {
           method: 'POST',
           headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
           body: JSON.stringify({
+            local_id: localId || null,
             protocolo: protocol,
             host: host?.trim(),
             puerto: Number(port),
@@ -1437,6 +1459,7 @@ export const ApiService = {
         method: 'POST',
         headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
+          local_id: config.id || null,
           protocolo: config.protocolo,
           host: config.host?.trim(),
           puerto: Number(config.puerto),
@@ -1478,6 +1501,7 @@ export const ApiService = {
         method: 'POST',
         headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
+          local_id: config.id || null,
           protocolo: config.protocolo,
           host: config.host?.trim(),
           puerto: Number(config.puerto),
@@ -1637,8 +1661,9 @@ export const ApiService = {
         if (!response.ok) {
           const serverDetail = await parseErrorDetail(response, "Error ejecutando importación");
 
-          // If proxy route fails with 5xx, try direct backend (if available).
-          if (response.status >= 500 && i < baseUrls.length - 1) {
+          // Retry only gateway/service availability errors. A regular 500 is
+          // an application result and repeating it creates duplicate load logs.
+          if ([502, 503, 504].includes(response.status) && i < baseUrls.length - 1) {
             console.warn(`executeManualImport: ${baseUrl} respondió ${response.status}. Intentando fallback...`);
             continue;
           }

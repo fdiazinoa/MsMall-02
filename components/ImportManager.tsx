@@ -1583,7 +1583,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         editingConfig.puerto,
         editingConfig.usuario,
         tempPassword,
-        authToken
+        authToken,
+        editingConfig.id
       );
       console.log("Explorer data received:", data);
       setExplorerPath(data.ruta_actual);
@@ -1666,7 +1667,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         editingConfig.puerto,
         editingConfig.usuario,
         tempPassword,
-        authToken
+        authToken,
+        editingConfig.id
       );
       setExplorerPath(data.ruta_actual);
       setExplorerItems(data.items);

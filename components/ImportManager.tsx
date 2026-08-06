@@ -3312,20 +3312,33 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       {showManualModal && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-4xl bg-white rounded-[2rem] border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col max-h-[85vh]">
-	            <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-center">
-              <div>
+	            <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-start gap-4">
+              <div className="min-w-0">
                 <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                   <Play size={20} className="text-indigo-600" fill="currentColor" />
                   Ejecución de Importación Manual
                 </h3>
                 <p className="text-slate-400 text-xs mt-0.5">Seleccione un archivo del servidor remoto para procesar inmediatamente.</p>
-                <p className="text-slate-500 text-xs mt-1">
-                  Ruta activa: <code className="font-bold text-indigo-600">{activeManualConfig?.ruta_remota || '.'}</code>
-                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="rounded-md bg-indigo-100 px-2 py-1 font-bold uppercase tracking-wide text-indigo-600">
+                    Importación
+                  </span>
+                  <strong
+                    className="max-w-full truncate text-sm text-slate-800"
+                    title={activeManualConfig?.nombre || 'Importación seleccionada'}
+                  >
+                    {activeManualConfig?.nombre || 'Importación seleccionada'}
+                  </strong>
+                  <span className="text-slate-300" aria-hidden="true">•</span>
+                  <span className="text-slate-500">
+                    Ruta: <code className="font-bold text-indigo-600">{activeManualConfig?.ruta_remota || '.'}</code>
+                  </span>
+                </div>
               </div>
 	              <button
 	                onClick={closeManualModal}
-	                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
+	                className="shrink-0 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
+	                aria-label="Cerrar ejecución de importación manual"
 	              >
 	                <XCircle size={24} />
 	              </button>

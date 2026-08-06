@@ -6,6 +6,7 @@ import { AppTab } from './components/appTabs';
 import { useAuth } from './context/AuthProvider';
 import { supabase } from './api';
 import { CopilotWidget } from './components/CopilotWidget';
+import { MSMALL_FOOTER_TEXT } from './appVersion';
 
 // Suppress Recharts deprecation warnings (XAxis, YAxis defaultProps)
 const originalConsoleError = console.error;
@@ -144,7 +145,7 @@ const App: React.FC = () => {
         </main>
 
         <footer className="border-t border-slate-200 py-2 px-4 text-center text-xs text-slate-500">
-          &copy; MercaSend, SRL. MsMall v.20
+          {MSMALL_FOOTER_TEXT}
         </footer>
       </div>
 

@@ -157,6 +157,14 @@ APP_ENV=production
 CORS_ALLOW_ORIGINS=https://msmall.vercel.app,https://admin.tudominio.com
 ```
 
+### Versionado de despliegues
+
+- `VERSION` es la fuente única de la versión visible de MsMall.
+- El build inyecta ese valor y el footer muestra `© MercaSend, SRL. MsMall v.<versión>`.
+- Antes de un nuevo despliegue, ejecutar `npm run deploy:version:bump` y confirmar el cambio de `VERSION` en el mismo PR.
+- Para consultar la versión: `npm run deploy:version:show`.
+- Para establecer una versión concreta: `npm run deploy:version:set -- <número>`.
+
 ## 5. Roadmap
 - Webhooks de Notificación (Slack/Email).
 - Exportación PDF/Excel de informes firmados.

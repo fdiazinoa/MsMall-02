@@ -477,7 +477,8 @@ const normalizeSaleTotals = <T extends { total_bruto?: any; total_impuestos?: an
 const fetchJsonWithBaseFallback = async <T>(
   path: string,
   init: RequestInit,
-  fallbackMessage: string
+  fallbackMessage: string,
+  options?: { timeoutMs?: number }
 ): Promise<T> => {
   const baseUrls = getApiBaseUrls();
   const isVercelPreview = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
@@ -486,9 +487,30 @@ const fetchJsonWithBaseFallback = async <T>(
   for (let i = 0; i < baseUrls.length; i++) {
     const baseUrl = baseUrls[i];
     const endpoint = `${baseUrl}${path}`;
+    const controller = options?.timeoutMs ? new AbortController() : null;
+    let didTimeout = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const abortFromCaller = () => controller?.abort(init.signal?.reason);
+
+    if (controller && init.signal) {
+      if (init.signal.aborted) {
+        abortFromCaller();
+      } else {
+        init.signal.addEventListener('abort', abortFromCaller, { once: true });
+      }
+    }
+    if (controller && options?.timeoutMs) {
+      timeoutId = setTimeout(() => {
+        didTimeout = true;
+        controller.abort();
+      }, options.timeoutMs);
+    }
 
     try {
-      const response = await fetch(endpoint, init);
+      const response = await fetch(endpoint, {
+        ...init,
+        signal: controller?.signal || init.signal
+      });
       if (response.ok) {
         return await response.json();
       }
@@ -506,12 +528,18 @@ const fetchJsonWithBaseFallback = async <T>(
       const detail = await parseErrorDetail(response, fallbackMessage);
       throw new Error(detail);
     } catch (error: any) {
-      lastError = error;
-      if (isNetworkFetchFailure(error) && i < baseUrls.length - 1) {
+      const normalizedError = didTimeout
+        ? new Error('Tiempo de espera agotado consultando el servidor remoto.')
+        : error;
+      lastError = normalizedError;
+      if ((isNetworkFetchFailure(error) || didTimeout) && i < baseUrls.length - 1) {
         console.warn(`API fallback: fallo de red en ${endpoint}. Intentando siguiente base...`);
         continue;
       }
-      throw error;
+      throw normalizedError;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      init.signal?.removeEventListener('abort', abortFromCaller);
     }
   }
 
@@ -1527,19 +1555,19 @@ export const ApiService = {
 
   async listRemoteFiles(config: ImportConfig, token?: string): Promise<{ nombre: string, fecha: string, tamano: number }[]> {
     try {
-      const response = await fetch(`${BASE_URL}/remote/list-files`, {
-        method: 'POST',
-        headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
-        body: JSON.stringify(config)
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: "Error listando archivos" }));
-        throw new Error(errorData.detail || "Error listando archivos");
-      }
-      return await response.json();
+      return await fetchJsonWithBaseFallback<{ nombre: string, fecha: string, tamano: number }[]>(
+        '/remote/list-files',
+        {
+          method: 'POST',
+          headers: withAuthHeaders(token, { 'Content-Type': 'application/json' }),
+          body: JSON.stringify(config)
+        },
+        'Error listando archivos',
+        { timeoutMs: 40000 }
+      );
     } catch (error: any) {
       console.error(error);
-      throw error.message || error;
+      throw new Error(normalizeErrorMessage(error, 'No se pudo consultar la ruta remota guardada.'));
     }
   },
 

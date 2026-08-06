@@ -113,6 +113,18 @@ def test_frontend_remote_reads_send_local_id_and_do_not_retry_regular_500():
     assert "[502, 503, 504].includes(response.status)" in source
 
 
+def test_frontend_remote_listing_retries_network_failures_with_timeout():
+    source = (Path(__file__).resolve().parents[1] / "api.ts").read_text(encoding="utf-8")
+    start = source.index("async listRemoteFiles")
+    end = source.index("async analyzeSingleFile", start)
+    segment = source[start:end]
+
+    assert "fetchJsonWithBaseFallback" in segment
+    assert "'/remote/list-files'" in segment
+    assert "{ timeoutMs: 40000 }" in segment
+    assert "No se pudo consultar la ruta remota guardada." in segment
+
+
 def test_manual_modal_shows_saved_route_and_listing_errors():
     source = (
         Path(__file__).resolve().parents[1]

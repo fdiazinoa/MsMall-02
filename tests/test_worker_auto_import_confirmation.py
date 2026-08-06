@@ -75,6 +75,8 @@ class _FakeWorkerTable:
         self._select = None
         self._filters = []
         self._in_filters = []
+        self._write_mode = None
+        self._upsert_options = {}
 
     def select(self, value, *_args, **_kwargs):
         self._select = value
@@ -90,13 +92,53 @@ class _FakeWorkerTable:
 
     def insert(self, payload):
         self.payload = payload
+        self._write_mode = "insert"
+        return self
+
+    def upsert(self, payload, **kwargs):
+        self.payload = payload
+        self._write_mode = "upsert"
+        self._upsert_options = dict(kwargs)
+        self.supabase.upsert_calls.append({
+            "table": self.table_name,
+            "payload": payload,
+            **kwargs,
+        })
         return self
 
     def execute(self):
         if self.payload is not None:
             rows = self.payload if isinstance(self.payload, list) else [self.payload]
-            self.supabase.tables.setdefault(self.table_name, []).extend([dict(row) for row in rows])
-            return SimpleNamespace(data=rows)
+            table_rows = self.supabase.tables.setdefault(self.table_name, [])
+            if self._write_mode != "upsert":
+                table_rows.extend([dict(row) for row in rows])
+                return SimpleNamespace(data=rows)
+
+            inserted = []
+            conflict_columns = [
+                column.strip()
+                for column in str(self._upsert_options.get("on_conflict") or "").split(",")
+                if column.strip()
+            ]
+            for row in rows:
+                conflict = next(
+                    (
+                        existing
+                        for existing in table_rows
+                        if conflict_columns
+                        and all(existing.get(column) == row.get(column) for column in conflict_columns)
+                    ),
+                    None,
+                )
+                if conflict is not None and self._upsert_options.get("ignore_duplicates"):
+                    continue
+                if conflict is not None:
+                    conflict.update(dict(row))
+                    inserted.append(dict(conflict))
+                    continue
+                table_rows.append(dict(row))
+                inserted.append(dict(row))
+            return SimpleNamespace(data=inserted)
 
         rows = list(self.supabase.tables.get(self.table_name, []))
         for column, value in self._filters:
@@ -112,6 +154,7 @@ class _FakeWorkerTable:
 class _FakeWorkerSupabase:
     def __init__(self):
         self.tables = {}
+        self.upsert_calls = []
 
     def table(self, table_name):
         return _FakeWorkerTable(self, table_name)
@@ -487,6 +530,58 @@ def test_worker_inserts_new_rows_and_documents_exact_duplicates(monkeypatch):
     assert "1 registros duplicados omitidos y documentados" in mensaje
     inserted = [row for row in fake_db.tables["ventas"] if row["factura_no"] == "1168161"]
     assert len(inserted) == 1
+    assert fake_db.upsert_calls[0]["on_conflict"] == "local_id,fecha,factura_no"
+    assert fake_db.upsert_calls[0]["ignore_duplicates"] is True
+
+
+def test_worker_atomically_ignores_duplicate_if_prefilter_misses_it(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    fake_db.tables["ventas"] = [
+        {
+            "local_id": "local-1",
+            "mall_id": "mall-1",
+            "fecha": "2026-07-25",
+            "factura_no": "1168160",
+            "total_bruto": 500.0,
+        }
+    ]
+    monkeypatch.setattr(worker, "supabase", fake_db)
+    monkeypatch.setattr(
+        worker,
+        "_filter_existing_sale_rows",
+        lambda rows, line_numbers, _local_id: (rows, line_numbers, []),
+    )
+
+    content = "\n".join([
+        "factura,fecha,bruto,impuestos,neto",
+        "1168160,2026-07-25,500,90,410",
+        "1168161,2026-07-25,750,135,615",
+    ])
+    config = {
+        "nombre": "Pollo Victorina",
+        "id": "local-1",
+        "mall_id": "mall-1",
+        "file_type": "CSV",
+        "mapping_config": {
+            "factura_numero": "factura",
+            "fecha_venta": "fecha",
+            "total_bruto": "bruto",
+            "total_impuestos": "impuestos",
+            "total_neto": "neto",
+        },
+        "constants_config": {},
+    }
+
+    count, details, stats = worker.process_file_logic(config, "DailySales.csv", content)
+
+    assert count == 1
+    assert stats["duplicate_skipped"] == 1
+    assert stats["processing_error_count"] == 0
+    assert details[0]["tipo"] == "duplicado"
+    assert details[0]["origen"] == "conflicto_base_datos"
+    assert fake_db.upsert_calls[0]["ignore_duplicates"] is True
+    assert len(fake_db.tables["ventas"]) == 2
 
 
 def test_worker_accepts_zero_value_sale_when_all_totals_are_zero(monkeypatch):

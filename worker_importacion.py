@@ -678,6 +678,44 @@ def _duplicate_sale_detail(
     }
 
 
+def _sale_conflict_key(row: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    local_id = str(row.get("local_id") or "").strip()
+    fecha = str(row.get("fecha") or "").strip()
+    factura = str(row.get("factura_no") or "").strip()
+    if not local_id or not fecha or not factura:
+        return None
+    return local_id, fecha, factura
+
+
+def _atomic_duplicate_details(
+    attempted_rows: List[Dict[str, Any]],
+    line_numbers: List[int],
+    inserted_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    inserted_keys = {
+        key
+        for row in inserted_rows
+        if (key := _sale_conflict_key(row)) is not None
+    }
+    return [
+        _duplicate_sale_detail(row, line_no, "conflicto_base_datos")
+        for row, line_no in zip(attempted_rows, line_numbers)
+        if (key := _sale_conflict_key(row)) is not None and key not in inserted_keys
+    ]
+
+
+def _upsert_sales_ignoring_duplicates(rows: List[Dict[str, Any]]):
+    return (
+        supabase.table("ventas")
+        .upsert(
+            rows,
+            on_conflict="local_id,fecha,factura_no",
+            ignore_duplicates=True,
+        )
+        .execute()
+    )
+
+
 def _filter_existing_sale_rows(
     rows: List[Dict[str, Any]],
     line_numbers: List[int],
@@ -976,20 +1014,34 @@ def process_file_logic(config, filename, content):
                     filename,
                 )
 
-        # Bulk insert for better throughput; fallback to row insert if a chunk fails.
+        # Atomic conflict handling prevents races between duplicate lookup and write.
+        # Keep row-level fallback so one malformed row does not reject valid rows.
         BATCH_SIZE = 500
         for start in range(0, len(valid_rows), BATCH_SIZE):
             batch = valid_rows[start:start + BATCH_SIZE]
             lines = valid_line_numbers[start:start + BATCH_SIZE]
             try:
-                supabase.table("ventas").insert(batch).execute()
-                registros_exito += len(batch)
+                response = _upsert_sales_ignoring_duplicates(batch)
+                inserted_rows = list(response.data or [])
+                registros_exito += len(inserted_rows)
+                atomic_duplicates = _atomic_duplicate_details(batch, lines, inserted_rows)
+                detalles.extend(atomic_duplicates)
+                stats["duplicate_skipped"] += len(atomic_duplicates)
             except Exception as batch_error:
-                logger.warning(f"Batch insert failed for {filename} ({len(batch)} rows): {batch_error}. Falling back to row-level inserts.")
+                logger.warning(
+                    "Batch upsert failed for %s (%s rows): %s. Falling back to row-level upserts.",
+                    filename,
+                    len(batch),
+                    batch_error,
+                )
                 for payload, line_no in zip(batch, lines):
                     try:
-                        supabase.table("ventas").insert(payload).execute()
-                        registros_exito += 1
+                        response = _upsert_sales_ignoring_duplicates([payload])
+                        inserted_rows = list(response.data or [])
+                        registros_exito += len(inserted_rows)
+                        atomic_duplicates = _atomic_duplicate_details([payload], [line_no], inserted_rows)
+                        detalles.extend(atomic_duplicates)
+                        stats["duplicate_skipped"] += len(atomic_duplicates)
                     except Exception as row_error:
                         detalles.append({"linea": line_no, "error": str(row_error)})
                         logger.error(f"Error insertando línea {line_no}: {row_error}")

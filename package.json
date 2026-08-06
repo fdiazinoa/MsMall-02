@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy:version:show": "node scripts/deploy-version.mjs show",
+    "deploy:version:bump": "node scripts/deploy-version.mjs bump",
+    "deploy:version:set": "node scripts/deploy-version.mjs set"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.93.2",

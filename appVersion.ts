@@ -1,0 +1,2 @@
+export const MSMALL_DEPLOY_VERSION = __MSMALL_DEPLOY_VERSION__;
+export const MSMALL_FOOTER_TEXT = `© MercaSend, SRL. MsMall v.${MSMALL_DEPLOY_VERSION}`;

@@ -132,7 +132,9 @@ def test_manual_modal_shows_saved_route_and_listing_errors():
         / "ImportManager.tsx"
     ).read_text(encoding="utf-8")
 
-    assert "Ruta activa:" in source
+    assert "Importación" in source
+    assert "activeManualConfig?.nombre" in source
+    assert "Ruta:" in source
     assert "manualLoadError" in source
     assert "No se pudo consultar la ruta remota" in source
 

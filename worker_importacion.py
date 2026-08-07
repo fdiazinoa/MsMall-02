@@ -1161,6 +1161,28 @@ def _fetch_webservice_json(url: str, token: Optional[str], timeout_seconds: int)
         return json.loads(decoded or "{}")
 
 
+def _webservice_http_error_message(status_code: Any) -> str:
+    try:
+        code = int(status_code)
+    except (TypeError, ValueError):
+        code = 0
+    if code == 525:
+        return (
+            "SUBA respondió HTTP 525: Cloudflare no pudo completar la conexión SSL con el servidor "
+            "de origen. La credencial no llegó a validarse; KATIÓN debe corregir el certificado/TLS "
+            "o proporcionar un endpoint vigente."
+        )
+    if code in {401, 403}:
+        return f"El WebService rechazó la credencial (HTTP {code}). Verifique o renueve el token Bearer."
+    if code == 404:
+        return "El endpoint configurado no existe o cambió (HTTP 404). Verifique la URL del WebService."
+    if code == 429:
+        return "El WebService limitó temporalmente las consultas (HTTP 429). Intente nuevamente más tarde."
+    if code >= 500:
+        return f"El proveedor WebService no está disponible temporalmente (HTTP {code})."
+    return f"El WebService respondió con error HTTP {code or 'desconocido'}."
+
+
 def fetch_generic_webservice_records(
     config: Dict[str, Any],
     *,
@@ -2151,7 +2173,7 @@ def _process_generic_webservice_import(
     try:
         records, fetched_pages, _ = fetch_generic_webservice_records(normalized)
     except urllib.error.HTTPError as exc:
-        message = f"Fallo HTTP Webservice: {exc.code}"
+        message = _webservice_http_error_message(exc.code)
         if write_load_log:
             insert_load_log(
                 local_name,

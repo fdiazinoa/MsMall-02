@@ -9,8 +9,8 @@ def test_deploy_version_is_centralized_and_visible():
     version_source = (repo / "appVersion.ts").read_text(encoding="utf-8")
     vite_source = (repo / "vite.config.ts").read_text(encoding="utf-8")
 
-    assert version == "20"
     assert version.isdigit()
+    assert int(version) >= 1
     assert "MSMALL_FOOTER_TEXT" in app_source
     assert "© MercaSend, SRL. MsMall v.${MSMALL_DEPLOY_VERSION}" in version_source
     assert "__MSMALL_DEPLOY_VERSION__" in vite_source

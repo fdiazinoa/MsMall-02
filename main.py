@@ -34,6 +34,7 @@ import urllib.request
 from worker_importacion import (
     api_provider_name,
     fetch_bundaberg_sales,
+    fetch_generic_webservice_records,
     fetch_studio_g_sales,
     process_webservice_import,
     run_worker_async,
@@ -2599,6 +2600,24 @@ def _test_remote_connection_sync(req: RemoteRequest):
     start_time = time.time()
     try:
         protocol = str(req.protocolo or "").strip().upper()
+        if protocol == "WEBSERVICE":
+            records, _, _ = fetch_generic_webservice_records(
+                {
+                    "sftp_protocol": "WEBSERVICE",
+                    "sftp_host": req.host,
+                    "sftp_pass": req.password,
+                    "constants_config": {"_webservice_timeout_seconds": "30"},
+                },
+                max_pages_override=1,
+            )
+            duration = time.time() - start_time
+            return {
+                "status": "success",
+                "message": (
+                    f"Webservice autenticado correctamente ({duration:.2f}s). "
+                    f"Registros detectados en la primera página: {len(records)}"
+                ),
+            }
         if protocol == "API":
             previous_day = date.today() - timedelta(days=1)
             api_config = _api_config_from_remote_request(
@@ -2795,12 +2814,17 @@ async def test_remote_connection(
 
 def _list_remote_files_sync(req: RemoteRequest):
     try:
-        if str(req.protocolo or "").strip().upper() == "API":
-            provider = api_provider_name(_api_config_from_remote_request(req))
+        if _is_webservice_protocol(req.protocolo):
+            protocol = str(req.protocolo or "").strip().upper()
+            provider = api_provider_name(_api_config_from_remote_request(req)) if protocol == "API" else ""
             return {
                 "ruta_actual": req.ruta,
                 "items": [{
-                    "nombre": "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API",
+                    "nombre": (
+                        "WEBSERVICE_API"
+                        if protocol == "WEBSERVICE"
+                        else "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API"
+                    ),
                     "ruta": req.ruta,
                     "es_dir": False,
                 }],
@@ -3879,8 +3903,20 @@ async def analyze_remote_mapping(
             is_json = req.tipo_archivo == "JSON" or req.ruta.lower().endswith('.json')
             read_size = -1 if is_json else 32768 # Read all for JSON, 32KB for CSV (increased from 8KB)
 
-            if str(req.protocolo or "").strip().upper() == "API":
+            protocol = str(req.protocolo or "").strip().upper()
+            if protocol == "API":
                 return json.dumps(_api_preview_rows(req), ensure_ascii=False)
+            if protocol == "WEBSERVICE":
+                rows, _, _ = fetch_generic_webservice_records(
+                    {
+                        "sftp_protocol": "WEBSERVICE",
+                        "sftp_host": req.host,
+                        "sftp_pass": req.password,
+                        "constants_config": {"_webservice_timeout_seconds": "30"},
+                    },
+                    max_pages_override=1,
+                )
+                return json.dumps(rows, ensure_ascii=False)
             if req.protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)
                 try:
@@ -4240,10 +4276,15 @@ def _list_remote_files(config: Dict[str, Any]):
     ruta = config.get("ruta_remota") or config.get("sftp_path", ".")
     tipo_archivo = config.get("tipo_archivo") or config.get("file_type", "CSV")
     logger.info(f"[DEBUG_AUTH] User: '{usuario}', PassLen: {len(password) if password else 0}, Host: '{host}', Port: {puerto}, Path: '{ruta}'")
-    if str(protocolo or "").strip().upper() == "API":
-        provider = api_provider_name(config)
+    if _is_webservice_protocol(protocolo):
+        protocol = str(protocolo or "").strip().upper()
+        provider = api_provider_name(config) if protocol == "API" else ""
         return [{
-            "nombre": "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API",
+            "nombre": (
+                "WEBSERVICE_API"
+                if protocol == "WEBSERVICE"
+                else "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API"
+            ),
             "fecha": datetime.utcnow().isoformat(),
             "tamano": 0,
         }]

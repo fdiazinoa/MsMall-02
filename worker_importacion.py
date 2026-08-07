@@ -74,6 +74,7 @@ def _read_bounded_int_env(name: str, default: int, minimum: int, maximum: int) -
 
 
 WEBSERVICE_TIMEOUT_SECONDS = _read_bounded_int_env("WEBSERVICE_TIMEOUT_SECONDS", 45, 5, 180)
+WEBSERVICE_MAX_PAGES = _read_bounded_int_env("WEBSERVICE_MAX_PAGES", 50, 1, 500)
 
 def _connection_monitor_service() -> ConnectionMonitorService:
     return ConnectionMonitorService(supabase, logger)
@@ -1091,6 +1092,161 @@ def _webservice_int_value(config: Dict[str, Any], constants: Dict[str, Any], def
         return default
 
 
+def _webservice_bool_value(config: Dict[str, Any], constants: Dict[str, Any], default: bool, *keys: str) -> bool:
+    raw = _webservice_config_value(config, constants, *keys)
+    if raw in (None, ""):
+        return default
+    return _parse_worker_bool(raw)
+
+
+def _append_query_param(url: str, key: str, value: Any) -> str:
+    parsed = urllib.parse.urlparse(str(url or ""))
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query = [(current_key, current_value) for current_key, current_value in query if current_key != key]
+    query.append((key, str(value)))
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
+def _json_path_value(payload: Any, path: str) -> Any:
+    current = payload
+    for part in [item for item in str(path or "").split(".") if item]:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _first_list_of_records(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("data", "items", "results", "records", "invoices", "facturas", "ventas"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [row for row in value if isinstance(row, dict)]
+
+    for value in payload.values():
+        if isinstance(value, list) and any(isinstance(row, dict) for row in value):
+            return [row for row in value if isinstance(row, dict)]
+        if isinstance(value, dict):
+            nested = _first_list_of_records(value)
+            if nested:
+                return nested
+
+    return [payload]
+
+
+def _extract_webservice_records(payload: Any, data_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    if data_path:
+        selected = _json_path_value(payload, data_path)
+        if selected is not None:
+            return _first_list_of_records(selected)
+    return _first_list_of_records(payload)
+
+
+def _fetch_webservice_json(url: str, token: Optional[str], timeout_seconds: int) -> Any:
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "MsMall-ImportWorker/1.0",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        raw = response.read()
+        decoded = _decode_worker_text(raw, is_json=True)
+        return json.loads(decoded or "{}")
+
+
+def fetch_generic_webservice_records(
+    config: Dict[str, Any],
+    *,
+    max_pages_override: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], int, str]:
+    normalized = _normalize_worker_import_config(config)
+    constants = _webservice_constants(normalized)
+    base_url = _webservice_config_value(
+        normalized,
+        constants,
+        "_webservice_url",
+        "webservice_url",
+        "api_url",
+        "endpoint_url",
+        "host",
+        "sftp_host",
+    )
+    if not base_url:
+        raise ValueError("Webservice sin URL configurada.")
+
+    token = _webservice_config_value(
+        normalized,
+        constants,
+        "_webservice_token",
+        "webservice_token",
+        "api_token",
+        "auth_token",
+        "password",
+        "sftp_pass",
+    )
+    page_param = str(
+        _webservice_config_value(normalized, constants, "_webservice_page_param", "page_param") or "page"
+    )
+    start_page = max(
+        1,
+        _webservice_int_value(normalized, constants, 1, "_webservice_start_page", "start_page"),
+    )
+    configured_max_pages = max(
+        1,
+        _webservice_int_value(
+            normalized,
+            constants,
+            WEBSERVICE_MAX_PAGES,
+            "_webservice_max_pages",
+            "max_pages",
+        ),
+    )
+    max_pages = max(1, min(configured_max_pages, max_pages_override)) if max_pages_override else configured_max_pages
+    timeout_seconds = max(
+        5,
+        _webservice_int_value(
+            normalized,
+            constants,
+            WEBSERVICE_TIMEOUT_SECONDS,
+            "_webservice_timeout_seconds",
+            "timeout_seconds",
+        ),
+    )
+    data_path = _webservice_config_value(normalized, constants, "_webservice_data_path", "data_path")
+    paginate = _webservice_bool_value(
+        normalized,
+        constants,
+        True,
+        "_webservice_paginate",
+        "paginate",
+    )
+
+    records: List[Dict[str, Any]] = []
+    fetched_pages = 0
+    last_url = ""
+    page = start_page
+    while fetched_pages < max_pages:
+        last_url = _append_query_param(str(base_url), page_param, page) if paginate else str(base_url)
+        payload = _fetch_webservice_json(last_url, str(token or "").strip() or None, timeout_seconds)
+        page_records = _extract_webservice_records(payload, str(data_path or "").strip() or None)
+        if not page_records:
+            break
+        records.extend(page_records)
+        fetched_pages += 1
+        if not paginate:
+            break
+        page += 1
+
+    return records, fetched_pages, last_url
+
+
 def _now_local() -> datetime:
     return datetime.now(_worker_timezone())
 
@@ -1978,6 +2134,169 @@ def process_bundaberg_api(config: Dict[str, Any], *, write_load_log: bool = True
         }
 
 
+def _process_generic_webservice_import(
+    config: Dict[str, Any],
+    *,
+    write_load_log: bool = True,
+) -> Dict[str, Any]:
+    normalized = _normalize_worker_import_config(config)
+    constants = _webservice_constants(normalized)
+    local_name = normalized.get("nombre") or "Local"
+    batch_id = str(uuid.uuid4())
+    start_page = max(
+        1,
+        _webservice_int_value(normalized, constants, 1, "_webservice_start_page", "start_page"),
+    )
+
+    try:
+        records, fetched_pages, _ = fetch_generic_webservice_records(normalized)
+    except urllib.error.HTTPError as exc:
+        message = f"Fallo HTTP Webservice: {exc.code}"
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                "WEBSERVICE",
+                "error",
+                message,
+                batch_id,
+                mall_id=normalized.get("mall_id"),
+                local_id=normalized.get("id"),
+                canal="WEBSERVICE",
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_webservice_import", "status_code": exc.code},
+            )
+        return {
+            "ok": False,
+            "status": "error",
+            "message": message,
+            "records_processed": 0,
+            "source_name": "WEBSERVICE",
+            "canal": "WEBSERVICE",
+            "provider": "generic",
+            "worker_source": "worker_webservice_import",
+            "details": [{"linea": 0, "error": message}],
+        }
+    except Exception as exc:
+        clean_error = sanitize_error_text(exc)
+        message = f"Fallo Webservice: {clean_error}"
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                "WEBSERVICE",
+                "error",
+                message,
+                batch_id,
+                mall_id=normalized.get("mall_id"),
+                local_id=normalized.get("id"),
+                canal="WEBSERVICE",
+                records_processed=0,
+                error_count=1,
+                metadata={"source": "worker_webservice_import", "exception": clean_error},
+            )
+        return {
+            "ok": False,
+            "status": "error",
+            "message": message,
+            "records_processed": 0,
+            "source_name": "WEBSERVICE",
+            "canal": "WEBSERVICE",
+            "provider": "generic",
+            "worker_source": "worker_webservice_import",
+            "details": [{"linea": 0, "error": message}],
+        }
+
+    if not records:
+        message = "Webservice ejecutado sin registros nuevos."
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                "WEBSERVICE",
+                "exito",
+                message,
+                batch_id,
+                mall_id=normalized.get("mall_id"),
+                local_id=normalized.get("id"),
+                canal="WEBSERVICE",
+                records_processed=0,
+                error_count=0,
+                metadata={"source": "worker_webservice_import", "pages": fetched_pages, "reason": "empty_response"},
+            )
+        return {
+            "ok": True,
+            "status": "success",
+            "message": message,
+            "records_processed": 0,
+            "records_received": 0,
+            "source_name": "WEBSERVICE",
+            "canal": "WEBSERVICE",
+            "provider": "generic",
+            "worker_source": "worker_webservice_import",
+            "processed_files": 0,
+            "failed_files": 0,
+            "total_pending": 0,
+            "batch_size": 0,
+            "details": [],
+        }
+
+    processing_config = dict(normalized)
+    processing_config["file_type"] = "JSON"
+    processing_config["tipo_archivo"] = "JSON"
+    processing_constants = dict(constants)
+    processing_constants.setdefault("_moving_window_mode", True)
+    processing_config["constants_config"] = processing_constants
+    processing_config["constants"] = processing_constants
+
+    source_name = f"WEBSERVICE_{start_page}-{start_page + max(fetched_pages - 1, 0)}.json"
+    count, errors, stats = _unpack_process_file_result(
+        process_file_logic(processing_config, source_name, json.dumps(records, ensure_ascii=False))
+    )
+    estado, mensaje, insert_confirmed = _resolve_worker_processing_outcome(count, errors, stats)
+    metadata = {
+        "source": "worker_webservice_import",
+        "pages": fetched_pages,
+        "records_received": len(records),
+        **(stats or {}),
+    }
+
+    if write_load_log:
+        insert_load_log(
+            local_name,
+            source_name,
+            estado if insert_confirmed else "error",
+            mensaje,
+            batch_id,
+            errors,
+            mall_id=normalized.get("mall_id"),
+            local_id=normalized.get("id"),
+            canal="WEBSERVICE",
+            records_processed=count,
+            error_count=len(errors or []),
+            metadata=metadata,
+        )
+
+    if count > 0:
+        run_local_risk_analysis_if_possible(normalized, trigger="worker_webservice_import")
+
+    return {
+        "ok": bool(insert_confirmed),
+        "status": "partial" if estado == "parcial" else ("success" if insert_confirmed else "error"),
+        "message": mensaje,
+        "records_processed": count,
+        "records_received": len(records),
+        "source_name": source_name,
+        "canal": "WEBSERVICE",
+        "provider": "generic",
+        "worker_source": "worker_webservice_import",
+        "duplicate_skipped": int((stats or {}).get("duplicate_skipped") or 0),
+        "processed_files": 1 if insert_confirmed else 0,
+        "failed_files": 0 if insert_confirmed else 1,
+        "total_pending": len(records),
+        "batch_size": 1,
+        "details": errors or [],
+    }
+
+
 def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
     normalized = _normalize_worker_import_config(config)
     protocol = str(normalized.get("sftp_protocol") or normalized.get("protocolo") or "").strip().upper()
@@ -1985,6 +2304,8 @@ def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = 
         return process_bundaberg_api(normalized, write_load_log=write_load_log)
     if protocol == "API" and _is_studio_g_config(normalized):
         return process_studio_g_api(normalized, write_load_log=write_load_log)
+    if protocol == "WEBSERVICE":
+        return _process_generic_webservice_import(normalized, write_load_log=write_load_log)
     message = f"Proveedor {protocol or 'API'} no soportado por este importador."
     return {
         "ok": False,
@@ -1998,7 +2319,7 @@ def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = 
 
 def process_local_files(config):
     protocol = str(config.get("sftp_protocol", "SFTP") or "SFTP").strip().upper()
-    if protocol == "API":
+    if protocol in {"API", "WEBSERVICE"}:
         return process_webservice_import(config)
 
     host = config.get("sftp_host")

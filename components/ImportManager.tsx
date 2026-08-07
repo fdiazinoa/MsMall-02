@@ -874,7 +874,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       alert("Selecciona un mall antes de guardar conexiones.");
       return;
     }
-    if (editingConfig.protocolo === 'LOCAL') {
+    if (editingConfig.protocolo === 'LOCAL' || editingConfig.protocolo === 'WEBSERVICE') {
       alert("Las conexiones guardadas aplican solo para FTP/SFTP.");
       return;
     }
@@ -983,6 +983,20 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       const existingApiConfig = configs.some(config => config.id === editingConfig.id && config.protocolo === 'API');
       if (!existingApiConfig && !tempPassword.trim() && !editingConfig.password?.trim()) {
         alert(selectedApiProvider === 'bundaberg' ? 'Indica la API key de Bundaberg.' : 'Indica el Client Secret de Studio G.');
+        return;
+      }
+    }
+
+    if (editingConfig.protocolo === 'WEBSERVICE') {
+      if (!editingConfig.host.trim()) {
+        alert('Indica el endpoint HTTPS del WebService.');
+        return;
+      }
+      const existingWebserviceConfig = configs.some(
+        config => config.id === editingConfig.id && config.protocolo === 'WEBSERVICE'
+      );
+      if (!existingWebserviceConfig && !tempPassword.trim() && !editingConfig.password?.trim()) {
+        alert('Indica el token Bearer del WebService.');
         return;
       }
     }
@@ -1989,7 +2003,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                     />
                   </div>
 
-                  {editingConfig.protocolo !== 'LOCAL' && editingConfig.protocolo !== 'API' && (
+                  {editingConfig.protocolo !== 'LOCAL' && editingConfig.protocolo !== 'API' && editingConfig.protocolo !== 'WEBSERVICE' && (
                     <div className="p-3 rounded-xl border border-indigo-100 bg-indigo-50/50 space-y-2">
                       <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest">
                         Conexiones Guardadas (FTP/SFTP)
@@ -2046,9 +2060,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           setEditingConfig({
                             ...editingConfig,
                             protocolo: nextProtocol,
-                            puerto: nextProtocol === 'SFTP' ? 22 : nextProtocol === 'API' ? 443 : 21,
-                            tipo_archivo: nextProtocol === 'API' ? 'JSON' : editingConfig.tipo_archivo,
-                            accion_post_procesado: nextProtocol === 'API' ? 'NINGUNA' : editingConfig.accion_post_procesado,
+                            puerto: nextProtocol === 'SFTP' ? 22 : ['API', 'WEBSERVICE'].includes(nextProtocol) ? 443 : 21,
+                            tipo_archivo: ['API', 'WEBSERVICE'].includes(nextProtocol) ? 'JSON' : editingConfig.tipo_archivo,
+                            accion_post_procesado: ['API', 'WEBSERVICE'].includes(nextProtocol) ? 'NINGUNA' : editingConfig.accion_post_procesado,
                             constants
                           });
                         }}
@@ -2056,6 +2070,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         <option value="SFTP">SFTP (SSH File Transfer)</option>
                         <option value="FTP">FTP (Estándar)</option>
                         <option value="API">API REST</option>
+                        <option value="WEBSERVICE">WebService JSON (Bearer token)</option>
                         <option value="LOCAL">Directorio local (servidor)</option>
                       </select>
                     </div>
@@ -2107,14 +2122,16 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       )}
                       <div>
                         <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                          {editingConfig.protocolo === 'API' ? 'URL Base API' : 'Host del Servidor'}
+                          {['API', 'WEBSERVICE'].includes(editingConfig.protocolo) ? 'Endpoint HTTPS' : 'Host del Servidor'}
                         </label>
                         <div className="relative">
                           <Globe size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder={editingConfig.protocolo === 'API'
-                              ? (selectedApiProvider === 'bundaberg' ? bundabergEndpoint : 'https://alcagora.ddns.net')
+                            placeholder={editingConfig.protocolo === 'WEBSERVICE'
+                              ? 'https://proveedor.example/api/invoices'
+                              : editingConfig.protocolo === 'API'
+                                ? (selectedApiProvider === 'bundaberg' ? bundabergEndpoint : 'https://alcagora.ddns.net')
                               : 'sftp.tu-tienda.com'}
                             value={editingConfig.host}
                             onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
@@ -2123,7 +2140,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       </div>
                     </>
                   )}
-                  {editingConfig.protocolo !== 'API' && (
+                  {!['API', 'WEBSERVICE'].includes(editingConfig.protocolo) && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Tipo de Archivo</label>
                     <div className="flex gap-2">
@@ -2190,12 +2207,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   {editingConfig.protocolo !== 'LOCAL' && (
                     <div>
                       <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-                        {editingConfig.protocolo === 'API'
+                        {editingConfig.protocolo === 'WEBSERVICE'
+                          ? 'Autenticación Bearer token'
+                          : editingConfig.protocolo === 'API'
                           ? (selectedApiProvider === 'bundaberg' ? 'Autenticación API key' : 'Autenticación Client Credentials')
                           : 'Credenciales de Acceso'}
                       </label>
                       <div className="space-y-3">
-                        {!(editingConfig.protocolo === 'API' && selectedApiProvider === 'bundaberg') && (
+                        {editingConfig.protocolo !== 'WEBSERVICE' && !(editingConfig.protocolo === 'API' && selectedApiProvider === 'bundaberg') && (
                         <div className="relative">
                           <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
@@ -2214,7 +2233,9 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
                             placeholder={hasStoredCredential && !tempPassword
                               ? '********'
-                              : editingConfig.protocolo === 'API'
+                              : editingConfig.protocolo === 'WEBSERVICE'
+                                ? 'Token Bearer del WebService'
+                                : editingConfig.protocolo === 'API'
                                 ? (selectedApiProvider === 'bundaberg' ? 'API key de Bundaberg' : 'Client Secret')
                                 : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
@@ -2302,7 +2323,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       </div>
                     </>
                   )}
-                  {editingConfig.protocolo !== 'API' && (
+                  {!['API', 'WEBSERVICE'].includes(editingConfig.protocolo) && (
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
                       {editingConfig.protocolo === 'LOCAL' ? 'Ruta del Directorio (Servidor)' : editingConfig.protocolo === 'API' ? 'ID TPV configurado' : 'Ruta Remota de Archivos'}
@@ -2415,7 +2436,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-600 transition-all shadow-lg active:scale-95 group"
                         >
                           <Database size={18} className="text-indigo-400 group-hover:text-white transition-colors" />
-                          {editingConfig.protocolo === 'API' ? 'Consultar y Procesar API' : 'Listar y Procesar Archivos'}
+                          {editingConfig.protocolo === 'API'
+                            ? 'Consultar y Procesar API'
+                            : editingConfig.protocolo === 'WEBSERVICE'
+                              ? 'Consultar y Procesar WebService'
+                              : 'Listar y Procesar Archivos'}
                         </button>
                       )}
                     </div>

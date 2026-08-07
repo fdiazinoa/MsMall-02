@@ -2578,7 +2578,20 @@ def get_ftp_client(host, port, user, password):
 def _remote_connection_error_message(protocol: str, exc: Exception, duration: float) -> str:
     raw_message = str(exc or "").strip()
     normalized = raw_message.lower()
-    if str(protocol or "").strip().upper() == "SFTP":
+    normalized_protocol = str(protocol or "").strip().upper()
+    if normalized_protocol == "WEBSERVICE" and isinstance(exc, urllib.error.HTTPError):
+        code = int(getattr(exc, "code", 0) or 0)
+        if code == 525:
+            return (
+                f"SUBA no está disponible ({duration:.2f}s): HTTP 525. Cloudflare no pudo completar "
+                "la conexión SSL con el servidor de KATIÓN. La credencial no llegó a validarse."
+            )
+        if code in {401, 403}:
+            return f"Credencial WebService rechazada ({duration:.2f}s, HTTP {code}). Renueve el token Bearer."
+        if code == 404:
+            return f"Endpoint WebService no encontrado ({duration:.2f}s, HTTP 404). Verifique la URL configurada."
+        return f"WebService no disponible ({duration:.2f}s, HTTP {code or 'desconocido'})."
+    if normalized_protocol == "SFTP":
         if "no existing session" in normalized or "error reading ssh protocol banner" in normalized:
             return (
                 f"SFTP no disponible ({duration:.2f}s): el puerto responde, pero el servidor no completa "

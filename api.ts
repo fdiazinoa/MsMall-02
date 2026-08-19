@@ -1748,10 +1748,12 @@ export const ApiService = {
   },
 
   // --- MÉTODOS DE AUDITORÍA DE CARGA ---
-  async getLoadLogs(mallId?: string, token?: string): Promise<LoadLogEntry[]> {
+  async getLoadLogs(mallId?: string, token?: string, dateRange?: Partial<DateRange>): Promise<LoadLogEntry[]> {
     try {
       const query = new URLSearchParams();
       if (mallId) query.set('mall_id', mallId);
+      if (dateRange?.startDate) query.set('start_date', dateRange.startDate);
+      if (dateRange?.endDate) query.set('end_date', dateRange.endDate);
       const suffix = query.toString() ? `?${query.toString()}` : '';
       const headers: Record<string, string> = { 'Accept': 'application/json' };
       if (mallId) headers['X-Mall-Id'] = mallId;

@@ -27,6 +27,18 @@ import {
 type MonitorStatusFilter = 'all' | 'exito' | 'parcial' | 'error';
 const LOAD_MONITOR_PAGE_SIZE = 20;
 
+const getCurrentMonthDateRange = (now = new Date()) => {
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const monthText = String(month + 1).padStart(2, '0');
+  const lastDay = new Date(year, month + 1, 0).getDate();
+
+  return {
+    start: `${year}-${monthText}-01`,
+    end: `${year}-${monthText}-${String(lastDay).padStart(2, '0')}`,
+  };
+};
+
 const StatCard = ({ title, count, icon: Icon, color, bgColor }: any) => (
   <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
     <div className={`p-3 rounded-xl ${bgColor} ${color}`}>
@@ -133,7 +145,7 @@ export const LoadMonitor: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedLog, setSelectedLog] = useState<LoadLogEntry | null>(null);
-  const [dateRange, setDateRange] = useState({ start: '', end: '' });
+  const [dateRange, setDateRange] = useState(getCurrentMonthDateRange);
   const [statusFilter, setStatusFilter] = useState<MonitorStatusFilter>('all');
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -141,7 +153,10 @@ export const LoadMonitor: React.FC = () => {
     if (!currentMall?.id) return;
     setLoading(true);
     try {
-      const data = await ApiService.getLoadLogs(currentMall.id, session?.access_token);
+      const data = await ApiService.getLoadLogs(currentMall.id, session?.access_token, {
+        startDate: dateRange.start,
+        endDate: dateRange.end,
+      });
       setLogs(data);
     } catch (e) {
       console.error(e);
@@ -176,7 +191,7 @@ export const LoadMonitor: React.FC = () => {
     loadData();
     const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
-  }, [currentMall]);
+  }, [currentMall?.id, session?.access_token, dateRange.start, dateRange.end]);
 
   const stats = useMemo(() => ({
     exito: logs.filter((log) => getNormalizedStatus(log) === 'exito').length,

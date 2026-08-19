@@ -379,6 +379,8 @@ def test_load_logs_endpoint_accepts_mall_query_without_current_mall_dependency(m
     class _Svc:
         def list_load_logs(self, **kwargs):
             assert kwargs["mall_id"] == "mall-a"
+            assert kwargs["start_date"] == "2026-08-01"
+            assert kwargs["end_date"] == "2026-08-31"
             return [{
                 "id": "log1",
                 "fecha_hora": "2026-02-24T10:00:00Z",
@@ -393,7 +395,11 @@ def test_load_logs_endpoint_accepts_mall_query_without_current_mall_dependency(m
     monkeypatch.setattr(main, "_sensitive_ops_service", lambda: _Svc())
 
     try:
-        res = _request(main.app, "GET", "/api/v1/load-logs?mall_id=mall-a")
+        res = _request(
+            main.app,
+            "GET",
+            "/api/v1/load-logs?mall_id=mall-a&start_date=2026-08-01&end_date=2026-08-31",
+        )
     finally:
         main.app.dependency_overrides.clear()
 

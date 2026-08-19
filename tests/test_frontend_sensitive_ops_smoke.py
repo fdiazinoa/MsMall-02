@@ -60,7 +60,9 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "ApiService.getLoadLogs(currentMall.id, authToken)" in import_manager
     assert "log.local_id" in import_manager
     assert "Auditoria rapida" in import_manager
-    assert "ApiService.getLoadLogs(currentMall.id, session?.access_token)" in load_monitor
+    assert "ApiService.getLoadLogs(currentMall.id, session?.access_token, {" in load_monitor
+    assert "startDate: dateRange.start" in load_monitor
+    assert "endDate: dateRange.end" in load_monitor
     assert "LOAD_MONITOR_PAGE_SIZE" in load_monitor
     assert "Retroceder" in load_monitor
     assert "Siguiente" in load_monitor

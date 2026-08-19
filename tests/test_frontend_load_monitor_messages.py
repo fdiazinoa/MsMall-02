@@ -23,3 +23,16 @@ def test_load_monitor_uses_operational_messages():
     assert "Accion recomendada" in monitor
     assert "describeLoadLog" in monitor
     assert "describeLoadLog" in import_manager
+
+
+def test_load_monitor_defaults_to_current_month_and_queries_that_range():
+    repo = Path(__file__).resolve().parents[1]
+    monitor = (repo / "components" / "LoadMonitor.tsx").read_text(encoding="utf-8")
+    api_ts = (repo / "api.ts").read_text(encoding="utf-8")
+
+    assert "const getCurrentMonthDateRange" in monitor
+    assert "useState(getCurrentMonthDateRange)" in monitor
+    assert "startDate: dateRange.start" in monitor
+    assert "endDate: dateRange.end" in monitor
+    assert "query.set('start_date', dateRange.startDate)" in api_ts
+    assert "query.set('end_date', dateRange.endDate)" in api_ts

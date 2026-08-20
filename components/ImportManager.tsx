@@ -63,6 +63,53 @@ const isSubaWebserviceConfig = (config: Partial<ImportConfig>) => (
   && String(config.host || '').trim().toLowerCase().includes('api.suba.do/api/external/v1/invoices')
 );
 
+const isValidIsoCalendarDate = (value?: string) => {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
+};
+
+const getSubaRangeValidationError = (config: Partial<ImportConfig>): string | null => {
+  if (!isSubaWebserviceConfig(config)) return null;
+  if ((config.constants?.[webserviceDateModeKey] || 'yesterday') !== 'custom') return null;
+
+  const startDate = config.constants?.[webserviceStartDateKey];
+  const endDate = config.constants?.[webserviceEndDateKey];
+  if (!startDate || !endDate) {
+    return 'Selecciona las fechas Desde y Hasta para consultar el WebService.';
+  }
+  if (!isValidIsoCalendarDate(startDate) || !isValidIsoCalendarDate(endDate)) {
+    return 'Selecciona fechas válidas y revisa el último día del mes.';
+  }
+  if (startDate > endDate) {
+    return 'La fecha Desde no puede ser posterior a la fecha Hasta.';
+  }
+  return null;
+};
+
+const withSubaWebserviceDefaults = (config: ImportConfig): ImportConfig => {
+  if (!isSubaWebserviceConfig(config)) return config;
+  return {
+    ...config,
+    constants: {
+      ...(config.constants || {}),
+      [webserviceDateModeKey]: config.constants?.[webserviceDateModeKey] || 'yesterday',
+      [webserviceStartDateParamKey]: config.constants?.[webserviceStartDateParamKey] || 'start_date',
+      [webserviceEndDateParamKey]: config.constants?.[webserviceEndDateParamKey] || 'end_date',
+      _webservice_data_path: config.constants?._webservice_data_path || 'data',
+      _webservice_paginate: config.constants?._webservice_paginate || 'true',
+      _webservice_page_param: config.constants?._webservice_page_param || 'page',
+      _webservice_start_page: config.constants?._webservice_start_page || '1'
+    }
+  };
+};
+
 const getApiProvider = (config: Partial<ImportConfig>) => {
   const explicit = String(config.constants?.provider || '').trim().toLowerCase();
   if (['bundaberg', 'agora', 'agora_bundaberg'].includes(explicit)) return 'bundaberg';
@@ -1008,17 +1055,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         alert('Indica el endpoint HTTPS del WebService.');
         return;
       }
-      if (isSubaWebservice && (editingConfig.constants?.[webserviceDateModeKey] || 'yesterday') === 'custom') {
-        const startDate = editingConfig.constants?.[webserviceStartDateKey];
-        const endDate = editingConfig.constants?.[webserviceEndDateKey];
-        if (!startDate || !endDate) {
-          alert('Selecciona las fechas Desde y Hasta para consultar el WebService.');
-          return;
-        }
-        if (startDate > endDate) {
-          alert('La fecha Desde no puede ser posterior a la fecha Hasta.');
-          return;
-        }
+      const rangeError = getSubaRangeValidationError(editingConfig);
+      if (rangeError) {
+        alert(rangeError);
+        return;
       }
       const existingWebserviceConfig = configs.some(
         config => config.id === editingConfig.id && config.protocolo === 'WEBSERVICE'
@@ -1029,21 +1069,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       }
     }
 
-    const constantsToSave = isSubaWebservice
-      ? {
-          ...(editingConfig.constants || {}),
-          [webserviceDateModeKey]: editingConfig.constants?.[webserviceDateModeKey] || 'yesterday',
-          [webserviceStartDateParamKey]: editingConfig.constants?.[webserviceStartDateParamKey] || 'start_date',
-          [webserviceEndDateParamKey]: editingConfig.constants?.[webserviceEndDateParamKey] || 'end_date',
-          _webservice_data_path: editingConfig.constants?._webservice_data_path || 'data',
-          _webservice_paginate: editingConfig.constants?._webservice_paginate || 'true',
-          _webservice_page_param: editingConfig.constants?._webservice_page_param || 'page',
-          _webservice_start_page: editingConfig.constants?._webservice_start_page || '1'
-        }
-      : editingConfig.constants;
     const configToSave = {
-      ...editingConfig,
-      constants: constantsToSave,
+      ...withSubaWebserviceDefaults(editingConfig),
       password: tempPassword || editingConfig.password
     };
     try {
@@ -1056,8 +1083,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     }
   };
 
-  const refreshFileList = async (configId: string) => {
-    const config = configs.find(c => c.id === configId);
+  const refreshFileList = async (configId: string, configOverride?: ImportConfig) => {
+    const config = configOverride || configs.find(c => c.id === configId);
     if (!config) return;
 
     setManualLoading(true);
@@ -1176,17 +1203,46 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     }
   };
 
-  const handleSyncNow = async (id: string, name: string) => {
+  const handleSyncNow = async (id: string, name: string, configOverride?: ImportConfig) => {
     resetManualExecutionState();
     setActiveConfigId(id);
-    const config = configs.find(c => c.id === id);
+    const config = configOverride || configs.find(c => c.id === id);
     if (!config) {
       alert("Configuración no encontrada.");
       return;
     }
 
+    if (configOverride) {
+      setConfigs(previous => previous.map(item => item.id === id ? configOverride : item));
+    }
+
     setShowManualModal(true);
-    await refreshFileList(id);
+    await refreshFileList(id, config);
+  };
+
+  const handleSyncCurrentEditor = async () => {
+    if (!editingConfig.id) {
+      alert('Selecciona el local existente antes de procesar el WebService.');
+      return;
+    }
+    const rangeError = getSubaRangeValidationError(editingConfig);
+    if (rangeError) {
+      alert(rangeError);
+      return;
+    }
+
+    const configToExecute = {
+      ...withSubaWebserviceDefaults(editingConfig),
+      password: tempPassword || editingConfig.password
+    };
+    try {
+      await ApiService.saveImportConfig(configToExecute, currentMall?.id);
+      closeFormDrawer();
+      await handleSyncNow(configToExecute.id, configToExecute.nombre, configToExecute);
+    } catch (error: any) {
+      console.error('Error saving visible WebService range before execution:', error);
+      alert(`No se pudo guardar el rango antes de procesar: ${error?.message || error}`);
+    }
   };
 
   const hasRequiredMapping = (config: ImportConfig) => {
@@ -2542,14 +2598,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       {editingConfig.frecuencia === 'manual' && editingConfig.id && (
                         <button
                           type="button"
-                          onClick={() => handleSyncNow(editingConfig.id, editingConfig.nombre)}
+                          onClick={handleSyncCurrentEditor}
                           className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-600 transition-all shadow-lg active:scale-95 group"
                         >
                           <Database size={18} className="text-indigo-400 group-hover:text-white transition-colors" />
                           {editingConfig.protocolo === 'API'
                             ? 'Consultar y Procesar API'
                             : editingConfig.protocolo === 'WEBSERVICE'
-                              ? 'Consultar y Procesar WebService'
+                              ? 'Guardar, Consultar y Procesar WebService'
                               : 'Listar y Procesar Archivos'}
                         </button>
                       )}

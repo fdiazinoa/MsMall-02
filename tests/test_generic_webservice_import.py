@@ -244,6 +244,23 @@ def test_import_manager_keeps_webservice_separate_from_provider_api():
     assert "Token Bearer del WebService" in manager
 
 
+def test_import_manager_exposes_suba_webservice_date_range_controls():
+    repo = Path(__file__).resolve().parents[1]
+    manager = (repo / "components" / "ImportManager.tsx").read_text(encoding="utf-8")
+
+    assert "api.suba.do/api/external/v1/invoices" in manager
+    assert "Periodo de consulta WebService" in manager
+    assert "Por rango de fecha" in manager
+    assert "Desde" in manager
+    assert "Hasta" in manager
+    assert "webserviceDateModeKey = '_webservice_date_mode'" in manager
+    assert "webserviceStartDateKey = '_webservice_start_date'" in manager
+    assert "webserviceEndDateKey = '_webservice_end_date'" in manager
+    assert "webserviceStartDateParamKey = '_webservice_start_date_param'" in manager
+    assert "webserviceEndDateParamKey = '_webservice_end_date_param'" in manager
+    assert "Selecciona las fechas Desde y Hasta para consultar el WebService." in manager
+
+
 def test_api_connection_test_and_manual_listing_recognize_webservice(monkeypatch):
     import main
 

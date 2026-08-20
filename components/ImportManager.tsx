@@ -51,7 +51,17 @@ const specialCharsToRemoveKey = '_special_chars_to_remove';
 const studioGDateModeKey = '_studio_g_date_mode';
 const studioGStartDateKey = '_studio_g_fecha_inicio';
 const studioGEndDateKey = '_studio_g_fecha_fin';
+const webserviceDateModeKey = '_webservice_date_mode';
+const webserviceStartDateKey = '_webservice_start_date';
+const webserviceEndDateKey = '_webservice_end_date';
+const webserviceStartDateParamKey = '_webservice_start_date_param';
+const webserviceEndDateParamKey = '_webservice_end_date_param';
 const bundabergEndpoint = 'https://sibs2.com/api_agora_inv/';
+
+const isSubaWebserviceConfig = (config: Partial<ImportConfig>) => (
+  config.protocolo === 'WEBSERVICE'
+  && String(config.host || '').trim().toLowerCase().includes('api.suba.do/api/external/v1/invoices')
+);
 
 const getApiProvider = (config: Partial<ImportConfig>) => {
   const explicit = String(config.constants?.provider || '').trim().toLowerCase();
@@ -66,6 +76,11 @@ const studioGDateModes = [
   { id: 'current_month', label: 'Mes actual' },
   { id: 'last_30_days', label: 'Últimos 30 días' },
   { id: 'custom', label: 'Rango' }
+] as const;
+
+const webserviceDateModes = [
+  { id: 'yesterday', label: 'Día anterior' },
+  { id: 'custom', label: 'Por rango de fecha' }
 ] as const;
 
 const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
@@ -281,6 +296,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
   const [editingConfig, setEditingConfig] = useState<ImportConfig>(createDefaultImportConfig());
   const selectedApiProvider = getApiProvider(editingConfig);
+  const isSubaWebservice = isSubaWebserviceConfig(editingConfig);
   const hasStoredCredential = configs.some(
     config => config.id === editingConfig.id && config.protocolo === editingConfig.protocolo
   );
@@ -992,6 +1008,18 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         alert('Indica el endpoint HTTPS del WebService.');
         return;
       }
+      if (isSubaWebservice && (editingConfig.constants?.[webserviceDateModeKey] || 'yesterday') === 'custom') {
+        const startDate = editingConfig.constants?.[webserviceStartDateKey];
+        const endDate = editingConfig.constants?.[webserviceEndDateKey];
+        if (!startDate || !endDate) {
+          alert('Selecciona las fechas Desde y Hasta para consultar el WebService.');
+          return;
+        }
+        if (startDate > endDate) {
+          alert('La fecha Desde no puede ser posterior a la fecha Hasta.');
+          return;
+        }
+      }
       const existingWebserviceConfig = configs.some(
         config => config.id === editingConfig.id && config.protocolo === 'WEBSERVICE'
       );
@@ -1001,7 +1029,23 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       }
     }
 
-    const configToSave = { ...editingConfig, password: tempPassword || editingConfig.password };
+    const constantsToSave = isSubaWebservice
+      ? {
+          ...(editingConfig.constants || {}),
+          [webserviceDateModeKey]: editingConfig.constants?.[webserviceDateModeKey] || 'yesterday',
+          [webserviceStartDateParamKey]: editingConfig.constants?.[webserviceStartDateParamKey] || 'start_date',
+          [webserviceEndDateParamKey]: editingConfig.constants?.[webserviceEndDateParamKey] || 'end_date',
+          _webservice_data_path: editingConfig.constants?._webservice_data_path || 'data',
+          _webservice_paginate: editingConfig.constants?._webservice_paginate || 'true',
+          _webservice_page_param: editingConfig.constants?._webservice_page_param || 'page',
+          _webservice_start_page: editingConfig.constants?._webservice_start_page || '1'
+        }
+      : editingConfig.constants;
+    const configToSave = {
+      ...editingConfig,
+      constants: constantsToSave,
+      password: tempPassword || editingConfig.password
+    };
     try {
       await ApiService.saveImportConfig(configToSave, currentMall?.id);
       closeFormDrawer();
@@ -2322,6 +2366,72 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         )}
                       </div>
                     </>
+                  )}
+                  {isSubaWebservice && (
+                    <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Periodo de consulta WebService</p>
+                        <p className="text-xs text-cyan-700 mt-1">
+                          Define el periodo que se enviará como <code>start_date</code> y <code>end_date</code>.
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {webserviceDateModes.map((mode) => (
+                          <button
+                            key={mode.id}
+                            type="button"
+                            onClick={() => setEditingConfig({
+                              ...editingConfig,
+                              constants: {
+                                ...editingConfig.constants,
+                                [webserviceDateModeKey]: mode.id
+                              }
+                            })}
+                            className={`px-3 py-2 rounded-xl border text-xs font-bold transition-all text-left ${((editingConfig.constants?.[webserviceDateModeKey] || 'yesterday') === mode.id)
+                              ? 'border-cyan-500 bg-white text-cyan-700 shadow-sm'
+                              : 'border-cyan-100 bg-white/70 text-slate-500 hover:bg-white'
+                            }`}
+                          >
+                            {mode.label}
+                          </button>
+                        ))}
+                      </div>
+                      {(editingConfig.constants?.[webserviceDateModeKey] || 'yesterday') === 'custom' && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                            Desde
+                            <input
+                              type="date"
+                              className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                              value={editingConfig.constants?.[webserviceStartDateKey] || ''}
+                              max={editingConfig.constants?.[webserviceEndDateKey] || undefined}
+                              onChange={e => setEditingConfig({
+                                ...editingConfig,
+                                constants: { ...editingConfig.constants, [webserviceStartDateKey]: e.target.value }
+                              })}
+                            />
+                          </label>
+                          <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                            Hasta
+                            <input
+                              type="date"
+                              className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                              value={editingConfig.constants?.[webserviceEndDateKey] || ''}
+                              min={editingConfig.constants?.[webserviceStartDateKey] || undefined}
+                              onChange={e => setEditingConfig({
+                                ...editingConfig,
+                                constants: { ...editingConfig.constants, [webserviceEndDateKey]: e.target.value }
+                              })}
+                            />
+                          </label>
+                        </div>
+                      )}
+                      {(editingConfig.constants?.[webserviceDateModeKey] || 'yesterday') === 'custom' && editingConfig.frecuencia !== 'manual' && (
+                        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                          Este rango permanecerá fijo en cada ejecución automática. Usa Día anterior para una ventana diaria móvil.
+                        </p>
+                      )}
+                    </div>
                   )}
                   {!['API', 'WEBSERVICE'].includes(editingConfig.protocolo) && (
                   <div>

@@ -175,6 +175,123 @@ def test_scheduler_skips_when_another_worker_claimed_the_slot(monkeypatch):
     assert sent == []
 
 
+def test_scheduler_records_failure_releases_slot_and_continues(monkeypatch):
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    monkeypatch.setenv("MISSING_DAYS_EMAIL_TIMEZONE", "America/Santo_Domingo")
+    supabase = _Supabase()
+    supabase.rows["email_notification_settings"] = [
+        {
+            "mall_id": "mall-1",
+            "notification_type": email_service.MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE,
+            "enabled": True,
+            "weekdays": [0],
+            "send_time": "10:00",
+        },
+        {
+            "mall_id": "mall-2",
+            "notification_type": email_service.MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE,
+            "enabled": True,
+            "weekdays": [0],
+            "send_time": "10:00",
+        },
+    ]
+    released = []
+    statuses = []
+
+    monkeypatch.setattr(email_service, "_system_health_get", lambda *_args: None)
+    monkeypatch.setattr(email_service, "_claim_system_health_slot", lambda *_args: True)
+    monkeypatch.setattr(
+        email_service,
+        "_release_system_health_slot",
+        lambda _client, key, slot: released.append((key, slot)),
+    )
+    monkeypatch.setattr(
+        email_service,
+        "_system_health_upsert",
+        lambda _client, key, value: statuses.append((key, value)),
+    )
+
+    def fake_send(_client, settings, **_kwargs):
+        if settings["mall_id"] == "mall-1":
+            raise RuntimeError("Resend timeout")
+        return {
+            "status": "success",
+            "mall_id": "mall-2",
+            "fecha_inicio": "2026-05-04",
+            "fecha_fin": "2026-05-10",
+            "requested": 1,
+            "sent": 1,
+            "skipped": 0,
+            "failed": 0,
+            "results": [],
+        }
+
+    monkeypatch.setattr(email_service, "send_missing_days_emails_for_mall", fake_send)
+    result = email_service.run_missing_days_email_scheduler(
+        supabase,
+        now=datetime(2026, 5, 11, 14, 1, tzinfo=timezone.utc),
+    )
+
+    assert result["checked"] == 2
+    assert result["failed"] == 1
+    assert result["executed"] is True
+    assert result["runs"][0]["reason"] == "send_failed"
+    assert result["runs"][1]["sent"] == 1
+    assert released == [
+        ("MDE_SLOT:mall-1:CONSOLIDATED", "2026-05-11T10:00"),
+    ]
+    assert ("MDE_STATUS:mall-1:CONSOLIDATED", "error: Resend timeout") in statuses
+
+
+def test_scheduler_retries_failed_consolidated_delivery(monkeypatch):
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    monkeypatch.setenv("MISSING_DAYS_EMAIL_TIMEZONE", "America/Santo_Domingo")
+    supabase = _Supabase()
+    supabase.rows["email_notification_settings"] = [{
+        "mall_id": "mall-1",
+        "notification_type": email_service.MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE,
+        "enabled": True,
+        "weekdays": [0],
+        "send_time": "10:00",
+    }]
+    released = []
+    monkeypatch.setattr(email_service, "_system_health_get", lambda *_args: None)
+    monkeypatch.setattr(email_service, "_claim_system_health_slot", lambda *_args: True)
+    monkeypatch.setattr(email_service, "_system_health_upsert", lambda *_args: None)
+    monkeypatch.setattr(
+        email_service,
+        "_release_system_health_slot",
+        lambda _client, key, slot: released.append((key, slot)),
+    )
+    monkeypatch.setattr(
+        email_service,
+        "send_missing_days_emails_for_mall",
+        lambda *_args, **_kwargs: {
+            "status": "partial",
+            "mall_id": "mall-1",
+            "fecha_inicio": "2026-05-04",
+            "fecha_fin": "2026-05-10",
+            "requested": 1,
+            "sent": 0,
+            "skipped": 0,
+            "failed": 1,
+            "results": [{"status": "failed", "reason": "Error enviando email."}],
+        },
+    )
+
+    result = email_service.run_missing_days_email_scheduler(
+        supabase,
+        now=datetime(2026, 5, 11, 14, 1, tzinfo=timezone.utc),
+    )
+
+    assert result["failed"] == 1
+    assert result["runs"][0]["retry_scheduled"] is True
+    assert result["runs"][0]["error"] == "Error enviando email."
+    assert released == [
+        ("MDE_SLOT:mall-1:CONSOLIDATED", "2026-05-11T10:00"),
+    ]
+
+
 def test_frontend_and_api_keep_consolidated_mode_contract():
     repo = Path(__file__).resolve().parents[1]
     component = (repo / "components" / "ResendMessagingAdmin.tsx").read_text(encoding="utf-8")

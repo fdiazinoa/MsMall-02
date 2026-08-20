@@ -2865,6 +2865,50 @@ async def clear_cron_error():
     except Exception as e:
         logger.error(f"Error clearing CRON_LAST_ERROR: {e}")
 
+
+def _missing_days_scheduler_error(result: Dict[str, Any]) -> Optional[str]:
+    reason = str(result.get("reason") or "").strip()
+    if reason in {"error", "resend_not_configured", "settings_table_unavailable"}:
+        detail = result.get("error") or reason
+        return _sanitize_health_error(f"Missing-days email scheduler: {detail}")
+
+    failed_runs = [
+        run
+        for run in (result.get("runs") or [])
+        if (
+            run.get("reason") == "send_failed"
+            or int(run.get("failed") or 0) > 0
+            or run.get("status_error")
+        )
+    ]
+    if not failed_runs:
+        return None
+
+    summaries = []
+    for run in failed_runs[:5]:
+        mall_id = str(run.get("mall_id") or "unknown")
+        detail = (
+            run.get("error")
+            or run.get("status_error")
+            or run.get("reason")
+            or run.get("status")
+            or "failed"
+        )
+        summaries.append(f"{mall_id}: {detail}")
+    return _sanitize_health_error(
+        f"Missing-days email scheduler failed ({len(failed_runs)}): {'; '.join(summaries)}"
+    )
+
+
+async def _finish_worker_cycle(email_scheduler_result: Dict[str, Any]):
+    await update_cron_success()
+    scheduler_error = _missing_days_scheduler_error(email_scheduler_result)
+    if scheduler_error:
+        await update_cron_error(scheduler_error)
+    else:
+        await clear_cron_error()
+
+
 async def run_connection_monitor_nightly_if_due():
     if not supabase:
         return {"executed": False, "reason": "supabase_not_configured"}
@@ -2893,7 +2937,10 @@ async def run_missing_days_email_scheduler_if_due():
         result = await asyncio.to_thread(
             lambda: run_missing_days_email_scheduler(supabase, logger=logger)
         )
-        if result.get("executed"):
+        scheduler_error = _missing_days_scheduler_error(result)
+        if scheduler_error:
+            logger.error("%s", scheduler_error)
+        elif result.get("executed"):
             logger.info("📬 Missing-days email scheduler executed: %s", result.get("runs"))
         else:
             logger.info("📬 Missing-days email scheduler skipped: %s", result)
@@ -3149,10 +3196,9 @@ async def run_worker_async():
         if not tasks_to_run:
             logger.info("😴 No active tasks for this hour.")
             run_deferred_big_data_jobs()
-            await run_missing_days_email_scheduler_if_due()
+            email_scheduler_result = await run_missing_days_email_scheduler_if_due()
             await run_connection_monitor_nightly_if_due()
-            await update_cron_success()
-            await clear_cron_error()
+            await _finish_worker_cycle(email_scheduler_result)
             return
 
         logger.info(f"📋 Encolados {len(tasks_to_run)} locales para ejecución.")
@@ -3168,10 +3214,9 @@ async def run_worker_async():
         # detection and operational observations only run after ingestion settles.
         run_deferred_big_data_jobs()
         logger.info("🏁 Cycle finished.")
-        await run_missing_days_email_scheduler_if_due()
+        email_scheduler_result = await run_missing_days_email_scheduler_if_due()
         await run_connection_monitor_nightly_if_due()
-        await update_cron_success()
-        await clear_cron_error()
+        await _finish_worker_cycle(email_scheduler_result)
         
     except Exception as e:
         logger.error(f"Critical error in main loop: {e}")

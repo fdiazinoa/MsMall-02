@@ -2447,6 +2447,23 @@ def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = 
     }
 
 
+def _remote_file_order(config: Dict[str, Any]) -> str:
+    constants = config.get("constants_config") or config.get("constants") or {}
+    configured = str(constants.get("_remote_file_order") or "oldest").strip().lower()
+    return "newest" if configured in {"newest", "latest", "desc", "descending"} else "oldest"
+
+
+def _sort_sftp_pending_files(pending_files: list, config: Dict[str, Any]) -> None:
+    pending_files.sort(
+        key=lambda item: (float(getattr(item, "st_mtime", 0) or 0), str(getattr(item, "filename", ""))),
+        reverse=_remote_file_order(config) == "newest",
+    )
+
+
+def _sort_ftp_pending_files(pending_files: list, config: Dict[str, Any]) -> None:
+    pending_files.sort(reverse=_remote_file_order(config) == "newest")
+
+
 def process_local_files(config):
     protocol = str(config.get("sftp_protocol", "SFTP") or "SFTP").strip().upper()
     if protocol in {"API", "WEBSERVICE"}:
@@ -2514,9 +2531,9 @@ def process_local_files(config):
                 if is_match and not is_processed and not is_backup and not is_error:
                     pending_files.append(item)
 
-            # 2. SORTING (Chronological: Oldest Modified First)
-            # This is critical to maintain data integrity order
-            pending_files.sort(key=lambda x: x.st_mtime)
+            # 2. SORTING. Oldest first remains the safe default. Snapshot-based
+            # providers can opt into newest first through constants_config.
+            _sort_sftp_pending_files(pending_files, config)
             
             total_pending = len(pending_files)
             
@@ -2666,9 +2683,9 @@ def process_local_files(config):
                 if is_match and not is_processed and not is_backup and not is_error:
                     pending_files.append(filename)
             
-            # 2. SORTING (Name Ascending)
-            # FTP List doesn't give dates reliable without extra calls. Name sort is best best.
-            pending_files.sort()
+            # 2. SORTING. FTP does not expose reliable modification dates here,
+            # so timestamped providers use the filename to prioritize snapshots.
+            _sort_ftp_pending_files(pending_files, config)
             
             total_pending = len(pending_files)
             

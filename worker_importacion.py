@@ -1183,6 +1183,61 @@ def _webservice_http_error_message(status_code: Any) -> str:
     return f"El WebService respondió con error HTTP {code or 'desconocido'}."
 
 
+def _generic_webservice_date_range(config: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    constants = _webservice_constants(config)
+    mode = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "_webservice_date_mode",
+            "webservice_date_mode",
+            "date_mode",
+        )
+        or ""
+    ).strip().lower()
+    raw_start = _webservice_config_value(
+        config,
+        constants,
+        "_webservice_start_date",
+        "webservice_start_date",
+        "start_date",
+    )
+    raw_end = _webservice_config_value(
+        config,
+        constants,
+        "_webservice_end_date",
+        "webservice_end_date",
+        "end_date",
+    )
+    if mode in {"none", "all", "sin_filtro", "no_filter"}:
+        return None
+    if not mode and raw_start in (None, "") and raw_end in (None, ""):
+        return None
+
+    today = _now_local().date()
+    if mode in {"today", "hoy"}:
+        start = end = today.isoformat()
+    elif mode in {"yesterday", "ayer", "previous_day"}:
+        previous = today - timedelta(days=1)
+        start = end = previous.isoformat()
+    elif mode in {"current_month", "mes_actual", "month"}:
+        start = today.replace(day=1).isoformat()
+        end = today.isoformat()
+    elif mode in {"last_30_days", "ultimos_30_dias", "last_month"}:
+        start = (today - timedelta(days=29)).isoformat()
+        end = today.isoformat()
+    else:
+        start = normalize_date(raw_start) if raw_start not in (None, "") else None
+        end = normalize_date(raw_end) if raw_end not in (None, "") else None
+
+    if not start or not end:
+        raise ValueError("Rango de fechas WebService inválido.")
+    if start > end:
+        logger.warning("Rango WebService invertido; normalizando %s..%s.", start, end)
+        start, end = end, start
+    return start, end
+
+
 def fetch_generic_webservice_records(
     config: Dict[str, Any],
     *,
@@ -1249,13 +1304,40 @@ def fetch_generic_webservice_records(
         "_webservice_paginate",
         "paginate",
     )
+    request_base_url = str(base_url)
+    date_range = _generic_webservice_date_range(normalized)
+    if date_range:
+        start_date_param = str(
+            _webservice_config_value(
+                normalized,
+                constants,
+                "_webservice_start_date_param",
+                "webservice_start_date_param",
+                "start_date_param",
+            )
+            or "start_date"
+        ).strip()
+        end_date_param = str(
+            _webservice_config_value(
+                normalized,
+                constants,
+                "_webservice_end_date_param",
+                "webservice_end_date_param",
+                "end_date_param",
+            )
+            or "end_date"
+        ).strip()
+        if not start_date_param or not end_date_param:
+            raise ValueError("Los parámetros de fecha del WebService no pueden estar vacíos.")
+        request_base_url = _append_query_param(request_base_url, start_date_param, date_range[0])
+        request_base_url = _append_query_param(request_base_url, end_date_param, date_range[1])
 
     records: List[Dict[str, Any]] = []
     fetched_pages = 0
     last_url = ""
     page = start_page
     while fetched_pages < max_pages:
-        last_url = _append_query_param(str(base_url), page_param, page) if paginate else str(base_url)
+        last_url = _append_query_param(request_base_url, page_param, page) if paginate else request_base_url
         payload = _fetch_webservice_json(last_url, str(token or "").strip() or None, timeout_seconds)
         page_records = _extract_webservice_records(payload, str(data_path or "").strip() or None)
         if not page_records:
@@ -2229,7 +2311,9 @@ def _process_generic_webservice_import(
         }
 
     if not records:
-        message = "Webservice ejecutado sin registros nuevos."
+        date_range = _generic_webservice_date_range(normalized)
+        range_label = f" para el rango {date_range[0]} al {date_range[1]}" if date_range else ""
+        message = f"El proveedor WebService devolvió 0 registros{range_label}."
         if write_load_log:
             insert_load_log(
                 local_name,
@@ -2242,7 +2326,13 @@ def _process_generic_webservice_import(
                 canal="WEBSERVICE",
                 records_processed=0,
                 error_count=0,
-                metadata={"source": "worker_webservice_import", "pages": fetched_pages, "reason": "empty_response"},
+                metadata={
+                    "source": "worker_webservice_import",
+                    "pages": fetched_pages,
+                    "reason": "empty_response",
+                    "requested_start_date": date_range[0] if date_range else None,
+                    "requested_end_date": date_range[1] if date_range else None,
+                },
             )
         return {
             "ok": True,

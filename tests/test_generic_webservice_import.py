@@ -54,6 +54,76 @@ def test_generic_webservice_uses_saved_bearer_token_and_paginates(monkeypatch):
     ]
 
 
+def test_generic_webservice_sends_saved_date_range_on_every_page(monkeypatch):
+    config = _suba_config()
+    config["sftp_host"] = "https://example.test/api/external/v1/invoices?tenant=agora"
+    config["constants_config"].update({
+        "_webservice_date_mode": "custom",
+        "_webservice_start_date": "2026-08-01",
+        "_webservice_end_date": "2026-08-20",
+        "_webservice_start_date_param": "start_date",
+        "_webservice_end_date_param": "end_date",
+    })
+    requests = []
+
+    def fake_fetch(url, _token, _timeout_seconds):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        requests.append(query)
+        return [{"invoiceNumber": "A-1"}] if query["page"] == ["1"] else []
+
+    monkeypatch.setattr(worker, "_fetch_webservice_json", fake_fetch)
+
+    records, fetched_pages, _ = worker.fetch_generic_webservice_records(config)
+
+    assert records == [{"invoiceNumber": "A-1"}]
+    assert fetched_pages == 1
+    assert requests == [
+        {
+            "tenant": ["agora"],
+            "start_date": ["2026-08-01"],
+            "end_date": ["2026-08-20"],
+            "page": ["1"],
+        },
+        {
+            "tenant": ["agora"],
+            "start_date": ["2026-08-01"],
+            "end_date": ["2026-08-20"],
+            "page": ["2"],
+        },
+    ]
+
+
+def test_generic_webservice_empty_response_reports_requested_range(monkeypatch):
+    config = _suba_config()
+    config["constants_config"].update({
+        "_webservice_date_mode": "custom",
+        "_webservice_start_date": "2026-08-01",
+        "_webservice_end_date": "2026-08-20",
+    })
+    monkeypatch.setattr(worker, "fetch_generic_webservice_records", lambda _config: ([], 0, "https://example.test"))
+
+    result = worker.process_webservice_import(config, write_load_log=False)
+
+    assert result["ok"] is True
+    assert result["records_received"] == 0
+    assert result["message"] == "El proveedor WebService devolvió 0 registros para el rango 2026-08-01 al 2026-08-20."
+
+
+def test_generic_webservice_none_date_mode_preserves_unfiltered_requests(monkeypatch):
+    config = _suba_config()
+    config["constants_config"]["_webservice_date_mode"] = "none"
+    requests = []
+    monkeypatch.setattr(
+        worker,
+        "_fetch_webservice_json",
+        lambda url, _token, _timeout: requests.append(url) or [],
+    )
+
+    worker.fetch_generic_webservice_records(config)
+
+    assert urllib.parse.parse_qs(urllib.parse.urlparse(requests[0]).query) == {"page": ["1"]}
+
+
 def test_webservice_protocol_routes_to_generic_import_without_duplicate_log(monkeypatch):
     monkeypatch.setattr(
         worker,
@@ -127,6 +197,10 @@ def test_import_manager_keeps_webservice_separate_from_provider_api():
     assert '<option value="WEBSERVICE">WebService JSON (Bearer token)</option>' in manager
     assert "editingConfig.protocolo === 'WEBSERVICE'" in manager
     assert "Token Bearer del WebService" in manager
+    assert "Periodo de consulta WebService" in manager
+    assert "const webserviceDateModeKey = '_webservice_date_mode'" in manager
+    assert "const webserviceStartDateKey = '_webservice_start_date'" in manager
+    assert "const webserviceEndDateKey = '_webservice_end_date'" in manager
 
 
 def test_api_connection_test_and_manual_listing_recognize_webservice(monkeypatch):

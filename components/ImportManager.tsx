@@ -51,6 +51,11 @@ const specialCharsToRemoveKey = '_special_chars_to_remove';
 const studioGDateModeKey = '_studio_g_date_mode';
 const studioGStartDateKey = '_studio_g_fecha_inicio';
 const studioGEndDateKey = '_studio_g_fecha_fin';
+const webserviceDateModeKey = '_webservice_date_mode';
+const webserviceStartDateKey = '_webservice_start_date';
+const webserviceEndDateKey = '_webservice_end_date';
+const webserviceStartDateParamKey = '_webservice_start_date_param';
+const webserviceEndDateParamKey = '_webservice_end_date_param';
 const bundabergEndpoint = 'https://sibs2.com/api_agora_inv/';
 
 const getApiProvider = (config: Partial<ImportConfig>) => {
@@ -66,6 +71,10 @@ const studioGDateModes = [
   { id: 'current_month', label: 'Mes actual' },
   { id: 'last_30_days', label: 'Últimos 30 días' },
   { id: 'custom', label: 'Rango' }
+] as const;
+const webserviceDateModes = [
+  { id: 'none', label: 'Sin filtro' },
+  ...studioGDateModes
 ] as const;
 
 const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
@@ -959,6 +968,19 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       const endDate = editingConfig.constants?.[studioGEndDateKey];
       if (!startDate || !endDate) {
         alert('Selecciona fecha inicio y fecha fin para el rango de consulta API.');
+        return;
+      }
+      if (startDate > endDate) {
+        alert('La fecha inicio no puede ser posterior a la fecha fin.');
+        return;
+      }
+    }
+
+    if (editingConfig.protocolo === 'WEBSERVICE' && editingConfig.constants?.[webserviceDateModeKey] === 'custom') {
+      const startDate = editingConfig.constants?.[webserviceStartDateKey];
+      const endDate = editingConfig.constants?.[webserviceEndDateKey];
+      if (!startDate || !endDate) {
+        alert('Selecciona fecha inicio y fecha fin para el rango del WebService.');
         return;
       }
       if (startDate > endDate) {
@@ -2322,6 +2344,79 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         )}
                       </div>
                     </>
+                  )}
+                  {editingConfig.protocolo === 'WEBSERVICE' && (
+                    <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Periodo de consulta WebService</p>
+                        <p className="text-xs text-cyan-700 mt-1">
+                          El rango seleccionado se enviará al proveedor en cada página consultada.
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {webserviceDateModes.map((mode) => (
+                          <button
+                            key={mode.id}
+                            type="button"
+                            onClick={() => setEditingConfig({
+                              ...editingConfig,
+                              constants: {
+                                ...editingConfig.constants,
+                                [webserviceDateModeKey]: mode.id,
+                                [webserviceStartDateParamKey]: editingConfig.constants?.[webserviceStartDateParamKey] || 'start_date',
+                                [webserviceEndDateParamKey]: editingConfig.constants?.[webserviceEndDateParamKey] || 'end_date'
+                              }
+                            })}
+                            className={`px-3 py-2 rounded-xl border text-xs font-bold transition-all text-left ${((editingConfig.constants?.[webserviceDateModeKey] || 'none') === mode.id)
+                              ? 'border-cyan-500 bg-white text-cyan-700 shadow-sm'
+                              : 'border-cyan-100 bg-white/70 text-slate-500 hover:bg-white'
+                            }`}
+                          >
+                            {mode.label}
+                          </button>
+                        ))}
+                      </div>
+                      {(editingConfig.constants?.[webserviceDateModeKey] || 'none') === 'custom' && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                            Fecha inicio
+                            <input
+                              type="date"
+                              className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                              value={editingConfig.constants?.[webserviceStartDateKey] || ''}
+                              max={editingConfig.constants?.[webserviceEndDateKey] || undefined}
+                              onChange={e => setEditingConfig({
+                                ...editingConfig,
+                                constants: {
+                                  ...editingConfig.constants,
+                                  [webserviceStartDateKey]: e.target.value,
+                                  [webserviceStartDateParamKey]: editingConfig.constants?.[webserviceStartDateParamKey] || 'start_date',
+                                  [webserviceEndDateParamKey]: editingConfig.constants?.[webserviceEndDateParamKey] || 'end_date'
+                                }
+                              })}
+                            />
+                          </label>
+                          <label className="text-xs font-bold text-slate-600 flex flex-col gap-1">
+                            Fecha fin
+                            <input
+                              type="date"
+                              className="px-3 py-2 rounded-xl border border-cyan-100 bg-white outline-none"
+                              value={editingConfig.constants?.[webserviceEndDateKey] || ''}
+                              min={editingConfig.constants?.[webserviceStartDateKey] || undefined}
+                              onChange={e => setEditingConfig({
+                                ...editingConfig,
+                                constants: {
+                                  ...editingConfig.constants,
+                                  [webserviceEndDateKey]: e.target.value,
+                                  [webserviceStartDateParamKey]: editingConfig.constants?.[webserviceStartDateParamKey] || 'start_date',
+                                  [webserviceEndDateParamKey]: editingConfig.constants?.[webserviceEndDateParamKey] || 'end_date'
+                                }
+                              })}
+                            />
+                          </label>
+                        </div>
+                      )}
+                    </div>
                   )}
                   {!['API', 'WEBSERVICE'].includes(editingConfig.protocolo) && (
                   <div>

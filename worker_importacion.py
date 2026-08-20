@@ -16,9 +16,11 @@ import csv
 import json
 import posixpath
 import re
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+import certifi
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from services.big_data_analytics_service import BigDataAnalyticsService
 from services.big_data_sprint2_service import BigDataSprint2Service
@@ -1155,7 +1157,8 @@ def _fetch_webservice_json(url: str, token: Optional[str], timeout_seconds: int)
         headers["Authorization"] = f"Bearer {token}"
 
     request = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(request, timeout=timeout_seconds, context=ssl_context) as response:
         raw = response.read()
         decoded = _decode_worker_text(raw, is_json=True)
         return json.loads(decoded or "{}")
@@ -1227,13 +1230,36 @@ def fetch_generic_webservice_records(
         "_webservice_paginate",
         "paginate",
     )
+    start_date_param = str(
+        _webservice_config_value(
+            normalized,
+            constants,
+            "_webservice_start_date_param",
+            "start_date_param",
+        )
+        or ""
+    ).strip()
+    end_date_param = str(
+        _webservice_config_value(
+            normalized,
+            constants,
+            "_webservice_end_date_param",
+            "end_date_param",
+        )
+        or ""
+    ).strip()
+    request_url = str(base_url)
+    if start_date_param and end_date_param:
+        start_date, end_date = _generic_webservice_date_range(normalized, constants)
+        request_url = _append_query_param(request_url, start_date_param, start_date)
+        request_url = _append_query_param(request_url, end_date_param, end_date)
 
     records: List[Dict[str, Any]] = []
     fetched_pages = 0
     last_url = ""
     page = start_page
     while fetched_pages < max_pages:
-        last_url = _append_query_param(str(base_url), page_param, page) if paginate else str(base_url)
+        last_url = _append_query_param(request_url, page_param, page) if paginate else request_url
         payload = _fetch_webservice_json(last_url, str(token or "").strip() or None, timeout_seconds)
         page_records = _extract_webservice_records(payload, str(data_path or "").strip() or None)
         if not page_records:
@@ -1245,6 +1271,59 @@ def fetch_generic_webservice_records(
         page += 1
 
     return records, fetched_pages, last_url
+
+
+def _generic_webservice_date_range(
+    config: Dict[str, Any],
+    constants: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, str]:
+    constants = constants or _webservice_constants(config)
+    today = _now_local().date()
+    mode = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "_webservice_date_mode",
+            "webservice_date_mode",
+            "date_mode",
+        )
+        or "yesterday"
+    ).strip().lower()
+    configured_start = _webservice_config_value(
+        config,
+        constants,
+        "_webservice_start_date",
+        "webservice_start_date",
+        "start_date",
+    )
+    configured_end = _webservice_config_value(
+        config,
+        constants,
+        "_webservice_end_date",
+        "webservice_end_date",
+        "end_date",
+    )
+
+    if mode in {"today", "hoy"}:
+        start = end = today.isoformat()
+    elif mode in {"current_month", "mes_actual", "month"}:
+        start = today.replace(day=1).isoformat()
+        end = today.isoformat()
+    elif mode in {"last_30_days", "ultimos_30_dias", "last_month"}:
+        start = (today - timedelta(days=29)).isoformat()
+        end = today.isoformat()
+    elif mode in {"custom", "range", "rango"}:
+        start = normalize_date(configured_start) if configured_start else None
+        end = normalize_date(configured_end) if configured_end else None
+    else:
+        previous_day = today - timedelta(days=1)
+        start = end = previous_day.isoformat()
+
+    if not start or not end:
+        raise ValueError("Rango de fechas Webservice invalido.")
+    if start > end:
+        start, end = end, start
+    return start, end
 
 
 def _now_local() -> datetime:

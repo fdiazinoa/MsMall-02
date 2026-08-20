@@ -1,5 +1,7 @@
 import json
+import ssl
 import urllib.parse
+from datetime import datetime
 from pathlib import Path
 
 import worker_importacion as worker
@@ -50,6 +52,119 @@ def test_generic_webservice_uses_saved_bearer_token_and_paginates(monkeypatch):
         (1, "stored-bearer-token", 45),
         (2, "stored-bearer-token", 45),
         (3, "stored-bearer-token", 45),
+    ]
+
+
+def test_generic_webservice_adds_configured_moving_date_range(monkeypatch):
+    config = _suba_config()
+    config["constants_config"].update(
+        {
+            "_webservice_start_date_param": "start_date",
+            "_webservice_end_date_param": "end_date",
+            "_webservice_date_mode": "yesterday",
+        }
+    )
+    requested_urls = []
+
+    def fake_fetch(url, _token, _timeout_seconds):
+        requested_urls.append(url)
+        return {"data": []}
+
+    monkeypatch.setattr(worker, "_now_local", lambda: datetime(2026, 8, 20, 12, 0, 0))
+    monkeypatch.setattr(worker, "_fetch_webservice_json", fake_fetch)
+
+    worker.fetch_generic_webservice_records(config)
+
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(requested_urls[0]).query)
+    assert query["page"] == ["1"]
+    assert query["start_date"] == ["2026-08-19"]
+    assert query["end_date"] == ["2026-08-19"]
+
+
+def test_generic_webservice_uses_verified_certifi_context(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        @staticmethod
+        def read():
+            return b'{"data": []}'
+
+    def fake_urlopen(_request, *, timeout, context):
+        captured["timeout"] = timeout
+        captured["context"] = context
+        return FakeResponse()
+
+    monkeypatch.setattr(worker.urllib.request, "urlopen", fake_urlopen)
+
+    payload = worker._fetch_webservice_json("https://example.test/invoices", "secret", 20)
+
+    assert payload == {"data": []}
+    assert captured["timeout"] == 20
+    assert captured["context"].verify_mode == ssl.CERT_REQUIRED
+    assert captured["context"].check_hostname is True
+
+
+def test_agalma_invoice_fields_map_to_sales_contract(monkeypatch):
+    inserted = []
+
+    class Result:
+        data = [{"id": "inserted"}]
+
+    monkeypatch.setattr(
+        worker,
+        "_filter_existing_sale_rows",
+        lambda rows, line_numbers, _local_id: (rows, line_numbers, []),
+    )
+    monkeypatch.setattr(worker, "_atomic_duplicate_details", lambda *_args: [])
+
+    def fake_upsert(rows):
+        inserted.extend(rows)
+        return Result()
+
+    monkeypatch.setattr(worker, "_upsert_sales_ignoring_duplicates", fake_upsert)
+
+    config = {
+        "id": "local-agalma",
+        "mall_id": "mall-agora",
+        "nombre": "AGALMA",
+        "file_type": "JSON",
+        "mapping_config": {
+            "factura_numero": "id",
+            "fecha_venta": "emission_date",
+            "total_bruto": "subtotal_taxable",
+            "total_impuestos": "tax_amount",
+            "total_neto": "total_amount",
+        },
+        "constants_config": {"_moving_window_mode": "true"},
+    }
+    invoice = {
+        "id": 618,
+        "emission_date": "2026-07-08",
+        "subtotal_taxable": 283.9,
+        "tax_amount": 51.1,
+        "total_amount": 335,
+    }
+
+    count, errors, _stats = worker.process_file_logic(config, "AGALMA.json", json.dumps([invoice]))
+
+    assert count == 1
+    assert errors == []
+    assert inserted == [
+        {
+            "local_id": "local-agalma",
+            "mall_id": "mall-agora",
+            "fecha": "2026-07-08",
+            "factura_no": "618",
+            "total_bruto": 283.9,
+            "total_impuestos": 51.1,
+            "total_neto": 335.0,
+        }
     ]
 
 

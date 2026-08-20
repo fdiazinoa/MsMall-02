@@ -562,6 +562,9 @@ export interface Store {
   mts: string;
   porciento_renta: string | number;
   upsert_activo?: boolean;
+  activo?: boolean;
+  fecha_inactivacion?: string | null;
+  motivo_inactivacion?: string | null;
   mall_nombre?: string;
   renta_fija?: string | number;
   breakpoint_venta?: string | number;

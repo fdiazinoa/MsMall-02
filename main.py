@@ -14,6 +14,7 @@ import secrets
 import unicodedata
 import weakref
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Optional, Dict, Any, Tuple, Set
 from uuid import uuid4
 
@@ -1338,6 +1339,9 @@ class StoreSchema(BaseModel):
     mts: str
     porciento_renta: str
     upsert_activo: bool = False
+    activo: bool = True
+    fecha_inactivacion: Optional[str] = None
+    motivo_inactivacion: Optional[str] = None
     mall_nombre: Optional[str] = "Mall Plaza"
     fecha_corte_importacion: Optional[str] = None
 
@@ -1345,12 +1349,16 @@ STORE_WRITE_FIELDS = {
     "mall_id", "codigo_interno", "nombre", "email", "email_secundario", "rubro", "responsable",
     "contrato_no", "piso", "tipo_negocio", "mts", "porciento_renta",
     "upsert_activo", "renta_fija", "breakpoint_venta", "porcentaje_variable",
-    "fecha_corte_importacion",
+    "fecha_corte_importacion", "activo", "fecha_inactivacion", "motivo_inactivacion",
 }
 
 STORE_NUMERIC_FIELDS = {
     "mts", "porciento_renta", "renta_fija", "breakpoint_venta", "porcentaje_variable",
 }
+
+
+def _is_store_active(row: Dict[str, Any]) -> bool:
+    return row.get("activo") is not False
 
 
 def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1393,6 +1401,29 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
             data["fecha_corte_importacion"] = raw_cutoff
         else:
             data["fecha_corte_importacion"] = None
+    if "fecha_inactivacion" in data:
+        raw_inactivation = str(data.get("fecha_inactivacion") or "").strip()
+        if raw_inactivation:
+            try:
+                datetime.strptime(raw_inactivation, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="fecha_inactivacion debe tener formato YYYY-MM-DD")
+            data["fecha_inactivacion"] = raw_inactivation
+        else:
+            data["fecha_inactivacion"] = None
+    if "motivo_inactivacion" in data:
+        data["motivo_inactivacion"] = str(data.get("motivo_inactivacion") or "").strip() or None
+    if data.get("activo") is False:
+        data["upsert_activo"] = False
+        data["tipo_ejecucion"] = "MANUAL"
+        data["processing_status"] = "IDLE"
+        if not data.get("fecha_inactivacion"):
+            data["fecha_inactivacion"] = datetime.now(
+                ZoneInfo("America/Santo_Domingo")
+            ).date().isoformat()
+    elif data.get("activo") is True:
+        data["fecha_inactivacion"] = None
+        data["motivo_inactivacion"] = None
     return data
 
 
@@ -8570,8 +8601,8 @@ async def get_sales_gaps(
             # Since I am "migrating", I should probably use the filter.
             # But `locales` table has `mall_id`.
             
-            stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
-            stores = stores_resp.data or []
+            stores_resp = supabase.table('locales').select('id, nombre, rubro, activo').eq('mall_id', current_mall).execute()
+            stores = [row for row in (stores_resp.data or []) if _is_store_active(row)]
             
             global_summary = []
             

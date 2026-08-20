@@ -45,3 +45,30 @@ def test_invalid_store_numeric_field_returns_clear_validation_error():
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "mts debe contener un número válido"
+
+
+def test_inactivating_store_disables_automatic_processing():
+    sanitized = main._sanitize_store_write_payload({
+        "activo": False,
+        "motivo_inactivacion": "  Fin de contrato  ",
+        "upsert_activo": True,
+    })
+
+    assert sanitized["activo"] is False
+    assert sanitized["upsert_activo"] is False
+    assert sanitized["tipo_ejecucion"] == "MANUAL"
+    assert sanitized["processing_status"] == "IDLE"
+    assert sanitized["motivo_inactivacion"] == "Fin de contrato"
+    assert sanitized["fecha_inactivacion"]
+
+
+def test_reactivating_store_clears_inactivation_metadata():
+    sanitized = main._sanitize_store_write_payload({
+        "activo": True,
+        "fecha_inactivacion": "2026-08-03",
+        "motivo_inactivacion": "Fin de contrato",
+    })
+
+    assert sanitized["activo"] is True
+    assert sanitized["fecha_inactivacion"] is None
+    assert sanitized["motivo_inactivacion"] is None

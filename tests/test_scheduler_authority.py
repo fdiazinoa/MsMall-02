@@ -75,6 +75,20 @@ def test_worker_run_updates_heartbeat_on_smoke_cycle(monkeypatch):
     async def _fake_upsert_system_health_value(key, value):
         heartbeat_updates.append((key, value))
 
+    async def _fake_email_scheduler():
+        return {
+            "executed": False,
+            "failed": 1,
+            "runs": [{
+                "mall_id": "mall-1",
+                "reason": "send_failed",
+                "error": "Resend timeout",
+            }],
+        }
+
+    async def _fake_connection_monitor():
+        return {"executed": False, "reason": "not_due"}
+
     class _LocalesQuery:
         def select(self, *_args, **_kwargs):
             return self
@@ -92,6 +106,8 @@ def test_worker_run_updates_heartbeat_on_smoke_cycle(monkeypatch):
 
     monkeypatch.setattr(worker, "cleanup_zombies", _fake_cleanup_zombies)
     monkeypatch.setattr(worker, "_upsert_system_health_value", _fake_upsert_system_health_value)
+    monkeypatch.setattr(worker, "run_missing_days_email_scheduler_if_due", _fake_email_scheduler)
+    monkeypatch.setattr(worker, "run_connection_monitor_nightly_if_due", _fake_connection_monitor)
     monkeypatch.setattr(worker, "supabase", _FakeSupabase())
 
     asyncio.run(worker.run_worker_async())
@@ -100,6 +116,9 @@ def test_worker_run_updates_heartbeat_on_smoke_cycle(monkeypatch):
     assert "CRON_LAST_RUN" in keys
     assert "CRON_LAST_SUCCESS" in keys
     assert "CRON_LAST_ERROR" in keys
+    cron_errors = [value for key, value in heartbeat_updates if key == "CRON_LAST_ERROR"]
+    assert cron_errors[-1] != ""
+    assert "mall-1" in cron_errors[-1]
 
 
 def test_worker_specific_schedule_waits_until_configured_minute(monkeypatch):

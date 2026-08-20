@@ -666,6 +666,24 @@ def _release_system_health_slot(supabase_client: Any, key: str, slot: str) -> No
     supabase_client.table("system_health").delete().eq("key", key).eq("value", slot).execute()
 
 
+def _scheduler_error_text(error: object) -> str:
+    text = str(error or "").replace("\r", " ").replace("\n", " ").strip()
+    if len(text) > 500:
+        text = f"{text[:497]}..."
+    return text or "unknown_error"
+
+
+def _email_result_error_text(result: Dict[str, Any]) -> Optional[str]:
+    reasons = [
+        str(row.get("reason") or "").strip()
+        for row in (result.get("results") or [])
+        if row.get("status") == "failed" and str(row.get("reason") or "").strip()
+    ]
+    if not reasons:
+        return None
+    return _scheduler_error_text("; ".join(reasons[:3]))
+
+
 def _is_email_settings_table_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return "email_notification_settings" in text and (
@@ -1140,25 +1158,100 @@ def run_missing_days_email_scheduler(
                 send_email=send_email,
                 now=now,
             )
-        except Exception:
-            _release_system_health_slot(supabase_client, last_slot_key, slot)
-            raise
+        except Exception as exc:
+            error_text = _scheduler_error_text(exc)
+            if logger:
+                logger.error(
+                    "Fallo el ciclo de email %s para el mall %s: %s",
+                    slot,
+                    mall_id,
+                    error_text,
+                )
+            try:
+                _system_health_upsert(supabase_client, status_key, f"error: {error_text}")
+            except Exception as status_exc:
+                if logger:
+                    logger.error(
+                        "No se pudo registrar el fallo de email del mall %s: %s",
+                        mall_id,
+                        _scheduler_error_text(status_exc),
+                    )
+            try:
+                _release_system_health_slot(supabase_client, last_slot_key, slot)
+            except Exception as release_exc:
+                if logger:
+                    logger.error(
+                        "No se pudo liberar el ciclo de email %s del mall %s: %s",
+                        slot,
+                        mall_id,
+                        _scheduler_error_text(release_exc),
+                    )
+            runs.append({
+                "mall_id": mall_id,
+                "notification_type": notification_type,
+                "executed": False,
+                "reason": "send_failed",
+                "slot": slot,
+                "error": error_text,
+            })
+            continue
 
-        _system_health_upsert(
-            supabase_client,
-            status_key,
-            f"{result['status']}: sent={result['sent']} skipped={result['skipped']} failed={result['failed']}",
+        result_error = _email_result_error_text(result)
+        status_value = (
+            f"{result['status']}: sent={result['sent']} "
+            f"skipped={result['skipped']} failed={result['failed']}"
         )
-        runs.append({
+        if result_error:
+            status_value = f"{status_value} error={result_error}"
+        status_error = None
+        try:
+            _system_health_upsert(supabase_client, status_key, status_value)
+        except Exception as status_exc:
+            status_error = _scheduler_error_text(status_exc)
+            if logger:
+                logger.error(
+                    "No se pudo registrar el resultado de email del mall %s: %s",
+                    mall_id,
+                    status_error,
+                )
+        retry_scheduled = (
+            notification_type == MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE
+            and int(result.get("sent") or 0) == 0
+            and int(result.get("failed") or 0) > 0
+        )
+        if retry_scheduled:
+            try:
+                _release_system_health_slot(supabase_client, last_slot_key, slot)
+            except Exception as release_exc:
+                retry_scheduled = False
+                if logger:
+                    logger.error(
+                        "No se pudo liberar el ciclo consolidado %s del mall %s: %s",
+                        slot,
+                        mall_id,
+                        _scheduler_error_text(release_exc),
+                    )
+        run = {
             "mall_id": mall_id,
             "notification_type": notification_type,
             "executed": True,
             "slot": slot,
+            "retry_scheduled": retry_scheduled,
             **result,
-        })
+        }
+        if result_error:
+            run["error"] = result_error
+        if status_error:
+            run["status_error"] = status_error
+        runs.append(run)
 
     return {
         "executed": any(run.get("executed") for run in runs),
         "checked": len(rows),
+        "failed": sum(
+            1
+            for run in runs
+            if run.get("reason") == "send_failed" or int(run.get("failed") or 0) > 0
+        ),
         "runs": runs,
     }

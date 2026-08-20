@@ -1186,6 +1186,8 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
             error_count=error_count,
             metadata={
                 "source": "exporter_sync_ingest",
+                "origin": "MsExportador",
+                "channel_family": "ERP_WEBSERVICE",
                 "granularity": granularity,
                 "probe": bool(meta.get("probe")),
                 "contract_type": _as_str_or_none(meta.get("contract_type")),
@@ -1360,6 +1362,8 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
                 error_count=1,
                 metadata={
                     "source": "exporter_sync_ingest",
+                    "origin": "MsExportador",
+                    "channel_family": "ERP_WEBSERVICE",
                     "granularity": granularity,
                     "detail": str(exc.detail),
                     "status_code": exc.status_code,
@@ -1380,6 +1384,8 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
                 error_count=1,
                 metadata={
                     "source": "exporter_sync_ingest",
+                    "origin": "MsExportador",
+                    "channel_family": "ERP_WEBSERVICE",
                     "granularity": granularity,
                     "detail": str(exc),
                 },

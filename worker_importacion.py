@@ -2898,7 +2898,7 @@ def _missing_days_scheduler_error(result: Dict[str, Any]) -> Optional[str]:
         run
         for run in (result.get("runs") or [])
         if (
-            run.get("reason") == "send_failed"
+            run.get("reason") in {"send_failed", "state_read_failed", "slot_claim_failed"}
             or int(run.get("failed") or 0) > 0
             or run.get("status_error")
         )

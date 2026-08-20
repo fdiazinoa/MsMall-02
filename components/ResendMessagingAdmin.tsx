@@ -138,25 +138,30 @@ export const ResendMessagingAdmin: React.FC = () => {
         });
 
       const schedulePromise = mallId
-        ? Promise.all([
+        ? Promise.allSettled([
           ApiService.getMissingDaysEmailSettings(mallId, token, 'missing_days_audit'),
           ApiService.getMissingDaysEmailSettings(mallId, token, 'missing_days_audit_consolidated'),
         ])
-          .then(([localSchedule, consolidatedSchedule]) => {
-            if (!cancelled && localSchedule.mall_id === mallId && consolidatedSchedule.mall_id === mallId) {
-              setSchedules({
-                missing_days_audit: normalizeSchedule(mallId, localSchedule),
-                missing_days_audit_consolidated: normalizeSchedule(mallId, consolidatedSchedule),
-              });
-              setCcEmailsByMode({
-                missing_days_audit: (localSchedule.cc_emails || []).join('\n'),
-                missing_days_audit_consolidated: (consolidatedSchedule.cc_emails || []).join('\n'),
-              });
-            }
-          })
-          .catch((e: any) => {
-            if (!cancelled) {
-              setScheduleError(e?.message || 'No se pudo cargar la programación de envío.');
+          .then(([localResult, consolidatedResult]) => {
+            if (cancelled) return;
+            const localSchedule = localResult.status === 'fulfilled'
+              ? localResult.value
+              : defaultSchedule(mallId, 'missing_days_audit');
+            const consolidatedSchedule = consolidatedResult.status === 'fulfilled'
+              ? consolidatedResult.value
+              : defaultSchedule(mallId, 'missing_days_audit_consolidated');
+            setSchedules({
+              missing_days_audit: normalizeSchedule(mallId, localSchedule),
+              missing_days_audit_consolidated: normalizeSchedule(mallId, consolidatedSchedule),
+            });
+            setCcEmailsByMode({
+              missing_days_audit: (localSchedule.cc_emails || []).join('\n'),
+              missing_days_audit_consolidated: (consolidatedSchedule.cc_emails || []).join('\n'),
+            });
+            const failedResult = [localResult, consolidatedResult].find((result) => result.status === 'rejected');
+            if (failedResult?.status === 'rejected') {
+              const reason = failedResult.reason as any;
+              setScheduleError(reason?.message || 'No se pudo cargar una de las programaciones de envío.');
             }
           })
         : Promise.resolve();

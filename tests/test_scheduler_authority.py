@@ -121,6 +121,23 @@ def test_worker_run_updates_heartbeat_on_smoke_cycle(monkeypatch):
     assert "mall-1" in cron_errors[-1]
 
 
+def test_worker_surfaces_scheduler_state_failures(monkeypatch):
+    worker = _load_worker(monkeypatch)
+
+    error = worker._missing_days_scheduler_error({
+        "executed": False,
+        "runs": [{
+            "mall_id": "mall-new",
+            "reason": "state_read_failed",
+            "error": "Supabase response unavailable",
+        }],
+    })
+
+    assert error is not None
+    assert "mall-new" in error
+    assert "Supabase response unavailable" in error
+
+
 def test_worker_specific_schedule_waits_until_configured_minute(monkeypatch):
     worker = _load_worker(monkeypatch)
     now = datetime(2026, 6, 1, 8, 9, tzinfo=ZoneInfo("America/Santo_Domingo"))

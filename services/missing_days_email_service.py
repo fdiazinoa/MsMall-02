@@ -636,13 +636,16 @@ def _system_health_key(
 
 
 def _system_health_get(supabase_client: Any, key: str) -> Optional[str]:
-    row = (
+    response = (
         supabase_client.table("system_health")
         .select("value")
         .eq("key", key)
         .maybe_single()
         .execute()
-    ).data or {}
+    )
+    row = getattr(response, "data", None) or {}
+    if not isinstance(row, dict):
+        return None
     return row.get("value")
 
 
@@ -916,8 +919,9 @@ def send_missing_days_emails_for_mall(
     try:
         stores = (
             supabase_client.table("locales")
-            .select("id, nombre, email, email_secundario")
+            .select("id, nombre, email, email_secundario, activo")
             .eq("mall_id", mall_id)
+            .eq("activo", True)
             .order("nombre")
             .execute()
         ).data or []
@@ -927,8 +931,9 @@ def send_missing_days_emails_for_mall(
             raise
         stores = (
             supabase_client.table("locales")
-            .select("id, nombre, email")
+            .select("id, nombre, email, activo")
             .eq("mall_id", mall_id)
+            .eq("activo", True)
             .order("nombre")
             .execute()
         ).data or []
@@ -1110,7 +1115,24 @@ def run_missing_days_email_scheduler(
             })
             continue
 
-        last_slot = _system_health_get(supabase_client, last_slot_key)
+        try:
+            last_slot = _system_health_get(supabase_client, last_slot_key)
+        except Exception as exc:
+            error_text = _scheduler_error_text(exc)
+            if logger:
+                logger.error(
+                    "No se pudo leer el estado de email del mall %s: %s",
+                    mall_id,
+                    error_text,
+                )
+            runs.append({
+                "mall_id": mall_id,
+                "notification_type": notification_type,
+                "executed": False,
+                "reason": "state_read_failed",
+                "error": error_text,
+            })
+            continue
         if last_slot == slot:
             runs.append({
                 "mall_id": mall_id,
@@ -1137,6 +1159,7 @@ def run_missing_days_email_scheduler(
                 "executed": False,
                 "reason": "slot_claim_failed",
                 "slot": slot,
+                "error": _scheduler_error_text(exc),
             })
             continue
 
@@ -1215,8 +1238,7 @@ def run_missing_days_email_scheduler(
                     status_error,
                 )
         retry_scheduled = (
-            notification_type == MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE
-            and int(result.get("sent") or 0) == 0
+            int(result.get("sent") or 0) == 0
             and int(result.get("failed") or 0) > 0
         )
         if retry_scheduled:

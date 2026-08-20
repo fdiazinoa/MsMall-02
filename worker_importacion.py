@@ -1252,27 +1252,10 @@ def fetch_generic_webservice_records(
         "_webservice_paginate",
         "paginate",
     )
-    start_date_param = str(
-        _webservice_config_value(
-            normalized,
-            constants,
-            "_webservice_start_date_param",
-            "start_date_param",
-        )
-        or ""
-    ).strip()
-    end_date_param = str(
-        _webservice_config_value(
-            normalized,
-            constants,
-            "_webservice_end_date_param",
-            "end_date_param",
-        )
-        or ""
-    ).strip()
     request_url = str(base_url)
-    if start_date_param and end_date_param:
-        start_date, end_date = _generic_webservice_date_range(normalized, constants)
+    query_window = _generic_webservice_query_window(normalized, constants)
+    if query_window:
+        start_date_param, end_date_param, start_date, end_date = query_window
         request_url = _append_query_param(request_url, start_date_param, start_date)
         request_url = _append_query_param(request_url, end_date_param, end_date)
 
@@ -1346,6 +1329,35 @@ def _generic_webservice_date_range(
     if start > end:
         start, end = end, start
     return start, end
+
+
+def _generic_webservice_query_window(
+    config: Dict[str, Any],
+    constants: Optional[Dict[str, Any]] = None,
+) -> Optional[Tuple[str, str, str, str]]:
+    constants = constants or _webservice_constants(config)
+    start_date_param = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "_webservice_start_date_param",
+            "start_date_param",
+        )
+        or ""
+    ).strip()
+    end_date_param = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "_webservice_end_date_param",
+            "end_date_param",
+        )
+        or ""
+    ).strip()
+    if not start_date_param or not end_date_param:
+        return None
+    start_date, end_date = _generic_webservice_date_range(config, constants)
+    return start_date_param, end_date_param, start_date, end_date
 
 
 def _now_local() -> datetime:
@@ -2308,7 +2320,18 @@ def _process_generic_webservice_import(
         }
 
     if not records:
-        message = "Webservice ejecutado sin registros nuevos."
+        query_window = _generic_webservice_query_window(normalized, constants)
+        requested_start_date = query_window[2] if query_window else None
+        requested_end_date = query_window[3] if query_window else None
+        if requested_start_date and requested_end_date:
+            formatted_start = _format_worker_range_date(requested_start_date) or requested_start_date
+            formatted_end = _format_worker_range_date(requested_end_date) or requested_end_date
+            message = (
+                "El proveedor WebService devolvió 0 registros para el rango "
+                f"{formatted_start} - {formatted_end}. No se insertaron ventas."
+            )
+        else:
+            message = "El proveedor WebService devolvió 0 registros. No se insertaron ventas."
         if write_load_log:
             insert_load_log(
                 local_name,
@@ -2321,7 +2344,13 @@ def _process_generic_webservice_import(
                 canal="WEBSERVICE",
                 records_processed=0,
                 error_count=0,
-                metadata={"source": "worker_webservice_import", "pages": fetched_pages, "reason": "empty_response"},
+                metadata={
+                    "source": "worker_webservice_import",
+                    "pages": fetched_pages,
+                    "reason": "empty_response",
+                    "requested_start_date": requested_start_date,
+                    "requested_end_date": requested_end_date,
+                },
             )
         return {
             "ok": True,

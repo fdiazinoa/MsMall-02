@@ -82,6 +82,43 @@ def test_generic_webservice_adds_configured_moving_date_range(monkeypatch):
     assert query["end_date"] == ["2026-08-19"]
 
 
+def test_generic_webservice_empty_response_reports_requested_range(monkeypatch):
+    config = _suba_config()
+    config["constants_config"].update(
+        {
+            "_webservice_start_date_param": "start_date",
+            "_webservice_end_date_param": "end_date",
+            "_webservice_date_mode": "custom",
+            "_webservice_start_date": "2026-08-01",
+            "_webservice_end_date": "2026-08-20",
+        }
+    )
+    captured_logs = []
+    monkeypatch.setattr(
+        worker,
+        "fetch_generic_webservice_records",
+        lambda _config: ([], 0, "https://example.test?page=1"),
+    )
+    monkeypatch.setattr(
+        worker,
+        "insert_load_log",
+        lambda *args, **kwargs: captured_logs.append({"args": args, "kwargs": kwargs}),
+    )
+
+    result = worker.process_webservice_import(config)
+
+    expected_message = (
+        "El proveedor WebService devolvió 0 registros para el rango "
+        "01/08/2026 - 20/08/2026. No se insertaron ventas."
+    )
+    assert result["ok"] is True
+    assert result["records_received"] == 0
+    assert result["message"] == expected_message
+    assert captured_logs[0]["args"][3] == expected_message
+    assert captured_logs[0]["kwargs"]["metadata"]["requested_start_date"] == "2026-08-01"
+    assert captured_logs[0]["kwargs"]["metadata"]["requested_end_date"] == "2026-08-20"
+
+
 def test_generic_webservice_uses_verified_certifi_context(monkeypatch):
     captured = {}
 

@@ -25,14 +25,13 @@ def test_load_monitor_uses_operational_messages():
     assert "describeLoadLog" in import_manager
 
 
-def test_load_monitor_defaults_to_current_month_and_queries_that_range():
+def test_load_monitor_requests_latest_200_without_date_filter():
     repo = Path(__file__).resolve().parents[1]
     monitor = (repo / "components" / "LoadMonitor.tsx").read_text(encoding="utf-8")
     api_ts = (repo / "api.ts").read_text(encoding="utf-8")
 
-    assert "const getCurrentMonthDateRange" in monitor
-    assert "useState(getCurrentMonthDateRange)" in monitor
-    assert "startDate: dateRange.start" in monitor
-    assert "endDate: dateRange.end" in monitor
-    assert "query.set('start_date', dateRange.startDate)" in api_ts
-    assert "query.set('end_date', dateRange.endDate)" in api_ts
+    assert "const LOAD_MONITOR_MAX_LOGS = 200" in monitor
+    assert "limit: LOAD_MONITOR_MAX_LOGS" in monitor
+    assert "dateRange" not in monitor
+    assert 'type="date"' not in monitor
+    assert "query.set('limit', String(options.limit))" in api_ts

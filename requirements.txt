@@ -5,6 +5,7 @@ python-multipart
 pydantic
 supabase
 python-dotenv
+certifi==2026.1.4
 
 thefuzz==0.22.1
 pandas

@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -111,7 +111,7 @@ def build_load_log_payload(
         metadata_payload["archivo"] = archivo
 
     payload = {
-        "fecha_hora": datetime.now().isoformat(),
+        "fecha_hora": datetime.now(timezone.utc).isoformat(),
         "local_nombre": local_nombre,
         "archivo": archivo,
         "estado": normalized_status,

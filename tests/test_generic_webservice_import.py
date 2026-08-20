@@ -298,6 +298,20 @@ def test_import_manager_exposes_suba_webservice_date_range_controls():
     assert "Selecciona las fechas Desde y Hasta para consultar el WebService." in manager
 
 
+def test_import_manager_persists_visible_suba_range_before_manual_execution():
+    repo = Path(__file__).resolve().parents[1]
+    manager = (repo / "components" / "ImportManager.tsx").read_text(encoding="utf-8")
+
+    assert "const handleSyncCurrentEditor = async () =>" in manager
+    assert "const rangeError = getSubaRangeValidationError(editingConfig)" in manager
+    assert "await ApiService.saveImportConfig(configToExecute, currentMall?.id)" in manager
+    assert "await handleSyncNow(configToExecute.id, configToExecute.nombre, configToExecute)" in manager
+    assert "onClick={handleSyncCurrentEditor}" in manager
+    assert "Guardar, Consultar y Procesar WebService" in manager
+    assert "configOverride || configs.find(c => c.id === id)" in manager
+    assert "refreshFileList(id, config)" in manager
+
+
 def test_api_connection_test_and_manual_listing_recognize_webservice(monkeypatch):
     import main
 

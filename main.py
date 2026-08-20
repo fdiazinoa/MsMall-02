@@ -14,6 +14,7 @@ import secrets
 import unicodedata
 import weakref
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Optional, Dict, Any, Tuple, Set
 from uuid import uuid4
 
@@ -1338,6 +1339,9 @@ class StoreSchema(BaseModel):
     mts: str
     porciento_renta: str
     upsert_activo: bool = False
+    activo: bool = True
+    fecha_inactivacion: Optional[str] = None
+    motivo_inactivacion: Optional[str] = None
     mall_nombre: Optional[str] = "Mall Plaza"
     fecha_corte_importacion: Optional[str] = None
 
@@ -1345,12 +1349,16 @@ STORE_WRITE_FIELDS = {
     "mall_id", "codigo_interno", "nombre", "email", "email_secundario", "rubro", "responsable",
     "contrato_no", "piso", "tipo_negocio", "mts", "porciento_renta",
     "upsert_activo", "renta_fija", "breakpoint_venta", "porcentaje_variable",
-    "fecha_corte_importacion",
+    "fecha_corte_importacion", "activo", "fecha_inactivacion", "motivo_inactivacion",
 }
 
 STORE_NUMERIC_FIELDS = {
     "mts", "porciento_renta", "renta_fija", "breakpoint_venta", "porcentaje_variable",
 }
+
+
+def _is_store_active(row: Dict[str, Any]) -> bool:
+    return row.get("activo") is not False
 
 
 def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1393,6 +1401,29 @@ def _sanitize_store_write_payload(payload: Dict[str, Any], *, existing_mall_id: 
             data["fecha_corte_importacion"] = raw_cutoff
         else:
             data["fecha_corte_importacion"] = None
+    if "fecha_inactivacion" in data:
+        raw_inactivation = str(data.get("fecha_inactivacion") or "").strip()
+        if raw_inactivation:
+            try:
+                datetime.strptime(raw_inactivation, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="fecha_inactivacion debe tener formato YYYY-MM-DD")
+            data["fecha_inactivacion"] = raw_inactivation
+        else:
+            data["fecha_inactivacion"] = None
+    if "motivo_inactivacion" in data:
+        data["motivo_inactivacion"] = str(data.get("motivo_inactivacion") or "").strip() or None
+    if data.get("activo") is False:
+        data["upsert_activo"] = False
+        data["tipo_ejecucion"] = "MANUAL"
+        data["processing_status"] = "IDLE"
+        if not data.get("fecha_inactivacion"):
+            data["fecha_inactivacion"] = datetime.now(
+                ZoneInfo("America/Santo_Domingo")
+            ).date().isoformat()
+    elif data.get("activo") is True:
+        data["fecha_inactivacion"] = None
+        data["motivo_inactivacion"] = None
     return data
 
 
@@ -2578,7 +2609,20 @@ def get_ftp_client(host, port, user, password):
 def _remote_connection_error_message(protocol: str, exc: Exception, duration: float) -> str:
     raw_message = str(exc or "").strip()
     normalized = raw_message.lower()
-    if str(protocol or "").strip().upper() == "SFTP":
+    normalized_protocol = str(protocol or "").strip().upper()
+    if normalized_protocol == "WEBSERVICE" and isinstance(exc, urllib.error.HTTPError):
+        code = int(getattr(exc, "code", 0) or 0)
+        if code == 525:
+            return (
+                f"SUBA no está disponible ({duration:.2f}s): HTTP 525. Cloudflare no pudo completar "
+                "la conexión SSL con el servidor de KATIÓN. La credencial no llegó a validarse."
+            )
+        if code in {401, 403}:
+            return f"Credencial WebService rechazada ({duration:.2f}s, HTTP {code}). Renueve el token Bearer."
+        if code == 404:
+            return f"Endpoint WebService no encontrado ({duration:.2f}s, HTTP 404). Verifique la URL configurada."
+        return f"WebService no disponible ({duration:.2f}s, HTTP {code or 'desconocido'})."
+    if normalized_protocol == "SFTP":
         if "no existing session" in normalized or "error reading ssh protocol banner" in normalized:
             return (
                 f"SFTP no disponible ({duration:.2f}s): el puerto responde, pero el servidor no completa "
@@ -8557,8 +8601,8 @@ async def get_sales_gaps(
             # Since I am "migrating", I should probably use the filter.
             # But `locales` table has `mall_id`.
             
-            stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
-            stores = stores_resp.data or []
+            stores_resp = supabase.table('locales').select('id, nombre, rubro, activo').eq('mall_id', current_mall).execute()
+            stores = [row for row in (stores_resp.data or []) if _is_store_active(row)]
             
             global_summary = []
             

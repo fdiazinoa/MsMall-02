@@ -1,5 +1,6 @@
 import json
 import ssl
+import urllib.error
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -203,6 +204,27 @@ def test_webservice_protocol_routes_to_generic_import_without_duplicate_log(monk
     assert processed["config"]["constants_config"]["_moving_window_mode"] is True
 
 
+def test_generic_webservice_explains_cloudflare_525(monkeypatch):
+    def fail_with_525(_config):
+        raise urllib.error.HTTPError(
+            url="https://example.test/api/invoices?page=1",
+            code=525,
+            msg=None,
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr(worker, "fetch_generic_webservice_records", fail_with_525)
+
+    result = worker.process_webservice_import(_suba_config(), write_load_log=False)
+
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert "HTTP 525" in result["message"]
+    assert "credencial no llegó a validarse" in result["message"]
+    assert "<none>" not in result["message"].lower()
+
+
 def test_worker_dispatches_legacy_webservice_protocol(monkeypatch):
     monkeypatch.setattr(worker, "process_webservice_import", lambda config: {"ok": True, "protocol": config["sftp_protocol"]})
 
@@ -245,3 +267,33 @@ def test_api_connection_test_and_manual_listing_recognize_webservice(monkeypatch
     assert connection["status"] == "success"
     assert "Registros detectados en la primera página: 1" in connection["message"]
     assert files[0]["nombre"] == "WEBSERVICE_API"
+
+
+def test_api_connection_test_explains_cloudflare_525(monkeypatch):
+    import main
+
+    def fail_with_525(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            url="https://example.test/api/invoices?page=1",
+            code=525,
+            msg=None,
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr(main, "fetch_generic_webservice_records", fail_with_525)
+    request = main.RemoteRequest(
+        protocolo="WEBSERVICE",
+        host="https://example.test/api/invoices",
+        puerto=443,
+        password="stored-bearer-token",
+        ruta=".",
+        tipo_archivo="JSON",
+    )
+
+    result = main._test_remote_connection_sync(request)
+
+    assert result["status"] == "error"
+    assert "HTTP 525" in result["message"]
+    assert "credencial no llegó a validarse" in result["message"]
+    assert "<none>" not in result["message"].lower()

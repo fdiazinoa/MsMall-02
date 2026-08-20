@@ -26,6 +26,7 @@ import {
 
 type MonitorStatusFilter = 'all' | 'exito' | 'parcial' | 'error';
 const LOAD_MONITOR_PAGE_SIZE = 20;
+const LOAD_MONITOR_MAX_LOGS = 200;
 
 const StatCard = ({ title, count, icon: Icon, color, bgColor }: any) => (
   <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
@@ -48,11 +49,6 @@ const safeDate = (value?: string | null): Date | null => {
 const formatDate = (value?: string | null): string => {
   const parsed = safeDate(value);
   return parsed ? parsed.toLocaleDateString() : 'Sin fecha';
-};
-
-const toIsoDate = (value?: string | null): string => {
-  const parsed = safeDate(value);
-  return parsed ? parsed.toISOString().split('T')[0] : '';
 };
 
 const formatDateTime = (value?: string | null): string => {
@@ -133,7 +129,6 @@ export const LoadMonitor: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedLog, setSelectedLog] = useState<LoadLogEntry | null>(null);
-  const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [statusFilter, setStatusFilter] = useState<MonitorStatusFilter>('all');
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -141,7 +136,9 @@ export const LoadMonitor: React.FC = () => {
     if (!currentMall?.id) return;
     setLoading(true);
     try {
-      const data = await ApiService.getLoadLogs(currentMall.id, session?.access_token);
+      const data = await ApiService.getLoadLogs(currentMall.id, session?.access_token, {
+        limit: LOAD_MONITOR_MAX_LOGS,
+      });
       setLogs(data);
     } catch (e) {
       console.error(e);
@@ -176,7 +173,7 @@ export const LoadMonitor: React.FC = () => {
     loadData();
     const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
-  }, [currentMall]);
+  }, [currentMall?.id, session?.access_token]);
 
   const stats = useMemo(() => ({
     exito: logs.filter((log) => getNormalizedStatus(log) === 'exito').length,
@@ -200,9 +197,6 @@ export const LoadMonitor: React.FC = () => {
       ].join(' ').toLowerCase();
 
       const matchesSearch = searchHaystack.includes(searchTerm.toLowerCase());
-      const logDate = toIsoDate(log.fecha_hora);
-      const matchesStart = !dateRange.start || logDate >= dateRange.start;
-      const matchesEnd = !dateRange.end || logDate <= dateRange.end;
 
       const normalizedStatus = getNormalizedStatus(log);
       let matchesStatus = true;
@@ -210,7 +204,7 @@ export const LoadMonitor: React.FC = () => {
       else if (statusFilter === 'parcial') matchesStatus = normalizedStatus === 'parcial';
       else if (statusFilter === 'error') matchesStatus = normalizedStatus === 'error';
 
-      return matchesSearch && matchesStart && matchesEnd && matchesStatus;
+      return matchesSearch && matchesStatus;
     });
 
     for (const log of rawFiltered) {
@@ -231,11 +225,11 @@ export const LoadMonitor: React.FC = () => {
     }
 
     return result;
-  }, [logs, searchTerm, dateRange, statusFilter, currentMall]);
+  }, [logs, searchTerm, statusFilter, currentMall]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, dateRange.start, dateRange.end, statusFilter, currentMall?.id]);
+  }, [searchTerm, statusFilter, currentMall?.id]);
 
   const totalPages = Math.max(1, Math.ceil(filteredLogs.length / LOAD_MONITOR_PAGE_SIZE));
   const safeCurrentPage = Math.min(Math.max(currentPage, 1), totalPages);
@@ -295,23 +289,6 @@ export const LoadMonitor: React.FC = () => {
             className="bg-transparent border-none outline-none text-sm w-full"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-          />
-        </div>
-
-        <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-100">
-          <Clock size={16} className="text-slate-400" />
-          <input
-            type="date"
-            className="bg-transparent border-none outline-none text-xs text-slate-600"
-            value={dateRange.start}
-            onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
-          />
-          <span className="text-slate-300">|</span>
-          <input
-            type="date"
-            className="bg-transparent border-none outline-none text-xs text-slate-600"
-            value={dateRange.end}
-            onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
           />
         </div>
 

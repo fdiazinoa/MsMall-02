@@ -5,14 +5,47 @@ import { supabase } from '../api'; // Asumiendo que supabase client está export
 const AuthContext = createContext();
 const SYSTEM_ADMIN_EMAIL = 'fdiaz@mercasend.net';
 const DEFAULT_RAILWAY_API_ROOT = 'https://msmall-02-production.up.railway.app';
+const PASSWORD_RECOVERY_QUERY_PARAM = 'password_recovery';
 
 const normalizeRole = (roleValue) => (roleValue || '').toString().trim().toLowerCase().replace(/[-\s]+/g, '_');
+
+const isPasswordRecoveryUrl = () => {
+    if (typeof window === 'undefined') return false;
+    const url = new URL(window.location.href);
+    return (
+        url.searchParams.get(PASSWORD_RECOVERY_QUERY_PARAM) === '1' ||
+        url.searchParams.get('type') === 'recovery' ||
+        new URLSearchParams(url.hash.replace(/^#/, '')).get('type') === 'recovery'
+    );
+};
+
+const passwordRecoveryRedirectUrl = () => {
+    const url = new URL(window.location.origin);
+    url.searchParams.set(PASSWORD_RECOVERY_QUERY_PARAM, '1');
+    return url.toString();
+};
+
+const clearPasswordRecoveryUrl = () => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    [
+        PASSWORD_RECOVERY_QUERY_PARAM,
+        'type',
+        'code',
+        'error',
+        'error_code',
+        'error_description',
+    ].forEach((key) => url.searchParams.delete(key));
+    url.hash = '';
+    window.history.replaceState({}, document.title, `${url.pathname}${url.search}`);
+};
 
 export const AuthProvider = ({ children }) => {
     const [session, setSession] = useState(null);
     const [user, setUser] = useState(null);
     const [role, setRole] = useState(null);
     const [permissions, setPermissions] = useState({});
+    const [isPasswordRecovery, setIsPasswordRecovery] = useState(isPasswordRecoveryUrl);
     // Multi-Tenant States
     const [malls, setMalls] = useState([]);
     const [currentMall, setCurrentMall] = useState(null);
@@ -47,7 +80,10 @@ export const AuthProvider = ({ children }) => {
         });
 
         // 2. Escuchar cambios de autenticación
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+            if (event === 'PASSWORD_RECOVERY') {
+                setIsPasswordRecovery(true);
+            }
             setSession(session);
             if (session) {
                 fetchEffectiveAccessRole(session.access_token);
@@ -309,6 +345,63 @@ export const AuthProvider = ({ children }) => {
         return true;
     };
 
+    const requestPasswordRecovery = async (email) => {
+        if (!supabase) {
+            throw new Error('Supabase no está configurado.');
+        }
+
+        const normalizedEmail = String(email || '').trim().toLowerCase();
+        if (!normalizedEmail) {
+            throw new Error('Ingresa el correo asociado a tu cuenta.');
+        }
+
+        const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+            redirectTo: passwordRecoveryRedirectUrl(),
+        });
+
+        if (error) {
+            // Do not reveal whether the email belongs to an account.
+            console.error('No se pudo solicitar la recuperación de contraseña:', error.message);
+            if (error.status === 429) {
+                throw new Error('Espera un minuto antes de solicitar otro enlace.');
+            }
+            throw new Error('No se pudo enviar el enlace en este momento. Intenta nuevamente más tarde.');
+        }
+
+        return true;
+    };
+
+    const completePasswordRecovery = async (newPassword) => {
+        if (!supabase || !session) {
+            throw new Error('El enlace de recuperación es inválido o expiró. Solicita uno nuevo.');
+        }
+        if (!newPassword || newPassword.length < 8) {
+            throw new Error('La nueva contraseña debe tener al menos 8 caracteres.');
+        }
+
+        const { error: updateError } = await supabase.auth.updateUser({
+            password: newPassword,
+        });
+        if (updateError) {
+            throw new Error(updateError.message || 'No se pudo actualizar la contraseña.');
+        }
+
+        const { error: signOutError } = await supabase.auth.signOut({ scope: 'global' });
+        if (signOutError) {
+            console.warn('La contraseña cambió, pero no se pudieron cerrar todas las sesiones:', signOutError.message);
+            await supabase.auth.signOut({ scope: 'local' });
+        }
+        return true;
+    };
+
+    const finishPasswordRecovery = async () => {
+        clearPasswordRecoveryUrl();
+        setIsPasswordRecovery(false);
+        if (supabase) {
+            await supabase.auth.signOut({ scope: 'local' });
+        }
+    };
+
     const normalizedRole = normalizeRole(
         role ||
         currentMall?.rol ||
@@ -346,6 +439,10 @@ export const AuthProvider = ({ children }) => {
         isAuditor: normalizedRole === 'auditor',
         signOut: () => supabase?.auth.signOut(),
         changePassword,
+        isPasswordRecovery,
+        requestPasswordRecovery,
+        completePasswordRecovery,
+        finishPasswordRecovery,
         refreshMalls: () => session?.access_token && fetchUserMalls(session.access_token, session?.user?.id),
     };
 

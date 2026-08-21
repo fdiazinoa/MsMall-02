@@ -7,6 +7,7 @@ import { useAuth } from './context/AuthProvider';
 import { supabase } from './api';
 import { CopilotWidget } from './components/CopilotWidget';
 import { MSMALL_FOOTER_TEXT } from './appVersion';
+import { ForgotPasswordScreen, ResetPasswordScreen } from './components/PasswordRecovery';
 
 // Suppress Recharts deprecation warnings (XAxis, YAxis defaultProps)
 const originalConsoleError = console.error;
@@ -19,13 +20,21 @@ console.error = (...args: any[]) => {
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AppTab>('analytics');
-  const { session, loading } = useAuth();
+  const {
+    session,
+    loading,
+    isPasswordRecovery,
+    requestPasswordRecovery,
+    completePasswordRecovery,
+    finishPasswordRecovery,
+  } = useAuth();
 
   // Estados para el login
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,6 +68,26 @@ const App: React.FC = () => {
     );
   }
 
+  if (isPasswordRecovery) {
+    return (
+      <ResetPasswordScreen
+        hasRecoverySession={Boolean(session)}
+        onReset={completePasswordRecovery}
+        onFinish={finishPasswordRecovery}
+      />
+    );
+  }
+
+  if (!session && showForgotPassword) {
+    return (
+      <ForgotPasswordScreen
+        initialEmail={email}
+        onRequest={requestPasswordRecovery}
+        onBack={() => setShowForgotPassword(false)}
+      />
+    );
+  }
+
   if (!session) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-slate-900 text-white p-6">
@@ -89,6 +118,18 @@ const App: React.FC = () => {
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all"
                 required
               />
+              <div className="mt-2 text-right">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthError(null);
+                    setShowForgotPassword(true);
+                  }}
+                  className="text-sm font-semibold text-indigo-400 transition-colors hover:text-indigo-300"
+                >
+                  ¿Olvidaste tu contraseña?
+                </button>
+              </div>
             </div>
 
             {authError && (

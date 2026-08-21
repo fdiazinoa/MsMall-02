@@ -2888,6 +2888,30 @@ def _webservice_test_config_from_remote_request(
     }
 
 
+def _malala_mapping_preview_config(
+    webservice_config: Optional[Dict[str, Any]],
+    lookback_days: int = 30,
+) -> Optional[Dict[str, Any]]:
+    config = dict(webservice_config or {})
+    constants = dict(config.get("constants_config") or config.get("constants") or {})
+    provider = str(constants.get("provider") or "").strip().lower()
+    host = str(config.get("sftp_host") or config.get("host") or "").strip().lower()
+    if provider != "malala" and "clientes.proisa.com.do/malala" not in host:
+        return None
+
+    safe_days = max(1, min(int(lookback_days or 30), 90))
+    end_date = date.today()
+    start_date = end_date - timedelta(days=safe_days - 1)
+    constants.update({
+        "_webservice_date_mode": "custom",
+        "_webservice_start_date": start_date.isoformat(),
+        "_webservice_end_date": end_date.isoformat(),
+    })
+    config["constants_config"] = constants
+    config["constants"] = constants
+    return config
+
+
 @app.post("/api/v1/remote/test")
 async def test_remote_connection(
     req: RemoteRequest,
@@ -4030,6 +4054,13 @@ async def analyze_remote_mapping(
                     webservice_config,
                     max_pages_override=1,
                 )
+                if not rows:
+                    preview_config = _malala_mapping_preview_config(webservice_config)
+                    if preview_config:
+                        rows, _, _ = fetch_generic_webservice_records(
+                            preview_config,
+                            max_pages_override=1,
+                        )
                 return json.dumps(rows, ensure_ascii=False)
             if req.protocolo == "SFTP":
                 ssh, sftp = get_sftp_client(req.host, req.puerto, req.usuario, req.password)

@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
-import { UserPlus, Shield, ShieldCheck, ShieldAlert, CheckCircle2, UserCog, Building2, Plus, Save, Trash2 } from 'lucide-react';
+import { UserPlus, Shield, ShieldCheck, ShieldAlert, CheckCircle2, UserCog, Building2, Plus, Save, Trash2, Mail } from 'lucide-react';
 import { RoleConfig, RolePermission } from '../types';
 
 const MODULES = [
@@ -38,6 +38,7 @@ export const UserManagement: React.FC = () => {
   const [editEmail, setEditEmail] = useState('');
   const [editName, setEditName] = useState('');
   const [savingUser, setSavingUser] = useState(false);
+  const [sendingRecoveryUserId, setSendingRecoveryUserId] = useState<string | null>(null);
 
   // Create User Modal State
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -179,6 +180,26 @@ export const UserManagement: React.FC = () => {
       alert(`Error actualizando usuario: ${e?.message || e}`);
     } finally {
       setSavingUser(false);
+    }
+  };
+
+  const handleSendPasswordRecovery = async (user: any) => {
+    if (!session?.access_token || !user?.id) return;
+    const email = String(user.email || '').trim();
+    if (!email) {
+      alert('Este usuario no tiene un correo asociado.');
+      return;
+    }
+    if (!window.confirm(`¿Enviar un enlace de recuperación a ${email}?`)) return;
+
+    setSendingRecoveryUserId(user.id);
+    try {
+      const result = await ApiService.sendUserPasswordRecovery(user.id, session.access_token);
+      alert(result?.message || 'Enlace de recuperación enviado.');
+    } catch (error: any) {
+      alert(error?.message || 'No se pudo enviar el enlace de recuperación.');
+    } finally {
+      setSendingRecoveryUserId(null);
     }
   };
 
@@ -424,12 +445,24 @@ export const UserManagement: React.FC = () => {
                     </span>
                   </td>
                   <td className="px-3 py-2.5 text-right">
-                    <button
-                      onClick={() => openAssignmentModal(user)}
-                      className="text-indigo-600 hover:text-indigo-800 text-xs font-bold flex items-center gap-1 ml-auto"
-                    >
-                      <UserCog size={14} /> Editar Perfil / Rol
-                    </button>
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      {canAccess('users', 'update') && (
+                        <button
+                          onClick={() => handleSendPasswordRecovery(user)}
+                          disabled={sendingRecoveryUserId === user.id}
+                          className="flex items-center gap-1 text-xs font-bold text-emerald-700 hover:text-emerald-900 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Mail size={14} />
+                          {sendingRecoveryUserId === user.id ? 'Enviando...' : 'Enviar recuperación'}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => openAssignmentModal(user)}
+                        className="flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-800"
+                      >
+                        <UserCog size={14} /> Editar Perfil / Rol
+                      </button>
+                    </div>
                   </td>
                 </tr>
               )) : (

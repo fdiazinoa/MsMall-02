@@ -138,6 +138,10 @@ RESEND_FROM_EMAIL = "notificaciones@mercasend.net"
 RESEND_FROM_NAME = "MercaSend Notificaciones"
 RESEND_USER_AGENT = "MSMALL-API/1.0 (mercasend.net)"
 RESEND_SENDER_EMAIL_KEY = "RESEND_FROM_EMAIL"
+PASSWORD_RECOVERY_REDIRECT_URL = (
+    os.getenv("PASSWORD_RECOVERY_REDIRECT_URL", "https://msmall.vercel.app/?password_recovery=1").strip()
+    or "https://msmall.vercel.app/?password_recovery=1"
+)
 RESEND_SENDER_NAME_KEY = "RESEND_FROM_NAME"
 COPILOT_ENABLED_KEY = "COPILOT_ENABLED"
 COPILOT_PROVIDER_KEY = "COPILOT_PROVIDER"
@@ -7635,6 +7639,63 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_module_per
         logger.error(f"Error listing users: {e}")
         # If admin API fails (unsupported), returns empty or error
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/admin/users/{target_user_id}/password-recovery")
+async def admin_send_password_recovery(
+    target_user_id: str,
+    admin_ctx: Dict[str, Any] = Depends(require_module_permission("users", "update")),
+):
+    """Send a recovery link without exposing or assigning the user's password."""
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Supabase no está configurado.")
+
+    try:
+        auth_result = supabase.auth.admin.get_user_by_id(target_user_id)
+        auth_user = _extract_auth_user(auth_result)
+        email = str(_user_field(auth_user, "email") or "").strip().lower()
+        if not email:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado o sin correo asociado.")
+
+        await asyncio.to_thread(
+            supabase.auth.reset_password_for_email,
+            email,
+            {"redirect_to": PASSWORD_RECOVERY_REDIRECT_URL},
+        )
+
+        try:
+            supabase.table("system_audit_logs").insert({
+                "usuario_id": admin_ctx.get("user_id"),
+                "mall_id": None,
+                "accion": "USER_PASSWORD_RECOVERY_REQUESTED",
+                "detalle": "Un administrador envió un enlace de recuperación de contraseña.",
+                "metadata": {
+                    "target_user_id": target_user_id,
+                    "requested_at": datetime.utcnow().isoformat(),
+                },
+            }).execute()
+        except Exception as audit_error:
+            logger.warning(
+                "No se pudo auditar la recuperación del usuario %s: %s",
+                target_user_id,
+                sanitize_sensitive_ops_error(audit_error),
+            )
+
+        return {
+            "message": "Enlace de recuperación enviado. El usuario debe revisar su correo.",
+            "target_user_id": target_user_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        safe_error = sanitize_sensitive_ops_error(e)
+        logger.error("Error enviando recuperación para usuario %s: %s", target_user_id, safe_error)
+        status_code = 429 if "rate" in safe_error.lower() and "limit" in safe_error.lower() else 502
+        detail = (
+            "Se alcanzó el límite de correos. Espera un minuto e intenta nuevamente."
+            if status_code == 429
+            else "No se pudo enviar el correo de recuperación. Verifica la configuración SMTP de Supabase."
+        )
+        raise HTTPException(status_code=status_code, detail=detail)
 
 @app.post("/api/v1/admin/users")
 async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str, Any] = Depends(require_module_permission("users", "create"))):

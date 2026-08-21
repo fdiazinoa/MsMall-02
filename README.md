@@ -157,6 +157,22 @@ APP_ENV=production
 CORS_ALLOW_ORIGINS=https://msmall.vercel.app,https://admin.tudominio.com
 ```
 
+### Recuperación de contraseña de usuarios
+
+El backend usa esta URL para los enlaces enviados desde Administración de Usuarios:
+
+```env
+PASSWORD_RECOVERY_REDIRECT_URL=https://msmall.vercel.app/?password_recovery=1
+```
+
+En Supabase Auth debe configurarse:
+
+- `Site URL`: `https://msmall.vercel.app`
+- Redirect URL permitida: `https://msmall.vercel.app/?password_recovery=1`
+- SMTP personalizado habilitado para entregar correos a usuarios fuera del equipo de Supabase.
+
+El frontend usa `resetPasswordForEmail()` y procesa el evento `PASSWORD_RECOVERY`; el administrador solo puede enviar el enlace mediante el permiso `users:update` y nunca recibe la contraseña del usuario.
+
 ### Versionado de despliegues
 
 - `VERSION` es la fuente única de la versión visible de MsMall.

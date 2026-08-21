@@ -596,6 +596,65 @@ def test_malala_connection_test_prefers_explicit_credentials_over_saved_values(m
     assert config["constants_config"]["_webservice_auth_url"].endswith("/auth/token")
 
 
+def test_malala_mapping_analysis_uses_saved_dynamic_auth_config(monkeypatch):
+    import main
+
+    stored_config = {
+        "id": "local-malala",
+        "mall_id": "mall-1",
+        "sftp_protocol": "WEBSERVICE",
+        "sftp_host": "https://clientes.proisa.com.do/Malala/ventas",
+        "sftp_user": "agora",
+        "sftp_pass": "stored-client-secret",
+        "file_type": "JSON",
+        "mapping_config": {},
+        "constants_config": {
+            "provider": "malala",
+            "_webservice_auth_url": "https://clientes.proisa.com.do/Malala/auth/token",
+            "_webservice_auth_username_field": "username",
+            "_webservice_auth_secret_field": "clientSecret",
+            "_webservice_auth_token_path": "token",
+            "_webservice_data_path": "data",
+            "_webservice_empty_statuses": "404",
+        },
+    }
+    captured = {}
+    monkeypatch.setattr(
+        main,
+        "_load_local_config_with_access",
+        lambda local_id, operator_ctx: stored_config,
+    )
+
+    def fake_fetch(config, max_pages_override=None):
+        captured["config"] = config
+        captured["max_pages_override"] = max_pages_override
+        return [{
+            "FECHA": "2026-08-20",
+            "ID_TRANSACCION": "M-1",
+            "TOTALBRUTO": 100,
+        }], 1, config["sftp_host"]
+
+    monkeypatch.setattr(main, "fetch_generic_webservice_records", fake_fetch)
+    request = main.RemoteRequest(
+        local_id="local-malala",
+        protocolo="WEBSERVICE",
+        host="https://clientes.proisa.com.do/Malala/ventas",
+        puerto=443,
+        usuario="agora",
+        password="",
+        ruta="WEBSERVICE_API",
+        tipo_archivo="JSON",
+    )
+
+    result = asyncio.run(main.analyze_remote_mapping(request, {"role": "admin"}))
+
+    assert captured["max_pages_override"] == 1
+    assert captured["config"]["sftp_user"] == "agora"
+    assert captured["config"]["sftp_pass"] == "stored-client-secret"
+    assert captured["config"]["constants_config"]["_webservice_auth_url"].endswith("/auth/token")
+    assert {"FECHA", "ID_TRANSACCION", "TOTALBRUTO"}.issubset(result["csv_headers"])
+
+
 def test_api_connection_test_explains_cloudflare_525(monkeypatch):
     import main
 

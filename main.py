@@ -2639,16 +2639,20 @@ def _is_webservice_protocol(value: Any) -> bool:
     return str(value or "").strip().upper() in {"API", "WEBSERVICE"}
 
 
-def _test_remote_connection_sync(req: RemoteRequest):
+def _test_remote_connection_sync(
+    req: RemoteRequest,
+    webservice_config: Optional[Dict[str, Any]] = None,
+):
     logger.info(f"Probando conexión remota sync a {req.host}:{req.puerto} ({req.protocolo})")
     start_time = time.time()
     try:
         protocol = str(req.protocolo or "").strip().upper()
         if protocol == "WEBSERVICE":
             records, _, _ = fetch_generic_webservice_records(
-                {
+                webservice_config or {
                     "sftp_protocol": "WEBSERVICE",
                     "sftp_host": req.host,
+                    "sftp_user": req.usuario,
                     "sftp_pass": req.password,
                     "constants_config": {"_webservice_timeout_seconds": "30"},
                 },
@@ -2834,17 +2838,80 @@ def _remote_request_with_saved_password(
     return req.model_copy(update=updates)
 
 
+def _webservice_test_config_from_remote_request(
+    req: RemoteRequest,
+    operator_ctx: Dict[str, Any],
+) -> Dict[str, Any]:
+    requested_host = str(req.host or "").strip()
+    requested_protocol = str(req.protocolo or "").strip().upper()
+
+    if req.local_id:
+        stored_config = _load_local_config_with_access(req.local_id, operator_ctx)
+        stored_protocol = str(stored_config.get("sftp_protocol") or "").strip().upper()
+        stored_host = str(stored_config.get("sftp_host") or "").strip().rstrip("/").lower()
+        if (
+            stored_protocol == requested_protocol
+            and stored_host == requested_host.rstrip("/").lower()
+        ):
+            test_config = _normalize_import_config_payload(stored_config)
+            if str(req.usuario or "").strip():
+                test_config["sftp_user"] = str(req.usuario or "").strip()
+            if str(req.password or "").strip():
+                test_config["sftp_pass"] = req.password
+            return test_config
+
+    constants: Dict[str, Any] = {"_webservice_timeout_seconds": "30"}
+    if "clientes.proisa.com.do/malala" in requested_host.lower():
+        constants.update({
+            "provider": "malala",
+            "_webservice_auth_url": "https://clientes.proisa.com.do/Malala/auth/token",
+            "_webservice_auth_username_field": "username",
+            "_webservice_auth_secret_field": "clientSecret",
+            "_webservice_auth_token_path": "token",
+            "_webservice_start_date_param": "fechaInicio",
+            "_webservice_end_date_param": "fechaFin",
+            "_webservice_data_path": "data",
+            "_webservice_paginate": "true",
+            "_webservice_page_param": "page",
+            "_webservice_page_size_param": "pageSize",
+            "_webservice_page_size": "1000",
+            "_webservice_start_page": "1",
+            "_webservice_empty_statuses": "404",
+        })
+
+    return {
+        "sftp_protocol": "WEBSERVICE",
+        "sftp_host": requested_host,
+        "sftp_user": str(req.usuario or "").strip(),
+        "sftp_pass": req.password,
+        "constants_config": constants,
+    }
+
+
 @app.post("/api/v1/remote/test")
 async def test_remote_connection(
     req: RemoteRequest,
     operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
 ):
-    req = _remote_request_with_saved_password(req, operator_ctx)
+    webservice_config = None
+    if str(req.protocolo or "").strip().upper() == "WEBSERVICE":
+        webservice_config = _webservice_test_config_from_remote_request(req, operator_ctx)
+        req = req.model_copy(update={
+            "host": str(req.host or "").strip(),
+            "usuario": str(req.usuario or "").strip(),
+        })
+    else:
+        req = _remote_request_with_saved_password(req, operator_ctx)
     loop = asyncio.get_event_loop()
     try:
         # Timeout de 30s para no bloquear el worker de FastAPI indefinidamente
         return await asyncio.wait_for(
-            loop.run_in_executor(executor, _test_remote_connection_sync, req),
+            loop.run_in_executor(
+                executor,
+                _test_remote_connection_sync,
+                req,
+                webservice_config,
+            ),
             timeout=30.0
         )
     except asyncio.TimeoutError:

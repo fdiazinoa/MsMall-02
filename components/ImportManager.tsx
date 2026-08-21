@@ -57,10 +57,17 @@ const webserviceEndDateKey = '_webservice_end_date';
 const webserviceStartDateParamKey = '_webservice_start_date_param';
 const webserviceEndDateParamKey = '_webservice_end_date_param';
 const bundabergEndpoint = 'https://sibs2.com/api_agora_inv/';
+const malalaApiBaseUrl = 'https://clientes.proisa.com.do/Malala';
+const malalaSalesEndpoint = `${malalaApiBaseUrl}/ventas`;
 
 const isSubaWebserviceConfig = (config: Partial<ImportConfig>) => (
   config.protocolo === 'WEBSERVICE'
   && String(config.host || '').trim().toLowerCase().includes('api.suba.do/api/external/v1/invoices')
+);
+
+const isMalalaWebserviceConfig = (config: Partial<ImportConfig>) => (
+  config.protocolo === 'WEBSERVICE'
+  && String(config.host || '').trim().toLowerCase().includes('clientes.proisa.com.do/malala')
 );
 
 const getApiProvider = (config: Partial<ImportConfig>) => {
@@ -297,6 +304,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const [editingConfig, setEditingConfig] = useState<ImportConfig>(createDefaultImportConfig());
   const selectedApiProvider = getApiProvider(editingConfig);
   const isSubaWebservice = isSubaWebserviceConfig(editingConfig);
+  const isMalalaWebservice = isMalalaWebserviceConfig(editingConfig);
+  const hasWebserviceDateRange = isSubaWebservice || isMalalaWebservice;
   const hasStoredCredential = configs.some(
     config => config.id === editingConfig.id && config.protocolo === editingConfig.protocolo
   );
@@ -1008,7 +1017,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         alert('Indica el endpoint HTTPS del WebService.');
         return;
       }
-      if (isSubaWebservice && (editingConfig.constants?.[webserviceDateModeKey] || 'yesterday') === 'custom') {
+      if (hasWebserviceDateRange && (editingConfig.constants?.[webserviceDateModeKey] || 'yesterday') === 'custom') {
         const startDate = editingConfig.constants?.[webserviceStartDateKey];
         const endDate = editingConfig.constants?.[webserviceEndDateKey];
         if (!startDate || !endDate) {
@@ -1020,16 +1029,38 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
           return;
         }
       }
+      if (isMalalaWebservice && !editingConfig.usuario.trim()) {
+        alert('Indica el usuario del API de MALALA.');
+        return;
+      }
       const existingWebserviceConfig = configs.some(
         config => config.id === editingConfig.id && config.protocolo === 'WEBSERVICE'
       );
       if (!existingWebserviceConfig && !tempPassword.trim() && !editingConfig.password?.trim()) {
-        alert('Indica el token Bearer del WebService.');
+        alert(isMalalaWebservice ? 'Indica el Client Secret del API de MALALA.' : 'Indica el token Bearer del WebService.');
         return;
       }
     }
 
-    const constantsToSave = isSubaWebservice
+    const constantsToSave = isMalalaWebservice
+      ? {
+          ...(editingConfig.constants || {}),
+          [webserviceDateModeKey]: editingConfig.constants?.[webserviceDateModeKey] || 'yesterday',
+          [webserviceStartDateParamKey]: 'fechaInicio',
+          [webserviceEndDateParamKey]: 'fechaFin',
+          _webservice_auth_url: `${malalaApiBaseUrl}/auth/token`,
+          _webservice_auth_username_field: 'username',
+          _webservice_auth_secret_field: 'clientSecret',
+          _webservice_auth_token_path: 'token',
+          _webservice_data_path: 'data',
+          _webservice_paginate: 'true',
+          _webservice_page_param: 'page',
+          _webservice_page_size_param: 'pageSize',
+          _webservice_page_size: '1000',
+          _webservice_start_page: '1',
+          _webservice_empty_statuses: '404'
+        }
+      : isSubaWebservice
       ? {
           ...(editingConfig.constants || {}),
           [webserviceDateModeKey]: editingConfig.constants?.[webserviceDateModeKey] || 'yesterday',
@@ -2173,7 +2204,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           <input
                             type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
                             placeholder={editingConfig.protocolo === 'WEBSERVICE'
-                              ? 'https://proveedor.example/api/invoices'
+                              ? malalaSalesEndpoint
                               : editingConfig.protocolo === 'API'
                                 ? (selectedApiProvider === 'bundaberg' ? bundabergEndpoint : 'https://alcagora.ddns.net')
                               : 'sftp.tu-tienda.com'}
@@ -2252,18 +2283,18 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                     <div>
                       <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
                         {editingConfig.protocolo === 'WEBSERVICE'
-                          ? 'Autenticación Bearer token'
+                          ? (isMalalaWebservice ? 'Autenticación dinámica MALALA' : 'Autenticación Bearer token')
                           : editingConfig.protocolo === 'API'
                           ? (selectedApiProvider === 'bundaberg' ? 'Autenticación API key' : 'Autenticación Client Credentials')
                           : 'Credenciales de Acceso'}
                       </label>
                       <div className="space-y-3">
-                        {editingConfig.protocolo !== 'WEBSERVICE' && !(editingConfig.protocolo === 'API' && selectedApiProvider === 'bundaberg') && (
+                        {(editingConfig.protocolo !== 'WEBSERVICE' || isMalalaWebservice) && !(editingConfig.protocolo === 'API' && selectedApiProvider === 'bundaberg') && (
                         <div className="relative">
                           <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder={editingConfig.protocolo === 'API' ? 'Client ID' : 'Nombre de usuario'}
+                            placeholder={editingConfig.protocolo === 'API' ? 'Client ID' : isMalalaWebservice ? 'Usuario MALALA' : 'Nombre de usuario'}
                             value={editingConfig.usuario}
                             onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
                           />
@@ -2278,7 +2309,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             placeholder={hasStoredCredential && !tempPassword
                               ? '********'
                               : editingConfig.protocolo === 'WEBSERVICE'
-                                ? 'Token Bearer del WebService'
+                                ? (isMalalaWebservice ? 'Client Secret de MALALA' : 'Token Bearer del WebService')
                                 : editingConfig.protocolo === 'API'
                                 ? (selectedApiProvider === 'bundaberg' ? 'API key de Bundaberg' : 'Client Secret')
                                 : 'Contraseña o Frase de paso SSH'}
@@ -2367,12 +2398,12 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                       </div>
                     </>
                   )}
-                  {isSubaWebservice && (
+                  {hasWebserviceDateRange && (
                     <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
                       <div>
                         <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Periodo de consulta WebService</p>
                         <p className="text-xs text-cyan-700 mt-1">
-                          Define el periodo que se enviará como <code>start_date</code> y <code>end_date</code>.
+                          Define el periodo que se enviará como <code>{isMalalaWebservice ? 'fechaInicio' : 'start_date'}</code> y <code>{isMalalaWebservice ? 'fechaFin' : 'end_date'}</code>.
                         </p>
                       </div>
                       <div className="grid grid-cols-2 gap-2">

@@ -1,6 +1,7 @@
 import json
 import ssl
 import urllib.parse
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 
@@ -79,6 +80,97 @@ def test_generic_webservice_adds_configured_moving_date_range(monkeypatch):
     assert query["page"] == ["1"]
     assert query["start_date"] == ["2026-08-19"]
     assert query["end_date"] == ["2026-08-19"]
+
+
+def test_generic_webservice_authenticates_dynamically_and_sends_page_size(monkeypatch):
+    config = _suba_config()
+    config.update({
+        "sftp_user": "agora",
+        "sftp_pass": "provider-secret",
+        "sftp_host": "https://provider.example/Malala/ventas",
+    })
+    config["constants_config"].update({
+        "_webservice_auth_url": "https://provider.example/Malala/auth/token",
+        "_webservice_auth_username_field": "username",
+        "_webservice_auth_secret_field": "clientSecret",
+        "_webservice_auth_token_path": "token",
+        "_webservice_start_date_param": "fechaInicio",
+        "_webservice_end_date_param": "fechaFin",
+        "_webservice_page_size_param": "pageSize",
+        "_webservice_page_size": "1000",
+        "_webservice_data_path": "data",
+    })
+    auth_requests = []
+    sales_requests = []
+
+    def fake_json_request(method, url, **kwargs):
+        auth_requests.append((method, url, kwargs.get("body"), kwargs.get("timeout_seconds")))
+        return {"token": "short-lived-jwt", "expiresIn": 3600}
+
+    def fake_fetch(url, token, timeout_seconds):
+        sales_requests.append((url, token, timeout_seconds))
+        return {"data": []}
+
+    monkeypatch.setattr(worker, "_webservice_json_request", fake_json_request)
+    monkeypatch.setattr(worker, "_fetch_webservice_json", fake_fetch)
+    monkeypatch.setattr(worker, "_now_local", lambda: datetime(2026, 8, 21, 12, 0, 0))
+
+    records, fetched_pages, last_url = worker.fetch_generic_webservice_records(config)
+
+    assert records == []
+    assert fetched_pages == 0
+    assert auth_requests == [(
+        "POST",
+        "https://provider.example/Malala/auth/token",
+        {"username": "agora", "clientSecret": "provider-secret"},
+        45,
+    )]
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(last_url).query)
+    assert query == {
+        "fechaInicio": ["2026-08-20"],
+        "fechaFin": ["2026-08-20"],
+        "page": ["1"],
+        "pageSize": ["1000"],
+    }
+    assert sales_requests == [(last_url, "short-lived-jwt", 45)]
+
+
+def test_generic_webservice_treats_configured_404_as_empty(monkeypatch):
+    config = _suba_config()
+    config["constants_config"]["_webservice_empty_statuses"] = "404"
+    calls = []
+
+    def fake_fetch(url, token, timeout_seconds, empty_statuses):
+        calls.append((url, token, timeout_seconds, empty_statuses))
+        return {}
+
+    monkeypatch.setattr(worker, "_fetch_webservice_json", fake_fetch)
+
+    records, fetched_pages, _last_url = worker.fetch_generic_webservice_records(config)
+
+    assert records == []
+    assert fetched_pages == 0
+    assert calls[0][3] == {404}
+
+
+def test_webservice_json_request_returns_empty_for_configured_status(monkeypatch):
+    error = urllib.error.HTTPError(
+        "https://provider.example/ventas",
+        404,
+        "Not Found",
+        {},
+        None,
+    )
+    monkeypatch.setattr(worker.urllib.request, "urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(error))
+
+    payload = worker._webservice_json_request(
+        "GET",
+        "https://provider.example/ventas",
+        timeout_seconds=20,
+        empty_statuses={404},
+    )
+
+    assert payload == {}
 
 
 def test_generic_webservice_uses_verified_certifi_context(monkeypatch):
@@ -168,6 +260,58 @@ def test_agalma_invoice_fields_map_to_sales_contract(monkeypatch):
     ]
 
 
+def test_malala_fields_map_to_sales_contract(monkeypatch):
+    inserted = []
+
+    class Result:
+        data = [{"id": "inserted"}]
+
+    monkeypatch.setattr(
+        worker,
+        "_filter_existing_sale_rows",
+        lambda rows, line_numbers, _local_id: (rows, line_numbers, []),
+    )
+    monkeypatch.setattr(worker, "_atomic_duplicate_details", lambda *_args: [])
+    monkeypatch.setattr(worker, "_upsert_sales_ignoring_duplicates", lambda rows: inserted.extend(rows) or Result())
+
+    config = {
+        "id": "local-malala",
+        "mall_id": "mall-santiago",
+        "nombre": "MALALA",
+        "file_type": "JSON",
+        "mapping_config": {
+            "factura_numero": "ID_TRANSACCION",
+            "fecha_venta": "FECHA",
+            "total_bruto": "TOTALBRUTO",
+            "total_impuestos": "TOTALIMPUESTOS",
+            "total_neto": "TOTALNETO",
+        },
+        "constants_config": {"_moving_window_mode": "true"},
+    }
+    sale = {
+        "ID_TRANSACCION": 1234,
+        "FECHA": "2026-08-20",
+        "HORA": "14:30:00",
+        "TOTALBRUTO": 847.46,
+        "TOTALIMPUESTOS": 152.54,
+        "TOTALNETO": 1000,
+    }
+
+    count, errors, _stats = worker.process_file_logic(config, "MALALA.json", json.dumps([sale]))
+
+    assert count == 1
+    assert errors == []
+    assert inserted == [{
+        "local_id": "local-malala",
+        "mall_id": "mall-santiago",
+        "fecha": "2026-08-20",
+        "factura_no": "1234",
+        "total_bruto": 847.46,
+        "total_impuestos": 152.54,
+        "total_neto": 1000.0,
+    }]
+
+
 def test_webservice_protocol_routes_to_generic_import_without_duplicate_log(monkeypatch):
     monkeypatch.setattr(
         worker,
@@ -237,6 +381,19 @@ def test_import_manager_exposes_suba_webservice_date_range_controls():
     assert "webserviceStartDateParamKey = '_webservice_start_date_param'" in manager
     assert "webserviceEndDateParamKey = '_webservice_end_date_param'" in manager
     assert "Selecciona las fechas Desde y Hasta para consultar el WebService." in manager
+
+
+def test_import_manager_supports_malala_dynamic_authentication():
+    repo = Path(__file__).resolve().parents[1]
+    manager = (repo / "components" / "ImportManager.tsx").read_text(encoding="utf-8")
+
+    assert "isMalalaWebserviceConfig" in manager
+    assert "https://clientes.proisa.com.do/Malala" in manager
+    assert "Autenticación dinámica MALALA" in manager
+    assert "_webservice_auth_url" in manager
+    assert "_webservice_auth_secret_field: 'clientSecret'" in manager
+    assert "_webservice_page_size_param: 'pageSize'" in manager
+    assert "_webservice_empty_statuses: '404'" in manager
 
 
 def test_api_connection_test_and_manual_listing_recognize_webservice(monkeypatch):

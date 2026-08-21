@@ -1137,7 +1137,7 @@ def _first_list_of_records(payload: Any) -> List[Dict[str, Any]]:
             if nested:
                 return nested
 
-    return [payload]
+    return [payload] if payload else []
 
 
 def _extract_webservice_records(payload: Any, data_path: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1148,20 +1148,156 @@ def _extract_webservice_records(payload: Any, data_path: Optional[str] = None) -
     return _first_list_of_records(payload)
 
 
-def _fetch_webservice_json(url: str, token: Optional[str], timeout_seconds: int) -> Any:
+def _webservice_status_codes(value: Any) -> set[int]:
+    codes: set[int] = set()
+    for item in re.split(r"[\s,]+", str(value or "").strip()):
+        if not item:
+            continue
+        try:
+            codes.add(int(item))
+        except (TypeError, ValueError):
+            continue
+    return codes
+
+
+def _webservice_json_request(
+    method: str,
+    url: str,
+    *,
+    token: Optional[str] = None,
+    body: Optional[Dict[str, Any]] = None,
+    timeout_seconds: int,
+    empty_statuses: Optional[set[int]] = None,
+) -> Any:
     headers = {
         "Accept": "application/json",
         "User-Agent": "MsMall-ImportWorker/1.0",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    payload = None
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
 
-    request = urllib.request.Request(url, headers=headers, method="GET")
+    request = urllib.request.Request(url, data=payload, headers=headers, method=method.upper())
     ssl_context = ssl.create_default_context(cafile=certifi.where())
-    with urllib.request.urlopen(request, timeout=timeout_seconds, context=ssl_context) as response:
-        raw = response.read()
-        decoded = _decode_worker_text(raw, is_json=True)
-        return json.loads(decoded or "{}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds, context=ssl_context) as response:
+            raw = response.read()
+            decoded = _decode_worker_text(raw, is_json=True)
+            return json.loads(decoded or "{}")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (empty_statuses or set()):
+            return {}
+        detail = _decode_worker_text(exc.read(), is_json=True)
+        raise RuntimeError(f"Webservice HTTP {exc.code}: {detail or exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"No se pudo conectar al Webservice: {exc.reason}") from exc
+
+
+def _fetch_webservice_json(
+    url: str,
+    token: Optional[str],
+    timeout_seconds: int,
+    empty_statuses: Optional[set[int]] = None,
+) -> Any:
+    return _webservice_json_request(
+        "GET",
+        url,
+        token=token,
+        timeout_seconds=timeout_seconds,
+        empty_statuses=empty_statuses,
+    )
+
+
+def _authorize_generic_webservice(
+    config: Dict[str, Any],
+    constants: Dict[str, Any],
+    timeout_seconds: int,
+) -> Optional[str]:
+    auth_url = str(
+        _webservice_config_value(config, constants, "_webservice_auth_url", "webservice_auth_url") or ""
+    ).strip()
+    if not auth_url:
+        return str(
+            _webservice_config_value(
+                config,
+                constants,
+                "_webservice_token",
+                "webservice_token",
+                "api_token",
+                "auth_token",
+                "password",
+                "sftp_pass",
+            )
+            or ""
+        ).strip() or None
+
+    username = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "_webservice_auth_username",
+            "webservice_auth_username",
+            "username",
+            "usuario",
+            "sftp_user",
+        )
+        or ""
+    ).strip()
+    secret = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "_webservice_auth_secret",
+            "webservice_auth_secret",
+            "password",
+            "sftp_pass",
+        )
+        or ""
+    ).strip()
+    if not username or not secret:
+        raise ValueError("Usuario y secreto requeridos para autenticar el Webservice.")
+
+    username_field = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "_webservice_auth_username_field",
+            "webservice_auth_username_field",
+        )
+        or "username"
+    ).strip()
+    secret_field = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "_webservice_auth_secret_field",
+            "webservice_auth_secret_field",
+        )
+        or "clientSecret"
+    ).strip()
+    token_path = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "_webservice_auth_token_path",
+            "webservice_auth_token_path",
+        )
+        or "token"
+    ).strip()
+
+    response = _webservice_json_request(
+        "POST",
+        auth_url,
+        body={username_field: username, secret_field: secret},
+        timeout_seconds=timeout_seconds,
+    )
+    token = _json_path_value(response, token_path)
+    if not isinstance(token, str) or not token.strip():
+        raise RuntimeError("El Webservice no devolvio el token de autenticacion esperado.")
+    return token.strip()
 
 
 def fetch_generic_webservice_records(
@@ -1184,16 +1320,6 @@ def fetch_generic_webservice_records(
     if not base_url:
         raise ValueError("Webservice sin URL configurada.")
 
-    token = _webservice_config_value(
-        normalized,
-        constants,
-        "_webservice_token",
-        "webservice_token",
-        "api_token",
-        "auth_token",
-        "password",
-        "sftp_pass",
-    )
     page_param = str(
         _webservice_config_value(normalized, constants, "_webservice_page_param", "page_param") or "page"
     )
@@ -1222,6 +1348,7 @@ def fetch_generic_webservice_records(
             "timeout_seconds",
         ),
     )
+    token = _authorize_generic_webservice(normalized, constants, timeout_seconds)
     data_path = _webservice_config_value(normalized, constants, "_webservice_data_path", "data_path")
     paginate = _webservice_bool_value(
         normalized,
@@ -1254,13 +1381,44 @@ def fetch_generic_webservice_records(
         request_url = _append_query_param(request_url, start_date_param, start_date)
         request_url = _append_query_param(request_url, end_date_param, end_date)
 
+    page_size_param = str(
+        _webservice_config_value(
+            normalized,
+            constants,
+            "_webservice_page_size_param",
+            "page_size_param",
+        )
+        or ""
+    ).strip()
+    page_size = _webservice_int_value(
+        normalized,
+        constants,
+        0,
+        "_webservice_page_size",
+        "page_size",
+    )
+    if page_size_param and page_size > 0:
+        request_url = _append_query_param(request_url, page_size_param, page_size)
+
+    empty_statuses = _webservice_status_codes(
+        _webservice_config_value(
+            normalized,
+            constants,
+            "_webservice_empty_statuses",
+            "empty_statuses",
+        )
+    )
+
     records: List[Dict[str, Any]] = []
     fetched_pages = 0
     last_url = ""
     page = start_page
     while fetched_pages < max_pages:
         last_url = _append_query_param(request_url, page_param, page) if paginate else request_url
-        payload = _fetch_webservice_json(last_url, str(token or "").strip() or None, timeout_seconds)
+        if empty_statuses:
+            payload = _fetch_webservice_json(last_url, token, timeout_seconds, empty_statuses)
+        else:
+            payload = _fetch_webservice_json(last_url, token, timeout_seconds)
         page_records = _extract_webservice_records(payload, str(data_path or "").strip() or None)
         if not page_records:
             break

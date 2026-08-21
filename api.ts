@@ -2731,6 +2731,17 @@ export const ApiService = {
     );
   },
 
+  async sendUserPasswordRecovery(userId: string, token: string): Promise<{ message: string; target_user_id: string }> {
+    return fetchJsonWithBaseFallback(
+      `/admin/users/${encodeURIComponent(userId)}/password-recovery`,
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, { 'Accept': 'application/json' }),
+      },
+      'No se pudo enviar el enlace de recuperación'
+    );
+  },
+
   async getRoles(token: string): Promise<RoleConfig[]> {
     return fetchJsonWithBaseFallback<RoleConfig[]>(
       '/admin/roles',

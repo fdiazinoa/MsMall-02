@@ -655,6 +655,67 @@ def test_malala_mapping_analysis_uses_saved_dynamic_auth_config(monkeypatch):
     assert {"FECHA", "ID_TRANSACCION", "TOTALBRUTO"}.issubset(result["csv_headers"])
 
 
+def test_malala_mapping_analysis_retries_recent_range_when_yesterday_is_empty(monkeypatch):
+    import main
+    from datetime import date
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 21)
+
+    stored_config = {
+        "id": "local-malala",
+        "mall_id": "mall-1",
+        "sftp_protocol": "WEBSERVICE",
+        "sftp_host": "https://clientes.proisa.com.do/Malala/ventas",
+        "sftp_user": "agora",
+        "sftp_pass": "stored-client-secret",
+        "file_type": "JSON",
+        "constants_config": {
+            "provider": "malala",
+            "_webservice_auth_url": "https://clientes.proisa.com.do/Malala/auth/token",
+            "_webservice_date_mode": "yesterday",
+            "_webservice_empty_statuses": "404",
+        },
+    }
+    calls = []
+    monkeypatch.setattr(main, "date", FixedDate)
+    monkeypatch.setattr(
+        main,
+        "_load_local_config_with_access",
+        lambda local_id, operator_ctx: stored_config,
+    )
+
+    def fake_fetch(config, max_pages_override=None):
+        calls.append(config)
+        if len(calls) == 1:
+            return [], 0, config["sftp_host"]
+        return [{"FECHA": "2026-08-15", "ID_TRANSACCION": "M-2"}], 1, config["sftp_host"]
+
+    monkeypatch.setattr(main, "fetch_generic_webservice_records", fake_fetch)
+    request = main.RemoteRequest(
+        local_id="local-malala",
+        protocolo="WEBSERVICE",
+        host="https://clientes.proisa.com.do/Malala/ventas",
+        puerto=443,
+        usuario="agora",
+        password="",
+        ruta="WEBSERVICE_API",
+        tipo_archivo="JSON",
+    )
+
+    result = asyncio.run(main.analyze_remote_mapping(request, {"role": "admin"}))
+
+    assert len(calls) == 2
+    assert calls[0]["constants_config"]["_webservice_date_mode"] == "yesterday"
+    assert calls[1]["constants_config"]["_webservice_date_mode"] == "custom"
+    assert calls[1]["constants_config"]["_webservice_start_date"] == "2026-07-23"
+    assert calls[1]["constants_config"]["_webservice_end_date"] == "2026-08-21"
+    assert stored_config["constants_config"]["_webservice_date_mode"] == "yesterday"
+    assert {"FECHA", "ID_TRANSACCION"}.issubset(result["csv_headers"])
+
+
 def test_api_connection_test_explains_cloudflare_525(monkeypatch):
     import main
 

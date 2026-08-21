@@ -4004,7 +4004,15 @@ async def analyze_remote_mapping(
     Connects to SFTP/FTP, reads a sample of the file, and returns mapping suggestions.
     """
     try:
-        req = _remote_request_with_saved_password(req, operator_ctx)
+        webservice_config = None
+        if str(req.protocolo or "").strip().upper() == "WEBSERVICE":
+            webservice_config = _webservice_test_config_from_remote_request(req, operator_ctx)
+            req = req.model_copy(update={
+                "host": str(req.host or "").strip(),
+                "usuario": str(req.usuario or "").strip(),
+            })
+        else:
+            req = _remote_request_with_saved_password(req, operator_ctx)
         content = ""
         loop = asyncio.get_event_loop()
         analysis_timeout_seconds = _remote_analysis_timeout_seconds(req.ruta, req.tipo_archivo)
@@ -4019,12 +4027,7 @@ async def analyze_remote_mapping(
                 return json.dumps(_api_preview_rows(req), ensure_ascii=False)
             if protocol == "WEBSERVICE":
                 rows, _, _ = fetch_generic_webservice_records(
-                    {
-                        "sftp_protocol": "WEBSERVICE",
-                        "sftp_host": req.host,
-                        "sftp_pass": req.password,
-                        "constants_config": {"_webservice_timeout_seconds": "30"},
-                    },
+                    webservice_config,
                     max_pages_override=1,
                 )
                 return json.dumps(rows, ensure_ascii=False)

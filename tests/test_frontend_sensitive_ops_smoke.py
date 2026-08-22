@@ -34,6 +34,7 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
 
     load_logs_segment = _segment(api_ts, "async getLoadLogs", until="async reactivateStore")
     assert "/load-logs" in load_logs_segment
+    assert "query.set('limit'" in load_logs_segment
     assert ".from('logs_carga')" not in load_logs_segment
 
     clear_logs_segment = _segment(api_ts, "async clearLoadLogs")
@@ -60,7 +61,8 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "ApiService.getLoadLogs(currentMall.id, authToken)" in import_manager
     assert "log.local_id" in import_manager
     assert "Auditoria rapida" in import_manager
-    assert "ApiService.getLoadLogs(currentMall.id, session?.access_token)" in load_monitor
+    assert "const LOAD_MONITOR_LOG_LIMIT = 1000;" in load_monitor
+    assert "LOAD_MONITOR_LOG_LIMIT," in load_monitor
     assert "LOAD_MONITOR_PAGE_SIZE" in load_monitor
     assert "Retroceder" in load_monitor
     assert "Siguiente" in load_monitor
@@ -87,3 +89,16 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "ApiService.saveResendSenderConfig(payload, token)" in resend_messaging_admin
     assert "Guardar remitente" in resend_messaging_admin
     assert "/admin/messaging/resend/sender" in api_ts
+
+
+def test_load_monitor_requests_up_to_1000_logs():
+    repo = Path(__file__).resolve().parents[1]
+    api_ts = (repo / "api.ts").read_text(encoding="utf-8")
+    load_monitor = (repo / "components" / "LoadMonitor.tsx").read_text(encoding="utf-8")
+
+    load_logs_segment = _segment(api_ts, "async getLoadLogs", until="async reactivateStore")
+    assert "limit: number = 50" in load_logs_segment
+    assert "query.set('limit'" in load_logs_segment
+    assert "Math.min(Math.trunc(limit), 1000)" in load_logs_segment
+    assert "const LOAD_MONITOR_LOG_LIMIT = 1000;" in load_monitor
+    assert "LOAD_MONITOR_LOG_LIMIT," in load_monitor

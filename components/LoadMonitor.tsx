@@ -26,6 +26,7 @@ import {
 
 type MonitorStatusFilter = 'all' | 'exito' | 'parcial' | 'error';
 const LOAD_MONITOR_PAGE_SIZE = 20;
+const LOAD_MONITOR_LOG_LIMIT = 1000;
 
 const StatCard = ({ title, count, icon: Icon, color, bgColor }: any) => (
   <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
@@ -141,7 +142,11 @@ export const LoadMonitor: React.FC = () => {
     if (!currentMall?.id) return;
     setLoading(true);
     try {
-      const data = await ApiService.getLoadLogs(currentMall.id, session?.access_token);
+      const data = await ApiService.getLoadLogs(
+        currentMall.id,
+        session?.access_token,
+        LOAD_MONITOR_LOG_LIMIT,
+      );
       setLogs(data);
     } catch (e) {
       console.error(e);

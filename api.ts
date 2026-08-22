@@ -1761,7 +1761,9 @@ export const ApiService = {
       if (mallId) query.set('mall_id', mallId);
       if (options?.startDate) query.set('start_date', options.startDate);
       if (options?.endDate) query.set('end_date', options.endDate);
-      if (options?.limit) query.set('limit', String(options.limit));
+      if (options?.limit) {
+        query.set('limit', String(Math.max(1, Math.min(Math.trunc(options.limit), 1000))));
+      }
       const suffix = query.toString() ? `?${query.toString()}` : '';
       const headers: Record<string, string> = { 'Accept': 'application/json' };
       if (mallId) headers['X-Mall-Id'] = mallId;

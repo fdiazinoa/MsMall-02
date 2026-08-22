@@ -1750,7 +1750,16 @@ export const BigDataDashboard: React.FC = () => {
                       Ajustes aprendidos
                     </p>
                     <div className="mt-3 space-y-2">
-                      {prediction.drivers.event_adjustments.map((adjustment) => (
+                      {[
+                        ...(prediction.drivers.holiday_adjustment.observations > 0
+                          ? [{
+                              event_type: 'COUNTRY_HOLIDAY',
+                              event_type_label: 'Feriados nacionales',
+                              ...prediction.drivers.holiday_adjustment,
+                            }]
+                          : []),
+                        ...prediction.drivers.event_adjustments,
+                      ].map((adjustment) => (
                         <div
                           key={adjustment.event_type}
                           className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 px-3 py-2.5"
@@ -1776,9 +1785,10 @@ export const BigDataDashboard: React.FC = () => {
                           </span>
                         </div>
                       ))}
-                      {!prediction.drivers.event_adjustments.length && (
+                      {prediction.drivers.holiday_adjustment.observations === 0
+                        && !prediction.drivers.event_adjustments.length && (
                         <p className="rounded-xl bg-slate-50 p-4 text-xs leading-5 text-slate-500">
-                          Todavía no existen actividades históricas suficientes para aprender un ajuste.
+                          Todavía no hay feriados o eventos históricos coincidentes con ventas dentro del período seleccionado.
                         </p>
                       )}
                     </div>

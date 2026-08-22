@@ -116,10 +116,10 @@ const getStatusBadge = (log: LoadLogEntry) => {
 };
 
 const SummaryTile = ({ label, value, subtle }: { label: string; value: React.ReactNode; subtle?: string }) => (
-  <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
-    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{label}</p>
-    <div className="text-sm font-bold text-slate-700 break-words">{value}</div>
-    {subtle && <div className="text-xs text-slate-500 mt-1 break-all">{subtle}</div>}
+  <div className="min-w-0 rounded-xl border border-slate-100 bg-slate-50 p-3">
+    <p className="mb-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400">{label}</p>
+    <div className="break-words text-sm font-bold leading-5 text-slate-700">{value}</div>
+    {subtle && <div className="mt-0.5 truncate text-[10px] text-slate-500" title={subtle}>{subtle}</div>}
   </div>
 );
 
@@ -449,56 +449,60 @@ export const LoadMonitor: React.FC = () => {
       </div>
 
       {selectedLog && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-4xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <div>
-                <h3 className="text-xl font-bold text-slate-800">Detalle de Carga</h3>
-                <p className="text-sm text-slate-500">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-3 backdrop-blur-sm sm:p-4">
+          <div data-testid="load-detail-modal" className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between gap-4 border-b border-slate-100 bg-slate-50/70 px-4 py-3 sm:px-5">
+              <div className="min-w-0">
+                <h3 className="text-lg font-bold text-slate-800">Detalle de Carga</h3>
+                <p className="truncate text-xs text-slate-500">
                   {getDisplayFileName(selectedLog)} · {getDisplayLocalName(selectedLog)}
                 </p>
               </div>
               <button
                 onClick={() => setSelectedLog(null)}
-                className="p-2 hover:bg-slate-200 rounded-full transition-colors"
+                className="shrink-0 rounded-full p-1.5 transition-colors hover:bg-slate-200"
+                aria-label="Cerrar detalle de carga"
               >
-                <XCircle size={24} className="text-slate-400" />
+                <XCircle size={20} className="text-slate-400" />
               </button>
             </div>
 
-            <div className="p-6 overflow-y-auto flex-1 space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
                 <SummaryTile label="Estado Final" value={getStatusBadge(selectedLog)} />
-                <SummaryTile label="Mall" value={getDisplayMallName(selectedLog, currentMall)} subtle={selectedLog.mall_id || undefined} />
-                <SummaryTile label="Local" value={getDisplayLocalName(selectedLog)} subtle={selectedLog.local_id || undefined} />
-                <SummaryTile label="Via de Carga" value={getDisplayChannel(selectedLog)} />
-                <SummaryTile label="Archivo" value={getDisplayFileName(selectedLog)} />
-                <SummaryTile label="Batch ID" value={selectedLog.batch_id || 'No aplica'} subtle={selectedLog.batch_id || undefined} />
-                <SummaryTile label="Registros Procesados" value={`${getProcessedCount(selectedLog)} registros`} />
-                <SummaryTile label="Errores" value={`${getErrorCount(selectedLog)} errores`} />
-                <SummaryTile label="Fecha y Hora" value={formatDateTime(selectedLog.fecha_hora)} />
+                <SummaryTile
+                  label="Mall / Local"
+                  value={<><span className="block">{getDisplayMallName(selectedLog, currentMall)}</span><span className="block text-xs font-medium text-slate-500">{getDisplayLocalName(selectedLog)}</span></>}
+                  subtle={[selectedLog.mall_id, selectedLog.local_id].filter(Boolean).join(' · ') || undefined}
+                />
+                <SummaryTile label="Via / Fecha" value={getDisplayChannel(selectedLog)} subtle={formatDateTime(selectedLog.fecha_hora)} />
+                <SummaryTile label="Archivo / Batch" value={<span className="line-clamp-2" title={getDisplayFileName(selectedLog)}>{getDisplayFileName(selectedLog)}</span>} subtle={selectedLog.batch_id || 'Sin batch_id'} />
+                <SummaryTile
+                  label="Procesados / Errores"
+                  value={<><span>{getProcessedCount(selectedLog)} registros</span><span className={`ml-2 text-xs ${getErrorCount(selectedLog) > 0 ? 'text-red-600' : 'text-slate-400'}`}>{getErrorCount(selectedLog)} errores</span></>}
+                />
               </div>
 
-              <div className="p-5 rounded-2xl bg-indigo-50 border border-indigo-100">
-                <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest mb-2">
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4">
+                <p className="mb-1 text-[9px] font-bold uppercase tracking-widest text-indigo-500">
                   Mensaje operativo · {selectedOperationalMessage.category}
                 </p>
                 <p className="text-sm font-bold text-slate-800">{selectedOperationalMessage.title}</p>
-                <p className="text-sm text-slate-700 leading-relaxed mt-1">{selectedOperationalMessage.summary}</p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
-                  <div className="rounded-xl bg-white/70 border border-indigo-100 p-3">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Causa probable</p>
-                    <p className="text-xs text-slate-700 leading-relaxed">{selectedOperationalMessage.cause}</p>
+                <p className="mt-0.5 text-xs leading-5 text-slate-700">{selectedOperationalMessage.summary}</p>
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className="rounded-lg border border-indigo-100 bg-white/70 p-2.5">
+                    <p className="mb-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400">Causa probable</p>
+                    <p className="text-xs leading-5 text-slate-700">{selectedOperationalMessage.cause}</p>
                   </div>
-                  <div className="rounded-xl bg-white/70 border border-indigo-100 p-3">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Accion recomendada</p>
-                    <p className="text-xs text-slate-700 leading-relaxed">{selectedOperationalMessage.action}</p>
+                  <div className="rounded-lg border border-indigo-100 bg-white/70 p-2.5">
+                    <p className="mb-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400">Accion recomendada</p>
+                    <p className="text-xs leading-5 text-slate-700">{selectedOperationalMessage.action}</p>
                   </div>
                 </div>
               </div>
 
               <div>
-                <h4 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-2">
+                <h4 className="mb-2 flex items-center gap-2 text-xs font-bold text-slate-800">
                   <AlertCircle size={16} className={isExecutionFailure ? 'text-red-500' : 'text-amber-500'} />
                   {hasLineErrors
                     ? `Resultado de Validacion (${selectedLogErrors.length} errores)`
@@ -508,9 +512,9 @@ export const LoadMonitor: React.FC = () => {
                 </h4>
 
                 {hasLineErrors ? (
-                  <div className="space-y-2">
+                  <div className="grid max-h-[180px] grid-cols-1 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
                     {selectedLogErrors.map((err, idx) => (
-                      <div key={`${idx}-${err.linea || 0}`} className="flex items-start gap-3 p-3 rounded-xl bg-red-50 border border-red-100">
+                      <div key={`${idx}-${err.linea || 0}`} className="flex items-start gap-2 rounded-lg border border-red-100 bg-red-50 p-2.5">
                         <span className="text-[10px] font-mono font-bold bg-red-200 text-red-700 px-1.5 py-0.5 rounded">
                           L{err.linea || idx + 1}
                         </span>
@@ -519,27 +523,24 @@ export const LoadMonitor: React.FC = () => {
                     ))}
                   </div>
                 ) : isExecutionFailure ? (
-                  <div className="p-5 rounded-2xl bg-red-50 border border-red-100 space-y-2">
-                    <p className="text-sm font-bold text-red-700">{selectedOperationalMessage.title}</p>
-                    <p className="text-xs text-red-700/90">{selectedOperationalMessage.summary}</p>
-                    <p className="text-xs text-red-700/90">Causa probable: {selectedOperationalMessage.cause}</p>
-                    <p className="text-[11px] text-red-600/80">
-                      No hay errores por linea porque el fallo ocurrio en conexion, descarga, validacion inicial o persistencia.
+                  <div className="rounded-xl border border-red-100 bg-red-50 p-3">
+                    <p className="text-xs text-red-700">
+                      No hay errores por linea: el fallo ocurrio en conexion, descarga, validacion inicial o persistencia.
                     </p>
                   </div>
                 ) : (
-                  <div className="p-8 text-center bg-green-50 rounded-2xl border border-green-100">
-                    <CheckCircle2 size={32} className="text-green-500 mx-auto mb-2" />
-                    <p className="text-sm text-green-700 font-medium">No se encontraron errores en la validacion del archivo o batch.</p>
+                  <div className="flex items-center gap-2 rounded-xl border border-green-100 bg-green-50 p-3">
+                    <CheckCircle2 size={20} className="shrink-0 text-green-500" />
+                    <p className="text-xs font-medium text-green-700">No se encontraron errores en la validacion del archivo o batch.</p>
                   </div>
                 )}
               </div>
             </div>
 
-            <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex justify-end">
+            <div className="flex justify-end border-t border-slate-100 bg-slate-50/70 px-4 py-3 sm:px-5">
               <button
                 onClick={() => setSelectedLog(null)}
-                className="px-6 py-2 rounded-xl bg-slate-800 text-white font-bold hover:bg-slate-900 transition-all active:scale-95"
+                className="rounded-lg bg-slate-800 px-5 py-2 text-sm font-bold text-white transition-all hover:bg-slate-900 active:scale-95"
               >
                 Cerrar
               </button>

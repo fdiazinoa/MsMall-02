@@ -25,13 +25,13 @@ def test_load_monitor_uses_operational_messages():
     assert "describeLoadLog" in import_manager
 
 
-def test_load_monitor_requests_latest_200_without_date_filter():
+def test_load_monitor_requests_latest_1000_without_date_filter():
     repo = Path(__file__).resolve().parents[1]
     monitor = (repo / "components" / "LoadMonitor.tsx").read_text(encoding="utf-8")
     api_ts = (repo / "api.ts").read_text(encoding="utf-8")
 
-    assert "const LOAD_MONITOR_MAX_LOGS = 200" in monitor
+    assert "const LOAD_MONITOR_MAX_LOGS = 1000" in monitor
     assert "limit: LOAD_MONITOR_MAX_LOGS" in monitor
     assert "dateRange" not in monitor
     assert 'type="date"' not in monitor
-    assert "query.set('limit', String(options.limit))" in api_ts
+    assert "Math.min(Math.trunc(options.limit), 1000)" in api_ts

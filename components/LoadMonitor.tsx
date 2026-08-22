@@ -307,18 +307,31 @@ export const LoadMonitor: React.FC = () => {
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left min-w-[1200px]">
-            <thead className="bg-slate-50/50 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
+        <div
+          data-testid="load-monitor-log-scroll"
+          className="max-h-[60vh] min-h-[320px] overflow-auto overscroll-contain"
+        >
+          <table className="w-full min-w-[1100px] table-fixed text-left">
+            <colgroup>
+              <col className="w-[130px]" />
+              <col className="w-[170px]" />
+              <col className="w-[105px]" />
+              <col className="w-[250px]" />
+              <col className="w-[105px]" />
+              <col className="w-[110px]" />
+              <col className="w-[210px]" />
+              <col className="w-[96px]" />
+            </colgroup>
+            <thead className="sticky top-0 z-20 border-b border-slate-100 bg-slate-50 text-[10px] font-bold uppercase tracking-widest text-slate-500 shadow-sm">
               <tr>
-                <th className="px-6 py-4">Fecha / Hora</th>
-                <th className="px-6 py-4">Mall / Local</th>
-                <th className="px-6 py-4">Via</th>
-                <th className="px-6 py-4">Archivo / Batch</th>
-                <th className="px-6 py-4">Estado</th>
-                <th className="px-6 py-4">Registros</th>
-                <th className="px-6 py-4">Mensaje</th>
-                <th className="px-6 py-4 text-right">Accion</th>
+                <th className="px-4 py-4">Fecha / Hora</th>
+                <th className="px-4 py-4">Mall / Local</th>
+                <th className="px-4 py-4">Via</th>
+                <th className="px-4 py-4">Archivo / Batch</th>
+                <th className="px-4 py-4">Estado</th>
+                <th className="px-4 py-4">Registros</th>
+                <th className="px-4 py-4">Mensaje</th>
+                <th className="sticky right-0 z-30 bg-slate-50 px-3 py-4 text-right shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.55)]">Accion</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -334,7 +347,7 @@ export const LoadMonitor: React.FC = () => {
               ) : filteredLogs.length > 0 ? (
                 paginatedLogs.map((log) => (
                   <tr key={String(log.id)} className="hover:bg-slate-50/80 transition-colors group">
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-4 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-slate-700">{formatDate(log.fecha_hora)}</div>
                       <div className="text-[10px] text-slate-400">
                         {safeDate(log.fecha_hora)?.toLocaleTimeString() || 'Sin hora'}
@@ -345,50 +358,50 @@ export const LoadMonitor: React.FC = () => {
                         )}
                       </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-4">
                       <div className="flex items-start gap-3">
-                        <Building2 size={15} className="text-slate-400 mt-0.5" />
-                        <div>
-                          <div className="text-sm font-bold text-slate-800">{getDisplayMallName(log, currentMall)}</div>
+                        <Building2 size={15} className="mt-0.5 shrink-0 text-slate-400" />
+                        <div className="min-w-0">
+                          <div className="break-words text-sm font-bold text-slate-800">{getDisplayMallName(log, currentMall)}</div>
                           <div className="text-xs text-slate-500 flex items-center gap-1.5 mt-1">
-                            <Store size={12} />
-                            <span>{getDisplayLocalName(log)}</span>
+                            <Store size={12} className="shrink-0" />
+                            <span className="break-words">{getDisplayLocalName(log)}</span>
                           </div>
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-4">
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-semibold">
                         <Waypoints size={12} />
                         {getDisplayChannel(log)}
                       </span>
                     </td>
-                    <td className="px-6 py-4">
-                      <div className="text-sm font-medium text-slate-700">{getDisplayFileName(log)}</div>
+                    <td className="px-4 py-4">
+                      <div className="line-clamp-2 break-all text-sm font-medium text-slate-700" title={getDisplayFileName(log)}>{getDisplayFileName(log)}</div>
                       <div className="text-xs text-slate-500 flex items-center gap-1.5 mt-1">
                         <Hash size={12} />
                         <span>{log.batch_id ? truncateMiddle(log.batch_id, 8, 6) : 'Sin batch_id'}</span>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-4">
                       {getStatusBadge(log)}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-4">
                       <div className="text-sm font-bold text-slate-800">{getProcessedCount(log)} registros</div>
                       <div className="text-xs text-slate-500">{getErrorCount(log)} errores</div>
                     </td>
-                    <td className="px-6 py-4">
-                      <div className="max-w-sm" title={getReadableMessage(log)}>
+                    <td className="px-4 py-4">
+                      <div className="min-w-0" title={getReadableMessage(log)}>
                         <div className="text-xs font-bold text-slate-700">{describeLoadLog(log).title}</div>
                         <div className="text-xs text-slate-500 line-clamp-2">{describeLoadLog(log).summary}</div>
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="sticky right-0 z-10 bg-white px-3 py-4 text-right shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.55)] group-hover:bg-slate-50">
                       <button
                         onClick={() => setSelectedLog(log)}
-                        className="text-xs font-bold text-indigo-600 hover:text-indigo-800 underline"
+                        className="whitespace-nowrap text-xs font-bold text-indigo-600 underline hover:text-indigo-800"
                       >
-                        Ver Detalle
+                        Ver detalle
                       </button>
                     </td>
                   </tr>

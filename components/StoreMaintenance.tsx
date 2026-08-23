@@ -15,7 +15,7 @@ import {
 } from '../utils/storeCatalog';
 import {
   Store as StoreIcon, Plus, Search, Building2,
-  User, FileText, MapPin, Tag, Maximize2, Percent, X, Settings2, Layers3, Mail, Power, RotateCcw
+  User, FileText, MapPin, Tag, Maximize2, Percent, Settings2, Layers3, Mail, Power, RotateCcw, Trash2
 } from 'lucide-react';
 import { SalesPurge } from './SalesPurge';
 
@@ -244,6 +244,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [showCustomFieldsManager, setShowCustomFieldsManager] = useState(false);
+  const [showSalesPurge, setShowSalesPurge] = useState(false);
   const [savingStore, setSavingStore] = useState(false);
   const [savingFieldDefinition, setSavingFieldDefinition] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -543,43 +544,52 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+    <div className="flex min-h-0 flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500 lg:h-[calc(100dvh-8rem)] lg:overflow-hidden">
+      <div className="flex shrink-0 flex-col items-start justify-between gap-3 md:flex-row md:items-center">
         <div>
           <h2 className="text-2xl font-bold text-slate-800">Mantenimiento de Locales</h2>
-          <p className="text-slate-500">Gestione la configuración contractual, física y los campos libres por mall.</p>
+          <p className="text-sm text-slate-500">Configuración contractual, física y campos libres por mall.</p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           {onOpenCatalogs && (
             <button
               type="button"
               onClick={onOpenCatalogs}
-              className="border border-slate-200 bg-white text-slate-700 px-4 py-2.5 rounded-xl flex items-center gap-2 hover:bg-slate-50 transition-all shadow-sm font-medium"
+              className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition-all hover:bg-slate-50"
             >
-              <Tag size={18} />
-              Gestionar Catálogos
+              <Tag size={16} />
+              Catálogos
             </button>
           )}
           <button
             onClick={() => setShowCustomFieldsManager(true)}
-            className="border border-slate-200 bg-white text-slate-700 px-4 py-2.5 rounded-xl flex items-center gap-2 hover:bg-slate-50 transition-all shadow-sm font-medium"
+            className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition-all hover:bg-slate-50"
           >
-            <Settings2 size={18} />
-            Configurar Campos Libres
+            <Settings2 size={16} />
+            Campos libres
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowSalesPurge(true)}
+            className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-600 transition-all hover:bg-red-100"
+          >
+            <Trash2 size={16} />
+            Depurar ventas
           </button>
           <button
             onClick={handleNewStore}
-            className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-md active:scale-95 font-medium"
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md transition-all hover:bg-indigo-700 active:scale-95"
           >
-            {showForm ? <X size={18} /> : <Plus size={18} />}
-            Registrar Nuevo Local
+            <Plus size={16} />
+            Nuevo local
           </button>
         </div>
       </div>
 
       {showForm && (
-        <div className="bg-white p-8 rounded-2xl border border-indigo-100 shadow-xl animate-in zoom-in-95 duration-200">
-          <div className="flex items-center justify-between gap-4 mb-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-3 backdrop-blur-sm sm:p-4">
+          <div data-testid="store-maintenance-form-modal" className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-indigo-100 bg-white shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-100 px-5 py-3 sm:px-6">
             <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
               <StoreIcon className="text-indigo-600" size={20} />
               {newStore.id ? 'Editar Local' : 'Información del Nuevo Local'}
@@ -589,8 +599,8 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
             </button>
           </div>
 
-          <form onSubmit={handleCreate} className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <form onSubmit={handleCreate} className="flex-1 space-y-5 overflow-y-auto p-5 sm:p-6">
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
               <div className="space-y-4">
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Básico</h4>
                 <div>
@@ -829,13 +839,14 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
               )}
             </div>
 
-            <div className="pt-6 border-t border-slate-100 flex justify-end gap-3">
+            <div className="sticky bottom-0 flex justify-end gap-3 border-t border-slate-100 bg-white/95 pt-4 backdrop-blur">
               <button type="button" onClick={() => { setShowForm(false); resetStoreForm(); }} className="px-6 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Cancelar</button>
               <button type="submit" disabled={savingStore} className="px-10 py-2.5 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-600/20 active:scale-95 transition-all disabled:opacity-60">
                 {savingStore ? 'Guardando...' : 'Guardar Local'}
               </button>
             </div>
-          </form>
+            </form>
+          </div>
         </div>
       )}
 
@@ -980,8 +991,8 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
         </div>
       )}
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+      <div data-testid="store-maintenance-list" className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex shrink-0 flex-col gap-3 border-b border-slate-100 bg-slate-50/50 p-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3 flex-1 max-w-md">
             <Search size={18} className="text-slate-400" />
             <input
@@ -992,7 +1003,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
               className="bg-transparent border-none outline-none text-sm w-full"
             />
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center justify-between gap-3 sm:justify-end">
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as 'active' | 'inactive' | 'all')}
@@ -1008,9 +1019,18 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
             </div>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
-            <thead className="bg-slate-50/50 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
+        <div data-testid="store-maintenance-list-scroll" className="min-h-[320px] flex-1 overflow-auto overscroll-contain">
+          <table className="w-full min-w-[1080px] table-fixed text-left">
+            <colgroup>
+              <col className="w-[250px]" />
+              <col className="w-[230px]" />
+              <col className="w-[145px]" />
+              <col className="w-[110px]" />
+              <col className="w-[90px]" />
+              <col className="w-[170px]" />
+              <col className="w-[110px]" />
+            </colgroup>
+            <thead className="sticky top-0 z-20 border-b border-slate-100 bg-slate-50 text-[10px] font-bold uppercase tracking-widest text-slate-500 shadow-sm">
               <tr>
                 <th className="px-6 py-4">Información Local</th>
                 <th className="px-6 py-4">Responsable</th>
@@ -1018,7 +1038,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                 <th className="px-6 py-4 text-center">Metraje (Mts²)</th>
                 <th className="px-6 py-4 text-center">Renta %</th>
                 <th className="px-6 py-4">Campos Libres</th>
-                <th className="px-6 py-4 text-right">Acciones</th>
+                <th className="sticky right-0 z-30 bg-slate-50 px-4 py-3 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -1117,8 +1137,8 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                         </div>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <td className="sticky right-0 z-10 bg-white px-4 py-3 text-right group-hover:bg-slate-50">
+                      <div className="flex items-center justify-end gap-1">
                         {store.activo !== false && store.processing_status === 'SUSPENDED_AUTH_ERROR' ? (
                           <button
                             onClick={async () => {
@@ -1168,9 +1188,24 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
         </div>
       </div>
 
-      <div className="mt-8 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-150">
-        <SalesPurge />
-      </div>
+      {showSalesPurge && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-3 backdrop-blur-sm sm:p-4">
+          <div data-testid="store-maintenance-purge-modal" className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-3 sm:px-6">
+              <div>
+                <h3 className="font-bold text-slate-800">Depuración de ventas</h3>
+                <p className="text-xs text-slate-500">Herramientas administrativas para eliminar cargas históricas.</p>
+              </div>
+              <button type="button" onClick={() => setShowSalesPurge(false)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">
+                Cerrar
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+              <SalesPurge />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

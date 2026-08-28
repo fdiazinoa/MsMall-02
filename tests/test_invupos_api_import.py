@@ -1,4 +1,5 @@
 import urllib.parse
+import json
 from pathlib import Path
 
 import main
@@ -113,6 +114,42 @@ def test_main_builds_invupos_preview_config_and_labels_virtual_file():
     assert config["constants_config"]["provider"] == "invupos"
     assert config["sftp_pass"] == "test-api-key"
     assert virtual["items"][0]["nombre"] == "INVUPOS_API"
+
+
+def test_empty_invupos_response_still_exposes_preview_fields(monkeypatch):
+    monkeypatch.setattr(main, "fetch_invupos_sales", lambda _config: ([], "InvuPOS citas/viewAll", 0))
+    request = main.RemoteRequest(
+        protocolo="API",
+        provider="invupos",
+        host="https://api6.invupos.com/invuApiPos/index.php",
+        password="test-api-key",
+        ruta="citas/viewAll",
+        tipo_archivo="JSON",
+    )
+
+    preview = main._api_preview_rows(request)
+
+    assert len(preview) == 1
+    assert set(preview[0]) >= {
+        "factura_numero",
+        "fecha_venta",
+        "hora_transaccion",
+        "comprobante",
+        "total_bruto",
+        "total_impuestos",
+        "total_neto",
+    }
+    assert preview[0]["estado_api"].startswith("Sin ventas disponibles")
+
+    analysis = main._perform_mapping_analysis(json.dumps(preview), "INVUPOS_API", "JSON")
+    assert set(analysis["csv_headers"]) >= {
+        "factura_numero",
+        "fecha_venta",
+        "total_bruto",
+        "total_impuestos",
+        "total_neto",
+    }
+    assert analysis["suggested_mapping"]["factura_numero"]["confidence"] == 100
 
 
 def test_import_manager_exposes_invupos_without_date_controls():

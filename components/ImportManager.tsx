@@ -57,6 +57,7 @@ const webserviceEndDateKey = '_webservice_end_date';
 const webserviceStartDateParamKey = '_webservice_start_date_param';
 const webserviceEndDateParamKey = '_webservice_end_date_param';
 const bundabergEndpoint = 'https://sibs2.com/api_agora_inv/';
+const invuposEndpoint = 'https://api6.invupos.com/invuApiPos/index.php';
 const malalaApiBaseUrl = 'https://clientes.proisa.com.do/Malala';
 const malalaSalesEndpoint = `${malalaApiBaseUrl}/ventas`;
 
@@ -136,6 +137,8 @@ const withWebserviceDefaults = (config: ImportConfig): ImportConfig => {
 
 const getApiProvider = (config: Partial<ImportConfig>) => {
   const explicit = String(config.constants?.provider || '').trim().toLowerCase();
+  if (['invupos', 'invu_pos', 'invu'].includes(explicit)) return 'invupos';
+  if (String(config.host || '').toLowerCase().includes('invupos.com/invuapipos')) return 'invupos';
   if (['bundaberg', 'agora', 'agora_bundaberg'].includes(explicit)) return 'bundaberg';
   if (String(config.host || '').toLowerCase().includes('sibs2.com')) return 'bundaberg';
   return 'studio_g';
@@ -1062,7 +1065,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         return;
       }
       if (!editingConfig.ruta_remota.trim() || editingConfig.ruta_remota === '.') {
-        alert('Indica el ID TPV del proveedor API.');
+        alert(selectedApiProvider === 'invupos' ? 'Indica la ruta de consulta InvuPOS.' : 'Indica el ID TPV del proveedor API.');
         return;
       }
       if (selectedApiProvider === 'studio_g' && !editingConfig.usuario.trim()) {
@@ -1071,7 +1074,13 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       }
       const existingApiConfig = configs.some(config => config.id === editingConfig.id && config.protocolo === 'API');
       if (!existingApiConfig && !tempPassword.trim() && !editingConfig.password?.trim()) {
-        alert(selectedApiProvider === 'bundaberg' ? 'Indica la API key de Bundaberg.' : 'Indica el Client Secret de Studio G.');
+        alert(
+          selectedApiProvider === 'invupos'
+            ? 'Indica la APIKEY de InvuPOS.'
+            : selectedApiProvider === 'bundaberg'
+              ? 'Indica la API key de Bundaberg.'
+              : 'Indica el Client Secret de Studio G.'
+        );
         return;
       }
     }
@@ -2235,18 +2244,23 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                               setEditingConfig({
                                 ...editingConfig,
                                 constants,
-                                host: provider === 'bundaberg'
-                                  ? bundabergEndpoint
-                                  : (editingConfig.host === bundabergEndpoint ? 'https://alcagora.ddns.net' : editingConfig.host),
-                                usuario: provider === 'bundaberg' ? '' : editingConfig.usuario,
-                                ruta_remota: provider === 'bundaberg' && (!editingConfig.ruta_remota || editingConfig.ruta_remota === '.')
-                                  ? '8906'
-                                  : editingConfig.ruta_remota
+                                host: provider === 'invupos'
+                                  ? invuposEndpoint
+                                  : provider === 'bundaberg'
+                                    ? bundabergEndpoint
+                                    : ([bundabergEndpoint, invuposEndpoint].includes(editingConfig.host) ? 'https://alcagora.ddns.net' : editingConfig.host),
+                                usuario: ['bundaberg', 'invupos'].includes(provider) ? '' : editingConfig.usuario,
+                                ruta_remota: provider === 'invupos'
+                                  ? 'citas/viewAll'
+                                  : provider === 'bundaberg' && (!editingConfig.ruta_remota || editingConfig.ruta_remota === '.')
+                                    ? '8906'
+                                    : editingConfig.ruta_remota
                               });
                             }}
                           >
                             <option value="studio_g">Studio G</option>
                             <option value="bundaberg">Bundaberg / Ágora</option>
+                            <option value="invupos">InvuPOS</option>
                           </select>
                         </div>
                       )}
@@ -2261,7 +2275,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             placeholder={editingConfig.protocolo === 'WEBSERVICE'
                               ? malalaSalesEndpoint
                               : editingConfig.protocolo === 'API'
-                                ? (selectedApiProvider === 'bundaberg' ? bundabergEndpoint : 'https://alcagora.ddns.net')
+                                ? (selectedApiProvider === 'invupos' ? invuposEndpoint : selectedApiProvider === 'bundaberg' ? bundabergEndpoint : 'https://alcagora.ddns.net')
                               : 'sftp.tu-tienda.com'}
                             value={editingConfig.host}
                             onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
@@ -2340,11 +2354,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         {editingConfig.protocolo === 'WEBSERVICE'
                           ? (isMalalaWebservice ? 'Autenticación dinámica MALALA' : 'Autenticación Bearer token')
                           : editingConfig.protocolo === 'API'
-                          ? (selectedApiProvider === 'bundaberg' ? 'Autenticación API key' : 'Autenticación Client Credentials')
+                          ? (['bundaberg', 'invupos'].includes(selectedApiProvider) ? 'Autenticación API key' : 'Autenticación Client Credentials')
                           : 'Credenciales de Acceso'}
                       </label>
                       <div className="space-y-3">
-                        {(editingConfig.protocolo !== 'WEBSERVICE' || isMalalaWebservice) && !(editingConfig.protocolo === 'API' && selectedApiProvider === 'bundaberg') && (
+                        {(editingConfig.protocolo !== 'WEBSERVICE' || isMalalaWebservice) && !(editingConfig.protocolo === 'API' && ['bundaberg', 'invupos'].includes(selectedApiProvider)) && (
                         <div className="relative">
                           <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
@@ -2366,7 +2380,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                               : editingConfig.protocolo === 'WEBSERVICE'
                                 ? (isMalalaWebservice ? 'Client Secret de MALALA' : 'Token Bearer del WebService')
                                 : editingConfig.protocolo === 'API'
-                                ? (selectedApiProvider === 'bundaberg' ? 'API key de Bundaberg' : 'Client Secret')
+                                ? (selectedApiProvider === 'invupos' ? 'APIKEY de InvuPOS' : selectedApiProvider === 'bundaberg' ? 'API key de Bundaberg' : 'Client Secret')
                                 : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}
@@ -2383,16 +2397,18 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                   {editingConfig.protocolo === 'API' && (
                     <>
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">ID TPV</label>
+                        {selectedApiProvider === 'invupos'
+                          ? <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Ruta de consulta</label>
+                          : <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">ID TPV</label>}
                         <input
                           type="text"
                           className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                          placeholder={selectedApiProvider === 'bundaberg' ? '8906' : 'AFB'}
+                          placeholder={selectedApiProvider === 'invupos' ? 'citas/viewAll' : selectedApiProvider === 'bundaberg' ? '8906' : 'AFB'}
                           value={editingConfig.ruta_remota}
                           onChange={e => setEditingConfig({ ...editingConfig, ruta_remota: e.target.value })}
                         />
                       </div>
-                      <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
+                      {selectedApiProvider !== 'invupos' && <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4 space-y-4">
                         <div>
                           <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Periodo de consulta API</p>
                           <p className="text-xs text-cyan-700 mt-1">
@@ -2450,7 +2466,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             </label>
                           </div>
                         )}
-                      </div>
+                      </div>}
                     </>
                   )}
                   {hasWebserviceDateRange && (

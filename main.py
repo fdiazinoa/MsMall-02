@@ -36,6 +36,7 @@ from worker_importacion import (
     api_provider_name,
     fetch_bundaberg_sales,
     fetch_generic_webservice_records,
+    fetch_invupos_sales,
     fetch_studio_g_sales,
     process_webservice_import,
     run_worker_async,
@@ -2678,16 +2679,22 @@ def _test_remote_connection_sync(
                 previous_day.isoformat(),
             )
             provider = api_provider_name(api_config)
-            rows, _ = (
-                fetch_bundaberg_sales(api_config)
-                if provider == "bundaberg"
-                else fetch_studio_g_sales(api_config)
-            )
+            if provider == "invupos":
+                rows, _, _ = fetch_invupos_sales(api_config)
+            elif provider == "bundaberg":
+                rows, _ = fetch_bundaberg_sales(api_config)
+            else:
+                rows, _ = fetch_studio_g_sales(api_config)
             duration = time.time() - start_time
+            provider_label = (
+                "InvuPOS"
+                if provider == "invupos"
+                else "Bundaberg" if provider == "bundaberg" else "Studio G"
+            )
             return {
                 "status": "success",
                 "message": (
-                    f"API {('Bundaberg' if provider == 'bundaberg' else 'Studio G')} autenticada y consulta de ventas validada "
+                    f"API {provider_label} autenticada y consulta de ventas validada "
                     f"({len(rows)} registro(s), {duration:.2f}s)"
                 ),
             }
@@ -2739,6 +2746,24 @@ def _api_config_from_remote_request(
     fecha_fin: Optional[str] = None,
 ) -> Dict[str, Any]:
     provider = str(req.provider or "").strip().lower()
+    if provider in {"invupos", "invu_pos", "invu"} or (
+        "invupos.com" in req.host.lower() and "invuapipos" in req.host.lower()
+    ):
+        return {
+            "id": "invupos-preview",
+            "mall_id": "00000000-0000-0000-0000-000000000000",
+            "nombre": "InvuPOS API",
+            "sftp_protocol": "API",
+            "sftp_host": req.host,
+            "sftp_user": "",
+            "sftp_pass": req.password,
+            "sftp_path": req.ruta,
+            "_webservice_timeout_seconds": "20",
+            "constants_config": {
+                "provider": "invupos",
+                "_invupos_route": req.ruta or "citas/viewAll",
+            },
+        }
     if provider in {"bundaberg", "agora", "agora_bundaberg"} or (
         "sibs2.com" in req.host.lower() and "api_agora" in req.host.lower()
     ):
@@ -2764,7 +2789,11 @@ def _api_config_from_remote_request(
 
 def _api_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
     provider_config = _api_config_from_remote_request(req)
-    if api_provider_name(provider_config) != "bundaberg":
+    provider = api_provider_name(provider_config)
+    if provider == "invupos":
+        rows, _, _ = fetch_invupos_sales(provider_config)
+        return rows
+    if provider != "bundaberg":
         return _studio_g_preview_rows(req)
 
     today = date.today()
@@ -2962,7 +2991,9 @@ def _list_remote_files_sync(req: RemoteRequest):
                     "nombre": (
                         "WEBSERVICE_API"
                         if protocol == "WEBSERVICE"
-                        else "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API"
+                        else "INVUPOS_API" if provider == "invupos"
+                        else "BUNDABERG_API" if provider == "bundaberg"
+                        else "STUDIO_G_API"
                     ),
                     "ruta": req.ruta,
                     "es_dir": False,
@@ -4432,7 +4463,9 @@ def _list_remote_files(config: Dict[str, Any]):
             "nombre": (
                 "WEBSERVICE_API"
                 if protocol == "WEBSERVICE"
-                else "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API"
+                else "INVUPOS_API" if provider == "invupos"
+                else "BUNDABERG_API" if provider == "bundaberg"
+                else "STUDIO_G_API"
             ),
             "fecha": datetime.utcnow().isoformat(),
             "tamano": 0,

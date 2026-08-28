@@ -1165,22 +1165,24 @@ def _webservice_json_request(
     url: str,
     *,
     token: Optional[str] = None,
+    headers: Optional[Dict[str, str]] = None,
     body: Optional[Dict[str, Any]] = None,
     timeout_seconds: int,
     empty_statuses: Optional[set[int]] = None,
 ) -> Any:
-    headers = {
+    request_headers = {
         "Accept": "application/json",
         "User-Agent": "MsMall-ImportWorker/1.0",
+        **(headers or {}),
     }
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        request_headers["Authorization"] = f"Bearer {token}"
     payload = None
     if body is not None:
         payload = json.dumps(body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
+        request_headers["Content-Type"] = "application/json"
 
-    request = urllib.request.Request(url, data=payload, headers=headers, method=method.upper())
+    request = urllib.request.Request(url, data=payload, headers=request_headers, method=method.upper())
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds, context=ssl_context) as response:
@@ -1577,12 +1579,256 @@ def _is_bundaberg_config(config: Dict[str, Any], constants: Optional[Dict[str, A
     )
 
 
+def _is_invupos_config(config: Dict[str, Any], constants: Optional[Dict[str, Any]] = None) -> bool:
+    constants = constants or _webservice_constants(config)
+    provider = str(
+        _webservice_config_value(
+            config,
+            constants,
+            "provider",
+            "_provider",
+            "api_provider",
+            "_api_provider",
+        )
+        or ""
+    ).strip().lower()
+    host = str(config.get("sftp_host") or config.get("host") or "").strip().lower()
+    return provider in {"invupos", "invu_pos", "invu"} or (
+        "invupos.com" in host and "invuapipos" in host
+    )
+
+
 def api_provider_name(config: Dict[str, Any]) -> str:
+    if _is_invupos_config(config):
+        return "invupos"
     if _is_bundaberg_config(config):
         return "bundaberg"
     if _is_studio_g_config(config):
         return "studio_g"
     return ""
+
+
+def _invupos_normalized_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _invupos_value(row: Dict[str, Any], *aliases: str) -> Any:
+    wanted = {_invupos_normalized_key(alias) for alias in aliases}
+    queue: List[Dict[str, Any]] = [row]
+    while queue:
+        current = queue.pop(0)
+        for key, value in current.items():
+            if _invupos_normalized_key(key) in wanted and value not in (None, ""):
+                if isinstance(value, dict):
+                    for nested_key in ("numero", "number", "id", "valor", "value", "total"):
+                        nested = value.get(nested_key)
+                        if nested not in (None, ""):
+                            return nested
+                elif not isinstance(value, list):
+                    return value
+        queue.extend(value for value in current.values() if isinstance(value, dict))
+    return None
+
+
+def _invupos_sale_is_cancelled(row: Dict[str, Any]) -> bool:
+    status_keys = {
+        _invupos_normalized_key(key)
+        for key in ("estado", "status", "order_status", "estado_orden")
+    }
+    queue: List[Dict[str, Any]] = [row]
+    while queue:
+        current = queue.pop(0)
+        for key, value in current.items():
+            if _invupos_normalized_key(key) in status_keys:
+                normalized = _invupos_normalized_key(value)
+                if any(marker in normalized for marker in ("anulad", "cancel", "void", "eliminad")):
+                    return True
+            if isinstance(value, dict):
+                queue.append(value)
+    return False
+
+
+def _map_invupos_sale(config: Dict[str, Any], row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if _invupos_sale_is_cancelled(row):
+        return None
+
+    raw_date = _invupos_value(
+        row,
+        "fecha_factura",
+        "fechaFactura",
+        "invoice_date",
+        "invoiceDate",
+        "fecha_venta",
+        "fechaVenta",
+        "fecha",
+        "created_at",
+        "createdAt",
+        "fecha_creacion",
+    )
+    sale_date = _parse_api_date(raw_date)
+    if not sale_date:
+        return None
+
+    invoice = _invupos_value(
+        row,
+        "factura_no",
+        "factura_numero",
+        "numero_factura",
+        "numeroFactura",
+        "invoice_number",
+        "invoiceNumber",
+        "factura",
+        "ncf",
+        "comprobante",
+    )
+    order_id = _invupos_value(
+        row,
+        "numero_orden",
+        "numeroOrden",
+        "order_number",
+        "orderNumber",
+        "order_id",
+        "orderId",
+        "id_orden",
+        "idOrden",
+        "id_cita",
+        "idCita",
+        "id",
+    )
+    invoice_text = str(invoice or "").strip()
+    if not invoice_text and order_id not in (None, ""):
+        invoice_text = f"INVUPOS-{str(order_id).strip()}"
+    if not invoice_text:
+        return None
+
+    def parse_optional_decimal(value: Any) -> Optional[float]:
+        return None if value in (None, "") else _parse_mapped_decimal(value, ".")
+
+    total_net = parse_optional_decimal(
+        _invupos_value(
+            row,
+            "total_neto",
+            "totalNeto",
+            "grand_total",
+            "grandTotal",
+            "total_pagar",
+            "totalPagar",
+            "monto_total",
+            "montoTotal",
+            "total",
+        )
+    )
+    tax = parse_optional_decimal(
+        _invupos_value(
+            row,
+            "total_impuestos",
+            "totalImpuestos",
+            "impuestos",
+            "impuesto",
+            "tax_total",
+            "taxTotal",
+            "tax",
+        )
+    )
+    gross = parse_optional_decimal(
+        _invupos_value(
+            row,
+            "total_bruto",
+            "totalBruto",
+            "subtotal",
+            "sub_total",
+            "subTotal",
+            "subtotal_venta",
+            "subtotalVenta",
+        )
+    )
+    if total_net is None:
+        total_net = gross
+    if gross is None and total_net is not None:
+        gross = total_net - (tax or 0)
+    if total_net is None:
+        return None
+
+    comprobante = _invupos_value(row, "ncf", "comprobante", "fiscal_number", "fiscalNumber")
+    raw_time = _invupos_value(
+        row,
+        "hora_transaccion",
+        "horaTransaccion",
+        "hora_factura",
+        "horaFactura",
+        "hora",
+        "time",
+    )
+    payload = {
+        "local_id": config.get("id"),
+        "mall_id": config.get("mall_id"),
+        "fecha": sale_date,
+        "factura_no": invoice_text,
+        "comprobante": str(comprobante).strip() if comprobante not in (None, "") else None,
+        "hora_transaccion": _parse_api_time(raw_time or raw_date),
+        "total_bruto": gross,
+        "total_impuestos": tax,
+        "total_neto": total_net,
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def fetch_invupos_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str, int]:
+    normalized = _normalize_worker_import_config(config)
+    constants = _webservice_constants(normalized)
+    api_key = str(
+        _webservice_config_value(
+            normalized,
+            constants,
+            "_invupos_api_key",
+            "invupos_api_key",
+            "api_key",
+            "password",
+            "sftp_pass",
+        )
+        or ""
+    ).strip()
+    if not api_key:
+        raise ValueError("APIKEY requerida para InvuPOS")
+
+    route = str(
+        _webservice_config_value(
+            normalized,
+            constants,
+            "_invupos_route",
+            "invupos_route",
+            "ruta_remota",
+            "sftp_path",
+        )
+        or "citas/viewAll"
+    ).strip()
+    if not route or route == ".":
+        route = "citas/viewAll"
+    request_url = _append_query_param(_api_base_url(normalized), "r", route)
+    timeout = max(
+        5,
+        _webservice_int_value(
+            normalized,
+            constants,
+            WEBSERVICE_TIMEOUT_SECONDS,
+            "_webservice_timeout_seconds",
+            "timeout_seconds",
+        ),
+    )
+    payload = _webservice_json_request(
+        "GET",
+        request_url,
+        timeout_seconds=timeout,
+        headers={"APIKEY": api_key},
+    )
+    records = _extract_webservice_records(payload)
+    rows = [
+        mapped
+        for record in records
+        for mapped in [_map_invupos_sale(normalized, record)]
+        if mapped
+    ]
+    return rows, "InvuPOS citas/viewAll", len(records) - len(rows)
 
 
 def _api_json_request(
@@ -2405,6 +2651,111 @@ def process_bundaberg_api(config: Dict[str, Any], *, write_load_log: bool = True
         }
 
 
+def process_invupos_api(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
+    config = _normalize_worker_import_config(config)
+    local_name = config.get("nombre") or "InvuPOS"
+    batch_id = str(uuid.uuid4())
+    try:
+        rows, source_name, rejected = fetch_invupos_sales(config)
+        inserted, skipped = _insert_studio_g_sales(config, rows)
+        details = []
+        if rejected:
+            details.append({
+                "linea": 0,
+                "tipo": "invupos_unmapped_records",
+                "error": (
+                    f"{rejected} registro(s) InvuPOS no contenian fecha, factura/orden "
+                    "o total reconocible, o estaban anulados."
+                ),
+            })
+        status = "partial" if rejected and rows else "success"
+        message = f"API InvuPOS: {inserted} ventas importadas"
+        if skipped:
+            message += f", {skipped} duplicadas omitidas"
+        if not rows and not rejected:
+            message = "API InvuPOS conectada: 0 ventas disponibles"
+        elif rejected:
+            message += f", {rejected} registros omitidos"
+
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                source_name,
+                "parcial" if status == "partial" else "exito",
+                message,
+                batch_id,
+                details,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal="API",
+                records_processed=inserted,
+                error_count=len(details),
+                metadata={
+                    "source": "worker_invupos_api",
+                    "provider": "invupos",
+                    "records_received": len(rows) + rejected,
+                    "records_rejected": rejected,
+                    "duplicate_skipped": skipped,
+                },
+            )
+        if inserted > 0:
+            run_local_risk_analysis_if_possible(config, trigger="worker_invupos_api")
+        return {
+            "ok": True,
+            "status": status,
+            "message": message,
+            "records_processed": inserted,
+            "records_received": len(rows) + rejected,
+            "records_rejected": rejected,
+            "source_name": source_name,
+            "canal": "API",
+            "provider": "invupos",
+            "worker_source": "worker_invupos_api",
+            "duplicate_skipped": skipped,
+            "processed_files": 1 if rows else 0,
+            "failed_files": 0,
+            "total_pending": len(rows),
+            "batch_size": 1 if rows else 0,
+            "details": details,
+        }
+    except Exception as exc:
+        clean_error = sanitize_error_text(exc)
+        message = f"Fallo API InvuPOS: {clean_error}"
+        details = [{"linea": 0, "tipo": "invupos_api_error", "error": message}]
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                "InvuPOS API",
+                "error",
+                message,
+                batch_id,
+                details,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal="API",
+                records_processed=0,
+                error_count=1,
+                metadata={
+                    "source": "worker_invupos_api",
+                    "provider": "invupos",
+                    "exception": clean_error,
+                    "error_type": "invupos_api_error",
+                },
+            )
+        return {
+            "ok": False,
+            "status": "error",
+            "message": message,
+            "records_processed": 0,
+            "source_name": "InvuPOS API",
+            "canal": "API",
+            "provider": "invupos",
+            "worker_source": "worker_invupos_api",
+            "error_type": "invupos_api_error",
+            "details": details,
+        }
+
+
 def _process_generic_webservice_import(
     config: Dict[str, Any],
     *,
@@ -2588,6 +2939,8 @@ def _process_generic_webservice_import(
 def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
     normalized = _normalize_worker_import_config(config)
     protocol = str(normalized.get("sftp_protocol") or normalized.get("protocolo") or "").strip().upper()
+    if protocol == "API" and _is_invupos_config(normalized):
+        return process_invupos_api(normalized, write_load_log=write_load_log)
     if protocol == "API" and _is_bundaberg_config(normalized):
         return process_bundaberg_api(normalized, write_load_log=write_load_log)
     if protocol == "API" and _is_studio_g_config(normalized):

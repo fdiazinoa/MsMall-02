@@ -2792,7 +2792,18 @@ def _api_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
     provider = api_provider_name(provider_config)
     if provider == "invupos":
         rows, _, _ = fetch_invupos_sales(provider_config)
-        return rows
+        if rows:
+            return rows
+        return [{
+            "factura_numero": "",
+            "fecha_venta": "",
+            "hora_transaccion": "",
+            "comprobante": "",
+            "total_bruto": None,
+            "total_impuestos": None,
+            "total_neto": None,
+            "estado_api": "Sin ventas disponibles; esquema normalizado InvuPOS",
+        }]
     if provider != "bundaberg":
         return _studio_g_preview_rows(req)
 

@@ -17,6 +17,11 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from supabase import Client
 from services.local_custom_fields_service import LocalCustomFieldsService
+from services.sales_gap_service import (
+    SALES_PAGE_SIZE,
+    expected_sales_dates,
+    normalize_sales_date,
+)
 
 class ExportService:
     def __init__(self, supabase_client: Client):
@@ -92,27 +97,6 @@ class ExportService:
 
         return rows
 
-    def _normalize_sales_date(self, raw_value: Any) -> Optional[str]:
-        if raw_value is None:
-            return None
-        if isinstance(raw_value, datetime):
-            return raw_value.strftime('%Y-%m-%d')
-
-        value = str(raw_value).strip()
-        if not value:
-            return None
-
-        if len(value) >= 10 and value[4] == '-' and value[7] == '-':
-            return value[:10]
-
-        try:
-            parsed = pd.to_datetime(value, errors='coerce')
-            if pd.isna(parsed):
-                return None
-            return parsed.strftime('%Y-%m-%d')
-        except Exception:
-            return None
-
     def _build_missing_days_dataset(
         self,
         fecha_inicio: str,
@@ -123,10 +107,7 @@ class ExportService:
         start_date = datetime.strptime(fecha_inicio, '%Y-%m-%d')
         end_date = datetime.strptime(fecha_fin, '%Y-%m-%d')
         total_days = (end_date - start_date).days + 1
-        expected_dates = {
-            (start_date + timedelta(days=x)).strftime('%Y-%m-%d')
-            for x in range(total_days)
-        }
+        expected_dates = expected_sales_dates(fecha_inicio, fecha_fin)
 
         stores_query = self.supabase.table('locales').select('id, nombre, rubro, activo').eq('mall_id', mall_id)
         if local_id:
@@ -136,7 +117,7 @@ class ExportService:
 
         sales_rows: List[Dict[str, Any]] = []
         if store_ids:
-            page_size = 2000
+            page_size = SALES_PAGE_SIZE
             page = 0
             while True:
                 chunk = (
@@ -159,7 +140,7 @@ class ExportService:
         sales_df = pd.DataFrame(sales_rows)
         if not sales_df.empty:
             sales_df['local_id_norm'] = sales_df['local_id'].astype(str)
-            sales_df['fecha_norm'] = sales_df['fecha'].apply(self._normalize_sales_date)
+            sales_df['fecha_norm'] = sales_df['fecha'].apply(normalize_sales_date)
 
         summary_rows: List[Dict[str, Any]] = []
         detail_rows: List[Dict[str, Any]] = []

@@ -78,6 +78,10 @@ from services.connection_monitor_service import (
 from services.date_parsing_service import normalize_sale_date
 from services.dashboard_analytics_service import DashboardAnalyticsService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
+from services.sales_gap_service import (
+    expected_sales_dates,
+    load_actual_sales_dates_for_local,
+)
 from services.missing_days_email_service import (
     DEFAULT_CONSOLIDATED_BODY_TEMPLATE,
     DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE,
@@ -8536,63 +8540,11 @@ async def get_sales_gaps(
     current_mall: str = Depends(get_current_mall)
 ):
     try:
-        def _normalize_sales_date(raw_value: Any) -> Optional[str]:
-            """Normalize DB date/timestamp values to YYYY-MM-DD for day-level comparisons."""
-            if raw_value is None:
-                return None
-            if isinstance(raw_value, datetime):
-                return raw_value.strftime('%Y-%m-%d')
-
-            value = str(raw_value).strip()
-            if not value:
-                return None
-
-            # Fast path for ISO-like values: 2026-02-03 or 2026-02-03T...
-            if len(value) >= 10 and value[4] == '-' and value[7] == '-':
-                return value[:10]
-
-            try:
-                parsed = pd.to_datetime(value, errors='coerce')
-                if pd.isna(parsed):
-                    return None
-                return parsed.strftime('%Y-%m-%d')
-            except Exception:
-                return None
-
-        def _load_actual_dates_for_local(target_local_id: str) -> Set[str]:
-            rows: List[Dict[str, Any]] = []
-            page_size = 2000
-            page = 0
-            while True:
-                chunk = (
-                    supabase.table('ventas')
-                    .select('id, fecha')
-                    .eq('local_id', target_local_id)
-                    .gte('fecha', fecha_inicio)
-                    .lte('fecha', fecha_fin)
-                    .order('id')
-                    .range(page * page_size, (page + 1) * page_size - 1)
-                    .execute()
-                ).data or []
-                if not chunk:
-                    break
-                rows.extend(chunk)
-                if len(chunk) < page_size:
-                    break
-                page += 1
-
-            actual_dates: Set[str] = set()
-            for row in rows:
-                normalized_date = _normalize_sales_date(row.get('fecha'))
-                if normalized_date:
-                    actual_dates.add(normalized_date)
-            return actual_dates
-
         # 1. Calendario Ideal
         start_date = datetime.strptime(fecha_inicio, '%Y-%m-%d')
         end_date = datetime.strptime(fecha_fin, '%Y-%m-%d')
         total_days = (end_date - start_date).days + 1
-        expected_dates = { (start_date + timedelta(days=x)).strftime('%Y-%m-%d') for x in range(total_days) }
+        expected_dates = expected_sales_dates(fecha_inicio, fecha_fin)
         
         # --- MODO GLOBAL (Matrix View) ---
         if not local_id or local_id == 'null' or local_id == 'ALL':
@@ -8618,14 +8570,19 @@ async def get_sales_gaps(
             # Since I am "migrating", I should probably use the filter.
             # But `locales` table has `mall_id`.
             
-            stores_resp = supabase.table('locales').select('id, nombre, rubro').eq('mall_id', current_mall).execute()
-            stores = stores_resp.data or []
+            stores_resp = supabase.table('locales').select('id, nombre, rubro, activo').eq('mall_id', current_mall).execute()
+            stores = [row for row in (stores_resp.data or []) if row.get('activo') is not False]
             
             global_summary = []
             
             for store in stores:
                 sid = str(store['id'])
-                s_actual = _load_actual_dates_for_local(sid)
+                s_actual = load_actual_sales_dates_for_local(
+                    supabase,
+                    local_id=sid,
+                    fecha_inicio=fecha_inicio,
+                    fecha_fin=fecha_fin,
+                )
                 
                 missing = sorted(list(expected_dates - s_actual))
                 count_missing = len(missing)
@@ -8657,7 +8614,12 @@ async def get_sales_gaps(
 
         # --- MODO INDIVIDUAL (Detailed View) ---
         # 2. Calendario Real (Individual)
-        actual_dates = _load_actual_dates_for_local(local_id)
+        actual_dates = load_actual_sales_dates_for_local(
+            supabase,
+            local_id=local_id,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+        )
         
         # 3. Brechas
         missing_dates = sorted(list(expected_dates - actual_dates))

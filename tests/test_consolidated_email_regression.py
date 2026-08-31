@@ -136,6 +136,45 @@ def test_consolidated_email_sends_once_to_admins_and_ignores_local_emails(monkey
     assert result["failed"] == 0
 
 
+def test_consolidated_email_includes_legacy_store_without_active_flag(monkeypatch):
+    supabase = _Supabase()
+    supabase.rows["locales"].append({
+        "id": "local-legacy",
+        "nombre": "Local Legacy",
+        "codigo_interno": "L003",
+        "activo": None,
+        "mall_id": "mall-1",
+    })
+    monkeypatch.setattr(
+        email_service,
+        "load_missing_days_details_for_local",
+        lambda _client, *, local_id, **_kwargs: ([{"fecha": "2026-05-10"}] if local_id == "local-legacy" else []),
+    )
+    monkeypatch.setattr(
+        email_service,
+        "load_resend_sender_config",
+        lambda *_args, **_kwargs: {"from_email": "notificaciones@mercasend.net", "from_name": "MSMALL"},
+    )
+    sent = []
+
+    result = email_service.send_missing_days_emails_for_mall(
+        supabase,
+        {
+            "mall_id": "mall-1",
+            "notification_type": email_service.MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE,
+            "lookback_days": 2,
+            "send_only_with_gaps": True,
+            "cc_emails": ["admin@example.com"],
+        },
+        send_email=lambda *args, **kwargs: sent.append((args, kwargs)) or {"id": "resend-legacy"},
+        now=datetime(2026, 5, 11, 14, 1, tzinfo=timezone.utc),
+    )
+
+    assert len(sent) == 1
+    assert "Local Legacy" in sent[0][0][3]
+    assert result["results"][0]["missing_days"] == 1
+
+
 def test_scheduler_uses_independent_slots_for_each_mode():
     assert email_service._system_health_key("mall-1", "LAST_SLOT") == "MDE_SLOT:mall-1"
     assert email_service._system_health_key(

@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from services.sales_gap_service import load_missing_sales_dates_for_local
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:  # pragma: no cover - Python 3.8 fallback only.
@@ -315,23 +317,6 @@ def missing_days_template_context(
     }
 
 
-def _normalize_missing_days_sale_date(raw_value: Any) -> Optional[str]:
-    if raw_value is None:
-        return None
-    if isinstance(raw_value, datetime):
-        return raw_value.strftime("%Y-%m-%d")
-    value = str(raw_value).strip()
-    if not value:
-        return None
-    if len(value) >= 10 and value[4] == "-" and value[7] == "-":
-        return value[:10]
-    try:
-        parsed = datetime.fromisoformat(value[:19])
-        return parsed.strftime("%Y-%m-%d")
-    except Exception:
-        return None
-
-
 def load_missing_days_details_for_local(
     supabase_client: Any,
     *,
@@ -341,41 +326,12 @@ def load_missing_days_details_for_local(
     fecha_inicio: str,
     fecha_fin: str,
 ) -> List[Dict[str, Any]]:
-    start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d")
-    end_date = datetime.strptime(fecha_fin, "%Y-%m-%d")
-    total_days = (end_date - start_date).days + 1
-    expected_dates = {
-        (start_date + timedelta(days=x)).strftime("%Y-%m-%d")
-        for x in range(total_days)
-    }
-
-    rows: List[Dict[str, Any]] = []
-    page_size = 2000
-    page = 0
-    while True:
-        chunk = (
-            supabase_client.table("ventas")
-            .select("id, fecha")
-            .eq("local_id", local_id)
-            .gte("fecha", fecha_inicio)
-            .lte("fecha", fecha_fin)
-            .order("id")
-            .range(page * page_size, (page + 1) * page_size - 1)
-            .execute()
-        ).data or []
-        if not chunk:
-            break
-        rows.extend(chunk)
-        if len(chunk) < page_size:
-            break
-        page += 1
-
-    actual_dates = {
-        normalized
-        for normalized in (_normalize_missing_days_sale_date(row.get("fecha")) for row in rows)
-        if normalized
-    }
-    missing_dates = sorted(list(expected_dates - actual_dates))
+    missing_dates = load_missing_sales_dates_for_local(
+        supabase_client,
+        local_id=local_id,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+    )
     if not missing_dates:
         return []
 
@@ -734,10 +690,12 @@ def send_consolidated_missing_days_email_for_mall(
         supabase_client.table("locales")
         .select("id, nombre, codigo_interno, activo")
         .eq("mall_id", mall_id)
-        .eq("activo", True)
         .order("nombre")
         .execute()
     ).data or []
+    # Auditoria de ventas treats legacy NULL as active and excludes only an
+    # explicit false. Keep the consolidated population identical.
+    stores = [store for store in stores if store.get("activo") is not False]
     admin_emails = [str(email or "").strip().lower() for email in (settings.get("cc_emails") or [])]
     admin_emails = [
         email

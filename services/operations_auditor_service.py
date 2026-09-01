@@ -6,6 +6,8 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from services.sales_query_service import fetch_sales_rows_keyset
+
 
 ACTIVE_STATUSES = {"OPEN", "ACKNOWLEDGED"}
 
@@ -411,15 +413,13 @@ class OperationsAuditorService:
         dates_by_local: Dict[str, Set[str]] = {local_id: set() for local_id in local_ids}
         if not local_ids:
             return dates_by_local
-        rows = (
-            self.supabase.table("ventas")
-            .select("local_id,fecha")
-            .in_("local_id", local_ids)
-            .gte("fecha", start_date.isoformat())
-            .lte("fecha", end_date.isoformat())
-            .limit(10000)
-            .execute()
-        ).data or []
+        rows = fetch_sales_rows_keyset(
+            self.supabase,
+            select_fields="local_id,fecha",
+            local_ids=local_ids,
+            fecha_inicio=start_date.isoformat(),
+            fecha_fin=end_date.isoformat(),
+        )
         for row in rows:
             local_id = str(row.get("local_id") or "")
             normalized = self._normalize_date(row.get("fecha"))

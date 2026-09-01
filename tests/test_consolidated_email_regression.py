@@ -86,6 +86,11 @@ class _Supabase:
 def test_consolidated_email_sends_once_to_admins_and_ignores_local_emails(monkeypatch):
     monkeypatch.setattr(
         email_service,
+        "load_actual_sales_dates_by_local",
+        lambda _client, *, local_ids, **_kwargs: {local_id: set() for local_id in local_ids},
+    )
+    monkeypatch.setattr(
+        email_service,
         "load_missing_days_details_for_local",
         lambda _client, *, local_id, **_kwargs: (
             [{"fecha": "2026-05-09"}, {"fecha": "2026-05-10"}]
@@ -145,6 +150,11 @@ def test_consolidated_email_includes_legacy_store_without_active_flag(monkeypatc
         "activo": None,
         "mall_id": "mall-1",
     })
+    monkeypatch.setattr(
+        email_service,
+        "load_actual_sales_dates_by_local",
+        lambda _client, *, local_ids, **_kwargs: {local_id: set() for local_id in local_ids},
+    )
     monkeypatch.setattr(
         email_service,
         "load_missing_days_details_for_local",

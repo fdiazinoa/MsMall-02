@@ -45,6 +45,10 @@ class _FakeTableQuery:
         self._filters.append(("lte", key, value))
         return self
 
+    def gt(self, key, value):
+        self._filters.append(("gt", key, value))
+        return self
+
     def order(self, key):
         self._order = key
         return self
@@ -83,6 +87,8 @@ class _FakeTableQuery:
                 result = [r for r in result if r.get(key) >= value]
             elif op == "lte":
                 result = [r for r in result if r.get(key) <= value]
+            elif op == "gt":
+                result = [r for r in result if r.get(key) is not None and r.get(key) > value]
         return result
 
     def execute(self):
@@ -91,7 +97,7 @@ class _FakeTableQuery:
         if self._mode == "select":
             data = self._apply_filters(rows)
             if self._order:
-                data = sorted(data, key=lambda row: row.get(self._order))
+                data = sorted(data, key=lambda row: (row.get(self._order) is None, str(row.get(self._order) or "")))
             if self._range is not None:
                 start, end = self._range
                 data = data[start : end + 1]

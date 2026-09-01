@@ -6,7 +6,8 @@ def test_sales_gap_backend_uses_shared_date_loader_for_global_and_individual_mod
     main_py = (repo / "main.py").read_text(encoding="utf-8")
 
     assert "from services.sales_gap_service import (" in main_py
-    assert "s_actual = load_actual_sales_dates_for_local(" in main_py
+    assert "dates_by_local = load_actual_sales_dates_by_local(" in main_py
+    assert "s_actual = dates_by_local.get(sid, set())" in main_py
     assert "actual_dates = load_actual_sales_dates_for_local(" in main_py
 
     email_service = (repo / "services" / "missing_days_email_service.py").read_text(encoding="utf-8")

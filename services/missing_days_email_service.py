@@ -9,7 +9,11 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from services.sales_gap_service import load_missing_sales_dates_for_local
+from services.sales_gap_service import (
+    expected_sales_dates,
+    load_actual_sales_dates_by_local,
+    load_missing_sales_dates_for_local,
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -325,13 +329,15 @@ def load_missing_days_details_for_local(
     mall_id: str,
     fecha_inicio: str,
     fecha_fin: str,
+    missing_dates: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    missing_dates = load_missing_sales_dates_for_local(
-        supabase_client,
-        local_id=local_id,
-        fecha_inicio=fecha_inicio,
-        fecha_fin=fecha_fin,
-    )
+    if missing_dates is None:
+        missing_dates = load_missing_sales_dates_for_local(
+            supabase_client,
+            local_id=local_id,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+        )
     if not missing_dates:
         return []
 
@@ -721,9 +727,18 @@ def send_consolidated_missing_days_email_for_mall(
 
     summaries: List[Dict[str, Any]] = []
     no_gap_count = 0
+    store_ids = [str(store.get("id") or "") for store in stores if store.get("id")]
+    expected_dates = expected_sales_dates(fecha_inicio, fecha_fin)
+    dates_by_local = load_actual_sales_dates_by_local(
+        supabase_client,
+        local_ids=store_ids,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+    )
     for store in stores:
         local_id = str(store.get("id") or "")
         local_name = str(store.get("nombre") or local_id)
+        missing_dates = sorted(expected_dates - dates_by_local.get(local_id, set()))
         details = load_missing_days_details_for_local(
             supabase_client,
             local_id=local_id,
@@ -731,6 +746,7 @@ def send_consolidated_missing_days_email_for_mall(
             mall_id=mall_id,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
+            missing_dates=missing_dates,
         )
         if not details:
             no_gap_count += 1

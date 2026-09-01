@@ -22,6 +22,7 @@ from services.sales_gap_service import (
     expected_sales_dates,
     normalize_sales_date,
 )
+from services.sales_query_service import fetch_sales_rows_keyset
 
 class ExportService:
     def __init__(self, supabase_client: Client):
@@ -64,38 +65,14 @@ class ExportService:
         local_id: Optional[str] = None,
         mall_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
-        # Supabase/PostgREST commonly caps responses around 1000 rows per request.
-        page_size = 1000
-        page = 0
-
-        while True:
-            query = (
-                self.supabase.table('ventas')
-                .select(select_fields)
-                .gte('fecha', fecha_inicio)
-                .lte('fecha', fecha_fin)
-            )
-            if mall_id:
-                query = query.eq('mall_id', mall_id)
-            if local_id:
-                query = query.eq('local_id', local_id)
-
-            chunk = (
-                query
-                .order('id')
-                .range(page * page_size, (page + 1) * page_size - 1)
-                .execute()
-            ).data or []
-
-            if not chunk:
-                break
-            rows.extend(chunk)
-            if len(chunk) < page_size:
-                break
-            page += 1
-
-        return rows
+        return fetch_sales_rows_keyset(
+            self.supabase,
+            select_fields=select_fields,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            local_id=local_id,
+            mall_id=mall_id,
+        )
 
     def _build_missing_days_dataset(
         self,
@@ -117,25 +94,14 @@ class ExportService:
 
         sales_rows: List[Dict[str, Any]] = []
         if store_ids:
-            page_size = SALES_PAGE_SIZE
-            page = 0
-            while True:
-                chunk = (
-                    self.supabase.table('ventas')
-                    .select('id, local_id, fecha')
-                    .in_('local_id', store_ids)
-                    .gte('fecha', fecha_inicio)
-                    .lte('fecha', fecha_fin)
-                    .order('id')
-                    .range(page * page_size, (page + 1) * page_size - 1)
-                    .execute()
-                ).data or []
-                if not chunk:
-                    break
-                sales_rows.extend(chunk)
-                if len(chunk) < page_size:
-                    break
-                page += 1
+            sales_rows = fetch_sales_rows_keyset(
+                self.supabase,
+                select_fields='local_id,fecha',
+                local_ids=store_ids,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                page_size=SALES_PAGE_SIZE,
+            )
 
         sales_df = pd.DataFrame(sales_rows)
         if not sales_df.empty:
@@ -577,22 +543,15 @@ class ExportService:
 
         sales = []
         if local_ids:
-            page_size = 1000
-            page = 0
-            while True:
-                sales_query = self.supabase.table("ventas").select("*").gte("fecha", fecha_inicio).lte("fecha", fecha_fin)
-                if local_id:
-                    sales_query = sales_query.eq("local_id", local_id)
-                else:
-                    sales_query = sales_query.in_("local_id", local_ids)
-                res = sales_query.order("fecha").range(page * page_size, (page + 1) * page_size - 1).execute()
-                chunk = res.data or []
-                if not chunk:
-                    break
-                sales.extend(self._normalize_sale_totals_row(dict(row)) for row in chunk)
-                if len(chunk) < page_size:
-                    break
-                page += 1
+            sales_rows = fetch_sales_rows_keyset(
+                self.supabase,
+                select_fields="*",
+                local_id=local_id,
+                local_ids=None if local_id else local_ids,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+            )
+            sales.extend(self._normalize_sale_totals_row(dict(row)) for row in sales_rows)
         
         wb = Workbook()
         ws = wb.active
@@ -699,7 +658,12 @@ class ExportService:
 
     async def _get_financial_data(self, fecha_inicio, fecha_fin):
         # Logic from getKPIs to calculate OCR
-        sales = self.supabase.table("ventas").select("local_id, total_bruto, total_neto").gte("fecha", fecha_inicio).lte("fecha", fecha_fin).execute().data
+        sales = fetch_sales_rows_keyset(
+            self.supabase,
+            select_fields="local_id,total_bruto,total_neto",
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+        )
         stores = self.supabase.table("locales").select("*").execute().data
         store_map = {str(s['id']): s for s in stores}
         

@@ -18,6 +18,7 @@ class _TableQuery:
         self._filters = []
         self._order = None
         self._range = None
+        self._limit = None
 
     def select(self, *_args, **_kwargs):
         return self
@@ -34,12 +35,20 @@ class _TableQuery:
         self._filters.append(("lte", key, value))
         return self
 
+    def gt(self, key, value):
+        self._filters.append(("gt", key, value))
+        return self
+
     def order(self, column, desc=False):
         self._order = (column, bool(desc))
         return self
 
     def range(self, start, end):
         self._range = (int(start), int(end))
+        return self
+
+    def limit(self, value):
+        self._limit = int(value)
         return self
 
     def _apply_filters(self, rows):
@@ -51,6 +60,8 @@ class _TableQuery:
                 result = [r for r in result if r.get(key) is not None and r.get(key) >= value]
             elif op == "lte":
                 result = [r for r in result if r.get(key) is not None and r.get(key) <= value]
+            elif op == "gt":
+                result = [r for r in result if r.get(key) is not None and r.get(key) > value]
         return result
 
     def execute(self):
@@ -64,6 +75,8 @@ class _TableQuery:
         if self._range is not None:
             start, end = self._range
             rows = rows[start:end + 1]
+        if self._limit is not None:
+            rows = rows[:self._limit]
         if self.table_name == "ventas":
             # Simula límite duro por request de PostgREST/Supabase, incluso con range.
             rows = rows[:1000]

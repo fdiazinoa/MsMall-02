@@ -8,6 +8,8 @@ import math
 from numbers import Number
 from typing import Any, Dict, List, Tuple
 
+from services.sales_query_service import fetch_sales_rows_keyset
+
 
 def empty_dashboard_result() -> Dict[str, Any]:
     return {
@@ -168,27 +170,13 @@ class DashboardAnalyticsService:
         if not allowed_local_ids:
             return empty_dashboard_result()
 
-        sales: List[Dict[str, Any]] = []
-        page_size = 1000
-        page = 0
-        while True:
-            response = (
-                self.supabase.table("ventas")
-                .select("local_id, fecha, total_bruto, total_neto")
-                .in_("local_id", allowed_local_ids)
-                .gte("fecha", start_date)
-                .lte("fecha", end_date)
-                .order("fecha")
-                .range(page * page_size, (page + 1) * page_size - 1)
-                .execute()
-            )
-            chunk = response.data or []
-            if not chunk:
-                break
-            sales.extend(chunk)
-            if len(chunk) < page_size:
-                break
-            page += 1
+        sales = fetch_sales_rows_keyset(
+            self.supabase,
+            select_fields="local_id,fecha,total_bruto,total_neto",
+            local_ids=allowed_local_ids,
+            fecha_inicio=start_date,
+            fecha_fin=end_date,
+        )
 
         sales_by_store: Dict[str, float] = {}
         total_bruto = 0.0

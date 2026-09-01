@@ -5,8 +5,10 @@ from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 
+from services.sales_query_service import DEFAULT_SALES_PAGE_SIZE, fetch_sales_rows_keyset
 
-SALES_PAGE_SIZE = 1000
+
+SALES_PAGE_SIZE = DEFAULT_SALES_PAGE_SIZE
 
 
 def normalize_sales_date(raw_value: Any) -> Optional[str]:
@@ -51,31 +53,38 @@ def load_actual_sales_dates_for_local(
     fecha_fin: str,
 ) -> Set[str]:
     """Load every distinct sales date for one store using deterministic pagination."""
-    rows: List[Dict[str, Any]] = []
-    page = 0
-    while True:
-        chunk = (
-            supabase_client.table("ventas")
-            .select("id, fecha")
-            .eq("local_id", local_id)
-            .gte("fecha", fecha_inicio)
-            .lte("fecha", fecha_fin)
-            .order("id")
-            .range(page * SALES_PAGE_SIZE, (page + 1) * SALES_PAGE_SIZE - 1)
-            .execute()
-        ).data or []
-        if not chunk:
-            break
-        rows.extend(chunk)
-        if len(chunk) < SALES_PAGE_SIZE:
-            break
-        page += 1
+    return load_actual_sales_dates_by_local(
+        supabase_client,
+        local_ids=[local_id],
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+    ).get(str(local_id), set())
 
-    return {
-        normalized
-        for normalized in (normalize_sales_date(row.get("fecha")) for row in rows)
-        if normalized
-    }
+
+def load_actual_sales_dates_by_local(
+    supabase_client: Any,
+    *,
+    local_ids: List[str],
+    fecha_inicio: str,
+    fecha_fin: str,
+) -> Dict[str, Set[str]]:
+    """Load distinct dates for many stores in one keyset-paginated scan."""
+    normalized_ids = list(dict.fromkeys(str(local_id) for local_id in local_ids if local_id))
+    dates_by_local: Dict[str, Set[str]] = {local_id: set() for local_id in normalized_ids}
+    rows = fetch_sales_rows_keyset(
+        supabase_client,
+        select_fields="local_id,fecha",
+        local_ids=normalized_ids,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        page_size=SALES_PAGE_SIZE,
+    )
+    for row in rows:
+        local_id = str(row.get("local_id") or "")
+        normalized_date = normalize_sales_date(row.get("fecha"))
+        if local_id in dates_by_local and normalized_date:
+            dates_by_local[local_id].add(normalized_date)
+    return dates_by_local
 
 
 def load_missing_sales_dates_for_local(

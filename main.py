@@ -82,8 +82,10 @@ from services.dashboard_analytics_service import DashboardAnalyticsService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.sales_gap_service import (
     expected_sales_dates,
+    load_actual_sales_dates_by_local,
     load_actual_sales_dates_for_local,
 )
+from services.sales_query_service import fetch_sales_rows_keyset
 from services.missing_days_email_service import (
     DEFAULT_CONSOLIDATED_BODY_TEMPLATE,
     DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE,
@@ -1854,12 +1856,6 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
     
     records_to_insert = []
     errors = []
-    
-    # Pre-warm Supabase connection / cache (optional)
-    try:
-        supabase.table("ventas").select("count", count="exact").limit(0).execute()
-    except:
-        pass
     
     try:
         raw_rows = []
@@ -5072,27 +5068,14 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         # Important: filter by local_id list (derived from mall) instead of ventas.mall_id,
         # because some legacy rows may have null/incorrect mall_id while local_id is valid.
         # Supabase select has page limits; fetch all rows in batches.
-        sales_data = []
-        page_size = 1000
-        page = 0
-        while True:
-            sales_res = (
-                supabase.table("ventas")
-                .select("*")
-                .in_("local_id", allowed_local_ids)
-                .gte("fecha", request.fecha_inicio)
-                .lte("fecha", request.fecha_fin)
-                .order("fecha")
-                .range(page * page_size, (page + 1) * page_size - 1)
-                .execute()
-            )
-            chunk = sales_res.data or []
-            if not chunk:
-                break
-            sales_data.extend(_normalize_cube_totals_row(dict(row)) for row in chunk)
-            if len(chunk) < page_size:
-                break
-            page += 1
+        sales_rows = fetch_sales_rows_keyset(
+            supabase,
+            select_fields="*",
+            local_ids=allowed_local_ids,
+            fecha_inicio=request.fecha_inicio,
+            fecha_fin=request.fecha_fin,
+        )
+        sales_data = [_normalize_cube_totals_row(dict(row)) for row in sales_rows]
         
         if not sales_data:
             # Return empty structure if no sales found
@@ -5507,27 +5490,13 @@ def _load_copilot_missing_days(locales: List[Dict[str, Any]], lookback_days: int
             "top_brechas": [],
         }
 
-    dates_by_local: Dict[str, Set[str]] = {local_id: set() for local_id in local_ids}
-    page_size = 5000
-    max_pages = 4
     try:
-        for page in range(max_pages):
-            chunk = (
-                supabase.table("ventas")
-                .select("local_id,fecha")
-                .in_("local_id", local_ids)
-                .gte("fecha", start_date.isoformat())
-                .lte("fecha", end_date.isoformat())
-                .range(page * page_size, (page + 1) * page_size - 1)
-                .execute()
-            ).data or []
-            for row in chunk:
-                local_id = str(row.get("local_id") or "")
-                normalized = _normalize_missing_days_sale_date(row.get("fecha"))
-                if local_id and normalized:
-                    dates_by_local.setdefault(local_id, set()).add(normalized)
-            if len(chunk) < page_size:
-                break
+        dates_by_local = load_actual_sales_dates_by_local(
+            supabase,
+            local_ids=local_ids,
+            fecha_inicio=start_date.isoformat(),
+            fecha_fin=end_date.isoformat(),
+        )
     except Exception as exc:
         logger.warning("Copilot missing days query failed: %s", sanitize_sensitive_ops_error(exc))
         return {
@@ -5584,25 +5553,14 @@ def _load_copilot_sales_summary(locales: List[Dict[str, Any]], lookback_days: in
         }
 
     store_map = {str(row.get("id")): row for row in locales if row.get("id")}
-    sales: List[Dict[str, Any]] = []
-    page_size = 5000
-    max_pages = 8
-
     try:
-        for page in range(max_pages):
-            chunk = (
-                supabase.table("ventas")
-                .select("local_id,fecha,total_bruto,total_neto")
-                .in_("local_id", local_ids)
-                .gte("fecha", start_date.isoformat())
-                .lte("fecha", end_date.isoformat())
-                .order("fecha")
-                .range(page * page_size, (page + 1) * page_size - 1)
-                .execute()
-            ).data or []
-            sales.extend(chunk)
-            if len(chunk) < page_size:
-                break
+        sales = fetch_sales_rows_keyset(
+            supabase,
+            select_fields="local_id,fecha,total_bruto,total_neto",
+            local_ids=local_ids,
+            fecha_inicio=start_date.isoformat(),
+            fecha_fin=end_date.isoformat(),
+        )
     except Exception as exc:
         logger.warning("Copilot sales query failed: %s", sanitize_sensitive_ops_error(exc))
         return {
@@ -6955,26 +6913,13 @@ def _load_missing_days_details_for_local(
         for x in range(total_days)
     }
 
-    rows: List[Dict[str, Any]] = []
-    page_size = 2000
-    page = 0
-    while True:
-        chunk = (
-            supabase.table("ventas")
-            .select("id, fecha")
-            .eq("local_id", local_id)
-            .gte("fecha", fecha_inicio)
-            .lte("fecha", fecha_fin)
-            .order("id")
-            .range(page * page_size, (page + 1) * page_size - 1)
-            .execute()
-        ).data or []
-        if not chunk:
-            break
-        rows.extend(chunk)
-        if len(chunk) < page_size:
-            break
-        page += 1
+    rows = fetch_sales_rows_keyset(
+        supabase,
+        select_fields="fecha",
+        local_id=local_id,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+    )
 
     actual_dates = {
         normalized
@@ -8761,17 +8706,19 @@ async def get_sales_gaps(
             
             stores_resp = supabase.table('locales').select('id, nombre, rubro, activo').eq('mall_id', current_mall).execute()
             stores = [row for row in (stores_resp.data or []) if _is_store_active(row)]
+            store_ids = [str(store['id']) for store in stores if store.get('id')]
+            dates_by_local = load_actual_sales_dates_by_local(
+                supabase,
+                local_ids=store_ids,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+            )
             
             global_summary = []
             
             for store in stores:
                 sid = str(store['id'])
-                s_actual = load_actual_sales_dates_for_local(
-                    supabase,
-                    local_id=sid,
-                    fecha_inicio=fecha_inicio,
-                    fecha_fin=fecha_fin,
-                )
+                s_actual = dates_by_local.get(sid, set())
                 
                 missing = sorted(list(expected_dates - s_actual))
                 count_missing = len(missing)

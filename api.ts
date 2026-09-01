@@ -1886,15 +1886,17 @@ export const ApiService = {
 
     try {
       let allSales: any[] = [];
-      let page = 0;
       const pageSize = 1000;
+      let lastId: string | number | null = null;
 
       while (true) {
         let query = supabase
           .from('ventas')
           .select('*')
           .gte('fecha', dates.startDate)
-          .lte('fecha', dates.endDate);
+          .lte('fecha', dates.endDate)
+          .order('id', { ascending: true })
+          .limit(pageSize);
 
         if (dates.mallId) {
           query = query.eq('mall_id', dates.mallId);
@@ -1904,17 +1906,25 @@ export const ApiService = {
           query = query.eq('local_id', localId);
         }
 
-        const { data: salesChunk, error } = await query.range(page * pageSize, (page + 1) * pageSize - 1);
+        if (lastId !== null) {
+          query = query.gt('id', lastId);
+        }
+
+        const { data: salesChunk, error } = await query;
 
         if (error) throw error;
 
         if (salesChunk) {
           allSales = [...allSales, ...salesChunk];
           if (salesChunk.length < pageSize) break; // Fin de datos
+          const nextId = salesChunk[salesChunk.length - 1]?.id;
+          if (nextId == null || nextId === lastId) {
+            throw new Error('La paginación de ventas no pudo avanzar por id.');
+          }
+          lastId = nextId;
         } else {
           break;
         }
-        page++;
       }
 
       const sales = allSales;

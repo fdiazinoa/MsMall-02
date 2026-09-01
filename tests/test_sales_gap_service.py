@@ -21,6 +21,10 @@ class _SalesQuery:
         self.local_id = value
         return self
 
+    def in_(self, _column, values):
+        self.local_ids = set(values)
+        return self
+
     def gte(self, _column, value):
         self.start = value
         return self
@@ -32,17 +36,25 @@ class _SalesQuery:
     def order(self, *_args):
         return self
 
-    def range(self, start, end):
-        self.range_start = start
-        self.range_end = end
+    def gt(self, _column, value):
+        self.after_id = value
+        return self
+
+    def limit(self, value):
+        self.page_size = value
         return self
 
     def execute(self):
+        local_ids = getattr(self, "local_ids", {self.local_id})
         filtered = [
             row for row in self.rows
-            if row["local_id"] == self.local_id and self.start <= row["fecha"] <= self.end
+            if row["local_id"] in local_ids and self.start <= row["fecha"] <= self.end
         ]
-        return SimpleNamespace(data=filtered[self.range_start:self.range_end + 1])
+        after_id = getattr(self, "after_id", None)
+        if after_id is not None:
+            filtered = [row for row in filtered if row["id"] > after_id]
+        filtered.sort(key=lambda row: row["id"])
+        return SimpleNamespace(data=filtered[:self.page_size])
 
 
 class _Supabase:

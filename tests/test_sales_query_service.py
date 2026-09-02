@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import re
 
 from services.sales_query_service import fetch_sales_rows_keyset
 
@@ -34,8 +35,17 @@ class _Query:
         self.filters.append(("gt", column, value))
         return self
 
+    def or_(self, expression):
+        match = re.fullmatch(
+            r"fecha\.gt\.([^,]+),and\(fecha\.eq\.([^,]+),id\.gt\.([^)]+)\)",
+            expression,
+        )
+        assert match
+        self.filters.append(("cursor", "fecha_id", (match.group(2), int(match.group(3)))))
+        return self
+
     def order(self, column):
-        assert column == "id"
+        assert column in {"fecha", "id"}
         return self
 
     def limit(self, value):
@@ -55,7 +65,9 @@ class _Query:
                 rows = [row for row in rows if row[column] in value]
             elif operation == "gt":
                 rows = [row for row in rows if row[column] > value]
-        rows.sort(key=lambda row: row["id"])
+            elif operation == "cursor":
+                rows = [row for row in rows if (row["fecha"], row["id"]) > value]
+        rows.sort(key=lambda row: (row["fecha"], row["id"]))
         chunk = rows[:self.page_size]
         self.calls.append({"filters": self.filters, "size": len(chunk), "fields": self.fields})
         return SimpleNamespace(data=chunk)
@@ -71,7 +83,7 @@ class _Supabase:
         return _Query(self.rows, self.calls)
 
 
-def test_fetch_sales_rows_uses_id_cursor_instead_of_offset():
+def test_fetch_sales_rows_uses_date_and_id_cursor_instead_of_offset():
     rows = [
         {"id": index, "local_id": "local-1", "fecha": "2026-08-24"}
         for index in range(1, 1002)
@@ -88,8 +100,8 @@ def test_fetch_sales_rows_uses_id_cursor_instead_of_offset():
 
     assert len(result) == 1001
     assert len(client.calls) == 2
-    assert not any(operation == "gt" for operation, *_ in client.calls[0]["filters"])
-    assert ("gt", "id", 1000) in client.calls[1]["filters"]
+    assert not any(operation == "cursor" for operation, *_ in client.calls[0]["filters"])
+    assert ("cursor", "fecha_id", ("2026-08-24", 1000)) in client.calls[1]["filters"]
     assert client.calls[0]["fields"] == "id,local_id,fecha"
 
 

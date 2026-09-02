@@ -1,4 +1,5 @@
 import asyncio
+import re
 
 from openpyxl import load_workbook
 
@@ -16,7 +17,7 @@ class _TableQuery:
         self.supabase = supabase
         self.table_name = table_name
         self._filters = []
-        self._order = None
+        self._orders = []
         self._range = None
         self._limit = None
 
@@ -39,8 +40,17 @@ class _TableQuery:
         self._filters.append(("gt", key, value))
         return self
 
+    def or_(self, expression):
+        match = re.fullmatch(
+            r"fecha\.gt\.([^,]+),and\(fecha\.eq\.([^,]+),id\.gt\.([^)]+)\)",
+            expression,
+        )
+        assert match
+        self._filters.append(("cursor", "fecha_id", (match.group(2), match.group(3))))
+        return self
+
     def order(self, column, desc=False):
-        self._order = (column, bool(desc))
+        self._orders.append((column, bool(desc)))
         return self
 
     def range(self, start, end):
@@ -62,14 +72,15 @@ class _TableQuery:
                 result = [r for r in result if r.get(key) is not None and r.get(key) <= value]
             elif op == "gt":
                 result = [r for r in result if r.get(key) is not None and r.get(key) > value]
+            elif op == "cursor":
+                result = [r for r in result if (r.get("fecha"), r.get("id")) > value]
         return result
 
     def execute(self):
         rows = [dict(r) for r in self.supabase.tables.get(self.table_name, [])]
         rows = self._apply_filters(rows)
 
-        if self._order:
-            col, desc = self._order
+        for col, desc in reversed(self._orders):
             rows = sorted(rows, key=lambda r: (r.get(col) is None, r.get(col)), reverse=desc)
 
         if self._range is not None:

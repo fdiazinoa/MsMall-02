@@ -738,8 +738,12 @@ class LocalCustomFieldsService:
 
         df["dimension_group"] = df["local_id"].map(_dimension_for_local)
 
-        metric_col = metric if metric != "transacciones" else "id"
-        aggfunc = "sum" if metric != "transacciones" else "count"
+        if metric == "transacciones" and "transacciones" in df.columns:
+            metric_col = "transacciones"
+            aggfunc = "sum"
+        else:
+            metric_col = metric if metric != "transacciones" else "id"
+            aggfunc = "sum" if metric != "transacciones" else "count"
         if metric != "transacciones":
             df[metric_col] = pd.to_numeric(df[metric_col], errors="coerce").fillna(0)
 

@@ -23,5 +23,17 @@ def test_hot_sales_read_paths_use_keyset_pagination():
 
     assert "sales = fetch_sales_rows_keyset(" in dashboard_service
     assert "return fetch_sales_rows_keyset(" in export_service
-    assert "query = query.gt('id', lastId);" in api_ts
+    assert "query = query.or(`fecha.gt.${lastDate},and(fecha.eq.${lastDate},id.gt.${lastId})`);" in api_ts
     assert "query.range(page * pageSize" not in api_ts
+
+
+def test_sales_cube_uses_daily_aggregates_for_large_ranges_and_surfaces_errors():
+    repo = Path(__file__).resolve().parents[1]
+    main_py = (repo / "main.py").read_text(encoding="utf-8")
+    api_ts = (repo / "api.ts").read_text(encoding="utf-8")
+    sales_cube = (repo / "components" / "SalesCube.tsx").read_text(encoding="utf-8")
+
+    assert "sales_rows = fetch_sales_cube_daily_aggregates(" in main_py
+    assert 'select_fields=(\n                    "id,local_id,fecha,total_bruto,total_neto,total_impuestos"' in main_py
+    assert "parseErrorDetail(response" in api_ts
+    assert 'setError(err?.message || "No se pudo generar el cubo de ventas.")' in sales_cube

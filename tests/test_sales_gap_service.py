@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import re
 
 from services.sales_gap_service import (
     SALES_PAGE_SIZE,
@@ -40,6 +41,16 @@ class _SalesQuery:
         self.after_id = value
         return self
 
+    def or_(self, expression):
+        match = re.fullmatch(
+            r"fecha\.gt\.([^,]+),and\(fecha\.eq\.([^,]+),id\.gt\.([^)]+)\)",
+            expression,
+        )
+        assert match
+        raw_id = match.group(3)
+        self.after_cursor = (match.group(2), int(raw_id) if raw_id.isdigit() else raw_id)
+        return self
+
     def limit(self, value):
         self.page_size = value
         return self
@@ -53,7 +64,10 @@ class _SalesQuery:
         after_id = getattr(self, "after_id", None)
         if after_id is not None:
             filtered = [row for row in filtered if row["id"] > after_id]
-        filtered.sort(key=lambda row: row["id"])
+        after_cursor = getattr(self, "after_cursor", None)
+        if after_cursor is not None:
+            filtered = [row for row in filtered if (row["fecha"], row["id"]) > after_cursor]
+        filtered.sort(key=lambda row: (row["fecha"], row["id"]))
         return SimpleNamespace(data=filtered[:self.page_size])
 
 

@@ -23,6 +23,7 @@ from services.sales_gap_service import (
     normalize_sales_date,
 )
 from services.sales_query_service import fetch_sales_rows_keyset
+from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
 
 class ExportService:
     def __init__(self, supabase_client: Client):
@@ -543,14 +544,28 @@ class ExportService:
 
         sales = []
         if local_ids:
-            sales_rows = fetch_sales_rows_keyset(
-                self.supabase,
-                select_fields="*",
-                local_id=local_id,
-                local_ids=None if local_id else local_ids,
-                fecha_inicio=fecha_inicio,
-                fecha_fin=fecha_fin,
+            sales_rows = (
+                fetch_sales_cube_daily_aggregates(
+                    self.supabase,
+                    mall_id=mall_id,
+                    local_ids=local_ids,
+                    fecha_inicio=fecha_inicio,
+                    fecha_fin=fecha_fin,
+                )
+                if mall_id
+                else None
             )
+            if sales_rows is None:
+                sales_rows = fetch_sales_rows_keyset(
+                    self.supabase,
+                    select_fields=(
+                        "id,local_id,fecha,total_bruto,total_neto,total_impuestos"
+                    ),
+                    local_id=local_id,
+                    local_ids=None if local_id else local_ids,
+                    fecha_inicio=fecha_inicio,
+                    fecha_fin=fecha_fin,
+                )
             sales.extend(self._normalize_sale_totals_row(dict(row)) for row in sales_rows)
         
         wb = Workbook()

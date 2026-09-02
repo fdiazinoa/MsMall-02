@@ -86,6 +86,7 @@ from services.sales_gap_service import (
     load_actual_sales_dates_for_local,
 )
 from services.sales_query_service import fetch_sales_rows_keyset
+from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
 from services.missing_days_email_service import (
     DEFAULT_CONSOLIDATED_BODY_TEMPLATE,
     DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE,
@@ -5068,13 +5069,31 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         # Important: filter by local_id list (derived from mall) instead of ventas.mall_id,
         # because some legacy rows may have null/incorrect mall_id while local_id is valid.
         # Supabase select has page limits; fetch all rows in batches.
-        sales_rows = fetch_sales_rows_keyset(
+        sales_rows = fetch_sales_cube_daily_aggregates(
             supabase,
-            select_fields="*",
+            mall_id=mall_id,
             local_ids=allowed_local_ids,
             fecha_inicio=request.fecha_inicio,
             fecha_fin=request.fecha_fin,
         )
+        if sales_rows is None:
+            sales_rows = fetch_sales_rows_keyset(
+                supabase,
+                select_fields=(
+                    "id,local_id,fecha,total_bruto,total_neto,total_impuestos"
+                ),
+                local_ids=allowed_local_ids,
+                fecha_inicio=request.fecha_inicio,
+                fecha_fin=request.fecha_fin,
+            )
+        else:
+            logger.info(
+                "Cubo de ventas usando agregados diarios mall=%s rango=%s..%s filas=%s",
+                mall_id,
+                request.fecha_inicio,
+                request.fecha_fin,
+                len(sales_rows),
+            )
         sales_data = [_normalize_cube_totals_row(dict(row)) for row in sales_rows]
         
         if not sales_data:
@@ -5092,7 +5111,8 @@ async def get_sales_cube(request: CubeRequest, mall_id: str = Depends(get_curren
         # 5. Ensure numeric types for metrics
         df['total_bruto'] = pd.to_numeric(df['total_bruto'], errors='coerce').fillna(0)
         df['total_neto'] = pd.to_numeric(df['total_neto'], errors='coerce').fillna(0)
-        df['transacciones'] = 1 # Each row is a transaction? Or aggregate? 
+        if 'transacciones' not in df.columns:
+            df['transacciones'] = 1 # Each raw row represents one transaction.
         # Assuming each row in 'ventas' is a transaction/daily summary. 
         # If 'ventas' is granular (ticket), count=1. If daily summary, we might need a 'count' column if exists, 
         # but usually 'ventas' tables in these systems are per-ticket or per-day. 

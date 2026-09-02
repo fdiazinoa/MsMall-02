@@ -110,10 +110,14 @@ def generate_sales_cube(
     # Rows: local_nombre (asumimos que viene en el DF, si no, usar local_id)
     # Columna pivote: 'periodo'
     # Valor: metric
-    agg = 'sum' if metric != 'transacciones' else 'count'
-    
-    # Si la metrica es transacciones, usamos cualquier columna para contar, ej: id
-    value_col = metric if metric != 'transacciones' else 'id'
+    if metric == 'transacciones' and 'transacciones' in df.columns:
+        # Raw rows carry ``transacciones = 1``; daily aggregate rows carry the
+        # already-computed count. Summing works for both sources.
+        agg = 'sum'
+        value_col = 'transacciones'
+    else:
+        agg = 'sum' if metric != 'transacciones' else 'count'
+        value_col = metric if metric != 'transacciones' else 'id'
     
     pivot = pd.pivot_table(
         df, 

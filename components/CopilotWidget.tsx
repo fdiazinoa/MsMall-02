@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthProvider';
 import { CopilotAttachment, CopilotChatMessage, CopilotEmailAction, CopilotSettings } from '../types';
 
 const SUGGESTED_PROMPTS = [
+  '¿Cuántos locales hay por tipo de conexión?',
   'Genera un Excel de ventas recientes',
   'Resumen de ventas recientes',
   'Resumen del monitor de carga',

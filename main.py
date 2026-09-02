@@ -72,6 +72,7 @@ from routers.token_auth import (
 )
 from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
 from services.local_custom_fields_service import LocalCustomFieldsService
+from services.copilot_connections_service import load_copilot_connection_inventory
 from services.big_data_sprint2_service import BigDataSprint2Service
 from services.connection_monitor_service import (
     ConnectionMonitorService,
@@ -5773,6 +5774,11 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
         mall_row = {"id": mall_id, "nombre": "Mall seleccionado"}
 
     locales = _load_copilot_locales(mall_id)
+    try:
+        connection_inventory = load_copilot_connection_inventory(supabase, mall_id)
+    except Exception as exc:
+        logger.warning("Copilot connection inventory failed: %s", sanitize_sensitive_ops_error(exc))
+        connection_inventory = {"status": "no_disponible", "fuente": "locales.sftp_protocol"}
     compact_locales = [
         {
             "id": row.get("id"),
@@ -5831,7 +5837,9 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
             "nombre": mall_row.get("nombre") or "Mall seleccionado",
         },
         "locales": {
-            "total": len(locales),
+            "total": connection_inventory.get("total_locales"),
+            "locales_evaluados": len(locales),
+            "alcance_indicadores": "Importacion, procesos y fallas corresponden solo a los locales evaluados (maximo 80).",
             "con_importacion_activa": sum(1 for row in locales if row.get("upsert_activo") or row.get("sftp_host")),
             "en_proceso": sum(1 for row in locales if row.get("processing_status") == "BUSY"),
             "con_fallas_consecutivas": sum(1 for row in locales if int(row.get("consecutive_failures") or 0) > 0),
@@ -5843,6 +5851,7 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
             "logs_recientes": [_compact_copilot_log(row) for row in logs[:15]],
         },
         "monitor_conexiones": connection_monitor,
+        "locales_por_tipo_conexion": connection_inventory,
         "dias_informacion": missing_days,
         "ventas_recientes": sales_summary,
     }
@@ -6355,6 +6364,13 @@ def _copilot_system_prompt() -> str:
         "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
         "Responde en español, de forma breve y accionable. Usa solamente el contexto JSON del sistema: "
         "ventas recientes, monitor de carga, monitor de conexiones, locales y dias de informacion. "
+        "Para cantidades o listados por tipo de conexion usa locales_por_tipo_conexion: "
+        "incluye todos los locales del mall, no solo la muestra de locales ni las conexiones del monitor. "
+        "Si su status es disponible, responde con sus cantidades y nombres registrados para FTP, SFTP, API, "
+        "WEBSERVICE y LOCAL, incluyendo SIN_CONFIGURAR y OTRO cuando existan. "
+        "SIN_CONFIGURAR significa protocolo no registrado; no supongas SFTP ni ausencia de ventas. "
+        "El tipo configurado no demuestra que la conexion este activa o funcionando. "
+        "Si status es no_disponible, informa que no se pudo consultar el inventario; no lo interpretes como cero. "
         "Si el contexto no contiene un dato solicitado, dilo claramente y sugiere donde revisarlo. "
         "No inventes cifras, locales, fechas ni estados. Cuando sea util, menciona la fuente del dato. "
         "Formato obligatorio: usa un titulo corto en negrita, luego lineas separadas con bullets. "
@@ -6639,7 +6655,7 @@ async def chat_with_copilot(
         "sources": (
             ["big_data_aggregates", "operational_findings", "big_data_forecast"]
             if big_data_question
-            else ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "dias_informacion"]
+            else ["ventas_recientes", "monitor_carga", "monitor_conexiones", "locales", "locales_por_tipo_conexion", "dias_informacion"]
         ),
         "attachments": [],
     }

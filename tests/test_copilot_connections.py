@@ -11,17 +11,20 @@ from fastapi import HTTPException
 
 from services.copilot_connections_service import (
     CONNECTION_COLUMNS,
+    CONNECTION_SOURCES,
+    EXPORTER_COLUMNS,
     load_copilot_connection_inventory,
 )
 
 
 class Query:
-    def __init__(self, client):
+    def __init__(self, client, table):
         self.client = client
+        self.table = table
         self.after = -1
 
     def select(self, columns):
-        assert columns == CONNECTION_COLUMNS
+        assert columns == (CONNECTION_COLUMNS if self.table == "locales" else EXPORTER_COLUMNS)
         return self
 
     def eq(self, column, value):
@@ -46,22 +49,24 @@ class Query:
         self.client.calls += 1
         if self.client.fail_at == self.client.calls:
             raise RuntimeError("Query unavailable")
-        rows = sorted((row for row in self.client.rows
+        source_rows = self.client.rows if self.table == "locales" else self.client.exporters
+        rows = sorted((row for row in source_rows
                        if row["mall_id"] == self.mall_id and row["id"] > self.after),
                       key=lambda row: row["id"])
         return SimpleNamespace(data=rows[:self.page_size])
 
 
 class Client:
-    def __init__(self, rows, server_cap=500, fail_at=None):
+    def __init__(self, rows, server_cap=500, fail_at=None, exporters=None):
         self.rows = rows
+        self.exporters = exporters or []
         self.server_cap = server_cap
         self.fail_at = fail_at
         self.calls = 0
 
     def table(self, name):
-        assert name == "locales"  # Never scans ventas or secret configuration tables.
-        return Query(self)
+        assert name in {"locales", "exporter_webservice_configs"}
+        return Query(self, name)
 
 
 def local(index, protocol="FTP", mall="mall-1"):
@@ -120,6 +125,7 @@ def context_namespace():
         "_load_copilot_missing_days": lambda rows: {"evaluados": len(rows)},
         "_load_copilot_sales_summary": lambda rows: {"evaluados": len(rows)},
         "load_copilot_connection_inventory": load_copilot_connection_inventory,
+        "CONNECTION_SOURCES": CONNECTION_SOURCES,
         "_connection_monitor_service": lambda: SimpleNamespace(get_status_summary=lambda **_: {}),
         "logger": logging.getLogger(__name__), "sanitize_sensitive_ops_error": lambda _: "unavailable",
     }
@@ -157,3 +163,55 @@ def test_context_checks_access_before_loading_inventory():
         scope["_build_copilot_context"]("other", {})
     assert error.value.status_code == 403
     assert scope["supabase"].calls == 0
+
+
+def exporter(index, local_id, enabled=True, mall="mall-1"):
+    return {"id": index, "local_id": local_id, "enabled": enabled, "mall_id": mall,
+            "notes": "private-notes"}
+
+
+def test_incoming_webservice_is_visible_despite_legacy_sftp_protocol():
+    client = Client([local(1, "SFTP"), local(2, "API")], exporters=[exporter(1, 1)])
+    result = load_copilot_connection_inventory(client, "mall-1")
+    assert result["por_tipo"]["WEBSERVICE"]["total"] == 1
+    assert result["por_tipo"]["API"]["total"] == 1
+    assert result["por_tipo"]["SFTP"]["total"] == 1
+    assert result["total_locales"] == 2
+    assert result["locales_con_varios_tipos"] == 1
+    assert result["por_tipo"]["WEBSERVICE"]["locales"][0]["fuentes"] == ["exporter_webservice_configs"]
+    assert "private-notes" not in json.dumps(result)
+
+
+def test_webservice_both_directions_counted_once_and_blank_not_unconfigured():
+    result = load_copilot_connection_inventory(
+        Client([local(1, "WEBSERVICE"), local(2, None)], exporters=[exporter(1, 1), exporter(2, 2)]), "mall-1")
+    assert result["por_tipo"]["WEBSERVICE"]["total"] == 2
+    assert result["por_tipo"]["SIN_CONFIGURAR"]["total"] == 0
+    assert result["locales_con_varios_tipos"] == 0
+    assert result["por_tipo"]["WEBSERVICE"]["locales"][0]["fuentes"] == CONNECTION_SOURCES
+
+
+def test_disabled_foreign_and_orphan_webservices_are_not_counted():
+    result = load_copilot_connection_inventory(Client(
+        [local(1), local(2), local(3, mall="other")],
+        exporters=[exporter(1, 1, enabled=False), exporter(2, 2, mall="other"),
+                   exporter(3, 3), exporter(4, 99)]), "mall-1")
+    assert result["por_tipo"]["WEBSERVICE"]["total"] == 0
+    assert result["webservices_receptores_deshabilitados"] == 1
+
+
+def test_incoming_webservices_are_paginated():
+    result = load_copilot_connection_inventory(Client(
+        [local(i) for i in range(1001)], server_cap=70,
+        exporters=[exporter(i, i) for i in range(1001)]), "mall-1")
+    assert result["por_tipo"]["WEBSERVICE"]["total"] == 1001
+    assert result["total_locales"] == 1001
+
+
+def test_exporter_query_failure_does_not_report_false_zero():
+    scope = context_namespace()
+    # Two calls read locales and the terminating empty page; third reads exporters.
+    scope["supabase"].fail_at = 3
+    result = scope["_build_copilot_context"]("mall-1", {})
+    assert result["locales_por_tipo_conexion"]["status"] == "no_disponible"
+    assert result["locales"]["total"] is None

@@ -72,7 +72,7 @@ from routers.token_auth import (
 )
 from services.sensitive_ops_service import SensitiveOpsService, sanitize_error_text as sanitize_sensitive_ops_error
 from services.local_custom_fields_service import LocalCustomFieldsService
-from services.copilot_connections_service import load_copilot_connection_inventory
+from services.copilot_connections_service import CONNECTION_SOURCES, load_copilot_connection_inventory
 from services.big_data_sprint2_service import BigDataSprint2Service
 from services.connection_monitor_service import (
     ConnectionMonitorService,
@@ -5778,7 +5778,7 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
         connection_inventory = load_copilot_connection_inventory(supabase, mall_id)
     except Exception as exc:
         logger.warning("Copilot connection inventory failed: %s", sanitize_sensitive_ops_error(exc))
-        connection_inventory = {"status": "no_disponible", "fuente": "locales.sftp_protocol"}
+        connection_inventory = {"status": "no_disponible", "fuente": ", ".join(CONNECTION_SOURCES)}
     compact_locales = [
         {
             "id": row.get("id"),
@@ -6366,6 +6366,10 @@ def _copilot_system_prompt() -> str:
         "ventas recientes, monitor de carga, monitor de conexiones, locales y dias de informacion. "
         "Para cantidades o listados por tipo de conexion usa locales_por_tipo_conexion: "
         "incluye todos los locales del mall, no solo la muestra de locales ni las conexiones del monitor. "
+        "Usa el inventario actual aunque respuestas anteriores del chat indiquen que no hay API o webservice. "
+        "WEBSERVICE incluye los receptores ERP habilitados en exporter_webservice_configs. "
+        "Un local puede tener varios tipos: no sumes los grupos como si fueran locales unicos; usa total_locales. "
+        "Incluye siempre las cantidades de API y WEBSERVICE en el desglose general, incluso si son cero. "
         "Si su status es disponible, responde con sus cantidades y nombres registrados para FTP, SFTP, API, "
         "WEBSERVICE y LOCAL, incluyendo SIN_CONFIGURAR y OTRO cuando existan. "
         "SIN_CONFIGURAR significa protocolo no registrado; no supongas SFTP ni ausencia de ventas. "

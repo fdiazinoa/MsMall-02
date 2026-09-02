@@ -1887,14 +1887,16 @@ export const ApiService = {
     try {
       let allSales: any[] = [];
       const pageSize = 1000;
+      let lastDate: string | null = null;
       let lastId: string | number | null = null;
 
       while (true) {
         let query = supabase
           .from('ventas')
-          .select('*')
+          .select('id,local_id,fecha,total_bruto,total_impuestos,total_neto')
           .gte('fecha', dates.startDate)
           .lte('fecha', dates.endDate)
+          .order('fecha', { ascending: true })
           .order('id', { ascending: true })
           .limit(pageSize);
 
@@ -1906,8 +1908,8 @@ export const ApiService = {
           query = query.eq('local_id', localId);
         }
 
-        if (lastId !== null) {
-          query = query.gt('id', lastId);
+        if (lastDate !== null && lastId !== null) {
+          query = query.or(`fecha.gt.${lastDate},and(fecha.eq.${lastDate},id.gt.${lastId})`);
         }
 
         const { data: salesChunk, error } = await query;
@@ -1917,10 +1919,12 @@ export const ApiService = {
         if (salesChunk) {
           allSales = [...allSales, ...salesChunk];
           if (salesChunk.length < pageSize) break; // Fin de datos
+          const nextDate = salesChunk[salesChunk.length - 1]?.fecha;
           const nextId = salesChunk[salesChunk.length - 1]?.id;
-          if (nextId == null || nextId === lastId) {
-            throw new Error('La paginación de ventas no pudo avanzar por id.');
+          if (nextDate == null || nextId == null || (nextDate === lastDate && nextId === lastId)) {
+            throw new Error('La paginación de ventas no pudo avanzar por fecha e id.');
           }
+          lastDate = nextDate;
           lastId = nextId;
         } else {
           break;
@@ -3093,7 +3097,9 @@ export const ApiService = {
         },
         body: JSON.stringify(params),
       });
-      if (!response.ok) throw new Error("Error fetching Sales Cube");
+      if (!response.ok) {
+        throw new Error(await parseErrorDetail(response, "No se pudo generar el cubo de ventas."));
+      }
       return await response.json();
     } catch (error) {
       console.error(error);

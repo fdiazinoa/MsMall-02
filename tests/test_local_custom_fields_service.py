@@ -210,3 +210,38 @@ def test_snapshot_filter_and_hierarchical_cube():
     north_group = next(row for row in cube["data"] if row["row_label"] == "Norte")
     assert north_group["01/04"] == 100
     assert next(row for row in cube["data"] if row["row_label"] == "  Zara")["01/04"] == 100
+
+
+def test_cube_sums_preaggregated_transaction_counts():
+    service, _fake_db = _service()
+    snapshot = service.build_snapshot("mall-1", ["local-a"], include_inactive=False)
+    df = pd.DataFrame([
+        {
+            "local_id": "local-a",
+            "local_nombre": "Zara",
+            "fecha": "2026-08-01",
+            "total_neto": 100,
+            "total_bruto": 118,
+            "transacciones": 3,
+        },
+        {
+            "local_id": "local-a",
+            "local_nombre": "Zara",
+            "fecha": "2026-08-02",
+            "total_neto": 200,
+            "total_bruto": 236,
+            "transacciones": 4,
+        },
+    ])
+
+    cube = service.build_cube_response(
+        df,
+        grouping="MES",
+        metric="transacciones",
+        start_date="2026-08-01",
+        end_date="2026-08-31",
+        snapshot=snapshot,
+    )
+
+    assert cube["data"][0]["2026-08"] == 7
+    assert cube["data"][0]["TOTAL_FILA"] == 7

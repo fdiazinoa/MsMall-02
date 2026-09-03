@@ -1,5 +1,7 @@
+import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pandas as pd
 import pytest
 from fastapi import HTTPException
@@ -82,7 +84,9 @@ class _TableQuery:
             if self._single:
                 return _FakeResponse(dict(data[0]) if data else None)
             if self._maybe_single:
-                return _FakeResponse(dict(data[0]) if data else None)
+                # supabase-py can return None (not a response with data=None)
+                # when maybe_single finds no matching record.
+                return _FakeResponse(dict(data[0])) if data else None
             return _FakeResponse([dict(row) for row in data])
 
         if self._mode == "insert":
@@ -145,6 +149,97 @@ def _service():
     })
     logger = SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None)
     return LocalCustomFieldsService(fake_db, logger), fake_db
+
+
+@pytest.mark.parametrize("data_type,widget_type,options", [
+    ("text", "textbox", []),
+    ("number", "textbox", []),
+    ("date", "textbox", []),
+    ("select", "select", [{"label": "Opción A", "value": "a"}]),
+    ("select", "drilldown", [{"label": "Opción hija", "value": "child", "parent_option_id": "opt-north"}]),
+])
+def test_create_definition_with_unused_key_and_empty_maybe_single(data_type, widget_type, options):
+    service, db = _service()
+    result = service.create_definition(
+        {"mall_id": "mall-1", "key": "nuevo_campo", "label": "Nuevo campo",
+         "data_type": data_type, "widget_type": widget_type, "options": options,
+         "parent_field_id": "field-region" if widget_type == "drilldown" else None},
+        operator_ctx={"role": "it", "allowed_malls": ["mall-1"]},
+        ensure_operator_can_access_mall=_guard,
+    )
+    assert result["key"] == "nuevo_campo"
+    assert len(result["options"]) == len(options)
+    assert len([row for row in db.tables["local_custom_field_definitions"] if row["key"] == "nuevo_campo"]) == 1
+
+
+def test_create_definition_duplicate_key_still_returns_conflict():
+    service, db = _service()
+    before = len(db.tables["local_custom_field_definitions"])
+    with pytest.raises(HTTPException) as error:
+        service.create_definition(
+            {"mall_id": "mall-1", "key": "region", "label": "Duplicado",
+             "data_type": "text", "widget_type": "textbox"},
+            operator_ctx={"role": "admin"}, ensure_operator_can_access_mall=_guard,
+        )
+    assert error.value.status_code == 409
+    assert len(db.tables["local_custom_field_definitions"]) == before
+
+
+@pytest.mark.parametrize("loader", ["_load_definition", "_load_local"])
+def test_missing_record_returns_404_not_attribute_error(loader):
+    service, _ = _service()
+    with pytest.raises(HTTPException) as error:
+        getattr(service, loader)("missing-id")
+    assert error.value.status_code == 404
+
+
+def test_update_definition_keeps_own_key():
+    service, _ = _service()
+    result = service.update_definition(
+        "field-opening", {"label": "Nueva etiqueta"},
+        operator_ctx={"role": "admin"}, ensure_operator_can_access_mall=_guard,
+    )
+    assert result["key"] == "opening_date"
+    assert result["label"] == "Nueva etiqueta"
+
+
+def test_create_definition_does_not_write_to_unauthorized_mall():
+    service, db = _service()
+    before = len(db.tables["local_custom_field_definitions"])
+    with pytest.raises(HTTPException) as error:
+        service.create_definition(
+            {"mall_id": "mall-2", "key": "nuevo", "label": "Nuevo", "data_type": "text", "widget_type": "textbox"},
+            operator_ctx={"role": "it", "allowed_malls": ["mall-1"]}, ensure_operator_can_access_mall=_guard,
+        )
+    assert error.value.status_code == 403
+    assert len(db.tables["local_custom_field_definitions"]) == before
+
+
+def test_create_endpoint_returns_json_and_cors_instead_of_unhandled_error(monkeypatch):
+    for name in ("SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SERVICE_ROLE_KEY"):
+        monkeypatch.setenv(name, "")
+    import main
+
+    service, _ = _service()
+    monkeypatch.setattr(main, "_local_custom_fields_service", lambda: service)
+    monkeypatch.setattr(main, "_ensure_operator_can_access_mall", _guard)
+    monkeypatch.setitem(main.app.dependency_overrides, main.require_it_or_admin_access,
+                        lambda: {"role": "it", "allowed_malls": ["mall-1"]})
+
+    async def run():
+        transport = httpx.ASGITransport(app=main.app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            payload = {"mall_id": "mall-1", "key": "nuevo", "label": "Nuevo", "data_type": "text", "widget_type": "textbox"}
+            headers = {"Origin": "https://msmall.vercel.app"}
+            created = await client.post("/api/v1/locales/custom-fields", json=payload, headers=headers)
+            assert created.status_code == 200, created.text
+            assert created.json()["key"] == "nuevo"
+            assert created.headers["access-control-allow-origin"] == headers["Origin"]
+            duplicate = await client.post("/api/v1/locales/custom-fields", json=payload, headers=headers)
+            assert duplicate.status_code == 409
+            assert "Ya existe" in duplicate.json()["detail"]
+
+    asyncio.run(run())
 
 
 def test_upsert_local_values_validates_required_and_drilldown():

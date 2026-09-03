@@ -122,7 +122,8 @@ class LocalCustomFieldsService:
             .maybe_single()
             .execute()
         )
-        row = existing.data
+        # maybe_single().execute() may return None when the key is unused.
+        row = existing.data if existing is not None else None
         if row and row.get("id") != field_id:
             raise HTTPException(status_code=409, detail="Ya existe un campo libre con esa clave en este mall.")
 
@@ -134,7 +135,7 @@ class LocalCustomFieldsService:
             .maybe_single()
             .execute()
         )
-        row = res.data
+        row = res.data if res is not None else None
         if not row:
             raise HTTPException(status_code=404, detail="Campo libre no encontrado.")
         return row
@@ -147,7 +148,7 @@ class LocalCustomFieldsService:
             .maybe_single()
             .execute()
         )
-        row = res.data
+        row = res.data if res is not None else None
         if not row:
             raise HTTPException(status_code=404, detail="Local no encontrado.")
         return row

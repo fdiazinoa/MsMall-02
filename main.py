@@ -587,7 +587,7 @@ def _find_auth_user_by_email(email: str) -> Optional[Any]:
             return u
     return None
 
-async def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)):
+def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
         # Verify token with Supabase
@@ -600,6 +600,10 @@ async def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depend
         raise HTTPException(status_code=401, detail="Authentication failed")
 
 async def _get_access_context(user_id: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(_get_access_context_sync, user_id)
+
+
+def _get_access_context_sync(user_id: str) -> Dict[str, Any]:
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado")
 
@@ -7367,7 +7371,7 @@ router_export = APIRouter(prefix="/api/v1/export", tags=["export"])
 
 
 @app.get("/api/v1/users/me/malls")
-async def get_my_malls(user_id: str = Depends(get_current_user_id)):
+def get_my_malls(user_id: str = Depends(get_current_user_id)):
     """
     Returns the list of malls assigned to the current user.
     """
@@ -8706,8 +8710,9 @@ async def export_financial_dashboard_pdf(fecha_inicio: str, fecha_fin: str):
         logger.error(f"Error exporting financial pdf: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Blocking pagination must run in FastAPI's worker pool, not the event loop.
 @app.get("/api/v1/auditoria/brechas-ventas")
-async def get_sales_gaps(
+def get_sales_gaps(
     local_id: Optional[str], 
     fecha_inicio: str, 
     fecha_fin: str,

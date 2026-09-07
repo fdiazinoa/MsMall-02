@@ -61,23 +61,9 @@ export const AuthProvider = ({ children }) => {
             return;
         }
 
-        // 1. Obtener sesión inicial
-        supabase.auth.getSession().then(({ data: { session }, error }) => {
-            if (error) {
-                console.error("Error validando sesión:", error);
-                supabase.auth.signOut();
-                setLoading(false);
-                return;
-            }
-
-            setSession(session);
-            if (session) {
-                fetchEffectiveAccessRole(session.access_token);
-                fetchProfile(session.user.id);
-                fetchUserMalls(session.access_token, session.user.id);
-            }
-            else setLoading(false);
-        });
+        // INITIAL_SESSION bootstraps persisted sessions; avoid a second getSession load.
+        let lastAccessToken = null;
+        let pendingLoad: ReturnType<typeof setTimeout> | undefined;
 
         // 2. Escuchar cambios de autenticación
         const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -86,11 +72,19 @@ export const AuthProvider = ({ children }) => {
             }
             setSession(session);
             if (session) {
-                fetchEffectiveAccessRole(session.access_token);
-                fetchProfile(session.user.id);
-                fetchUserMalls(session.access_token, session.user.id);
+                if (lastAccessToken === session.access_token && event !== 'USER_UPDATED') return;
+                lastAccessToken = session.access_token;
+                clearTimeout(pendingLoad);
+                // Start Supabase queries after the auth callback releases its lock.
+                pendingLoad = setTimeout(() => {
+                    fetchEffectiveAccessRole(session.access_token);
+                    fetchProfile(session.user.id);
+                    fetchUserMalls(session.access_token, session.user.id);
+                }, 0);
             }
             else {
+                lastAccessToken = null;
+                clearTimeout(pendingLoad);
                 setUser(null);
                 setRole(null);
                 setPermissions({});
@@ -101,7 +95,10 @@ export const AuthProvider = ({ children }) => {
             }
         });
 
-        return () => subscription.unsubscribe();
+        return () => {
+            clearTimeout(pendingLoad);
+            subscription.unsubscribe();
+        };
     }, []);
 
     const normalizeMallsPayload = (payload) => {
@@ -112,11 +109,12 @@ export const AuthProvider = ({ children }) => {
     };
 
     const getApiBaseCandidates = () => {
-        const normalizeApiRoot = (value) => (value || '')
-            .trim()
-            .replace(/\/+$/, '')
-            .replace(/\/api\/v1$/i, '')
-            .replace(/\/api$/i, '');
+        const normalizeApiRoot = (value) => {
+            const root = (value || '').trim().replace(/\/+$/, '')
+                .replace(/\/api\/v1$/i, '').replace(/\/api$/i, '');
+            if (!root || root.startsWith('/') || /^https?:\/\//i.test(root)) return root;
+            return `https://${root}`;
+        };
 
         const normalizedEnv = normalizeApiRoot(RAW_API_URL);
         const normalizedDirect = normalizeApiRoot(RAW_DIRECT_BACKEND_URL);

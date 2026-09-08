@@ -56,6 +56,38 @@ export interface KPIData {
   ventas_por_tienda_completo?: Record<string, number>;
 }
 
+export type MallComparisonMetric = 'total_bruto' | 'total_neto' | 'transacciones' | 'ticket_promedio';
+
+export interface MallComparisonDimensionRow {
+  nombre: string;
+  total_bruto: number;
+  total_neto: number;
+  transacciones: number;
+  ticket_promedio: number;
+  cantidad_locales?: number;
+}
+
+export interface MallComparisonStore extends MallComparisonDimensionRow {
+  id: string;
+  rubro: string;
+  categoria: string;
+}
+
+export interface MallComparisonMall extends MallComparisonDimensionRow {
+  id: string;
+  locale: string;
+  moneda: string;
+  locales: MallComparisonStore[];
+  rubros: MallComparisonDimensionRow[];
+  categorias: MallComparisonDimensionRow[];
+}
+
+export interface MallComparisonResponse {
+  start_date: string;
+  end_date: string;
+  malls: MallComparisonMall[];
+}
+
 export interface BigDataSummary {
   mall_id: string;
   start_date: string;

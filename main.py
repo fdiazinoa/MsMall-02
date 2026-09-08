@@ -78,6 +78,7 @@ from services.connection_monitor_service import (
 )
 from services.date_parsing_service import normalize_sale_date
 from services.dashboard_analytics_service import DashboardAnalyticsService
+from services.mall_comparison_service import MallComparisonService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.sales_gap_service import (
     expected_sales_dates,
@@ -7143,6 +7144,51 @@ async def get_dashboard_data(start_date: str, end_date: str, mall_id: str = Depe
         except Exception as exc:
             logger.error("Error fetching dashboard data: %s", exc)
             raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/v1/analytics/mall-comparison")
+async def get_mall_comparison(
+    start_date: str,
+    end_date: str,
+    mall_ids: List[str] = Query(...),
+    access_ctx: Dict[str, Any] = Depends(require_module_permission("comparisons", "view")),
+):
+    """Compare only malls assigned to the authenticated user over one date range."""
+    selected_malls = list(dict.fromkeys(str(mall_id).strip() for mall_id in mall_ids if str(mall_id).strip()))
+    if len(selected_malls) < 2:
+        raise HTTPException(status_code=400, detail="Selecciona al menos dos malls para comparar.")
+    if len(selected_malls) > 8:
+        raise HTTPException(status_code=400, detail="Puedes comparar hasta ocho malls a la vez.")
+
+    try:
+        parsed_start = date.fromisoformat(start_date)
+        parsed_end = date.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Las fechas deben usar el formato YYYY-MM-DD.")
+    if parsed_start > parsed_end:
+        raise HTTPException(status_code=400, detail="La fecha inicial no puede ser posterior a la fecha final.")
+    if (parsed_end - parsed_start).days > 366:
+        raise HTTPException(status_code=400, detail="El período de comparación no puede superar 367 días.")
+
+    if access_ctx.get("legacy_role") != "admin":
+        allowed_malls = set(await asyncio.to_thread(_get_user_mall_ids, access_ctx.get("user_id")))
+        if any(mall_id not in allowed_malls for mall_id in selected_malls):
+            raise HTTPException(status_code=403, detail="No tienes acceso a uno o más malls seleccionados.")
+
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not initialized")
+    try:
+        return await asyncio.to_thread(
+            MallComparisonService(supabase).load,
+            selected_malls,
+            start_date,
+            end_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("Error loading mall comparison: %s", exc)
+        raise HTTPException(status_code=500, detail="No se pudo generar la comparativa de malls.")
 
 # --- EXPORT ENDPOINTS ---
 from fastapi import APIRouter

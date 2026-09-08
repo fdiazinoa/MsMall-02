@@ -17,7 +17,7 @@ import { SmartInsights } from './SmartInsights';
 import { FinancialDashboard } from './FinancialDashboard';
 import { SalesCube } from './SalesCube';
 import { MallManager } from './MallManager';
-import { PeriodComparison } from './PeriodComparison';
+import { ComparisonsWorkspace } from './ComparisonsWorkspace';
 import { ResendMessagingAdmin } from './ResendMessagingAdmin';
 import { SecurityTokenAdmin } from './SecurityTokenAdmin';
 import { CopilotSettings } from './CopilotSettings';
@@ -64,7 +64,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab })
     case 'malls':
       return <MallManager />;
     case 'comparisons':
-      return <PeriodComparison />;
+      return <ComparisonsWorkspace />;
     case 'messaging':
       return <ResendMessagingAdmin />;
     case 'copilot':

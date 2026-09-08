@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataCalendarDayBreakdown, BigDataAnomalyReview, BigDataAnomalyReviewStatus, BigDataAnomalyCauseType, BigDataPhaseTwoDiagnostic, BigDataPhaseThreePrediction, BigDataScenario, BigDataScenarioAction, BigDataScenarioActionStatus, BigDataScenarioInput, BigDataScenarioSimulation, BigDataScenarioStatus, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataCalendarDayBreakdown, BigDataAnomalyReview, BigDataAnomalyReviewStatus, BigDataAnomalyCauseType, BigDataPhaseTwoDiagnostic, BigDataPhaseThreePrediction, BigDataScenario, BigDataScenarioAction, BigDataScenarioActionStatus, BigDataScenarioInput, BigDataScenarioSimulation, BigDataScenarioStatus, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName, MallComparisonResponse } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -2036,6 +2036,25 @@ export const ApiService = {
         ventas_por_tienda_completo: {}
       };
     }
+  },
+
+  async getMallComparison(
+    mallIds: string[],
+    dates: DateRange,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<MallComparisonResponse> {
+    const params = new URLSearchParams({
+      start_date: dates.startDate,
+      end_date: dates.endDate,
+    });
+    mallIds.forEach((mallId) => params.append('mall_ids', mallId));
+    return fetchJsonWithBaseFallback<MallComparisonResponse>(
+      `/analytics/mall-comparison?${params.toString()}`,
+      { headers: withAuthHeaders(token), signal },
+      'No se pudo cargar la comparativa de malls.',
+      { timeoutMs: 60000 },
+    );
   },
 
   async getStores(mallId?: string, includeInactive = true): Promise<Store[]> {

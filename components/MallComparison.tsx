@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3, Building2, CalendarDays, Download, RefreshCw, ShoppingBag,
-  Store, Tags, TrendingUp, WalletCards,
+  Store, Tags, TrendingUp, WalletCards, X,
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { ApiService } from '../api';
@@ -53,6 +53,7 @@ export const MallComparison: React.FC = () => {
   const [dimension, setDimension] = useState<Dimension>('malls');
   const [rubroFilter, setRubroFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [selectedLocalKeys, setSelectedLocalKeys] = useState<string[]>([]);
   const [data, setData] = useState<MallComparisonResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,6 +102,19 @@ export const MallComparison: React.FC = () => {
     (data?.malls || []).flatMap((mall) => mall.locales.map((local) => local.categoria)),
   )).sort(), [data]);
 
+  useEffect(() => {
+    if (!data) {
+      setSelectedLocalKeys([]);
+      return;
+    }
+    const available = new Set(data.malls.flatMap((mall) =>
+      mall.locales.map((local) => `${mall.id}:${local.id}`),
+    ));
+    setSelectedLocalKeys((current) => current.filter((key) => available.has(key)));
+  }, [data]);
+
+  const selectedLocalKeySet = useMemo(() => new Set(selectedLocalKeys), [selectedLocalKeys]);
+
   const rows = useMemo<ComparisonRow[]>(() => {
     if (!data) return [];
     if (dimension === 'malls') {
@@ -108,6 +122,7 @@ export const MallComparison: React.FC = () => {
     }
     if (dimension === 'locales') {
       return data.malls.flatMap((mall) => mall.locales
+        .filter((local) => selectedLocalKeys.length === 0 || selectedLocalKeySet.has(`${mall.id}:${local.id}`))
         .filter((local) => rubroFilter === 'ALL' || local.rubro === rubroFilter)
         .filter((local) => categoryFilter === 'ALL' || local.categoria === categoryFilter)
         .map((local) => ({ ...local, key: `${mall.id}:${local.id}`, mall: mall.nombre })));
@@ -118,7 +133,7 @@ export const MallComparison: React.FC = () => {
       key: `${mall.id}:${item.nombre}`,
       mall: mall.nombre,
     })));
-  }, [data, dimension, rubroFilter, categoryFilter]);
+  }, [data, dimension, rubroFilter, categoryFilter, selectedLocalKeys, selectedLocalKeySet]);
 
   const rankedRows = useMemo(
     () => [...rows].sort((left, right) => Number(right[metric] || 0) - Number(left[metric] || 0)),
@@ -128,8 +143,8 @@ export const MallComparison: React.FC = () => {
     ...row,
     chartLabel: dimension === 'malls' ? row.nombre : `${row.nombre} · ${row.mall}`,
   }));
-  const totalSales = (data?.malls || []).reduce((sum, mall) => sum + mall.total_bruto, 0);
-  const totalTransactions = (data?.malls || []).reduce((sum, mall) => sum + mall.transacciones, 0);
+  const totalSales = rows.reduce((sum, row) => sum + row.total_bruto, 0);
+  const totalTransactions = rows.reduce((sum, row) => sum + row.transacciones, 0);
   const leader = rankedRows[0];
   const second = rankedRows[1];
   const spread = leader && second && Number(second[metric]) !== 0
@@ -154,6 +169,16 @@ export const MallComparison: React.FC = () => {
     setSelectedMallIds((current) => current.includes(mallId)
       ? current.filter((id) => id !== mallId)
       : current.length < 8 ? [...current, mallId] : current);
+  };
+
+  const addLocal = (mallId: string, localId: string) => {
+    if (!localId) return;
+    const key = `${mallId}:${localId}`;
+    setSelectedLocalKeys((current) => current.includes(key) ? current : [...current, key]);
+  };
+
+  const removeLocal = (key: string) => {
+    setSelectedLocalKeys((current) => current.filter((item) => item !== key));
   };
 
   const exportCsv = () => {
@@ -242,15 +267,70 @@ export const MallComparison: React.FC = () => {
         </div>
 
         {dimension === 'locales' && (
-          <div className="flex flex-wrap gap-2 border-b border-slate-100 bg-slate-50/60 px-4 py-3">
-            <select value={rubroFilter} onChange={(event) => setRubroFilter(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-              <option value="ALL">Todos los rubros</option>
-              {rubros.map((rubro) => <option key={rubro} value={rubro}>{rubro}</option>)}
-            </select>
-            <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-              <option value="ALL">Todas las categorías</option>
-              {categories.map((category) => <option key={category} value={category}>{category}</option>)}
-            </select>
+          <div className="space-y-3 border-b border-slate-100 bg-slate-50/60 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-2">
+                <select value={rubroFilter} onChange={(event) => setRubroFilter(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                  <option value="ALL">Todos los rubros</option>
+                  {rubros.map((rubro) => <option key={rubro} value={rubro}>{rubro}</option>)}
+                </select>
+                <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                  <option value="ALL">Todas las categorías</option>
+                  {categories.map((category) => <option key={category} value={category}>{category}</option>)}
+                </select>
+              </div>
+              {selectedLocalKeys.length > 0 && (
+                <button type="button" onClick={() => setSelectedLocalKeys([])} className="text-xs font-bold text-indigo-600 hover:text-indigo-800">
+                  Mostrar todos
+                </button>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Locales a comparar</p>
+                  <p className="mt-0.5 text-[11px] text-slate-400">Selecciona locales concretos en cada centro comercial.</p>
+                </div>
+                <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-[10px] font-bold text-indigo-700">
+                  {selectedLocalKeys.length || 'Todos'} seleccionados
+                </span>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {(data?.malls || []).map((mall) => {
+                  const selectedInMall = mall.locales.filter((local) => selectedLocalKeySet.has(`${mall.id}:${local.id}`));
+                  const availableInMall = [...mall.locales]
+                    .filter((local) => !selectedLocalKeySet.has(`${mall.id}:${local.id}`))
+                    .sort((left, right) => left.nombre.localeCompare(right.nombre, 'es'));
+                  return (
+                    <div key={`local-selector-${mall.id}`} className="rounded-xl border border-slate-200 bg-white p-3">
+                      <p className="mb-2 truncate text-xs font-bold text-slate-800" title={mall.nombre}>{mall.nombre}</p>
+                      <select
+                        value=""
+                        aria-label={`Agregar local de ${mall.nombre}`}
+                        onChange={(event) => addLocal(mall.id, event.target.value)}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600"
+                      >
+                        <option value="">Seleccionar local...</option>
+                        {availableInMall.map((local) => <option key={local.id} value={local.id}>{local.nombre}</option>)}
+                      </select>
+                      <div className="mt-2 flex min-h-6 flex-wrap gap-1.5">
+                        {selectedInMall.length === 0 ? (
+                          <span className="text-[10px] text-slate-400">Ningún local específico</span>
+                        ) : selectedInMall.map((local) => {
+                          const key = `${mall.id}:${local.id}`;
+                          return (
+                            <button key={key} type="button" onClick={() => removeLocal(key)} aria-label={`Quitar ${local.nombre} de ${mall.nombre}`} className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-1 text-[10px] font-bold text-indigo-700 hover:bg-indigo-100">
+                              {local.nombre} <X size={11} />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         )}
 

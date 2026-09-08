@@ -26,3 +26,13 @@ def test_cross_mall_view_has_required_dimensions_and_authenticated_api_call():
     assert "params.append('mall_ids', mallId)" in api
     assert "headers: withAuthHeaders(token)" in api
     assert 'AbortController' in component
+
+
+def test_store_comparison_supports_independent_selection_per_mall():
+    component = (ROOT / 'components' / 'MallComparison.tsx').read_text()
+
+    assert 'selectedLocalKeys' in component
+    assert 'Locales a comparar' in component
+    assert 'Agregar local de ${mall.nombre}' in component
+    assert '`${mall.id}:${local.id}`' in component
+    assert 'selectedLocalKeySet.has(`${mall.id}:${local.id}`)' in component

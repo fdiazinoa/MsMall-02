@@ -23,6 +23,10 @@ const App: React.FC = () => {
   const {
     session,
     loading,
+    currentMall,
+    mallsError,
+    mallsLoading,
+    refreshMalls,
     isPasswordRecovery,
     requestPasswordRecovery,
     completePasswordRecovery,
@@ -180,7 +184,16 @@ const App: React.FC = () => {
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
               </div>
             }>
-          <Dashboard activeTab={activeTab} setActiveTab={setActiveTab} />
+          {mallsLoading && !currentMall ? (
+            <p role="status" className="p-4 text-slate-600">Cargando Malls…</p>
+          ) : mallsError ? (
+            <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900">
+              <p>{mallsError}</p>
+              <button onClick={refreshMalls} className="mt-3 rounded-lg bg-indigo-600 px-4 py-2 text-white">
+                Reintentar carga de Malls
+              </button>
+            </div>
+          ) : <Dashboard activeTab={activeTab} setActiveTab={setActiveTab} />}
             </Suspense>
           </div>
         </main>

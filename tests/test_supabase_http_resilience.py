@@ -57,7 +57,7 @@ def test_auth_distinguishes_connection_failure_from_invalid_session(monkeypatch,
 
     monkeypatch.setattr(main, 'supabase', SimpleNamespace(auth=SimpleNamespace(get_user=get_user)))
     with pytest.raises(HTTPException) as result:
-        asyncio.run(main.get_current_user_id(HTTPAuthorizationCredentials(scheme='Bearer', credentials='test')))
+        main.get_current_user_id(HTTPAuthorizationCredentials(scheme='Bearer', credentials='test'))
     assert result.value.status_code == status
     if status == 503:
         assert result.value.headers == {'Retry-After': '2'}

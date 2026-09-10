@@ -10,6 +10,7 @@ function harness() {
   let sequence = 0, unsubscribed = false;
   const react = {
     createContext: () => ({}), createElement: () => null,
+    useRef: value => ({current: value}),
     useContext: () => ({}), useState: value => [value, () => {}],
     useEffect: fn => { effect = fn; },
   };
@@ -24,17 +25,26 @@ function harness() {
     .replaceAll('import.meta.env', 'testEnv');
   const js = ts.transpileModule(source, {compilerOptions: {target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React}}).outputText;
   const context = {
-    exports: {}, require: name => name === 'react' ? react : {supabase},
+    exports: {}, require: name => {
+      if (name === 'react') return react;
+      if (name.includes('authRequests')) {
+        const helpers = { ...context, exports: {} };
+        const helperSource = fs.readFileSync(require('node:path').join(__dirname, '../utils/authRequests.js'), 'utf8');
+        vm.runInNewContext(ts.transpileModule(helperSource, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}}).outputText, helpers);
+        return helpers.exports;
+      }
+      return {supabase};
+    },
     testEnv: {VITE_API_URL: 'msmall-02-production.up.railway.app'},
     window: {location: {href: 'https://msmall.vercel.app/', hostname: 'msmall.vercel.app'}},
-    URL, URLSearchParams, console: {log: () => {}, warn: console.warn, error: console.error},
+    URL, URLSearchParams, AbortSignal, console: {log: () => {}, warn: console.warn, error: console.error},
     localStorage: {getItem: () => null, setItem: () => {}, removeItem: () => {}},
     setTimeout: fn => {scheduled.set(++sequence, fn); return sequence;},
     clearTimeout: id => scheduled.delete(id),
     fetch: async url => {
       requests.push(url);
       const payload = url.endsWith('/access') ? {role: 'admin', permissions: {}} : [{id:'mall-1', nombre:'Mall'}];
-      return {ok: true, status: 200, text: async () => JSON.stringify(payload)};
+      return {ok: true, status: 200, json: async () => payload};
     },
   };
   vm.runInNewContext(js, context);

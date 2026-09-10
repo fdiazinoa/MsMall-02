@@ -100,7 +100,10 @@ from services.missing_days_email_service import (
     build_missing_days_email_html,
     send_missing_days_emails_for_mall,
 )
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
+from supabase_auth.errors import AuthRetryableError
+import httpx
+from services.supabase_http import SupabaseReadRetryClient
 import os
 from dotenv import load_dotenv
 
@@ -132,7 +135,10 @@ _CORS_LOCK_V1_ORIGIN_REGEX = r"https://msmall-[a-z0-9-]+-felix-diaz-s-projects\.
 
 if SUPABASE_URL and SUPABASE_KEY:
     try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        supabase = create_client(
+            SUPABASE_URL, SUPABASE_KEY,
+            options=ClientOptions(httpx_client=SupabaseReadRetryClient()),
+        )
         logger.info(f"Supabase Client initialized (Service Role: {'Yes' if os.getenv('SUPABASE_SERVICE_ROLE_KEY') else 'No'})")
     except Exception as e:
         logger.error(f"CRITICAL: Failed to initialize Supabase client: {e}")
@@ -596,6 +602,15 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(secu
         if not user or not user.user:
             raise HTTPException(status_code=401, detail="Invalid token")
         return user.user.id
+    except HTTPException:
+        raise
+    except (httpx.TransportError, AuthRetryableError) as e:
+        logger.warning("Supabase auth temporarily unavailable: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo verificar la sesión. Reintenta en unos segundos.",
+            headers={"Retry-After": "2"},
+        ) from e
     except Exception as e:
         logger.error(f"Auth error: {e}")
         raise HTTPException(status_code=401, detail="Authentication failed")

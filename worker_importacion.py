@@ -7,7 +7,8 @@ import asyncio
 import time
 from datetime import date, datetime, timezone, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
+from services.supabase_http import SupabaseReadRetryClient
 from dotenv import load_dotenv
 import paramiko
 from ftplib import FTP
@@ -53,7 +54,10 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     )
 else:
     try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        supabase = create_client(
+            SUPABASE_URL, SUPABASE_KEY,
+            options=ClientOptions(httpx_client=SupabaseReadRetryClient()),
+        )
     except Exception as e:
         logger.error(f"Failed to initialize Supabase client: {e}")
 

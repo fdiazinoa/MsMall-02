@@ -990,7 +990,7 @@ export interface CopilotAttachment {
 
 export interface CopilotChatResponse {
   answer: string;
-  provider: CopilotProvider;
+  provider: CopilotProvider | 'deterministic';
   model: string;
   context_generated_at?: string;
   sources: string[];

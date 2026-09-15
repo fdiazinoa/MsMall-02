@@ -2994,7 +2994,8 @@ export const ApiService = {
     mallId: string,
     message: string,
     history: CopilotChatMessage[],
-    token: string
+    token: string,
+    reportOptions: { log_text?: string; fecha_inicio?: string; fecha_fin?: string } = {}
   ): Promise<CopilotChatResponse> {
     return fetchJsonWithBaseFallback<CopilotChatResponse>(
       '/copilot/chat',
@@ -3005,6 +3006,7 @@ export const ApiService = {
           'Content-Type': 'application/json'
         }),
         body: JSON.stringify({
+          ...reportOptions,
           mall_id: mallId,
           message,
           history: history.slice(-8)

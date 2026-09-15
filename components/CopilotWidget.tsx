@@ -5,13 +5,10 @@ import { useAuth } from '../context/AuthProvider';
 import { CopilotAttachment, CopilotChatMessage, CopilotEmailAction, CopilotSettings } from '../types';
 
 const SUGGESTED_PROMPTS = [
-  '¿Cuántos locales hay por tipo de conexión?',
-  'Genera un Excel de ventas recientes',
-  'Resumen de ventas recientes',
-  'Resumen del monitor de carga',
-  '¿Qué locales tienen días faltantes?',
-  '¿Qué locales tienen fallas recientes?',
-  '¿Cómo está el monitor de conexiones?',
+  'Crear un reporte del log de errores facilitado con fecha, hora, local, error y observación',
+  'Exportar en Excel todas las conexiones de Importación Automatizada',
+  'Reporte de locales con cargas fallidas o parciales en los últimos 7 días',
+  'Exportar el cubo con ventas faltantes en Excel resaltadas en rojo suave',
 ];
 
 const renderInlineMarkdown = (text: string): React.ReactNode[] => {
@@ -99,6 +96,21 @@ const CopilotMessageContent: React.FC<{ content: string; isUser: boolean }> = ({
 };
 
 const CopilotAttachmentCard: React.FC<{ attachment: CopilotAttachment }> = ({ attachment }) => {
+  const { session } = useAuth();
+  const [downloadError, setDownloadError] = useState('');
+  const download = async () => {
+    setDownloadError('');
+    try {
+      const url = new URL(attachment.download_url, window.location.origin);
+      if (url.origin !== window.location.origin) throw new Error('URL de descarga no válida.');
+      const response = await fetch(url.toString(), { headers: { Authorization: `Bearer ${session?.access_token || ''}` } });
+      if (!response.ok) throw new Error('No se pudo descargar el reporte. Puede haber expirado; vuelve a generarlo.');
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = objectUrl; link.download = attachment.filename; link.click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (error: any) { setDownloadError(error.message); }
+  };
   const isPdf = attachment.format === 'pdf' || attachment.mime_type === 'application/pdf';
   const Icon = isPdf ? FileText : FileSpreadsheet;
   const expiresAt = attachment.expires_at ? new Date(attachment.expires_at) : null;
@@ -121,14 +133,15 @@ const CopilotAttachmentCard: React.FC<{ attachment: CopilotAttachment }> = ({ at
           </p>
         </div>
       </div>
-      <a
-        href={attachment.download_url}
-        download={attachment.filename}
+      <button
+        type="button"
+        onClick={download}
         className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-700 transition-colors"
       >
         <Download size={14} />
-        Descargar {isPdf ? 'PDF' : 'Excel'}
-      </a>
+        Descargar {isPdf ? 'PDF' : attachment.format === 'csv' ? 'CSV' : 'Excel'}
+      </button>
+      {downloadError && <p role="alert" className="mt-2 text-xs text-red-700">{downloadError}</p>}
     </div>
   );
 };
@@ -174,6 +187,9 @@ export const CopilotWidget: React.FC = () => {
   const [status, setStatus] = useState<CopilotSettings | null>(null);
   const [messages, setMessages] = useState<CopilotChatMessage[]>([]);
   const [draft, setDraft] = useState('');
+  const [logText, setLogText] = useState('');
+  const [reportStart, setReportStart] = useState('');
+  const [reportEnd, setReportEnd] = useState('');
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendingEmailIds, setSendingEmailIds] = useState<Record<string, boolean>>({});
@@ -209,6 +225,13 @@ export const CopilotWidget: React.FC = () => {
   };
 
   useEffect(() => {
+    setMessages([]);
+    setLogText('');
+    setReportStart('');
+    setReportEnd('');
+  }, [mallId, session?.user?.id]);
+
+  useEffect(() => {
     if (open) loadStatus();
   }, [open, mallId, token]);
 
@@ -227,7 +250,7 @@ export const CopilotWidget: React.FC = () => {
     setError(null);
 
     try {
-      const response = await ApiService.sendCopilotMessage(mallId, question, messages, token);
+      const response = await ApiService.sendCopilotMessage(mallId, question, messages, token, { log_text: logText, fecha_inicio: reportStart || undefined, fecha_fin: reportEnd || undefined });
       setMessages([...nextMessages, { role: 'assistant', content: response.answer, attachments: response.attachments || [], email_actions: response.email_actions || [] }]);
       if (!status) {
         setStatus({
@@ -397,6 +420,17 @@ export const CopilotWidget: React.FC = () => {
             </div>
 
             <form onSubmit={handleSubmit} className="border-t border-slate-200 bg-white p-3">
+              <details className="mb-2 text-xs text-slate-600">
+                <summary className="cursor-pointer">Opciones de reporte y log para analizar</summary>
+                <p className="my-2">Sin fechas: últimos 7 días completos. Para el cubo, indica el período que deseas revisar.</p>
+                <div className="flex gap-2 my-2">
+                  <label>Desde<input aria-label="Fecha inicial del reporte" type="date" value={reportStart} onChange={e => setReportStart(e.target.value)} className="block border rounded p-1 w-full" /></label>
+                  <label>Hasta<input aria-label="Fecha final del reporte" type="date" value={reportEnd} onChange={e => setReportEnd(e.target.value)} className="block border rounded p-1 w-full" /></label>
+                </div>
+                <label>Log para analizar
+                  <textarea value={logText} onChange={e => setLogText(e.target.value)} maxLength={100000} rows={4} placeholder="Pega CSV con fecha, hora, local, error; JSON; o texto. Los campos ausentes se indican sin inventarlos." className="block w-full border rounded p-2 mt-1" />
+                </label>
+              </details>
               <div className="flex items-end gap-2">
                 <textarea
                   value={draft}

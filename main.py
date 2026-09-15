@@ -100,6 +100,7 @@ from services.missing_days_email_service import (
     build_missing_days_email_html,
     send_missing_days_emails_for_mall,
 )
+from services import copilot_reports_service as copilot_reports
 from supabase import create_client, Client, ClientOptions
 from supabase_auth.errors import AuthRetryableError
 import httpx
@@ -1607,6 +1608,9 @@ class CopilotChatMessage(BaseModel):
 class CopilotChatRequest(BaseModel):
     mall_id: str
     message: str
+    log_text: str = ""
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
     history: List[CopilotChatMessage] = []
 
 class CopilotEmailSendRequest(BaseModel):
@@ -6087,7 +6091,16 @@ def _build_copilot_excel(definition: Dict[str, Any]) -> bytes:
         cell.alignment = Alignment(horizontal="center")
 
     for row in definition.get("rows") or []:
-        sheet.append([_report_value(value) for value in row])
+        sheet.append([copilot_reports.safe_cell(_report_value(value)) for value in row])
+    for row_index, column_index in definition.get("red_cells", []):
+        sheet.cell(row=header_row + 1 + row_index, column=column_index + 1).fill = PatternFill("solid", fgColor="FEE2E2")
+    sheet.freeze_panes = f"D{header_row + 1}" if definition.get("red_cells") else f"A{header_row + 1}"
+    sheet.auto_filter.ref = f"A{header_row}:{sheet.cell(row=sheet.max_row, column=len(headers)).coordinate}"
+    for row in sheet:
+        for cell in row:
+            if isinstance(cell.value, str):
+                cell.value = copilot_reports.safe_cell(cell.value)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
 
     for column_cells in sheet.columns:
         max_length = 10
@@ -6324,7 +6337,7 @@ async def download_copilot_report(download_id: str):
     with _COPILOT_DOWNLOADS_LOCK:
         _cleanup_copilot_downloads()
         item = _COPILOT_DOWNLOADS.get(download_id)
-    if not item:
+    if not item or item.get("owner_id"):
         raise HTTPException(status_code=404, detail="Reporte no encontrado o expirado.")
 
     filename = item["filename"]
@@ -6333,6 +6346,42 @@ async def download_copilot_report(download_id: str):
         media_type=item["mime_type"],
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/v1/copilot/operational-download/{download_id}")
+async def download_copilot_operational_report(
+    download_id: str, operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    with _COPILOT_DOWNLOADS_LOCK:
+        _cleanup_copilot_downloads()
+        item = _COPILOT_DOWNLOADS.get(download_id)
+    if not item or not item.get("owner_id") or item["owner_id"] != operator_ctx.get("user_id"):
+        raise HTTPException(404, "Reporte no encontrado o expirado.")
+    _ensure_operator_can_access_mall(operator_ctx, item["mall_id"])
+    return StreamingResponse(io.BytesIO(item["content"]), media_type=item["mime_type"],
+        headers={"Content-Disposition": f'attachment; filename="{item["filename"]}"', "Cache-Control": "no-store"})
+
+
+def _prepare_operational_report(payload, operator_ctx, intent):
+    if intent["type"] == "conexiones" and operator_ctx.get("role") not in {"admin", "it"}:
+        raise HTTPException(403, "Se requiere rol IT o ADMIN para exportar accesos de conexiones.")
+    mall = copilot_reports.resolve_mall(supabase, payload.mall_id, payload.message, operator_ctx, _ensure_operator_can_access_mall)
+    definition = copilot_reports.build_report(supabase, intent, mall, payload.message,
+        payload.fecha_inicio, payload.fecha_fin, payload.log_text)
+    fmt = intent["format"]
+    content = copilot_reports.csv_bytes(definition) if fmt == "csv" else _build_copilot_excel(definition)
+    mime = "text/csv; charset=utf-8" if fmt == "csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    mall_label = re.sub(r"[^a-z0-9]+", "_", copilot_reports.normalized(mall["nombre"])).strip("_")
+    attachment = _store_copilot_download(f"{definition['filename_base']}_{mall_label}_{datetime.utcnow():%Y%m%d_%H%M}.{fmt}", mime, content)
+    with _COPILOT_DOWNLOADS_LOCK:
+        _COPILOT_DOWNLOADS[attachment["id"]].update(owner_id=operator_ctx["user_id"], mall_id=mall["id"])
+    attachment.update(download_url=f"/api/v1/copilot/operational-download/{attachment['id']}",
+        label=definition["title"], format=fmt, row_count=len(definition["rows"]), report_type=intent["type"])
+    return {"answer": f"**Reporte listo**\n{definition['subtitle']}\n{len(definition['rows'])} filas. El enlace expira en 15 minutos."
+        + "".join(f"\n{label}: {value}" for label, value in definition.get("summary", []))
+        + ("\nCSV no admite colores; las celdas faltantes indican SIN VENTAS." if fmt == "csv" and intent["type"] == "cubo_faltantes" else ""),
+        "provider": "deterministic", "model": "operational-reports-v1", "sources": definition["sources"],
+        "context_generated_at": definition["generated_at"], "attachments": [attachment]}
 
 
 @app.post("/api/v1/copilot/email/send")
@@ -6589,6 +6638,11 @@ async def chat_with_copilot(
     settings = _copilot_config_status()
     if not settings.get("enabled"):
         raise HTTPException(status_code=503, detail="Copilot MsMall esta desactivado.")
+    if len(payload.log_text) > 100000:
+        raise HTTPException(422, "El log supera 100,000 caracteres. Divide el archivo por período.")
+    operational_intent = copilot_reports.report_intent(message, payload.log_text)
+    if operational_intent and not _parse_copilot_email_request(message):
+        return await asyncio.to_thread(_prepare_operational_report, payload, operator_ctx, operational_intent)
     if not settings.get("api_key_configured") and not big_data_question:
         raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
 

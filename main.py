@@ -1,6 +1,7 @@
 
 # Backend: FastAPI API para MSMALL Audit
 import asyncio
+from zoneinfo import ZoneInfo
 import base64
 import csv
 import html
@@ -34,6 +35,7 @@ import urllib.request
 from worker_importacion import (
     api_provider_name,
     fetch_bundaberg_sales,
+    fetch_cookieontop_sales,
     fetch_generic_webservice_records,
     fetch_studio_g_sales,
     process_webservice_import,
@@ -2644,7 +2646,7 @@ def _test_remote_connection_sync(req: RemoteRequest):
                 ),
             }
         if protocol == "API":
-            previous_day = date.today() - timedelta(days=1)
+            previous_day = datetime.now(ZoneInfo("America/Santo_Domingo")).date() - timedelta(days=1)
             api_config = _api_config_from_remote_request(
                 req,
                 previous_day.isoformat(),
@@ -2652,7 +2654,9 @@ def _test_remote_connection_sync(req: RemoteRequest):
             )
             provider = api_provider_name(api_config)
             rows, _ = (
-                fetch_bundaberg_sales(api_config)
+                fetch_cookieontop_sales(api_config)
+                if provider == "cookieontop"
+                else fetch_bundaberg_sales(api_config)
                 if provider == "bundaberg"
                 else fetch_studio_g_sales(api_config)
             )
@@ -2660,7 +2664,7 @@ def _test_remote_connection_sync(req: RemoteRequest):
             return {
                 "status": "success",
                 "message": (
-                    f"API {('Bundaberg' if provider == 'bundaberg' else 'Studio G')} autenticada y consulta de ventas validada "
+                    f"API {('CookieOnTop' if provider == 'cookieontop' else 'Bundaberg' if provider == 'bundaberg' else 'Studio G')} autenticada y consulta de ventas validada "
                     f"({len(rows)} registro(s), {duration:.2f}s)"
                 ),
             }
@@ -2712,6 +2716,11 @@ def _api_config_from_remote_request(
     fecha_fin: Optional[str] = None,
 ) -> Dict[str, Any]:
     provider = str(req.provider or "").strip().lower()
+    if provider == "cookieontop" or req.host.rstrip("/") in {"https://api.citrus.com.do/cookieontop", "https://api.citrus.com.do/cookieontop/ventas"}:
+        config = _studio_g_config_from_remote_request(req, fecha_inicio, fecha_fin)
+        config.update(id="cookieontop-preview", nombre="CookieOnTop API")
+        config["constants_config"]["provider"] = "cookieontop"
+        return config
     if provider in {"bundaberg", "agora", "agora_bundaberg"} or (
         "sibs2.com" in req.host.lower() and "api_agora" in req.host.lower()
     ):
@@ -2737,6 +2746,11 @@ def _api_config_from_remote_request(
 
 def _api_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
     provider_config = _api_config_from_remote_request(req)
+    if api_provider_name(provider_config) == "cookieontop":
+        # Preview a closed day first; never fabricate sample sales.
+        previous = (datetime.now(ZoneInfo("America/Santo_Domingo")).date() - timedelta(days=1)).isoformat()
+        rows, _ = fetch_cookieontop_sales(_api_config_from_remote_request(req, previous, previous))
+        return rows
     if api_provider_name(provider_config) != "bundaberg":
         return _studio_g_preview_rows(req)
 
@@ -2848,7 +2862,7 @@ def _list_remote_files_sync(req: RemoteRequest):
                     "nombre": (
                         "WEBSERVICE_API"
                         if protocol == "WEBSERVICE"
-                        else "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API"
+                        else "COOKIEONTOP_API" if provider == "cookieontop" else "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API"
                     ),
                     "ruta": req.ruta,
                     "es_dir": False,
@@ -4308,7 +4322,7 @@ def _list_remote_files(config: Dict[str, Any]):
             "nombre": (
                 "WEBSERVICE_API"
                 if protocol == "WEBSERVICE"
-                else "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API"
+                else "COOKIEONTOP_API" if provider == "cookieontop" else "BUNDABERG_API" if provider == "bundaberg" else "STUDIO_G_API"
             ),
             "fecha": datetime.utcnow().isoformat(),
             "tamano": 0,

@@ -30,6 +30,7 @@ from services.date_parsing_service import normalize_sale_date
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import run_missing_days_email_scheduler
 from services.sensitive_ops_service import sanitize_error_text
+from services.cookieontop_service import is_cookieontop_config, fetch_sales as fetch_cookieontop_records
 from services.operations_agent_service import OperationsAgentWorker
 from analytics_service import run_local_risk_analysis
 
@@ -1548,6 +1549,8 @@ def _is_bundaberg_config(config: Dict[str, Any], constants: Optional[Dict[str, A
 
 
 def api_provider_name(config: Dict[str, Any]) -> str:
+    if is_cookieontop_config(config):
+        return "cookieontop"
     if _is_bundaberg_config(config):
         return "bundaberg"
     if _is_studio_g_config(config):
@@ -2283,6 +2286,68 @@ def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True)
         }
 
 
+def fetch_cookieontop_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+    normalized = dict(config)
+    constants = dict(_webservice_constants(config))
+    if not any(constants.get(k) for k in ("_studio_g_date_mode", "_api_date_mode", "_studio_g_fecha_inicio", "_api_fecha_inicio")):
+        constants["_studio_g_date_mode"] = "yesterday"
+    normalized["constants_config"] = constants
+    try:
+        start, end = _bundaberg_date_range(normalized)
+    except ValueError as exc:
+        raise ValueError(str(exc).replace("Bundaberg", "CookieOnTop")) from None
+    return fetch_cookieontop_records(normalized, start, end)
+
+
+def process_cookieontop_api(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
+    config = _normalize_worker_import_config(config)
+    inserted = skipped = 0
+    rows = []
+    source = "CookieOnTop API"
+    try:
+        rows, source = fetch_cookieontop_sales(config)
+        if rows and not supabase:
+            raise ValueError("Supabase no configurado")
+        # Atomic duplicate protection also covers concurrent/repeated imports.
+        for offset in range(0, len(rows), 500):
+            batch = rows[offset:offset + 500]
+            response = _upsert_sales_ignoring_duplicates(batch)
+            count = len(response.data or [])
+            inserted += count
+            skipped += len(batch) - count
+        status = "success"
+        message = f"API CookieOnTop: {inserted} ventas importadas, {skipped} duplicadas omitidas"
+        if not rows:
+            message = "API CookieOnTop: 0 ventas encontradas para el rango"
+        details = []
+    except Exception as exc:
+        status = "partial" if inserted else "error"
+        # Never include provider response bodies/credentials in logs.
+        message = f"Fallo API CookieOnTop: {sanitize_error_text(exc)}"
+        details = [{"linea": 0, "tipo": "cookieontop_api_error", "error": message}]
+    result = {
+        "ok": status != "error", "status": status, "message": message,
+        "records_processed": inserted, "records_received": len(rows),
+        "duplicate_skipped": skipped, "source_name": source, "canal": "API",
+        "provider": "cookieontop", "worker_source": "worker_cookieontop_api",
+        "processed_files": 1 if inserted or skipped else 0,
+        "failed_files": len(details), "total_pending": len(rows),
+        "batch_size": 1 if rows else 0, "details": details,
+    }
+    if write_load_log:
+        insert_load_log(
+            config.get("nombre") or "CookieOnTop", source,
+            {"success": "exito", "partial": "parcial", "error": "error"}[status],
+            message, str(uuid.uuid4()), details,
+            mall_id=config.get("mall_id"), local_id=config.get("id"), canal="API",
+            records_processed=inserted, error_count=len(details),
+            metadata={"source": "worker_cookieontop_api", "records_received": len(rows), "duplicate_skipped": skipped},
+        )
+        if inserted:
+            run_local_risk_analysis_if_possible(config, trigger="worker_cookieontop_api")
+    return result
+
+
 def process_bundaberg_api(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
     config = _normalize_worker_import_config(config)
     local_name = config.get("nombre") or "Bundaberg"
@@ -2541,6 +2606,8 @@ def _process_generic_webservice_import(
 def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
     normalized = _normalize_worker_import_config(config)
     protocol = str(normalized.get("sftp_protocol") or normalized.get("protocolo") or "").strip().upper()
+    if protocol == "API" and is_cookieontop_config(normalized):
+        return process_cookieontop_api(normalized, write_load_log=write_load_log)
     if protocol == "API" and _is_bundaberg_config(normalized):
         return process_bundaberg_api(normalized, write_load_log=write_load_log)
     if protocol == "API" and _is_studio_g_config(normalized):

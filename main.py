@@ -1,6 +1,7 @@
 
 # Backend: FastAPI API para MSMALL Audit
 import asyncio
+from zoneinfo import ZoneInfo
 import base64
 import csv
 import html
@@ -35,6 +36,7 @@ import urllib.request
 from worker_importacion import (
     api_provider_name,
     fetch_bundaberg_sales,
+    fetch_cookieontop_sales,
     fetch_generic_webservice_records,
     fetch_invupos_sales,
     fetch_studio_g_sales,
@@ -2698,7 +2700,7 @@ def _test_remote_connection_sync(
                 ),
             }
         if protocol == "API":
-            previous_day = date.today() - timedelta(days=1)
+            previous_day = datetime.now(ZoneInfo("America/Santo_Domingo")).date() - timedelta(days=1)
             api_config = _api_config_from_remote_request(
                 req,
                 previous_day.isoformat(),
@@ -2707,6 +2709,8 @@ def _test_remote_connection_sync(
             provider = api_provider_name(api_config)
             if provider == "invupos":
                 rows, _, _ = fetch_invupos_sales(api_config)
+            elif provider == "cookieontop":
+                rows, _ = fetch_cookieontop_sales(api_config)
             elif provider == "bundaberg":
                 rows, _ = fetch_bundaberg_sales(api_config)
             else:
@@ -2715,6 +2719,7 @@ def _test_remote_connection_sync(
             provider_label = (
                 "InvuPOS"
                 if provider == "invupos"
+                else "CookieOnTop" if provider == "cookieontop"
                 else "Bundaberg" if provider == "bundaberg" else "Studio G"
             )
             return {
@@ -2790,6 +2795,11 @@ def _api_config_from_remote_request(
                 "_invupos_route": req.ruta or "citas/viewAll",
             },
         }
+    if provider == "cookieontop" or req.host.rstrip("/") in {"https://api.citrus.com.do/cookieontop", "https://api.citrus.com.do/cookieontop/ventas"}:
+        config = _studio_g_config_from_remote_request(req, fecha_inicio, fecha_fin)
+        config.update(id="cookieontop-preview", nombre="CookieOnTop API")
+        config["constants_config"]["provider"] = "cookieontop"
+        return config
     if provider in {"bundaberg", "agora", "agora_bundaberg"} or (
         "sibs2.com" in req.host.lower() and "api_agora" in req.host.lower()
     ):
@@ -2830,6 +2840,11 @@ def _api_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
             "total_neto": None,
             "estado_api": "Sin ventas disponibles; esquema normalizado InvuPOS",
         }]
+    if api_provider_name(provider_config) == "cookieontop":
+        # Preview a closed day first; never fabricate sample sales.
+        previous = (datetime.now(ZoneInfo("America/Santo_Domingo")).date() - timedelta(days=1)).isoformat()
+        rows, _ = fetch_cookieontop_sales(_api_config_from_remote_request(req, previous, previous))
+        return rows
     if provider != "bundaberg":
         return _studio_g_preview_rows(req)
 
@@ -3028,6 +3043,7 @@ def _list_remote_files_sync(req: RemoteRequest):
                     "nombre": (
                         "WEBSERVICE_API"
                         if protocol == "WEBSERVICE"
+                        else "COOKIEONTOP_API" if provider == "cookieontop"
                         else "INVUPOS_API" if provider == "invupos"
                         else "BUNDABERG_API" if provider == "bundaberg"
                         else "STUDIO_G_API"
@@ -4500,6 +4516,7 @@ def _list_remote_files(config: Dict[str, Any]):
             "nombre": (
                 "WEBSERVICE_API"
                 if protocol == "WEBSERVICE"
+                else "COOKIEONTOP_API" if provider == "cookieontop"
                 else "INVUPOS_API" if provider == "invupos"
                 else "BUNDABERG_API" if provider == "bundaberg"
                 else "STUDIO_G_API"

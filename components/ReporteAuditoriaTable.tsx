@@ -114,7 +114,7 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                             <th className="w-10 px-4 py-4"></th>
                             <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Local</th>
                             <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Centro Comercial</th>
-                            <th className="px-6 py-4 text-xs text-slate-500">Última importación con datos</th><th className="px-6 py-4 text-xs text-slate-500">Días faltantes del año</th><th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Bruto</th>
+                            <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Bruto</th>
                             <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Impuestos</th>
                             <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Neto</th>
                         </tr>
@@ -122,7 +122,7 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                     <tbody className="divide-y divide-slate-100">
                         {isLoading ? (
                             <tr>
-                                <td colSpan={8} className="px-6 py-20 text-center text-slate-400">Cargando datos...</td>
+                                <td colSpan={6} className="px-6 py-20 text-center text-slate-400">Cargando datos...</td>
                             </tr>
                         ) : data.length > 0 ? (
                             paginatedData.map((row) => {
@@ -147,8 +147,6 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                         </td>
                                         <td className="px-6 py-4 font-medium text-slate-800">{row.local_nombre}</td>
                                         <td className="px-6 py-4 text-slate-500">{row.mall_nombre}</td>
-                                        <td className="px-6 py-4 text-sm text-slate-600">{row.ultima_importacion_datos ? new Date(row.ultima_importacion_datos).toLocaleDateString('es-DO', { timeZone: 'America/Santo_Domingo' }) : 'Sin ventas reportadas'}</td>
-                                        <td className="px-6 py-4 text-sm text-slate-600">Días faltantes del período {row.audit_year}: {row.dias_faltantes_anio}</td>
                                         <td className="px-6 py-4 text-right font-mono font-medium text-slate-700">{formatAmount(row.total_bruto)}</td>
                                         <td className="px-6 py-4 text-right font-mono text-slate-400">{formatAmount(row.total_impuestos)}</td>
                                         <td className="px-6 py-4 text-right font-mono font-bold text-indigo-600">{format(row.total_neto)}</td>
@@ -157,7 +155,7 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                     {/* Expandable Detail Row */}
                                     {expandedLocalId === row.local_id && (
                                         <tr>
-                                            <td colSpan={8} className="px-0 py-0 bg-slate-50/50">
+                                            <td colSpan={6} className="px-0 py-0 bg-slate-50/50">
                                                 <div className="p-6 border-l-4 border-indigo-500 animate-in slide-in-from-top-2 duration-200">
                                                     <h4 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
                                                         Detalle de Facturas - {row.local_nombre}
@@ -189,7 +187,7 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                                             <tbody className="divide-y divide-slate-100">
                                                                 {loadingDetails[row.local_id] ? (
                                                                     <tr>
-                                                                        <td colSpan={8} className="px-4 py-8 text-center text-slate-400 italic">
+                                                                        <td colSpan={6} className="px-4 py-8 text-center text-slate-400 italic">
                                                                             Cargando boletas...
                                                                         </td>
                                                                     </tr>
@@ -224,7 +222,7 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                                                                     </>
                                                                 ) : (
                                                                     <tr>
-                                                                        <td colSpan={8} className="px-4 py-8 text-center text-slate-400 italic">
+                                                                        <td colSpan={6} className="px-4 py-8 text-center text-slate-400 italic">
                                                                             No se encontraron facturas detalladas.
                                                                         </td>
                                                                     </tr>
@@ -241,7 +239,7 @@ export const ReporteAuditoriaTable: React.FC<ReporteAuditoriaTableProps> = ({
                             })
                         ) : (
                             <tr>
-                                <td colSpan={8} className="px-6 py-20 text-center text-slate-400">No hay ventas registradas en este periodo.</td>
+                                <td colSpan={6} className="px-6 py-20 text-center text-slate-400">No hay ventas registradas en este periodo.</td>
                             </tr>
                         )}
                     </tbody>

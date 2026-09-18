@@ -1883,106 +1883,20 @@ export const ApiService = {
 
   // --- OTROS MÉTODOS ---
   async getSalesReport(dates: DateRange & { mallId?: string }, localId?: string): Promise<SaleReport[]> {
-    if (!supabase) return [];
-
-    try {
-      let allSales: any[] = [];
-      const pageSize = 1000;
-      let lastDate: string | null = null;
-      let lastId: string | number | null = null;
-
-      while (true) {
-        let query = supabase
-          .from('ventas')
-          .select('id,local_id,fecha,total_bruto,total_impuestos,total_neto')
-          .gte('fecha', dates.startDate)
-          .lte('fecha', dates.endDate)
-          .order('fecha', { ascending: true })
-          .order('id', { ascending: true })
-          .limit(pageSize);
-
-        if (dates.mallId) {
-          query = query.eq('mall_id', dates.mallId);
-        }
-
-        if (localId) {
-          query = query.eq('local_id', localId);
-        }
-
-        if (lastDate !== null && lastId !== null) {
-          query = query.or(`fecha.gt.${lastDate},and(fecha.eq.${lastDate},id.gt.${lastId})`);
-        }
-
-        const { data: salesChunk, error } = await query;
-
-        if (error) throw error;
-
-        if (salesChunk) {
-          allSales = [...allSales, ...salesChunk];
-          if (salesChunk.length < pageSize) break; // Fin de datos
-          const nextDate = salesChunk[salesChunk.length - 1]?.fecha;
-          const nextId = salesChunk[salesChunk.length - 1]?.id;
-          if (nextDate == null || nextId == null || (nextDate === lastDate && nextId === lastId)) {
-            throw new Error('La paginación de ventas no pudo avanzar por fecha e id.');
-          }
-          lastDate = nextDate;
-          lastId = nextId;
-        } else {
-          break;
-        }
-      }
-
-      const sales = allSales;
-
-      const stores = await this.getStores();
-      const storeMap = new Map(stores.map(s => [s.id, s]));
-
-      const reportMap: Record<string, SaleReport> = {};
-
-      sales?.forEach((sale: any) => {
-        if (!sale.local_id) return;
-        const localId = String(sale.local_id);
-        const store = storeMap.get(localId) as Store | undefined;
-        const storeName = store?.nombre || 'Desconocido';
-        const mallName = store?.mall_nombre || 'Mall Principal';
-        const totals = normalizeSaleTotals(sale);
-
-        if (!reportMap[localId]) {
-          reportMap[localId] = {
-            local_id: localId,
-            local_nombre: storeName,
-            total_bruto: 0,
-            total_impuestos: 0,
-            total_neto: 0,
-            mall_nombre: mallName
-          };
-        }
-
-        reportMap[localId].total_bruto += totals.total_bruto;
-        reportMap[localId].total_impuestos += totals.total_impuestos;
-        reportMap[localId].total_neto += totals.total_neto;
-      });
-
-      if (dates.mallId) {
-        const { data: { session } } = await supabase.auth.getSession();
-        const annual = await fetchJsonWithBaseFallback<any[]>('/auditoria/estado-anual', {
-          headers: withAuthHeaders(session?.access_token || '', { 'X-Mall-Id': dates.mallId })
-        }, 'No se pudo cargar el estado anual de auditoría.', { timeoutMs: 60000 });
-        for (const row of annual) {
-          if (localId && row.local_id !== localId) continue;
-          const store = storeMap.get(row.local_id) as Store | undefined;
-          if (!reportMap[row.local_id]) {
-            reportMap[row.local_id] = { local_id: row.local_id, local_nombre: row.local_nombre,
-              mall_nombre: store?.mall_nombre || '', total_bruto: 0, total_impuestos: 0, total_neto: 0 };
-          }
-          Object.assign(reportMap[row.local_id], row);
-        }
-      }
-      return Object.values(reportMap);
-    } catch (error) {
-      console.error('Error getting sales report:', error);
-      throw error;
-    }
+    if (!supabase || !dates.mallId) return [];
+    const { data: { session } } = await supabase.auth.getSession();
+    const headers = withAuthHeaders(session?.access_token || '', { 'X-Mall-Id': dates.mallId });
+    const params = new URLSearchParams({ fecha_inicio: dates.startDate, fecha_fin: dates.endDate });
+    if (localId) params.set('local_id', localId);
+    const [summary, annual] = await Promise.all([
+      fetchJsonWithBaseFallback<SaleReport[]>(`/auditoria/resumen-ventas?${params}`, { headers },
+        'No se pudo cargar el resumen de ventas.', { timeoutMs: 60000 }),
+      fetchJsonWithBaseFallback<any[]>('/auditoria/estado-anual', { headers },
+        'No se pudo cargar la última importación.', { timeoutMs: 60000 }),
+    ]);
+    const byLocal = new Map(annual.map((row) => [row.local_id, row]));
+    return summary.map((row) => ({ ...row, ...byLocal.get(row.local_id),
+      total_bruto: Number(row.total_bruto), total_impuestos: Number(row.total_impuestos), total_neto: Number(row.total_neto) }));
   },
 
   async getSaleDetails(localId: string, dates: DateRange & { mallId?: string }): Promise<SaleDetail[]> {
@@ -1990,14 +1904,16 @@ export const ApiService = {
     if (!localId || localId === 'null') return [];
 
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('ventas')
-        .select('*')
+        .select('id,local_id,fecha,hora,factura_no,total_bruto,total_impuestos,total_neto')
         .eq('local_id', localId)
         .gte('fecha', dates.startDate)
         .lte('fecha', dates.endDate)
         .order('fecha', { ascending: false })
         .order('hora', { ascending: false });
+      if (dates.mallId) query = query.eq('mall_id', dates.mallId);
+      const { data, error } = await query;
 
       if (error) throw error;
       return ((data as SaleDetail[]) || []).map((row) => ({

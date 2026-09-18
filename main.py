@@ -8846,6 +8846,21 @@ async def export_financial_dashboard_pdf(fecha_inicio: str, fecha_fin: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Blocking pagination must run in FastAPI's worker pool, not the event loop.
+@app.get("/api/v1/auditoria/resumen-ventas")
+def get_audit_sales_summary(
+    fecha_inicio: date, fecha_fin: date, local_id: Optional[str] = None,
+    current_mall: str = Depends(get_current_mall),
+    audit_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
+):
+    _ensure_operator_can_access_mall(audit_ctx, current_mall)
+    if fecha_fin < fecha_inicio:
+        raise HTTPException(status_code=400, detail="La fecha final debe ser igual o posterior a la inicial.")
+    return supabase.rpc("audit_sales_summary", {
+        "p_mall_id": current_mall, "p_start": fecha_inicio.isoformat(),
+        "p_end": fecha_fin.isoformat(), "p_local_id": local_id,
+    }).execute().data or []
+
+
 @app.get("/api/v1/auditoria/estado-anual")
 def get_annual_audit_status(current_mall: str = Depends(get_current_mall), audit_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view"))):
     _ensure_operator_can_access_mall(audit_ctx, current_mall)

@@ -65,6 +65,7 @@ export const SalesReport: React.FC = () => {
   const fetchData = async () => {
     if (!currentMall) return;
     setIsLoading(true);
+    setData([]);
     setError(null);
     setExpandedLocalId(null);
     setDetailsData({});
@@ -433,6 +434,7 @@ export const SalesReport: React.FC = () => {
       {/* Global & Local Gap Analysis Alert */}
       <MissingDaysAlert
         auditStatus={data}
+        auditStatusLoading={isLoading}
         localId={selectedLocal || null}
         startDate={dates.startDate}
         endDate={dates.endDate}

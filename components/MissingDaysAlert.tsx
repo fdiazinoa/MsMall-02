@@ -34,9 +34,10 @@ interface Props {
     endDate: string;
     onSelectLocal?: (localId: string) => void;
     auditStatus?: SaleReport[];
+    auditStatusLoading?: boolean;
 }
 
-export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate, onSelectLocal, auditStatus = [] }) => {
+export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate, onSelectLocal, auditStatus = [], auditStatusLoading = false }) => {
     const { currentMall, session } = useAuth();
     const [analysis, setAnalysis] = useState<GapAnalysisResult | null>(null);
     const [loading, setLoading] = useState(false);
@@ -120,7 +121,11 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
 
     const AuditFacts = ({ id }: { id: string }) => {
         const row = auditStatus.find((item) => item.local_id === id);
-        if (!row || row.audit_year == null) return null;
+        if (!row || row.audit_year == null) {
+            return <div className="mt-2 text-xs text-slate-500">
+                <span className="font-medium">Última importación con datos:</span> {auditStatusLoading ? 'Cargando…' : 'No disponible; actualice el reporte para reintentar.'}
+            </div>;
+        }
         const latestImport = row.ultima_importacion_datos
             ? new Date(row.ultima_importacion_datos).toLocaleDateString('es-DO', { timeZone: 'America/Santo_Domingo' })
             : 'Sin ventas reportadas';

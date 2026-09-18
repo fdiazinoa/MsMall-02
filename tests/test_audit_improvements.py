@@ -91,3 +91,14 @@ def test_missing_summary_is_an_error_instead_of_reporting_no_sales():
         def rpc(self, *args): return Query([])
     with pytest.raises(ValueError):
         status.load_annual_audit_status(EmptyClient(), 'mall', [{'id': 'local', 'nombre': 'Local'}])
+
+
+def test_last_import_can_be_from_a_previous_year():
+    class PreviousYearClient:
+        def rpc(self, *args):
+            return Query([{'local_id': 'local', 'ultima_importacion_datos': '2025-12-31T12:00:00Z', 'dias_reportados': 0}])
+    row = status.load_annual_audit_status(PreviousYearClient(), 'mall', [{'id': 'local', 'nombre': 'Local'}], datetime(2026, 1, 4, 12, tzinfo=timezone.utc))[0]
+    assert row['ultima_importacion_datos'] == '2025-12-31T12:00:00Z'
+    assert '31/12/2025' in status.annual_audit_text(row)
+    assert row['audit_year'] == 2026
+    assert row['dias_faltantes_anio'] == 3

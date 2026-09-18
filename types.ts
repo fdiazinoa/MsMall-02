@@ -1,5 +1,8 @@
 
 export interface SaleReport {
+  ultima_importacion_datos?: string | null;
+  audit_year?: number;
+  dias_faltantes_anio?: number;
   local_id: string;
   local_nombre: string;
   total_bruto: number;
@@ -788,6 +791,7 @@ export interface LoadLog {
 }
 
 export interface ImportConfig {
+  cliente_inactivo?: boolean;
   id: string;
   nombre: string;
   protocolo: ImportProtocol;
@@ -920,6 +924,7 @@ export interface MissingDaysEmailSettings {
   weekdays: number[];
   send_time: string;
   lookback_days: number;
+  min_missing_days?: number;
   send_only_with_gaps: boolean;
   cc_emails: string[];
   subject_template: string;

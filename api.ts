@@ -1151,7 +1151,7 @@ export const ApiService = {
     // Fetch only locals with configured SFTP host
     let query = supabase
       .from('locales')
-      .select('id,nombre,mall_id,sftp_host,sftp_port,sftp_user,sftp_path,sftp_protocol,file_type,frecuencia_cron,hora_especifica,accion_post_procesado,prefijo_backup,mapping_config,constants_config,fecha_corte_importacion,tipo_ejecucion,ultima_ejecucion')
+      .select('id,nombre,activo,mall_id,sftp_host,sftp_port,sftp_user,sftp_path,sftp_protocol,file_type,frecuencia_cron,hora_especifica,accion_post_procesado,prefijo_backup,mapping_config,constants_config,fecha_corte_importacion,tipo_ejecucion,ultima_ejecucion')
       .not('sftp_host', 'is', null)
       .neq('sftp_host', ''); // Also exclude empty strings
 
@@ -1168,6 +1168,7 @@ export const ApiService = {
 
     return (data || []).map((local: any) => ({
       id: local.id,
+      cliente_inactivo: local.activo === false,
       nombre: local.nombre,
       protocolo: (local.sftp_protocol || 'SFTP') as ImportProtocol,
       host: local.sftp_host || '',
@@ -1962,10 +1963,25 @@ export const ApiService = {
         reportMap[localId].total_neto += totals.total_neto;
       });
 
+      if (dates.mallId) {
+        const { data: { session } } = await supabase.auth.getSession();
+        const annual = await fetchJsonWithBaseFallback<any[]>('/auditoria/estado-anual', {
+          headers: withAuthHeaders(session?.access_token || '', { 'X-Mall-Id': dates.mallId })
+        }, 'No se pudo cargar el estado anual de auditoría.', { timeoutMs: 60000 });
+        for (const row of annual) {
+          if (localId && row.local_id !== localId) continue;
+          const store = storeMap.get(row.local_id) as Store | undefined;
+          if (!reportMap[row.local_id]) {
+            reportMap[row.local_id] = { local_id: row.local_id, local_nombre: row.local_nombre,
+              mall_nombre: store?.mall_nombre || '', total_bruto: 0, total_impuestos: 0, total_neto: 0 };
+          }
+          Object.assign(reportMap[row.local_id], row);
+        }
+      }
       return Object.values(reportMap);
     } catch (error) {
       console.error('Error getting sales report:', error);
-      return [];
+      throw error;
     }
   },
 

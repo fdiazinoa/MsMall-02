@@ -29,6 +29,7 @@ const defaultSchedule = (mallId = '', notificationType: ScheduleMode = 'missing_
   weekdays: [],
   send_time: '08:00',
   lookback_days: 7,
+  min_missing_days: 4,
   send_only_with_gaps: true,
   cc_emails: [],
   subject_template: notificationType === 'missing_days_audit_consolidated' ? DEFAULT_CONSOLIDATED_SUBJECT_TEMPLATE : DEFAULT_SUBJECT_TEMPLATE,
@@ -600,15 +601,21 @@ export const ResendMessagingAdmin: React.FC = () => {
           </div>
         </div>
 
+        <label className="block text-sm text-slate-700 mb-4">
+          Umbral de días faltantes del mall (compartido por ambos reportes)
+          <input type="number" min={1} max={366} value={schedule.min_missing_days ?? 4}
+            onChange={(e) => {
+              const value = Number(e.target.value);
+              setSchedules((prev) => ({
+                missing_days_audit: { ...prev.missing_days_audit, min_missing_days: value },
+                missing_days_audit_consolidated: { ...prev.missing_days_audit_consolidated, min_missing_days: value },
+              }));
+            }} className="block rounded-xl border border-slate-200 px-4 py-3 mt-2" />
+        </label>
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] gap-5">
-          <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              checked={schedule.send_only_with_gaps}
-              onChange={(e) => setSchedule((prev) => ({ ...prev, send_only_with_gaps: e.target.checked }))}
-            />
-            Enviar solo cuando existan días faltantes
-          </label>
+          <p className="rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3 text-sm text-slate-700">
+            Los avisos incluyen únicamente locales que alcanzan el umbral del mall. El día actual se excluye del cálculo.
+          </p>
 
           <div className="space-y-1.5">
             <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Copias administrativas</label>

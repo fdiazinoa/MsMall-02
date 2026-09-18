@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Q
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import pandas as pd
 from thefuzz import process, fuzz
 import paramiko
@@ -84,6 +84,7 @@ from services.date_parsing_service import normalize_sale_date
 from services.dashboard_analytics_service import DashboardAnalyticsService
 from services.mall_comparison_service import MallComparisonService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
+from services.audit_status_service import load_annual_audit_status
 from services.sales_gap_service import (
     expected_sales_dates,
     load_actual_sales_dates_by_local,
@@ -99,6 +100,7 @@ from services.missing_days_email_service import (
     MISSING_DAYS_CONSOLIDATED_NOTIFICATION_TYPE,
     MISSING_DAYS_NOTIFICATION_TYPE,
     MISSING_DAYS_NOTIFICATION_TYPES,
+    load_missing_days_threshold,
     build_missing_days_email_html,
     send_missing_days_emails_for_mall,
 )
@@ -1587,6 +1589,7 @@ class MissingDaysEmailSettingsRequest(BaseModel):
     weekdays: List[int] = []
     send_time: str = "08:00"
     lookback_days: int = 7
+    min_missing_days: Optional[int] = Field(default=None, ge=1, le=366)
     send_only_with_gaps: bool = True
     cc_emails: List[str] = []
     subject_template: Optional[str] = None
@@ -6903,6 +6906,7 @@ def _default_missing_days_email_settings(
         "weekdays": [],
         "send_time": "08:00",
         "lookback_days": 7,
+        "min_missing_days": load_missing_days_threshold(supabase, mall_id),
         "send_only_with_gaps": True,
         "cc_emails": [],
         "subject_template": subject_template,
@@ -7039,10 +7043,7 @@ def _load_missing_days_details_for_local(
     start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d")
     end_date = datetime.strptime(fecha_fin, "%Y-%m-%d")
     total_days = (end_date - start_date).days + 1
-    expected_dates = {
-        (start_date + timedelta(days=x)).strftime("%Y-%m-%d")
-        for x in range(total_days)
-    }
+    expected_dates = expected_sales_dates(fecha_inicio, fecha_fin)
 
     rows = fetch_sales_rows_keyset(
         supabase,
@@ -7283,6 +7284,8 @@ async def save_missing_days_email_settings(
             .upsert(row, on_conflict="mall_id,notification_type")
             .execute()
         )
+        if payload.min_missing_days is not None:
+            _upsert_system_health_value_sync(f"missing_days_threshold:{mall_id}", str(payload.min_missing_days))
         saved = (res.data or [row])[0]
         return _sanitize_missing_days_email_settings_row(saved, mall_id, notification_type)
     except Exception as exc:
@@ -8843,6 +8846,13 @@ async def export_financial_dashboard_pdf(fecha_inicio: str, fecha_fin: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Blocking pagination must run in FastAPI's worker pool, not the event loop.
+@app.get("/api/v1/auditoria/estado-anual")
+def get_annual_audit_status(current_mall: str = Depends(get_current_mall), audit_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view"))):
+    _ensure_operator_can_access_mall(audit_ctx, current_mall)
+    stores = supabase.table("locales").select("id,nombre,activo").eq("mall_id", current_mall).execute().data or []
+    return load_annual_audit_status(supabase, current_mall, stores)
+
+
 @app.get("/api/v1/auditoria/brechas-ventas")
 def get_sales_gaps(
     local_id: Optional[str], 
@@ -8856,6 +8866,7 @@ def get_sales_gaps(
         end_date = datetime.strptime(fecha_fin, '%Y-%m-%d')
         total_days = (end_date - start_date).days + 1
         expected_dates = expected_sales_dates(fecha_inicio, fecha_fin)
+        total_days = len(expected_dates)
         
         # --- MODO GLOBAL (Matrix View) ---
         if not local_id or local_id == 'null' or local_id == 'ALL':
@@ -8899,7 +8910,7 @@ def get_sales_gaps(
                 
                 missing = sorted(list(expected_dates - s_actual))
                 count_missing = len(missing)
-                compliance = ((total_days - count_missing) / total_days) * 100
+                compliance = ((total_days - count_missing) / total_days) * 100 if total_days else 100.0
                 
                 # Definir estado
                 status = 'Completo'

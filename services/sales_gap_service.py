@@ -1,6 +1,7 @@
 """Shared sales-gap calculation used by audit reports and email notifications."""
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
@@ -36,9 +37,11 @@ def normalize_sales_date(raw_value: Any) -> Optional[str]:
 def expected_sales_dates(fecha_inicio: str, fecha_fin: str) -> Set[str]:
     start_date = datetime.strptime(fecha_inicio, "%Y-%m-%d")
     end_date = datetime.strptime(fecha_fin, "%Y-%m-%d")
-    total_days = (end_date - start_date).days + 1
-    if total_days < 1:
+    if end_date < start_date:
         raise ValueError("fecha_fin debe ser igual o posterior a fecha_inicio")
+    yesterday = datetime.now(ZoneInfo("America/Santo_Domingo")).date() - timedelta(days=1)
+    end_date = min(end_date, datetime.combine(yesterday, datetime.min.time()))
+    total_days = max(0, (end_date - start_date).days + 1)
     return {
         (start_date + timedelta(days=offset)).strftime("%Y-%m-%d")
         for offset in range(total_days)

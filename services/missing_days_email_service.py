@@ -1,5 +1,7 @@
 """Missing-days email notifications and scheduler helpers."""
 
+from services.audit_status_service import load_annual_audit_status, annual_audit_text
+
 import json
 import os
 import re
@@ -435,6 +437,14 @@ def _system_health_value(supabase_client: Any, key: str) -> Optional[str]:
         return None
 
 
+def load_missing_days_threshold(supabase_client: Any, mall_id: str) -> int:
+    """One notification threshold per mall, shared by both report modes."""
+    raw = _system_health_value(supabase_client, f"missing_days_threshold:{mall_id}")
+    if raw is not None:
+        return max(1, int(raw))
+    return 4
+
+
 def _normalize_sender_email(value: str) -> str:
     email = str(value or "").strip().lower()
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
@@ -728,6 +738,7 @@ def send_consolidated_missing_days_email_for_mall(
             }],
         }
 
+    threshold = load_missing_days_threshold(supabase_client, mall_id)
     summaries: List[Dict[str, Any]] = []
     no_gap_count = 0
     store_ids = [str(store.get("id") or "") for store in stores if store.get("id")]
@@ -751,7 +762,7 @@ def send_consolidated_missing_days_email_for_mall(
             fecha_fin=fecha_fin,
             missing_dates=missing_dates,
         )
-        if not details:
+        if len(details) < threshold:
             no_gap_count += 1
         summaries.append({
             "local_id": local_id,
@@ -761,8 +772,8 @@ def send_consolidated_missing_days_email_for_mall(
             "missing_details": details,
         })
 
-    with_gaps = [row for row in summaries if row["missing_count"] > 0]
-    summaries_for_email = with_gaps if settings.get("send_only_with_gaps") is not False else summaries
+    with_gaps = [row for row in summaries if row["missing_count"] >= threshold]
+    summaries_for_email = with_gaps
     if not summaries_for_email:
         return {
             "status": "success",
@@ -882,6 +893,7 @@ def send_missing_days_emails_for_mall(
     if not mall_id:
         raise ValueError("mall_id es requerido.")
 
+    threshold = load_missing_days_threshold(supabase_client, mall_id)
     fecha_inicio, fecha_fin = missing_days_email_period(settings.get("lookback_days"), now=now)
 
     try:
@@ -914,7 +926,6 @@ def send_missing_days_emails_for_mall(
 
     results: List[Dict[str, Any]] = []
     cc_emails = [str(email or "").strip().lower() for email in (settings.get("cc_emails") or []) if email]
-    send_only_with_gaps = settings.get("send_only_with_gaps") is not False
     sender = load_resend_sender_config(supabase_client)
     subject_template = settings.get("subject_template") or DEFAULT_MISSING_DAYS_SUBJECT_TEMPLATE
     body_template = settings.get("body_template") or DEFAULT_MISSING_DAYS_BODY_TEMPLATE
@@ -946,15 +957,15 @@ def send_missing_days_emails_for_mall(
             fecha_fin=fecha_fin,
         )
         missing_count = len(missing_details)
-        if missing_count == 0 and send_only_with_gaps:
+        if missing_count < threshold:
             results.append({
                 "local_id": local_id,
                 "local_nombre": local_name,
                 "email": local_email,
                 "emails": recipient_emails,
                 "status": "skipped",
-                "missing_days": 0,
-                "reason": "Sin dias faltantes en el periodo.",
+                "missing_days": missing_count,
+                "reason": "Dias faltantes por debajo del umbral del mall.",
             })
             continue
 
@@ -981,6 +992,8 @@ def send_missing_days_emails_for_mall(
             template_context,
             DEFAULT_MISSING_DAYS_BODY_TEMPLATE,
         )
+        annual = load_annual_audit_status(supabase_client, mall_id, [{"id": local_id, "nombre": local_name}], now=now)[0]
+        text_body += "\n\n" + annual_audit_text(annual)
         html_body = build_missing_days_email_html(
             mall_name=mall_name,
             local_name=local_name,

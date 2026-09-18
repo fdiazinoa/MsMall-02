@@ -86,6 +86,7 @@ class ExportService:
         end_date = datetime.strptime(fecha_fin, '%Y-%m-%d')
         total_days = (end_date - start_date).days + 1
         expected_dates = expected_sales_dates(fecha_inicio, fecha_fin)
+        total_days = len(expected_dates)
 
         stores_query = self.supabase.table('locales').select('id, nombre, rubro, activo').eq('mall_id', mall_id)
         if local_id:

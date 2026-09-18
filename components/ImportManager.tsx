@@ -276,6 +276,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   const authToken = session?.access_token || '';
   const [configs, setConfigs] = useState<ImportConfig[]>([]);
   const [connectionSearchTerm, setConnectionSearchTerm] = useState('');
+  const [inactiveConnections, setInactiveConnections] = useState(false);
   const [loading, setLoading] = useState(true);
   const [configLoadError, setConfigLoadError] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
@@ -409,7 +410,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       return;
     }
     try {
-      const stores = await ApiService.getStores(mallId, false);
+      const stores = await ApiService.getStores(mallId, true);
       // Avoid stale async overwrite when mall changes quickly.
       if (String(currentMall?.id || '') !== String(mallId)) {
         return;
@@ -544,13 +545,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         config: row,
       }));
 
-    return [...storeRows, ...orphanRows];
-  }, [availableStores, exporterWsConfigs]);
+    return [...storeRows, ...orphanRows].filter((row) => (row.store?.activo === false) === inactiveConnections);
+  }, [availableStores, exporterWsConfigs, inactiveConnections]);
 
   const filteredConfigs = useMemo(() => {
     const query = connectionSearchTerm.trim().toLowerCase();
-    if (!query) return configs;
     return (configs || []).filter((config) => {
+      if (Boolean(config.cliente_inactivo) !== inactiveConnections) return false;
+      if (!query) return true;
       return [
         config.nombre,
         config.protocolo,
@@ -561,7 +563,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         config.estado,
       ].some((value) => String(value || '').toLowerCase().includes(query));
     });
-  }, [configs, connectionSearchTerm]);
+  }, [configs, connectionSearchTerm, inactiveConnections]);
 
   const saveExporterWebserviceConfig = async () => {
     if (!currentMall?.id) {
@@ -802,6 +804,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <div className="text-sm font-semibold text-slate-800">{storeLabel}</div>
+                        {store?.activo === false && <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">Cliente inactivo</span>}
                         <div className="text-[11px] text-slate-500 mt-1">
                           {config
                             ? `${config.allow_transaction ? 'Transacción' : 'Sin transacción'} · ${config.allow_daily ? 'Daily' : 'Sin daily'} · Default ${config.default_granularity}`
@@ -2029,6 +2032,10 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
               className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm font-medium text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
             />
           </div>
+          <select aria-label="Estado del cliente" value={inactiveConnections ? 'inactive' : 'active'} onChange={(e) => setInactiveConnections(e.target.value === 'inactive')} className="rounded-xl border border-amber-200 p-3 text-sm">
+            <option value="active">Conexiones de clientes activos</option>
+            <option value="inactive">Conexiones de clientes inactivos</option>
+          </select>
           <div className="inline-flex items-center bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
             <button
               onClick={() => setViewMode('cards')}
@@ -3219,6 +3226,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 </div>
                 <div>
                   <h4 className="font-bold text-slate-800 text-lg">{config.nombre}</h4>
+                  {config.cliente_inactivo && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Cliente inactivo</span>}
                   <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
                     {config.protocolo !== 'LOCAL' && (
                       <>
@@ -3336,6 +3344,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           </div>
                           <div>
                             <p className="max-w-[190px] truncate text-sm font-bold text-slate-800">{config.nombre}</p>
+                            {config.cliente_inactivo && <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">Cliente inactivo</span>}
                             <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">{config.tipo_archivo}</p>
                           </div>
                         </div>

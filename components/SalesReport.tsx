@@ -432,6 +432,7 @@ export const SalesReport: React.FC = () => {
 
       {/* Global & Local Gap Analysis Alert */}
       <MissingDaysAlert
+        auditStatus={data}
         localId={selectedLocal || null}
         startDate={dates.startDate}
         endDate={dates.endDate}

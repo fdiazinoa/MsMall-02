@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AlertTriangle, ChevronDown, ChevronUp, CheckCircle, SearchX, ServerCrash, BarChart2, Eye } from 'lucide-react';
 import { useAuth } from '../context/AuthProvider';
 import { supabase } from '../api';
+import { SaleReport } from '../types';
 
 interface AuditDetail {
     fecha: string;
@@ -32,9 +33,10 @@ interface Props {
     startDate: string;
     endDate: string;
     onSelectLocal?: (localId: string) => void;
+    auditStatus?: SaleReport[];
 }
 
-export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate, onSelectLocal }) => {
+export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate, onSelectLocal, auditStatus = [] }) => {
     const { currentMall, session } = useAuth();
     const [analysis, setAnalysis] = useState<GapAnalysisResult | null>(null);
     const [loading, setLoading] = useState(false);
@@ -116,6 +118,20 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
         fetchAnalysis();
     }, [localId, startDate, endDate, currentMall, session]);
 
+    const AuditFacts = ({ id }: { id: string }) => {
+        const row = auditStatus.find((item) => item.local_id === id);
+        if (!row || row.audit_year == null) return null;
+        const latestImport = row.ultima_importacion_datos
+            ? new Date(row.ultima_importacion_datos).toLocaleDateString('es-DO', { timeZone: 'America/Santo_Domingo' })
+            : 'Sin ventas reportadas';
+        return (
+            <div className="mt-2 space-y-1 text-xs text-slate-500">
+                <div><span className="font-medium">Última importación con datos:</span> {latestImport}</div>
+                <div>Días faltantes del período {row.audit_year}: <span className="font-semibold">{row.dias_faltantes_anio}</span></div>
+            </div>
+        );
+    };
+
     if (loading) return null;
     if (!analysis) return null;
 
@@ -165,6 +181,7 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                                         <td className="px-4 py-3">
                                             <div className="font-medium text-slate-800">{item.nombre}</div>
                                             <div className="text-xs text-slate-400">{item.rubro}</div>
+                                            <AuditFacts id={item.local_id} />
                                         </td>
                                         <td className="px-4 py-3 text-center">
                                             <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${item.estado === 'Crítico' ? 'bg-rose-100 text-rose-700' :
@@ -256,7 +273,8 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
         return (
             <div className="mb-4 bg-emerald-50 border border-emerald-100 p-3 rounded-lg flex items-center gap-2 text-emerald-700 text-sm">
                 <CheckCircle size={16} />
-                <span className="font-medium">Auditoría Completa:</span> No faltan días de venta en este periodo.
+                <div><span className="font-medium">Auditoría Completa:</span> No faltan días de venta en este periodo.
+                    {localId && <AuditFacts id={localId} />}</div>
             </div>
         );
     }
@@ -275,6 +293,7 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                         <p className="text-amber-700 text-sm mt-1">
                             Se detectaron días sin transacciones registradas en el periodo seleccionado.
                         </p>
+                        {localId && <AuditFacts id={localId} />}
                     </div>
                 </div>
 

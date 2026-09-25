@@ -82,6 +82,7 @@ from services.date_parsing_service import normalize_sale_date
 from services.dashboard_analytics_service import DashboardAnalyticsService
 from services.mall_comparison_service import MallComparisonService
 from services.load_log_service import build_load_log_payload, insert_load_log_row
+from services.audit_status_service import load_annual_audit_status
 from services.sales_gap_service import (
     expected_sales_dates,
     load_actual_sales_dates_by_local,
@@ -8648,7 +8649,7 @@ def get_annual_audit_status(current_mall: str = Depends(get_current_mall), audit
     stores = supabase.table("locales").select("id,nombre,activo").eq("mall_id", current_mall).execute().data or []
     return load_annual_audit_status(supabase, current_mall, stores)
 @app.get("/api/v1/auditoria/brechas-ventas")
-async def get_sales_gaps(
+def get_sales_gaps(
     local_id: Optional[str], 
     fecha_inicio: str, 
     fecha_fin: str,
@@ -8658,8 +8659,8 @@ async def get_sales_gaps(
         # 1. Calendario Ideal
         start_date = datetime.strptime(fecha_inicio, '%Y-%m-%d')
         end_date = datetime.strptime(fecha_fin, '%Y-%m-%d')
-        total_days = (end_date - start_date).days + 1
         expected_dates = expected_sales_dates(fecha_inicio, fecha_fin)
+        total_days = len(expected_dates)
         
         # --- MODO GLOBAL (Matrix View) ---
         if not local_id or local_id == 'null' or local_id == 'ALL':
@@ -8693,6 +8694,7 @@ async def get_sales_gaps(
                 local_ids=store_ids,
                 fecha_inicio=fecha_inicio,
                 fecha_fin=fecha_fin,
+                mall_id=current_mall,
             )
             
             global_summary = []
@@ -8703,7 +8705,7 @@ async def get_sales_gaps(
                 
                 missing = sorted(list(expected_dates - s_actual))
                 count_missing = len(missing)
-                compliance = ((total_days - count_missing) / total_days) * 100
+                compliance = ((total_days - count_missing) / total_days) * 100 if total_days else 100.0
                 
                 # Definir estado
                 status = 'Completo'
@@ -8736,13 +8738,14 @@ async def get_sales_gaps(
             local_id=local_id,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
+            mall_id=current_mall,
         )
         
         # 3. Brechas
         missing_dates = sorted(list(expected_dates - actual_dates))
         
         # 4. Enriquecimiento con Logs (logs_carga)
-        local_resp = supabase.table('locales').select('nombre, mall_id').eq('id', local_id).single().execute()
+        local_resp = supabase.table('locales').select('nombre, mall_id').eq('id', local_id).eq('mall_id', current_mall).single().execute()
         local_name = local_resp.data['nombre'] if local_resp.data else None
         local_mall_id = local_resp.data.get('mall_id') if local_resp.data else None
         

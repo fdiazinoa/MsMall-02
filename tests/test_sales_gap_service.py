@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from services.sales_gap_service import (
     SALES_PAGE_SIZE,
+    load_actual_sales_dates_by_local,
     load_actual_sales_dates_for_local,
     load_missing_sales_dates_for_local,
 )
@@ -97,3 +98,40 @@ def test_shared_missing_days_are_the_same_dates_consumed_by_audit_and_email():
     )
 
     assert missing == ["2026-08-25"]
+
+
+def test_tenant_loader_uses_one_aggregate_rpc_instead_of_sales_pages():
+    calls = []
+
+    class RpcClient:
+        def rpc(self, name, params):
+            calls.append((name, params))
+            return SimpleNamespace(
+                execute=lambda: SimpleNamespace(data=[
+                    {"local_id": "local-1", "fecha": "2026-09-01"},
+                    {"local_id": "local-1", "fecha": "2026-09-02"},
+                    {"local_id": "local-2", "fecha": "2026-09-02"},
+                ])
+            )
+
+        def table(self, _table_name):
+            raise AssertionError("The optimized path must not download raw sales rows")
+
+    actual = load_actual_sales_dates_by_local(
+        RpcClient(),
+        mall_id="mall-1",
+        local_ids=["local-1", "local-2"],
+        fecha_inicio="2026-09-01",
+        fecha_fin="2026-09-02",
+    )
+
+    assert actual == {
+        "local-1": {"2026-09-01", "2026-09-02"},
+        "local-2": {"2026-09-02"},
+    }
+    assert calls == [("audit_sales_dates", {
+        "p_mall_id": "mall-1",
+        "p_local_ids": ["local-1", "local-2"],
+        "p_start": "2026-09-01",
+        "p_end": "2026-09-02",
+    })]

@@ -16,6 +16,9 @@ export const SalesReport: React.FC = () => {
 
   const [data, setData] = useState<SaleReport[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [annualAuditStatus, setAnnualAuditStatus] = useState<SaleReport[]>([]);
+  const [isAnnualStatusLoading, setIsAnnualStatusLoading] = useState(false);
+  const [annualStatusError, setAnnualStatusError] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,20 +65,25 @@ export const SalesReport: React.FC = () => {
     ]));
   };
 
-  const fetchData = async () => {
+  const fetchData = async (signal?: AbortSignal) => {
     if (!currentMall) return;
     setIsLoading(true);
     setError(null);
     setExpandedLocalId(null);
     setDetailsData({});
     try {
-      const result = await ApiService.getSalesReport({ ...dates, mallId: currentMall.id }, selectedLocal || undefined);
+      const result = await ApiService.getSalesReport(
+        { ...dates, mallId: currentMall.id },
+        selectedLocal || undefined,
+        signal
+      );
       setData(result);
-    } catch (err) {
+    } catch (err: any) {
+      if (signal?.aborted) return;
       console.error(err);
-      setError('Error al cargar datos.');
+      setError(err?.message || 'Error al cargar datos.');
     } finally {
-      setIsLoading(false);
+      if (!signal?.aborted) setIsLoading(false);
     }
   };
 
@@ -210,8 +218,29 @@ export const SalesReport: React.FC = () => {
   }, [currentMall]);
 
   useEffect(() => {
-    fetchData();
+    const controller = new AbortController();
+    fetchData(controller.signal);
+    return () => controller.abort();
   }, [dates, selectedLocal, currentMall]); // Refetch when dates or local changes
+
+  useEffect(() => {
+    if (!currentMall) return;
+    const controller = new AbortController();
+    setIsAnnualStatusLoading(true);
+    setAnnualStatusError(null);
+    setAnnualAuditStatus([]);
+    ApiService.getAnnualAuditStatus(currentMall.id, controller.signal)
+      .then(setAnnualAuditStatus)
+      .catch((err: any) => {
+        if (controller.signal.aborted) return;
+        console.error(err);
+        setAnnualStatusError(err?.message || 'No se pudo cargar la última importación.');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsAnnualStatusLoading(false);
+      });
+    return () => controller.abort();
+  }, [currentMall?.id]);
 
   const totalSales = data.reduce((sum, item) => sum + item.total_neto, 0);
   const formatStoreOption = (store: any) => (
@@ -402,8 +431,9 @@ export const SalesReport: React.FC = () => {
           </div>
 
           <button
-            onClick={fetchData}
-            className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
+            onClick={() => fetchData()}
+            disabled={isLoading}
+            className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
           >
             Actualizar
           </button>
@@ -432,6 +462,9 @@ export const SalesReport: React.FC = () => {
 
       {/* Global & Local Gap Analysis Alert */}
       <MissingDaysAlert
+        auditStatus={annualAuditStatus}
+        auditStatusLoading={isAnnualStatusLoading}
+        auditStatusError={annualStatusError}
         localId={selectedLocal || null}
         startDate={dates.startDate}
         endDate={dates.endDate}

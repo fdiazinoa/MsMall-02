@@ -54,6 +54,7 @@ def load_actual_sales_dates_for_local(
     local_id: str,
     fecha_inicio: str,
     fecha_fin: str,
+    mall_id: Optional[str] = None,
 ) -> Set[str]:
     """Load every distinct sales date for one store using deterministic pagination."""
     return load_actual_sales_dates_by_local(
@@ -61,6 +62,7 @@ def load_actual_sales_dates_for_local(
         local_ids=[local_id],
         fecha_inicio=fecha_inicio,
         fecha_fin=fecha_fin,
+        mall_id=mall_id,
     ).get(str(local_id), set())
 
 
@@ -70,18 +72,31 @@ def load_actual_sales_dates_by_local(
     local_ids: List[str],
     fecha_inicio: str,
     fecha_fin: str,
+    mall_id: Optional[str] = None,
 ) -> Dict[str, Set[str]]:
-    """Load distinct dates for many stores in one keyset-paginated scan."""
+    """Load distinct dates, preferring one tenant-scoped aggregate RPC."""
     normalized_ids = list(dict.fromkeys(str(local_id) for local_id in local_ids if local_id))
     dates_by_local: Dict[str, Set[str]] = {local_id: set() for local_id in normalized_ids}
-    rows = fetch_sales_rows_keyset(
-        supabase_client,
-        select_fields="local_id,fecha",
-        local_ids=normalized_ids,
-        fecha_inicio=fecha_inicio,
-        fecha_fin=fecha_fin,
-        page_size=SALES_PAGE_SIZE,
-    )
+    if not normalized_ids:
+        return dates_by_local
+
+    if mall_id:
+        rows = supabase_client.rpc("audit_sales_dates", {
+            "p_mall_id": mall_id,
+            "p_local_ids": normalized_ids,
+            "p_start": fecha_inicio,
+            "p_end": fecha_fin,
+        }).execute().data or []
+    else:
+        # Compatibility path for callers that do not yet carry tenant context.
+        rows = fetch_sales_rows_keyset(
+            supabase_client,
+            select_fields="local_id,fecha",
+            local_ids=normalized_ids,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            page_size=SALES_PAGE_SIZE,
+        )
     for row in rows:
         local_id = str(row.get("local_id") or "")
         normalized_date = normalize_sales_date(row.get("fecha"))
@@ -96,6 +111,7 @@ def load_missing_sales_dates_for_local(
     local_id: str,
     fecha_inicio: str,
     fecha_fin: str,
+    mall_id: Optional[str] = None,
 ) -> List[str]:
     expected_dates = expected_sales_dates(fecha_inicio, fecha_fin)
     actual_dates = load_actual_sales_dates_for_local(
@@ -103,5 +119,6 @@ def load_missing_sales_dates_for_local(
         local_id=local_id,
         fecha_inicio=fecha_inicio,
         fecha_fin=fecha_fin,
+        mall_id=mall_id,
     )
     return sorted(expected_dates - actual_dates)

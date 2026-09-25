@@ -15,7 +15,7 @@ def test_global_audit_uses_one_batched_sales_date_loader():
     assert "s_actual = dates_by_local.get(sid, set())" in main_py
 
 
-def test_hot_sales_read_paths_use_keyset_pagination():
+def test_hot_sales_read_paths_avoid_offset_and_frontend_invoice_downloads():
     repo = Path(__file__).resolve().parents[1]
     dashboard_service = (repo / "services" / "dashboard_analytics_service.py").read_text(encoding="utf-8")
     export_service = (repo / "services" / "export_service.py").read_text(encoding="utf-8")
@@ -23,7 +23,9 @@ def test_hot_sales_read_paths_use_keyset_pagination():
 
     assert "sales = fetch_sales_rows_keyset(" in dashboard_service
     assert "return fetch_sales_rows_keyset(" in export_service
-    assert "query = query.or(`fecha.gt.${lastDate},and(fecha.eq.${lastDate},id.gt.${lastId})`);" in api_ts
+    report_segment = api_ts[api_ts.index("async getSalesReport("):api_ts.index("async getSaleDetails(")]
+    assert "/auditoria/resumen-ventas" in report_segment
+    assert ".from('ventas')" not in report_segment
     assert "query.range(page * pageSize" not in api_ts
 
 

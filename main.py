@@ -8879,7 +8879,6 @@ def get_sales_gaps(
         # 1. Calendario Ideal
         start_date = datetime.strptime(fecha_inicio, '%Y-%m-%d')
         end_date = datetime.strptime(fecha_fin, '%Y-%m-%d')
-        total_days = (end_date - start_date).days + 1
         expected_dates = expected_sales_dates(fecha_inicio, fecha_fin)
         total_days = len(expected_dates)
         
@@ -8915,6 +8914,7 @@ def get_sales_gaps(
                 local_ids=store_ids,
                 fecha_inicio=fecha_inicio,
                 fecha_fin=fecha_fin,
+                mall_id=current_mall,
             )
             
             global_summary = []
@@ -8958,13 +8958,14 @@ def get_sales_gaps(
             local_id=local_id,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
+            mall_id=current_mall,
         )
         
         # 3. Brechas
         missing_dates = sorted(list(expected_dates - actual_dates))
         
         # 4. Enriquecimiento con Logs (logs_carga)
-        local_resp = supabase.table('locales').select('nombre, mall_id').eq('id', local_id).single().execute()
+        local_resp = supabase.table('locales').select('nombre, mall_id').eq('id', local_id).eq('mall_id', current_mall).single().execute()
         local_name = local_resp.data['nombre'] if local_resp.data else None
         local_mall_id = local_resp.data.get('mall_id') if local_resp.data else None
         

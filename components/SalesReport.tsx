@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../context/AuthProvider';
 import { SaleReport, DateRange, SaleDetail } from '../types';
 import { ApiService } from '../api';
@@ -19,6 +19,7 @@ export const SalesReport: React.FC = () => {
   const [annualAuditStatus, setAnnualAuditStatus] = useState<SaleReport[]>([]);
   const [isAnnualStatusLoading, setIsAnnualStatusLoading] = useState(false);
   const [annualStatusError, setAnnualStatusError] = useState<string | null>(null);
+  const [hasAuditResult, setHasAuditResult] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,8 +44,10 @@ export const SalesReport: React.FC = () => {
   // Stores state
   const [stores, setStores] = useState<any[]>([]);
   const [selectedLocal, setSelectedLocal] = useState<string>('');
+  const [auditedLocalId, setAuditedLocalId] = useState<string>('');
   const [localSearchTerm, setLocalSearchTerm] = useState('');
   const [isLocalPickerOpen, setIsLocalPickerOpen] = useState(false);
+  const auditControllerRef = useRef<AbortController | null>(null);
 
   const normalizeApiRoot = (value: string): string => {
     const trimmed = String(value || '').trim();
@@ -65,16 +68,17 @@ export const SalesReport: React.FC = () => {
     ]));
   };
 
-  const fetchData = async (signal?: AbortSignal) => {
-    if (!currentMall) return;
+  const fetchData = async (localId: string, signal?: AbortSignal) => {
+    if (!currentMall || !localId) return;
     setIsLoading(true);
     setError(null);
+    setData([]);
     setExpandedLocalId(null);
     setDetailsData({});
     try {
       const result = await ApiService.getSalesReport(
         { ...dates, mallId: currentMall.id },
-        selectedLocal || undefined,
+        localId,
         signal
       );
       setData(result);
@@ -85,6 +89,49 @@ export const SalesReport: React.FC = () => {
     } finally {
       if (!signal?.aborted) setIsLoading(false);
     }
+  };
+
+  const auditLocal = async (localId: string) => {
+    if (!currentMall || !localId) return;
+    auditControllerRef.current?.abort();
+    const controller = new AbortController();
+    auditControllerRef.current = controller;
+
+    setSelectedLocal(localId);
+    setAuditedLocalId(localId);
+    const store = stores.find((item) => String(item.id) === String(localId));
+    if (store) setLocalSearchTerm(formatStoreOption(store));
+    setHasAuditResult(true);
+    setAnnualAuditStatus([]);
+    setAnnualStatusError(null);
+    setIsAnnualStatusLoading(true);
+
+    const summaryPromise = fetchData(localId, controller.signal);
+    const statusPromise = ApiService.getAnnualAuditStatus(currentMall.id, localId, controller.signal)
+      .then(setAnnualAuditStatus)
+      .catch((err: any) => {
+        if (controller.signal.aborted) return;
+        console.error(err);
+        setAnnualStatusError(err?.message || 'No se pudo cargar la última importación.');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsAnnualStatusLoading(false);
+      });
+
+    await Promise.allSettled([summaryPromise, statusPromise]);
+  };
+
+  const clearAuditResult = () => {
+    auditControllerRef.current?.abort();
+    auditControllerRef.current = null;
+    setHasAuditResult(false);
+    setAuditedLocalId('');
+    setIsLoading(false);
+    setIsAnnualStatusLoading(false);
+    setData([]);
+    setAnnualAuditStatus([]);
+    setAnnualStatusError(null);
+    setError(null);
   };
 
   const openExportModal = (format: 'excel' | 'pdf') => {
@@ -218,29 +265,10 @@ export const SalesReport: React.FC = () => {
   }, [currentMall]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    fetchData(controller.signal);
-    return () => controller.abort();
-  }, [dates, selectedLocal, currentMall]); // Refetch when dates or local changes
+    clearAuditResult();
+  }, [dates.startDate, dates.endDate, currentMall?.id]);
 
-  useEffect(() => {
-    if (!currentMall) return;
-    const controller = new AbortController();
-    setIsAnnualStatusLoading(true);
-    setAnnualStatusError(null);
-    setAnnualAuditStatus([]);
-    ApiService.getAnnualAuditStatus(currentMall.id, controller.signal)
-      .then(setAnnualAuditStatus)
-      .catch((err: any) => {
-        if (controller.signal.aborted) return;
-        console.error(err);
-        setAnnualStatusError(err?.message || 'No se pudo cargar la última importación.');
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setIsAnnualStatusLoading(false);
-      });
-    return () => controller.abort();
-  }, [currentMall?.id]);
+  useEffect(() => () => auditControllerRef.current?.abort(), []);
 
   const totalSales = data.reduce((sum, item) => sum + item.total_neto, 0);
   const formatStoreOption = (store: any) => (
@@ -360,6 +388,7 @@ export const SalesReport: React.FC = () => {
                 type="search"
                 value={localSearchTerm}
                 onChange={(e) => {
+                  clearAuditResult();
                   setLocalSearchTerm(e.target.value);
                   setSelectedLocal('');
                   setIsLocalPickerOpen(true);
@@ -378,6 +407,7 @@ export const SalesReport: React.FC = () => {
                   type="button"
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => {
+                    clearAuditResult();
                     setSelectedLocal('');
                     setLocalSearchTerm('');
                     setIsLocalPickerOpen(false);
@@ -396,6 +426,7 @@ export const SalesReport: React.FC = () => {
                     aria-selected={!selectedLocal}
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => {
+                      clearAuditResult();
                       setSelectedLocal('');
                       setLocalSearchTerm('');
                       setIsLocalPickerOpen(false);
@@ -415,6 +446,7 @@ export const SalesReport: React.FC = () => {
                         aria-selected={String(store.id) === String(selectedLocal)}
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={() => {
+                          clearAuditResult();
                           setSelectedLocal(store.id);
                           setLocalSearchTerm(formatStoreOption(store));
                           setIsLocalPickerOpen(false);
@@ -431,11 +463,11 @@ export const SalesReport: React.FC = () => {
           </div>
 
           <button
-            onClick={() => fetchData()}
-            disabled={isLoading}
+            onClick={() => auditLocal(selectedLocal)}
+            disabled={isLoading || !selectedLocal}
             className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Actualizar
+            Auditar local
           </button>
 
           <div className="h-6 w-px bg-slate-200 mx-1"></div>
@@ -465,12 +497,14 @@ export const SalesReport: React.FC = () => {
         auditStatus={annualAuditStatus}
         auditStatusLoading={isAnnualStatusLoading}
         auditStatusError={annualStatusError}
-        localId={selectedLocal || null}
+        localId={auditedLocalId || null}
         startDate={dates.startDate}
         endDate={dates.endDate}
-        onSelectLocal={setSelectedLocal}
+        onAuditLocal={auditLocal}
       />
 
+      {hasAuditResult && (
+      <>
       {/* Stats Overview */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-indigo-600 rounded-2xl p-4 text-white shadow-md">
@@ -495,15 +529,19 @@ export const SalesReport: React.FC = () => {
           </div>
         )}
 
-        <ReporteAuditoriaTable
-          data={data}
-          isLoading={isLoading}
-          detailsData={detailsData}
-          loadingDetails={loadingDetails}
-          toggleRow={toggleRow}
-          expandedLocalId={expandedLocalId}
-        />
+        {!error && (
+          <ReporteAuditoriaTable
+            data={data}
+            isLoading={isLoading}
+            detailsData={detailsData}
+            loadingDetails={loadingDetails}
+            toggleRow={toggleRow}
+            expandedLocalId={expandedLocalId}
+          />
+        )}
       </div>
+      </>
+      )}
     </div>
   );
 };

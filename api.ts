@@ -1903,12 +1903,15 @@ export const ApiService = {
       total_bruto: Number(row.total_bruto), total_impuestos: Number(row.total_impuestos), total_neto: Number(row.total_neto) }));
   },
 
-  async getAnnualAuditStatus(mallId: string, signal?: AbortSignal): Promise<SaleReport[]> {
+  async getAnnualAuditStatus(mallId: string, localId?: string, signal?: AbortSignal): Promise<SaleReport[]> {
     if (!supabase || !mallId) return [];
     const { data: { session } } = await supabase.auth.getSession();
     const headers = withAuthHeaders(session?.access_token || '', { 'X-Mall-Id': mallId });
+    const params = new URLSearchParams();
+    if (localId) params.set('local_id', localId);
+    const query = params.toString();
     return fetchJsonWithBaseFallback<SaleReport[]>(
-      '/auditoria/estado-anual',
+      `/auditoria/estado-anual${query ? `?${query}` : ''}`,
       { headers, signal },
       'No se pudo cargar la última importación.',
       { timeoutMs: 30000, retryOnTimeout: false }

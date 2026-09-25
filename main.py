@@ -8862,9 +8862,18 @@ def get_audit_sales_summary(
 
 
 @app.get("/api/v1/auditoria/estado-anual")
-def get_annual_audit_status(current_mall: str = Depends(get_current_mall), audit_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view"))):
+def get_annual_audit_status(
+    local_id: Optional[str] = None,
+    current_mall: str = Depends(get_current_mall),
+    audit_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
+):
     _ensure_operator_can_access_mall(audit_ctx, current_mall)
-    stores = supabase.table("locales").select("id,nombre,activo").eq("mall_id", current_mall).execute().data or []
+    stores_query = supabase.table("locales").select("id,nombre,activo").eq("mall_id", current_mall)
+    if local_id:
+        stores_query = stores_query.eq("id", local_id)
+    stores = stores_query.execute().data or []
+    if local_id and not stores:
+        raise HTTPException(status_code=404, detail="El local no pertenece al centro comercial seleccionado.")
     return load_annual_audit_status(supabase, current_mall, stores)
 
 

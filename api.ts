@@ -478,7 +478,7 @@ const fetchJsonWithBaseFallback = async <T>(
   path: string,
   init: RequestInit,
   fallbackMessage: string,
-  options?: { timeoutMs?: number }
+  options?: { timeoutMs?: number; retryOnTimeout?: boolean }
 ): Promise<T> => {
   const baseUrls = getApiBaseUrls();
   const isVercelPreview = typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
@@ -532,7 +532,8 @@ const fetchJsonWithBaseFallback = async <T>(
         ? new Error('Tiempo de espera agotado consultando el servidor remoto.')
         : error;
       lastError = normalizedError;
-      if ((isNetworkFetchFailure(error) || didTimeout) && i < baseUrls.length - 1) {
+      const canRetryTimeout = didTimeout && options?.retryOnTimeout !== false;
+      if ((isNetworkFetchFailure(error) || canRetryTimeout) && i < baseUrls.length - 1) {
         console.warn(`API fallback: fallo de red en ${endpoint}. Intentando siguiente base...`);
         continue;
       }
@@ -1870,21 +1871,36 @@ export const ApiService = {
   },
 
   // --- OTROS MÉTODOS ---
-  async getSalesReport(dates: DateRange & { mallId?: string }, localId?: string): Promise<SaleReport[]> {
+  async getSalesReport(
+    dates: DateRange & { mallId?: string },
+    localId?: string,
+    signal?: AbortSignal
+  ): Promise<SaleReport[]> {
     if (!supabase || !dates.mallId) return [];
     const { data: { session } } = await supabase.auth.getSession();
     const headers = withAuthHeaders(session?.access_token || '', { 'X-Mall-Id': dates.mallId });
     const params = new URLSearchParams({ fecha_inicio: dates.startDate, fecha_fin: dates.endDate });
     if (localId) params.set('local_id', localId);
-    const [summary, annual] = await Promise.all([
-      fetchJsonWithBaseFallback<SaleReport[]>(`/auditoria/resumen-ventas?${params}`, { headers },
-        'No se pudo cargar el resumen de ventas.', { timeoutMs: 60000 }),
-      fetchJsonWithBaseFallback<any[]>('/auditoria/estado-anual', { headers },
-        'No se pudo cargar la última importación.', { timeoutMs: 60000 }),
-    ]);
-    const byLocal = new Map(annual.map((row) => [row.local_id, row]));
-    return summary.map((row) => ({ ...row, ...byLocal.get(row.local_id),
+    const summary = await fetchJsonWithBaseFallback<SaleReport[]>(
+      `/auditoria/resumen-ventas?${params}`,
+      { headers, signal },
+      'No se pudo cargar el resumen de ventas.',
+      { timeoutMs: 30000, retryOnTimeout: false }
+    );
+    return summary.map((row) => ({ ...row,
       total_bruto: Number(row.total_bruto), total_impuestos: Number(row.total_impuestos), total_neto: Number(row.total_neto) }));
+  },
+
+  async getAnnualAuditStatus(mallId: string, signal?: AbortSignal): Promise<SaleReport[]> {
+    if (!supabase || !mallId) return [];
+    const { data: { session } } = await supabase.auth.getSession();
+    const headers = withAuthHeaders(session?.access_token || '', { 'X-Mall-Id': mallId });
+    return fetchJsonWithBaseFallback<SaleReport[]>(
+      '/auditoria/estado-anual',
+      { headers, signal },
+      'No se pudo cargar la última importación.',
+      { timeoutMs: 30000, retryOnTimeout: false }
+    );
   },
 
   async getSaleDetails(localId: string, dates: DateRange & { mallId?: string }): Promise<SaleDetail[]> {

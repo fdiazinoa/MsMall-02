@@ -35,9 +35,10 @@ interface Props {
     onSelectLocal?: (localId: string) => void;
     auditStatus?: SaleReport[];
     auditStatusLoading?: boolean;
+    auditStatusError?: string | null;
 }
 
-export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate, onSelectLocal, auditStatus = [], auditStatusLoading = false }) => {
+export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate, onSelectLocal, auditStatus = [], auditStatusLoading = false, auditStatusError = null }) => {
     const { currentMall, session } = useAuth();
     const [analysis, setAnalysis] = useState<GapAnalysisResult | null>(null);
     const [loading, setLoading] = useState(false);
@@ -48,6 +49,8 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
     useEffect(() => {
         if (!startDate || !endDate || !currentMall) return;
         setMatrixPage(1);
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 30000);
 
         const fetchAnalysis = async () => {
             setLoading(true);
@@ -90,11 +93,12 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
 
                 let res: Response;
                 try {
-                    res = await fetch(endpoint, { headers: requestHeaders });
+                    res = await fetch(endpoint, { headers: requestHeaders, signal: controller.signal });
                 } catch (firstError) {
+                    if (controller.signal.aborted) return;
                     console.warn(`Gap analysis primary URL failed (${endpoint}), retrying with relative path`, firstError);
                     const fallbackEndpoint = `/api/v1/auditoria/brechas-ventas?${query.toString()}`;
-                    res = await fetch(fallbackEndpoint, { headers: requestHeaders });
+                    res = await fetch(fallbackEndpoint, { headers: requestHeaders, signal: controller.signal });
                 }
 
                 if (res.ok) {
@@ -110,20 +114,27 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                     console.error("Error fetching analysis:", errorBody);
                 }
             } catch (err) {
+                if (controller.signal.aborted) return;
                 console.error("Error fetching gap analysis:", err);
             } finally {
-                setLoading(false);
+                window.clearTimeout(timeoutId);
+                if (!controller.signal.aborted) setLoading(false);
             }
         };
 
         fetchAnalysis();
-    }, [localId, startDate, endDate, currentMall, session]);
+        return () => {
+            window.clearTimeout(timeoutId);
+            controller.abort();
+        };
+    }, [localId, startDate, endDate, currentMall?.id, session?.access_token]);
 
     const AuditFacts = ({ id }: { id: string }) => {
         const row = auditStatus.find((item) => item.local_id === id);
         if (!row || row.audit_year == null) {
             return <div className="mt-2 text-xs text-slate-500">
-                <span className="font-medium">Última importación con datos:</span> {auditStatusLoading ? 'Cargando…' : 'No disponible; actualice el reporte para reintentar.'}
+                <span className="font-medium">Última importación con datos:</span>{' '}
+                {auditStatusLoading ? 'Cargando…' : auditStatusError ? 'No disponible temporalmente.' : 'Sin información disponible.'}
             </div>;
         }
         const latestImport = row.ultima_importacion_datos

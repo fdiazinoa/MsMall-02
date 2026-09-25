@@ -1,5 +1,8 @@
 
 export interface SaleReport {
+  ultima_importacion_datos?: string | null;
+  audit_year?: number;
+  dias_faltantes_anio?: number;
   local_id: string;
   local_nombre: string;
   total_bruto: number;

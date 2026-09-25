@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthProvider';
 import { SaleReport, DateRange, SaleDetail } from '../types';
 import { ApiService } from '../api';
 import { MissingDaysAlert } from './MissingDaysAlert';
-import { FileSpreadsheet, FileText, ChevronRight, ChevronDown, Loader2, Search, X } from 'lucide-react';
+import { FileSpreadsheet, FileText, ChevronRight, ChevronDown, Loader2, Search, X, ArrowLeft } from 'lucide-react';
 import { formatCurrency, formatNumber } from '../utils/formatters';
 import { useFormatCurrency } from '../hooks/useFormatCurrency';
 import { ReporteAuditoriaTable } from './ReporteAuditoriaTable';
@@ -132,6 +132,13 @@ export const SalesReport: React.FC = () => {
     setAnnualAuditStatus([]);
     setAnnualStatusError(null);
     setError(null);
+  };
+
+  const returnToAuditReport = () => {
+    clearAuditResult();
+    setSelectedLocal('');
+    setLocalSearchTerm('');
+    setIsLocalPickerOpen(false);
   };
 
   const openExportModal = (format: 'excel' | 'pdf') => {
@@ -491,6 +498,16 @@ export const SalesReport: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {hasAuditResult && (
+        <button
+          type="button"
+          onClick={returnToAuditReport}
+          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-indigo-300 hover:text-indigo-600"
+        >
+          <ArrowLeft size={16} /> Volver al reporte de auditoría
+        </button>
+      )}
 
       {/* Global & Local Gap Analysis Alert */}
       <MissingDaysAlert

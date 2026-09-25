@@ -6,6 +6,7 @@ Contiene toda la lógica de generación de archivos Excel y PDF
 import io
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -37,6 +38,58 @@ class ExportService:
     def _format_currency(self, value):
         if value is None: return "$0.00"
         return f"${value:,.2f}"
+
+    def _format_import_date(self, value: Optional[str]) -> str:
+        if not value:
+            return "Sin cargas con datos"
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(ZoneInfo("America/Santo_Domingo"))
+            return parsed.strftime("%d/%m/%Y")
+        except (TypeError, ValueError):
+            return str(value)[:10]
+
+    def _load_latest_imports_by_local(
+        self,
+        mall_id: Optional[str],
+        local_ids: List[str],
+    ) -> Dict[str, Optional[str]]:
+        normalized_ids = list(dict.fromkeys(str(value) for value in local_ids if value))
+        latest = {local_id: None for local_id in normalized_ids}
+        if not mall_id or not normalized_ids:
+            return latest
+        rows = self.supabase.rpc("audit_latest_imports", {
+            "p_mall_id": mall_id,
+            "p_local_ids": normalized_ids,
+        }).execute().data or []
+        for row in rows:
+            row_local_id = str(row.get("local_id") or "")
+            if row_local_id in latest:
+                latest[row_local_id] = row.get("ultima_importacion_datos")
+        return latest
+
+    def _add_latest_imports_sheet(
+        self,
+        workbook: Workbook,
+        local_names: Dict[str, str],
+        latest_imports: Dict[str, Optional[str]],
+    ) -> None:
+        ws = workbook.create_sheet("Últimas Cargas")
+        fill, font = self._get_header_style()
+        for column, label in enumerate(["Local", "Última importación con datos"], 1):
+            cell = ws.cell(row=1, column=column, value=label)
+            cell.fill = fill
+            cell.font = font
+        ws.column_dimensions["A"].width = 32
+        ws.column_dimensions["B"].width = 30
+        for row_number, local_id in enumerate(sorted(local_names, key=lambda value: local_names[value]), 2):
+            ws.cell(row=row_number, column=1, value=local_names[local_id])
+            ws.cell(
+                row=row_number,
+                column=2,
+                value=self._format_import_date(latest_imports.get(local_id)),
+            )
 
     def _normalize_sale_totals_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         bruto = float(row.get('total_bruto') or 0)
@@ -93,6 +146,7 @@ class ExportService:
             stores_query = stores_query.eq('id', local_id)
         stores = [row for row in (stores_query.execute().data or []) if row.get('activo') is not False]
         store_ids = [str(s['id']) for s in stores if s.get('id')]
+        latest_imports = self._load_latest_imports_by_local(mall_id, store_ids)
 
         sales_rows: List[Dict[str, Any]] = []
         if store_ids:
@@ -145,6 +199,7 @@ class ExportService:
                 'dias_totales_periodo': total_days,
                 'porcentaje_cumplimiento': round(compliance, 1),
                 'estado': status,
+                'ultima_importacion_datos': latest_imports.get(sid),
                 'lista_dias': missing_dates,
             })
 
@@ -168,6 +223,7 @@ class ExportService:
             'detail_rows': detail_rows,
             'is_local_mode': bool(local_id),
             'selected_local_name': (stores[0].get('nombre') if local_id and stores else None),
+            'selected_latest_import': (latest_imports.get(str(stores[0]['id'])) if local_id and stores else None),
         }
 
     # --- SALES REPORT ---
@@ -194,6 +250,15 @@ class ExportService:
             df['nombre_local'] = df['locales'].apply(lambda x: x.get('nombre') if x else 'Desc')
         else:
             df = pd.DataFrame(columns=['local_id', 'nombre_local', 'total_neto', 'total_impuestos', 'total_bruto', 'fecha', 'hora', 'factura_no'])
+
+        report_local_ids = [str(local_id)] if local_id else list(dict.fromkeys(df['local_id'].astype(str).tolist()))
+        latest_imports = self._load_latest_imports_by_local(mall_id, report_local_ids)
+        local_names = {
+            str(row['local_id']): str(row['nombre_local'])
+            for _, row in df[['local_id', 'nombre_local']].drop_duplicates().iterrows()
+        }
+        if local_id and str(local_id) not in local_names:
+            local_names[str(local_id)] = str(local_id)
 
         wb = Workbook()
         ws = wb.active
@@ -231,7 +296,7 @@ class ExportService:
         
         else:
             # --- VISTA RESUMIDA (Agrupada) ---
-            headers = ['Local', 'Ventas Brutas (Base)', 'Impuestos', 'Ventas Netas (Total)']
+            headers = ['Local', 'Ventas Brutas (Base)', 'Impuestos', 'Ventas Netas (Total)', 'Última importación con datos']
             for col, h in enumerate(headers, 1):
                 cell = ws.cell(row=4, column=col, value=h)
                 cell.fill = fill
@@ -252,6 +317,7 @@ class ExportService:
                     ws.cell(row=row_idx, column=2, value=row['total_neto']).number_format = '$#,##0.00;[Red]-$#,##0.00'
                     ws.cell(row=row_idx, column=3, value=row['total_impuestos']).number_format = '$#,##0.00;[Red]-$#,##0.00'
                     ws.cell(row=row_idx, column=4, value=row['total_bruto']).number_format = '$#,##0.00;[Red]-$#,##0.00'
+                    ws.cell(row=row_idx, column=5, value=self._format_import_date(latest_imports.get(str(row['local_id']))))
                     row_idx += 1
                 
                 # Totales
@@ -262,6 +328,8 @@ class ExportService:
                 ws.cell(row=row_idx, column=3).font = Font(bold=True)
                 ws.cell(row=row_idx, column=4, value=resumen['total_bruto'].sum()).number_format = '$#,##0.00;[Red]-$#,##0.00'
                 ws.cell(row=row_idx, column=4).font = Font(bold=True)
+
+        self._add_latest_imports_sheet(wb, local_names, latest_imports)
 
         output = io.BytesIO()
         wb.save(output)
@@ -290,6 +358,9 @@ class ExportService:
         else:
             df = pd.DataFrame(columns=['local_id', 'nombre_local', 'total_neto', 'total_impuestos', 'total_bruto'])
 
+        report_local_ids = [str(local_id)] if local_id else list(dict.fromkeys(df['local_id'].astype(str).tolist()))
+        latest_imports = self._load_latest_imports_by_local(mall_id, report_local_ids)
+
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter)
         elements = []
@@ -315,6 +386,11 @@ class ExportService:
             ["Total Ventas Netas:", self._format_currency(total_final)],
             ["Transacciones:", str(tx_count)]
         ]
+        if local_id:
+            summary_data.append([
+                "Última importación con datos:",
+                self._format_import_date(latest_imports.get(str(local_id))),
+            ])
         t_summary = Table(summary_data, colWidths=[200, 150])
         t_summary.setStyle(TableStyle([
             ('FONTNAME', (0,0), (-1,-1), 'Helvetica'),
@@ -330,18 +406,19 @@ class ExportService:
             elements.append(Paragraph(section_title, header_style))
             resumen = df.groupby(['local_id', 'nombre_local']).agg({'total_neto':'sum', 'total_impuestos':'sum', 'total_bruto':'sum'}).reset_index()
             
-            table_data = [['Local', 'Ventas Brutas', 'Impuestos', 'Ventas Netas']]
+            table_data = [['Local', 'Ventas Brutas', 'Impuestos', 'Ventas Netas', 'Última carga']]
             for _, row in resumen.iterrows():
                 table_data.append([
                     row['nombre_local'],
                     self._format_currency(row['total_neto']),
                     self._format_currency(row['total_impuestos']),
-                    self._format_currency(row['total_bruto'])
+                    self._format_currency(row['total_bruto']),
+                    self._format_import_date(latest_imports.get(str(row['local_id']))),
                 ])
             # Footer
-            table_data.append(['TOTAL', self._format_currency(total_base), self._format_currency(total_tax), self._format_currency(total_final)])
+            table_data.append(['TOTAL', self._format_currency(total_base), self._format_currency(total_tax), self._format_currency(total_final), ''])
             
-            t = Table(table_data, colWidths=[150, 100, 100, 100], repeatRows=1)
+            t = Table(table_data, colWidths=[105, 75, 70, 75, 115], repeatRows=1)
             t.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1F4788')),
                 ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
@@ -372,6 +449,7 @@ class ExportService:
         detail_rows = dataset['detail_rows']
         is_local_mode = dataset['is_local_mode']
         selected_local_name = dataset['selected_local_name'] or "Local"
+        selected_latest_import = dataset['selected_latest_import']
 
         wb = Workbook()
         ws = wb.active
@@ -381,6 +459,7 @@ class ExportService:
         ws['A1'] = 'REPORTE DE DÍAS FALTANTES (AUDITORÍA)'
         ws['A2'] = f"Período: {fecha_inicio} al {fecha_fin}"
         ws['A3'] = f"Alcance: {selected_local_name if is_local_mode else 'Todos los locales con brechas'}"
+        ws['A4'] = f"Última importación con datos: {self._format_import_date(selected_latest_import)}" if is_local_mode else None
         ws['A1'].font = Font(size=14, bold=True)
         ws['A2'].font = Font(size=11, bold=False)
         ws['A3'].font = Font(size=11, bold=False)
@@ -389,7 +468,7 @@ class ExportService:
             headers = ['Fecha Faltante']
             data_rows = [[r['fecha_faltante']] for r in detail_rows]
         else:
-            headers = ['Local', 'Rubro', 'Días Faltantes', 'Días del Periodo', '% Cumplimiento', 'Estado']
+            headers = ['Local', 'Rubro', 'Días Faltantes', 'Días del Periodo', '% Cumplimiento', 'Estado', 'Última importación con datos']
             data_rows = [[
                 r['local_nombre'],
                 r['rubro'],
@@ -397,6 +476,7 @@ class ExportService:
                 r['dias_totales_periodo'],
                 r['porcentaje_cumplimiento'],
                 r['estado'],
+                self._format_import_date(r.get('ultima_importacion_datos')),
             ] for r in summary_rows]
 
         header_row = 5
@@ -451,6 +531,7 @@ class ExportService:
         detail_rows = dataset['detail_rows']
         is_local_mode = dataset['is_local_mode']
         selected_local_name = dataset['selected_local_name'] or "Local"
+        selected_latest_import = dataset['selected_latest_import']
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -462,6 +543,11 @@ class ExportService:
         elements.append(Paragraph(f"Período: {fecha_inicio} - {fecha_fin}", subtitle_style))
         alcance = selected_local_name if is_local_mode else "Todos los locales con brechas"
         elements.append(Paragraph(f"Alcance: {alcance}", normal_style))
+        if is_local_mode:
+            elements.append(Paragraph(
+                f"Última importación con datos: {self._format_import_date(selected_latest_import)}",
+                normal_style,
+            ))
         elements.append(Spacer(1, 12))
 
         if is_local_mode:
@@ -476,7 +562,7 @@ class ExportService:
             t = Table(table_data, colWidths=[400])
         else:
             elements.append(Paragraph("RESUMEN POR LOCAL", header_style))
-            table_data = [['Local', 'Rubro', 'Días Falt.', '% Cumpl.']]
+            table_data = [['Local', 'Rubro', 'Días Falt.', '% Cumpl.', 'Última carga']]
             if summary_rows:
                 for row in summary_rows:
                     table_data.append([
@@ -484,11 +570,12 @@ class ExportService:
                         row['rubro'],
                         str(row['dias_faltantes_count']),
                         f"{row['porcentaje_cumplimiento']}%",
+                        self._format_import_date(row.get('ultima_importacion_datos')),
                     ])
             else:
-                table_data.append(['Sin brechas', '-', '0', '100%'])
+                table_data.append(['Sin brechas', '-', '0', '100%', '-'])
 
-            t = Table(table_data, colWidths=[170, 100, 70, 70])
+            t = Table(table_data, colWidths=[115, 80, 60, 65, 110])
 
         t.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1F4788')),

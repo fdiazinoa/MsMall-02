@@ -1,5 +1,6 @@
 import asyncio
 import re
+from types import SimpleNamespace
 
 from openpyxl import load_workbook
 
@@ -26,6 +27,10 @@ class _TableQuery:
 
     def eq(self, key, value):
         self._filters.append(("eq", key, value))
+        return self
+
+    def in_(self, key, values):
+        self._filters.append(("in", key, set(values)))
         return self
 
     def gte(self, key, value):
@@ -66,6 +71,8 @@ class _TableQuery:
         for op, key, value in self._filters:
             if op == "eq":
                 result = [r for r in result if r.get(key) == value]
+            elif op == "in":
+                result = [r for r in result if r.get(key) in value]
             elif op == "gte":
                 result = [r for r in result if r.get(key) is not None and r.get(key) >= value]
             elif op == "lte":
@@ -96,11 +103,18 @@ class _TableQuery:
 
 
 class _FakeSupabase:
-    def __init__(self, tables=None):
+    def __init__(self, tables=None, rpc_rows=None):
         self.tables = tables or {}
+        self.rpc_rows = rpc_rows or {}
 
     def table(self, table_name):
         return _TableQuery(self, table_name)
+
+    def rpc(self, name, params):
+        rows = self.rpc_rows.get(name, [])
+        requested = {str(value) for value in params.get("p_local_ids", [])}
+        filtered = [row for row in rows if str(row.get("local_id")) in requested]
+        return SimpleNamespace(execute=lambda: _FakeResponse(filtered))
 
 
 def _build_sales_rows():
@@ -156,7 +170,12 @@ def _read_summary_locals_from_excel(workbook_bytes):
 
 
 def test_generate_sales_report_excel_summary_includes_all_locals_with_pagination_and_mall_filter():
-    fake_supabase = _FakeSupabase({"ventas": _build_sales_rows()})
+    fake_supabase = _FakeSupabase(
+        {"ventas": _build_sales_rows()},
+        {"audit_latest_imports": [
+            {"local_id": "l-alpha", "ultima_importacion_datos": "2026-09-24T15:30:00Z"},
+        ]},
+    )
     service = ExportService(fake_supabase)
 
     result = asyncio.run(
@@ -172,6 +191,15 @@ def test_generate_sales_report_excel_summary_includes_all_locals_with_pagination
 
     assert set(locals_found) == {"Alpha", "Beta", "Gamma", "Delta"}
     assert "Omega" not in locals_found
+    wb = load_workbook(result)
+    assert wb["Reporte de Ventas"]["E4"].value == "Última importación con datos"
+    assert wb["Reporte de Ventas"]["E5"].value == "24/09/2026"
+    assert wb["Últimas Cargas"]["B1"].value == "Última importación con datos"
+
+
+def test_latest_import_date_uses_dominican_republic_timezone():
+    service = ExportService(_FakeSupabase())
+    assert service._format_import_date("2026-09-25T01:30:00Z") == "24/09/2026"
 
 
 def test_generate_sales_report_pdf_summary_includes_local_table(monkeypatch):
@@ -184,7 +212,12 @@ def test_generate_sales_report_pdf_summary_includes_local_table(monkeypatch):
 
     monkeypatch.setattr(export_service_module, "Table", _spy_table)
 
-    fake_supabase = _FakeSupabase({"ventas": _build_sales_rows()})
+    fake_supabase = _FakeSupabase(
+        {"ventas": _build_sales_rows()},
+        {"audit_latest_imports": [
+            {"local_id": "l-alpha", "ultima_importacion_datos": "2026-09-24T15:30:00Z"},
+        ]},
+    )
     service = ExportService(fake_supabase)
 
     pdf_buffer = asyncio.run(
@@ -203,7 +236,7 @@ def test_generate_sales_report_pdf_summary_includes_local_table(monkeypatch):
         (
             table
             for table in captured_tables
-            if table and table[0] == ["Local", "Ventas Brutas", "Impuestos", "Ventas Netas"]
+            if table and table[0] == ["Local", "Ventas Brutas", "Impuestos", "Ventas Netas", "Última carga"]
         ),
         None,
     )
@@ -212,3 +245,51 @@ def test_generate_sales_report_pdf_summary_includes_local_table(monkeypatch):
     locals_in_table = {str(row[0]) for row in detail_table[1:] if row and row[0] != "TOTAL"}
     assert {"Alpha", "Beta", "Gamma", "Delta"}.issubset(locals_in_table)
     assert "Omega" not in locals_in_table
+    alpha_row = next(row for row in detail_table if row and row[0] == "Alpha")
+    assert alpha_row[-1] == "24/09/2026"
+
+
+def test_missing_days_excel_and_pdf_include_latest_import(monkeypatch):
+    captured_tables = []
+    original_table = export_service_module.Table
+
+    def _spy_table(data, *args, **kwargs):
+        captured_tables.append(data)
+        return original_table(data, *args, **kwargs)
+
+    monkeypatch.setattr(export_service_module, "Table", _spy_table)
+    fake_supabase = _FakeSupabase(
+        {
+            "locales": [{
+                "id": "l-alpha", "mall_id": "mall-1", "nombre": "Alpha",
+                "rubro": "Moda", "activo": True,
+            }],
+            "ventas": [{
+                "id": "1", "mall_id": "mall-1", "local_id": "l-alpha",
+                "fecha": "2026-01-15",
+            }],
+        },
+        {"audit_latest_imports": [{
+            "local_id": "l-alpha", "ultima_importacion_datos": "2026-09-24T15:30:00Z",
+        }]},
+    )
+    service = ExportService(fake_supabase)
+
+    excel = asyncio.run(service.generate_missing_days_report_excel(
+        fecha_inicio="2026-01-15",
+        fecha_fin="2026-01-16",
+        mall_id="mall-1",
+    ))
+    ws = load_workbook(excel)["Dias Faltantes"]
+    assert ws["G5"].value == "Última importación con datos"
+    assert ws["G6"].value == "24/09/2026"
+
+    pdf = asyncio.run(service.generate_missing_days_report_pdf(
+        fecha_inicio="2026-01-15",
+        fecha_fin="2026-01-16",
+        mall_id="mall-1",
+        mall_name="Mall Test",
+    ))
+    assert len(pdf.getvalue()) > 0
+    summary = next(table for table in captured_tables if table and table[0][-1] == "Última carga")
+    assert summary[1][-1] == "24/09/2026"

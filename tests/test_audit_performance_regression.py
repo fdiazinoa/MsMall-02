@@ -29,6 +29,8 @@ def test_frontend_loads_audit_details_only_after_user_action():
     assert "Auditar local" in component
     assert "ApiService.getAnnualAuditStatus(currentMall.id, localId" in component
     assert "fetchData(controller.signal)" not in automatic_effects
+    assert "Volver al reporte de auditoría" in component
+    assert "onClick={returnToAuditReport}" in component
 
 
 def test_migration_aggregates_sales_dates_and_keeps_rpc_private():

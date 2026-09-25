@@ -32,13 +32,13 @@ interface Props {
     localId: string | null;
     startDate: string;
     endDate: string;
-    onSelectLocal?: (localId: string) => void;
+    onAuditLocal?: (localId: string) => void;
     auditStatus?: SaleReport[];
     auditStatusLoading?: boolean;
     auditStatusError?: string | null;
 }
 
-export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate, onSelectLocal, auditStatus = [], auditStatusLoading = false, auditStatusError = null }) => {
+export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate, onAuditLocal, auditStatus = [], auditStatusLoading = false, auditStatusError = null }) => {
     const { currentMall, session } = useAuth();
     const [analysis, setAnalysis] = useState<GapAnalysisResult | null>(null);
     const [loading, setLoading] = useState(false);
@@ -197,7 +197,6 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                                         <td className="px-4 py-3">
                                             <div className="font-medium text-slate-800">{item.nombre}</div>
                                             <div className="text-xs text-slate-400">{item.rubro}</div>
-                                            <AuditFacts id={item.local_id} />
                                         </td>
                                         <td className="px-4 py-3 text-center">
                                             <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${item.estado === 'Crítico' ? 'bg-rose-100 text-rose-700' :
@@ -231,7 +230,7 @@ export const MissingDaysAlert: React.FC<Props> = ({ localId, startDate, endDate,
                                         </td>
                                         <td className="px-4 py-3 text-right">
                                             <button
-                                                onClick={() => onSelectLocal && onSelectLocal(item.local_id)}
+                                                onClick={() => onAuditLocal && onAuditLocal(item.local_id)}
                                                 className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 text-xs font-medium shadow-sm transition-all hover:border-indigo-300 hover:text-indigo-600"
                                             >
                                                 <Eye size={14} /> Auditar

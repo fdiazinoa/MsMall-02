@@ -22,6 +22,15 @@ def test_frontend_does_not_couple_summary_to_annual_status():
     assert "auditStatus={annualAuditStatus}" in component
 
 
+def test_frontend_loads_audit_details_only_after_user_action():
+    component = (ROOT / "components" / "SalesReport.tsx").read_text()
+    automatic_effects = component[component.index("useEffect(() => {"):]
+    assert "onAuditLocal={auditLocal}" in component
+    assert "Auditar local" in component
+    assert "ApiService.getAnnualAuditStatus(currentMall.id, localId" in component
+    assert "fetchData(controller.signal)" not in automatic_effects
+
+
 def test_migration_aggregates_sales_dates_and_keeps_rpc_private():
     migration = (ROOT / "supabase" / "migrations" / "20260925123000_optimize_sales_audit_queries.sql").read_text()
     assert "CREATE OR REPLACE FUNCTION public.audit_sales_dates" in migration

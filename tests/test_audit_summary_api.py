@@ -57,7 +57,35 @@ def test_annual_status_loads_only_the_requested_mall(monkeypatch):
         lambda client, mall_id, stores: [{"local_id": stores[0]["id"], "mall_id": mall_id}],
     )
 
-    result = main.get_annual_audit_status("mall-1", {"role": "admin"})
+    result = main.get_annual_audit_status(None, "mall-1", {"role": "admin"})
 
     assert result == [{"local_id": "local", "mall_id": "mall-1"}]
     assert ("eq", "mall_id", "mall-1") in calls
+
+
+def test_annual_status_limits_query_to_requested_local(monkeypatch):
+    calls = []
+
+    class Query:
+        def select(self, fields):
+            return self
+
+        def eq(self, field, value):
+            calls.append((field, value))
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[{"id": "local-1", "nombre": "Local", "activo": True}])
+
+    class Client:
+        def table(self, name):
+            return Query()
+
+    monkeypatch.setattr(main, "supabase", Client())
+    monkeypatch.setattr(main, "load_annual_audit_status", lambda client, mall_id, stores: stores)
+
+    result = main.get_annual_audit_status("local-1", "mall-1", {"role": "admin"})
+
+    assert result[0]["id"] == "local-1"
+    assert ("mall_id", "mall-1") in calls
+    assert ("id", "local-1") in calls

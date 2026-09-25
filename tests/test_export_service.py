@@ -197,6 +197,33 @@ def test_generate_sales_report_excel_summary_includes_all_locals_with_pagination
     assert wb["Últimas Cargas"]["B1"].value == "Última importación con datos"
 
 
+def test_generate_sales_report_excel_detailed_shows_latest_import_in_main_sheet():
+    fake_supabase = _FakeSupabase(
+        {"ventas": _build_sales_rows()},
+        {"audit_latest_imports": [
+            {"local_id": "l-alpha", "ultima_importacion_datos": "2026-09-24T15:30:00Z"},
+        ]},
+    )
+    service = ExportService(fake_supabase)
+
+    result = asyncio.run(
+        service.generate_sales_report_excel(
+            fecha_inicio="2026-01-01",
+            fecha_fin="2026-01-31",
+            report_type="detailed",
+            mall_id="mall-1",
+        )
+    )
+
+    wb = load_workbook(result)
+    ws = wb["Reporte de Ventas"]
+
+    assert ws["B4"].value == "Última importación con datos"
+    assert ws["B5"].value == "24/09/2026"
+    assert ws.column_dimensions["B"].width == 30
+    assert wb["Últimas Cargas"]["B1"].value == "Última importación con datos"
+
+
 def test_latest_import_date_uses_dominican_republic_timezone():
     service = ExportService(_FakeSupabase())
     assert service._format_import_date("2026-09-25T01:30:00Z") == "24/09/2026"

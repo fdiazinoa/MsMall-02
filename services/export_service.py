@@ -272,12 +272,15 @@ class ExportService:
         
         if report_type == 'detailed':
             # --- VISTA DETALLADA (Filas Individuales) ---
-            headers = ['Local', 'Fecha', 'Hora', 'Factura #', 'Bruto', 'Impuestos', 'Neto']
+            headers = [
+                'Local', 'Última importación con datos', 'Fecha', 'Hora', 'Factura #',
+                'Bruto', 'Impuestos', 'Neto',
+            ]
             for col, h in enumerate(headers, 1):
                 cell = ws.cell(row=4, column=col, value=h)
                 cell.fill = fill
                 cell.font = font
-                ws.column_dimensions[chr(64+col)].width = 15
+                ws.column_dimensions[chr(64+col)].width = 30 if col == 2 else 15
             
             if not df.empty:
                 # Ordenar: Nombre Local, Fecha, Hora
@@ -286,12 +289,17 @@ class ExportService:
                 row_idx = 5
                 for _, row in df_sorted.iterrows():
                     ws.cell(row=row_idx, column=1, value=row.get('nombre_local'))
-                    ws.cell(row=row_idx, column=2, value=row.get('fecha'))
-                    ws.cell(row=row_idx, column=3, value=row.get('hora'))
-                    ws.cell(row=row_idx, column=4, value=row.get('factura_no'))
-                    ws.cell(row=row_idx, column=5, value=row.get('total_neto')).number_format = '$#,##0.00;[Red]-$#,##0.00'  # Bruto UI
-                    ws.cell(row=row_idx, column=6, value=row.get('total_impuestos')).number_format = '$#,##0.00;[Red]-$#,##0.00'
-                    ws.cell(row=row_idx, column=7, value=row.get('total_bruto')).number_format = '$#,##0.00;[Red]-$#,##0.00' # Neto UI
+                    ws.cell(
+                        row=row_idx,
+                        column=2,
+                        value=self._format_import_date(latest_imports.get(str(row.get('local_id')))),
+                    )
+                    ws.cell(row=row_idx, column=3, value=row.get('fecha'))
+                    ws.cell(row=row_idx, column=4, value=row.get('hora'))
+                    ws.cell(row=row_idx, column=5, value=row.get('factura_no'))
+                    ws.cell(row=row_idx, column=6, value=row.get('total_neto')).number_format = '$#,##0.00;[Red]-$#,##0.00'  # Bruto UI
+                    ws.cell(row=row_idx, column=7, value=row.get('total_impuestos')).number_format = '$#,##0.00;[Red]-$#,##0.00'
+                    ws.cell(row=row_idx, column=8, value=row.get('total_bruto')).number_format = '$#,##0.00;[Red]-$#,##0.00' # Neto UI
                     row_idx += 1
         
         else:

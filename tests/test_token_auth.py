@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 import httpx
 import jwt
+import pytest
 
 from routers.token_auth import (
     InMemoryTokenStore,
@@ -61,6 +62,18 @@ class _FakeSupabase:
 
     def table(self, table_name):
         return _FakeSupabaseTable(self, table_name)
+
+
+class _FailingLoadLogTable(_FakeSupabaseTable):
+    def execute(self):
+        if self.table_name == "logs_carga":
+            raise RuntimeError("logs_carga unavailable")
+        return super().execute()
+
+
+class _FailingLoadLogSupabase(_FakeSupabase):
+    def table(self, table_name):
+        return _FailingLoadLogTable(self, table_name)
 
 
 def build_test_client(supabase_client=None):
@@ -279,6 +292,87 @@ def test_exporter_sync_ingest_writes_structured_load_log():
     assert events[0]["mall_id"] == "mall-1"
     assert events[0]["local_id"] == "local-1"
     assert events[0]["payload"]["canal"] == "WebService"
+
+
+def test_required_webservice_load_log_does_not_hide_insert_failure():
+    service = TokenService(store=InMemoryTokenStore(), supabase_client=_FailingLoadLogSupabase())
+
+    with pytest.raises(RuntimeError, match="no se pudo registrar su trazabilidad"):
+        service.write_load_log(
+            mall_id="mall-1",
+            local_id="local-1",
+            local_nombre="Zara",
+            archivo="ventas.json",
+            estado="exito",
+            mensaje="Carga procesada",
+            records_processed=1,
+            error_count=0,
+            metadata={"source": "exporter_sync_ingest"},
+            required=True,
+        )
+
+
+def test_exporter_ingest_cannot_report_success_when_required_log_fails():
+    client, svc, store = build_test_client(_FailingLoadLogSupabase())
+    store.local_codes[("mall-1", "local-1")] = "LOC-001"
+    store.local_names[("mall-1", "local-1")] = "Zara"
+    admin_access = bootstrap_manage_token(client, svc, store)
+    service_account = client.post(
+        "/service-accounts",
+        headers={"Authorization": f"Bearer {admin_access}"},
+        json={
+            "mall_id": "mall-1",
+            "local_id": "local-1",
+            "token_type": "exporter",
+            "scopes": ["export:write", "mapping:read"],
+        },
+    )
+    token = client.post(
+        "/auth/token",
+        json={
+            "token_type": "exporter",
+            "client_id": service_account.json()["client_id"],
+            "client_secret": service_account.json()["client_secret"],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="no se pudo registrar su trazabilidad"):
+        client.post(
+            "/api/v1/exporter/sync/ingest",
+            headers={"Authorization": f"Bearer {token.json()['access_token']}"},
+            json={
+                "mall_id": "mall-1",
+                "local_id": "local-1",
+                "rows": [{
+                    "documento_numero": "FAC-LOG-1",
+                    "documento_tipo": "factura",
+                    "fecha_venta": "2026-09-26",
+                    "hora_venta": "09:30:00",
+                    "total_bruto": 118,
+                    "total_impuesto": 18,
+                    "total_neto": 100,
+                }],
+                "meta": {"batch_id": "batch-required-log"},
+            },
+        )
+
+
+def test_optional_error_load_log_keeps_original_failure_path():
+    service = TokenService(store=InMemoryTokenStore(), supabase_client=_FailingLoadLogSupabase())
+
+    written = service.write_load_log(
+        mall_id="mall-1",
+        local_id="local-1",
+        local_nombre="Zara",
+        archivo="ventas.json",
+        estado="error",
+        mensaje="Carga rechazada",
+        records_processed=0,
+        error_count=1,
+        metadata={"source": "exporter_sync_ingest"},
+    )
+
+    assert written is False
 
 
 def test_exporter_token_handles_store_lookup_failure_without_500():

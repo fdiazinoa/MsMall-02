@@ -597,9 +597,10 @@ class TokenService:
         records_processed: Optional[int] = None,
         error_count: Optional[int] = None,
         metadata: Optional[Dict[str, Any]] = None,
-    ) -> None:
+        required: bool = False,
+    ) -> bool:
         if not self.supabase:
-            return
+            return False
         payload = build_load_log_payload(
             local_nombre=local_nombre or local_id or "Local desconocido",
             archivo=archivo,
@@ -616,8 +617,14 @@ class TokenService:
         )
         try:
             insert_load_log_row(self.supabase, payload, logger=logger)
+            return True
         except Exception as exc:
             logger.warning("webservice load log failed: %s", exc)
+            if required:
+                raise RuntimeError(
+                    "La carga WebService fue procesada, pero no se pudo registrar su trazabilidad"
+                ) from exc
+            return False
 
     def _issue_jwt(self, *, token_id: str, mall_id: str, local_id: Optional[str], token_type: str, scopes: List[str], access_exp: Optional[datetime]) -> str:
         now_ts = _now_ts()
@@ -1193,6 +1200,7 @@ def _process_exporter_sync_ingest_payload(payload: Dict[str, Any], svc: "TokenSe
                 "contract_type": _as_str_or_none(meta.get("contract_type")),
                 **(extra_metadata or {}),
             },
+            required=True,
         )
         log_written = True
 

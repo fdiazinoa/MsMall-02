@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataCalendarDayBreakdown, BigDataAnomalyReview, BigDataAnomalyReviewStatus, BigDataAnomalyCauseType, BigDataPhaseTwoDiagnostic, BigDataPhaseThreePrediction, BigDataScenario, BigDataScenarioAction, BigDataScenarioActionStatus, BigDataScenarioInput, BigDataScenarioSimulation, BigDataScenarioStatus, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName, MallComparisonResponse } from './types';
+import { SaleReport, IngestionResponse, DateRange, KPIData, User, ImportConfig, SaleDetail, ImportProtocol, FileType, ImportFrequency, RemoteConnection, RoleConfig, ConnectionMonitorStatusResponse, ConnectionMonitorFailuresResponse, ConnectionRetryActionResponse, ConnectionRetryBatchResponse, MissingDaysEmailSettings, MissingDaysSendNowResponse, ResendMessagingStatus, ResendSenderConfigPayload, ResendTestMessageResponse, SecurityApiToken, SecurityExporterWebserviceConfig, SecurityServiceAccount, SecurityTokenAuditLogEntry, SecurityTokenPairReveal, LoadLogEntry, CopilotSettings, CopilotSettingsPayload, CopilotChatMessage, CopilotChatResponse, CopilotEmailSendResponse, CopilotScheduleConfirmResponse, BigDataSummary, BigDataCategory, BigDataRanking, BigDataForecast, BigDataExecutiveSummary, BigDataPhaseOne, BigDataCalendarDayBreakdown, BigDataAnomalyReview, BigDataAnomalyReviewStatus, BigDataAnomalyCauseType, BigDataPhaseTwoDiagnostic, BigDataPhaseThreePrediction, BigDataScenario, BigDataScenarioAction, BigDataScenarioActionStatus, BigDataScenarioInput, BigDataScenarioSimulation, BigDataScenarioStatus, BigDataCalendarEvent, BigDataCalendarEventType, OperationalFinding, OperationsCollection, OperationsCollectionName, MallComparisonResponse } from './types';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -2982,6 +2982,21 @@ export const ApiService = {
         })
       },
       "No se pudo enviar el correo del Copilot"
+    );
+  },
+
+  async confirmCopilotSchedule(mallId: string, draftId: string, token: string): Promise<CopilotScheduleConfirmResponse> {
+    return fetchJsonWithBaseFallback<CopilotScheduleConfirmResponse>(
+      '/copilot/schedule/confirm',
+      {
+        method: 'POST',
+        headers: withAuthHeaders(token, {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }),
+        body: JSON.stringify({ mall_id: mallId, draft_id: draftId })
+      },
+      "No se pudo programar el proceso"
     );
   },
 

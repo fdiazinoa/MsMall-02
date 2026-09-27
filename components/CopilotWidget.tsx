@@ -1,14 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Download, FileSpreadsheet, FileText, Loader2, Mail, MessageCircle, RefreshCw, Send, Sparkles, X } from 'lucide-react';
+import { AlertCircle, Bot, CalendarClock, Download, FileSpreadsheet, FileText, Loader2, Mail, MessageCircle, RefreshCw, Send, Sparkles, X } from 'lucide-react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
-import { CopilotAttachment, CopilotChatMessage, CopilotEmailAction, CopilotSettings } from '../types';
+import { CopilotAttachment, CopilotChatMessage, CopilotEmailAction, CopilotScheduleAction, CopilotSettings } from '../types';
 
 const SUGGESTED_PROMPTS = [
   'Crear un reporte del log de errores facilitado con fecha, hora, local, error y observación',
   'Exportar en Excel todas las conexiones de Importación Automatizada',
   'Reporte de locales con cargas fallidas o parciales en los últimos 7 días',
   'Exportar el cubo con ventas faltantes en Excel resaltadas en rojo suave',
+  'Mañana a las 8:00 a. m. envíame los locales con 7 días consecutivos sin registrar ventas',
 ];
 
 const renderInlineMarkdown = (text: string): React.ReactNode[] => {
@@ -180,6 +181,43 @@ const CopilotEmailActionCard: React.FC<{
   );
 };
 
+const CopilotScheduleActionCard: React.FC<{
+  action: CopilotScheduleAction;
+  scheduling: boolean;
+  scheduled: boolean;
+  onConfirm: (action: CopilotScheduleAction) => void;
+}> = ({ action, scheduling, scheduled, onConfirm }) => {
+  const scheduledDate = new Date(action.scheduled_for_local || action.scheduled_for);
+  const dateLabel = Number.isNaN(scheduledDate.getTime())
+    ? action.scheduled_for_local
+    : scheduledDate.toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' });
+  return (
+    <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/80 p-3">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 h-9 w-9 shrink-0 rounded-lg bg-white text-indigo-600 flex items-center justify-center border border-indigo-100">
+          <CalendarClock size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-bold text-slate-900">Reporte programado</p>
+          <p className="mt-0.5 text-[11px] text-slate-600">{action.mall_name} · {dateLabel}</p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            {action.consecutive_days} días consecutivos sin ventas · {action.recipient_email}
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => onConfirm(action)}
+        disabled={scheduling || scheduled}
+        className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-700 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {scheduling ? <Loader2 size={14} className="animate-spin" /> : <CalendarClock size={14} />}
+        {scheduled ? 'Proceso programado' : scheduling ? 'Programando...' : 'Programar proceso'}
+      </button>
+    </div>
+  );
+};
+
 export const CopilotWidget: React.FC = () => {
   const { session, currentMall } = useAuth();
   const token = session?.access_token || '';
@@ -194,6 +232,8 @@ export const CopilotWidget: React.FC = () => {
   const [sending, setSending] = useState(false);
   const [sendingEmailIds, setSendingEmailIds] = useState<Record<string, boolean>>({});
   const [sentEmailIds, setSentEmailIds] = useState<Record<string, boolean>>({});
+  const [schedulingIds, setSchedulingIds] = useState<Record<string, boolean>>({});
+  const [scheduledIds, setScheduledIds] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -253,7 +293,7 @@ export const CopilotWidget: React.FC = () => {
 
     try {
       const response = await ApiService.sendCopilotMessage(mallId, question, messages, token, { log_text: logText, fecha_inicio: reportStart || undefined, fecha_fin: reportEnd || undefined });
-      setMessages([...nextMessages, { role: 'assistant', content: response.answer, attachments: response.attachments || [], email_actions: response.email_actions || [] }]);
+      setMessages([...nextMessages, { role: 'assistant', content: response.answer, attachments: response.attachments || [], email_actions: response.email_actions || [], schedule_actions: response.schedule_actions || [] }]);
       if (!status) {
         setStatus({
           enabled: true,
@@ -296,6 +336,31 @@ export const CopilotWidget: React.FC = () => {
       setError(e?.message || 'No se pudo enviar el correo.');
     } finally {
       setSendingEmailIds((prev) => ({ ...prev, [action.id]: false }));
+    }
+  };
+
+  const confirmScheduleAction = async (action: CopilotScheduleAction) => {
+    if (!token || !mallId || !action.id || schedulingIds[action.id] || scheduledIds[action.id]) return;
+    setSchedulingIds((prev) => ({ ...prev, [action.id]: true }));
+    setError(null);
+    try {
+      const result = await ApiService.confirmCopilotSchedule(mallId, action.id, token);
+      setScheduledIds((prev) => ({ ...prev, [action.id]: true }));
+      const scheduledDate = new Date(result.scheduled_for_local || result.scheduled_for);
+      const dateLabel = Number.isNaN(scheduledDate.getTime())
+        ? result.scheduled_for_local
+        : scheduledDate.toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' });
+      setMessages((prev) => ([
+        ...prev,
+        {
+          role: 'assistant',
+          content: `**Proceso programado**\n- Ejecución: **${dateLabel}**\n- Mall: **${result.mall_name}**\n- Período sin ventas: **${result.consecutive_days} días consecutivos**\n- Se enviará a: **${result.recipient_email}**`,
+        }
+      ]));
+    } catch (e: any) {
+      setError(e?.message || 'No se pudo programar el proceso.');
+    } finally {
+      setSchedulingIds((prev) => ({ ...prev, [action.id]: false }));
     }
   };
 
@@ -405,6 +470,15 @@ export const CopilotWidget: React.FC = () => {
                         sending={Boolean(sendingEmailIds[action.id])}
                         sent={Boolean(sentEmailIds[action.id])}
                         onSend={sendEmailAction}
+                      />
+                    ))}
+                    {message.role === 'assistant' && (message.schedule_actions || []).map((action) => (
+                      <CopilotScheduleActionCard
+                        key={action.id}
+                        action={action}
+                        scheduling={Boolean(schedulingIds[action.id])}
+                        scheduled={Boolean(scheduledIds[action.id])}
+                        onConfirm={confirmScheduleAction}
                       />
                     ))}
                   </div>

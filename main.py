@@ -105,6 +105,9 @@ from services.missing_days_email_service import (
     build_missing_days_email_html,
     send_missing_days_emails_for_mall,
 )
+from services.copilot_scheduled_tasks_service import (
+    parse_copilot_schedule_request,
+)
 from services import copilot_reports_service as copilot_reports
 from supabase import create_client, Client, ClientOptions
 from supabase_auth.errors import AuthRetryableError
@@ -248,6 +251,8 @@ _COPILOT_DOWNLOADS_LOCK = threading.Lock()
 _COPILOT_DOWNLOAD_TTL_SECONDS = 15 * 60
 _COPILOT_EMAIL_DRAFTS: Dict[str, Dict[str, Any]] = {}
 _COPILOT_EMAIL_DRAFTS_LOCK = threading.Lock()
+_COPILOT_SCHEDULE_DRAFTS: Dict[str, Dict[str, Any]] = {}
+_COPILOT_SCHEDULE_DRAFTS_LOCK = threading.Lock()
 
 def _env_int(name: str, default: int, min_value: int = 1, max_value: int = 3600) -> int:
     raw = os.getenv(name)
@@ -1625,6 +1630,10 @@ class CopilotChatRequest(BaseModel):
     history: List[CopilotChatMessage] = []
 
 class CopilotEmailSendRequest(BaseModel):
+    mall_id: str
+    draft_id: str
+
+class CopilotScheduleConfirmRequest(BaseModel):
     mall_id: str
     draft_id: str
 
@@ -6330,6 +6339,80 @@ def _cleanup_copilot_email_drafts(now: Optional[float] = None) -> None:
         _COPILOT_EMAIL_DRAFTS.pop(key, None)
 
 
+def _cleanup_copilot_schedule_drafts(now: Optional[float] = None) -> None:
+    current_time = now or time.time()
+    expired = [
+        key for key, item in _COPILOT_SCHEDULE_DRAFTS.items()
+        if float(item.get("expires_at_epoch") or 0) <= current_time
+    ]
+    for key in expired:
+        _COPILOT_SCHEDULE_DRAFTS.pop(key, None)
+
+
+def _store_copilot_schedule_draft(draft: Dict[str, Any]) -> Dict[str, Any]:
+    draft_id = secrets.token_urlsafe(24)
+    expires_at_epoch = time.time() + _COPILOT_DOWNLOAD_TTL_SECONDS
+    with _COPILOT_SCHEDULE_DRAFTS_LOCK:
+        _cleanup_copilot_schedule_drafts()
+        _COPILOT_SCHEDULE_DRAFTS[draft_id] = {
+            **draft,
+            "expires_at_epoch": expires_at_epoch,
+        }
+    return {
+        "id": draft_id,
+        "expires_at": datetime.utcfromtimestamp(expires_at_epoch).isoformat(),
+    }
+
+
+def _build_copilot_schedule_draft(
+    schedule_request: Dict[str, Any],
+    mall_id: str,
+    operator_ctx: Dict[str, Any],
+) -> Dict[str, Any]:
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+    owner_id = str(operator_ctx.get("user_id") or "").strip()
+    owner_email = str(operator_ctx.get("email") or "").strip().lower()
+    recipient_email = str(schedule_request.get("recipient_email") or "").strip().lower()
+    if not owner_id or not owner_email:
+        raise HTTPException(status_code=400, detail="Tu usuario no tiene un correo válido para programar envíos.")
+    if recipient_email != owner_email:
+        raise HTTPException(
+            status_code=400,
+            detail="Por seguridad, las tareas del Copilot solo pueden enviarse al correo del usuario autenticado.",
+        )
+
+    try:
+        mall_row = (
+            supabase.table("malls")
+            .select("id,nombre")
+            .eq("id", mall_id)
+            .maybe_single()
+            .execute()
+        ).data or {}
+    except Exception:
+        mall_row = {}
+    mall_name = str(mall_row.get("nombre") or "Mall seleccionado")
+    stored = _store_copilot_schedule_draft({
+        **schedule_request,
+        "mall_id": mall_id,
+        "mall_name": mall_name,
+        "owner_id": owner_id,
+        "owner_email": owner_email,
+        "idempotency_key": secrets.token_urlsafe(32),
+    })
+    return {
+        **stored,
+        "mall_id": mall_id,
+        "mall_name": mall_name,
+        "task_type": schedule_request["task_type"],
+        "recipient_email": recipient_email,
+        "scheduled_for": schedule_request["scheduled_for"],
+        "scheduled_for_local": schedule_request["scheduled_for_local"],
+        "timezone": schedule_request["timezone"],
+        "consecutive_days": schedule_request["consecutive_days"],
+    }
+
+
 def _build_copilot_email_draft(email_request: Dict[str, Any], context: Dict[str, Any], mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[str, Any]:
     recipients = email_request.get("recipients") or []
     if not recipients:
@@ -6448,6 +6531,97 @@ def _prepare_operational_report(payload, operator_ctx, intent):
         + ("\nCSV no admite colores; las celdas faltantes indican SIN VENTAS." if fmt == "csv" and intent["type"] == "cubo_faltantes" else ""),
         "provider": "deterministic", "model": "operational-reports-v1", "sources": definition["sources"],
         "context_generated_at": definition["generated_at"], "attachments": [attachment]}
+
+
+@app.post("/api/v1/copilot/schedule/confirm")
+async def confirm_copilot_schedule(
+    payload: CopilotScheduleConfirmRequest,
+    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+):
+    mall_id = str(payload.mall_id or "").strip()
+    draft_id = str(payload.draft_id or "").strip()
+    if not mall_id or not draft_id:
+        raise HTTPException(status_code=400, detail="mall_id y draft_id son requeridos.")
+    _ensure_operator_can_access_mall(operator_ctx, mall_id)
+
+    with _COPILOT_SCHEDULE_DRAFTS_LOCK:
+        _cleanup_copilot_schedule_drafts()
+        draft = _COPILOT_SCHEDULE_DRAFTS.get(draft_id)
+    if (
+        not draft
+        or draft.get("mall_id") != mall_id
+        or draft.get("owner_id") != operator_ctx.get("user_id")
+    ):
+        raise HTTPException(status_code=404, detail="Propuesta de programación no encontrada o expirada.")
+
+    owner_email = str(operator_ctx.get("email") or "").strip().lower()
+    if not owner_email or str(draft.get("recipient_email") or "").lower() != owner_email:
+        raise HTTPException(status_code=403, detail="El destinatario ya no coincide con el usuario autenticado.")
+    try:
+        scheduled_for = datetime.fromisoformat(str(draft.get("scheduled_for") or "").replace("Z", "+00:00"))
+        if scheduled_for.tzinfo is None:
+            scheduled_for = scheduled_for.replace(tzinfo=ZoneInfo("UTC"))
+        if scheduled_for <= datetime.now(ZoneInfo("UTC")):
+            raise HTTPException(status_code=409, detail="La fecha programada ya pasó. Solicita una nueva programación.")
+    except HTTPException:
+        raise
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="La propuesta tiene una fecha inválida.")
+
+    row = {
+        "mall_id": mall_id,
+        "created_by": operator_ctx["user_id"],
+        "recipient_email": owner_email,
+        "task_type": draft["task_type"],
+        "status": "scheduled",
+        "scheduled_for": draft["scheduled_for"],
+        "timezone": draft["timezone"],
+        "lookback_days": int(draft["lookback_days"]),
+        "consecutive_days": int(draft["consecutive_days"]),
+        "instruction": str(draft.get("instruction") or "")[:1400],
+        "idempotency_key": draft["idempotency_key"],
+    }
+    try:
+        saved_rows = supabase.table("copilot_scheduled_tasks").insert(row).execute().data or []
+        saved = saved_rows[0] if saved_rows else row
+    except Exception as exc:
+        error_text = str(exc).lower()
+        if "copilot_scheduled_tasks" in error_text and (
+            "does not exist" in error_text or "schema cache" in error_text or "pgrst205" in error_text
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="La base de datos aún no tiene instalada la migración de tareas del Copilot.",
+            )
+        if "duplicate" in error_text or "23505" in error_text:
+            existing = (
+                supabase.table("copilot_scheduled_tasks")
+                .select("*")
+                .eq("idempotency_key", draft["idempotency_key"])
+                .eq("created_by", operator_ctx["user_id"])
+                .maybe_single()
+                .execute()
+            ).data or {}
+            if not existing:
+                raise HTTPException(status_code=409, detail="La tarea ya fue confirmada.")
+            saved = existing
+        else:
+            logger.error("Error guardando tarea de Copilot: %s", sanitize_sensitive_ops_error(exc))
+            raise HTTPException(status_code=500, detail="No se pudo guardar la tarea programada.")
+
+    with _COPILOT_SCHEDULE_DRAFTS_LOCK:
+        _COPILOT_SCHEDULE_DRAFTS.pop(draft_id, None)
+    return {
+        "id": saved.get("id"),
+        "status": saved.get("status") or "scheduled",
+        "mall_id": mall_id,
+        "mall_name": draft.get("mall_name") or "Mall seleccionado",
+        "recipient_email": owner_email,
+        "scheduled_for": saved.get("scheduled_for") or draft["scheduled_for"],
+        "scheduled_for_local": draft["scheduled_for_local"],
+        "timezone": draft["timezone"],
+        "consecutive_days": int(draft["consecutive_days"]),
+    }
 
 
 @app.post("/api/v1/copilot/email/send")
@@ -6812,6 +6986,48 @@ async def chat_with_copilot(
         raise HTTPException(status_code=503, detail="Copilot MsMall esta desactivado.")
     if len(payload.log_text) > 100000:
         raise HTTPException(422, "El log supera 100,000 caracteres. Divide el archivo por período.")
+
+    try:
+        schedule_request = parse_copilot_schedule_request(
+            message,
+            user_email=operator_ctx.get("email"),
+        )
+    except ValueError as exc:
+        return {
+            "answer": f"**No pude completar la programación**\n- {str(exc)}",
+            "provider": "deterministic",
+            "model": "copilot-scheduler-v1",
+            "sources": [],
+            "attachments": [],
+            "email_actions": [],
+            "schedule_actions": [],
+        }
+    if schedule_request:
+        schedule_draft = await asyncio.to_thread(
+            _build_copilot_schedule_draft,
+            schedule_request,
+            mall_id,
+            operator_ctx,
+        )
+        scheduled_local = datetime.fromisoformat(schedule_draft["scheduled_for_local"])
+        local_label = scheduled_local.strftime("%d/%m/%Y %I:%M %p")
+        return {
+            "answer": (
+                "**Proceso listo para programar**\n"
+                f"- Mall: **{schedule_draft['mall_name']}**\n"
+                f"- Ejecución: **{local_label}** ({schedule_draft['timezone']})\n"
+                f"- Condición: locales con **{schedule_draft['consecutive_days']} días consecutivos** sin ventas registradas\n"
+                f"- Destinatario: **{schedule_draft['recipient_email']}**\n"
+                "- Confirma con el botón para guardar la tarea."
+            ),
+            "provider": "deterministic",
+            "model": "copilot-scheduler-v1",
+            "sources": ["copilot_scheduled_tasks"],
+            "attachments": [],
+            "email_actions": [],
+            "schedule_actions": [schedule_draft],
+        }
+
     operational_intent = copilot_reports.report_intent(message, payload.log_text)
     if operational_intent and not _parse_copilot_email_request(message):
         return await asyncio.to_thread(_prepare_operational_report, payload, operator_ctx, operational_intent)

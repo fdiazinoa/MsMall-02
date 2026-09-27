@@ -980,6 +980,7 @@ export interface CopilotChatMessage {
   content: string;
   attachments?: CopilotAttachment[];
   email_actions?: CopilotEmailAction[];
+  schedule_actions?: CopilotScheduleAction[];
 }
 
 export interface CopilotAttachment {
@@ -1002,6 +1003,7 @@ export interface CopilotChatResponse {
   sources: string[];
   attachments?: CopilotAttachment[];
   email_actions?: CopilotEmailAction[];
+  schedule_actions?: CopilotScheduleAction[];
 }
 
 export interface CopilotEmailAction {
@@ -1018,6 +1020,31 @@ export interface CopilotEmailSendResponse {
   sent: Array<{ email: string; resend_id?: string | null }>;
   subject: string;
   attachment_count: number;
+}
+
+export interface CopilotScheduleAction {
+  id: string;
+  mall_id: string;
+  mall_name: string;
+  task_type: 'missing_sales_consecutive';
+  recipient_email: string;
+  scheduled_for: string;
+  scheduled_for_local: string;
+  timezone: string;
+  consecutive_days: number;
+  expires_at?: string;
+}
+
+export interface CopilotScheduleConfirmResponse {
+  id?: string;
+  status: 'scheduled';
+  mall_id: string;
+  mall_name: string;
+  recipient_email: string;
+  scheduled_for: string;
+  scheduled_for_local: string;
+  timezone: string;
+  consecutive_days: number;
 }
 
 export type SecurityTokenType = 'app' | 'exporter';

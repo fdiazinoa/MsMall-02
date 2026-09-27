@@ -29,6 +29,7 @@ from services.connection_monitor_service import ConnectionMonitorService
 from services.date_parsing_service import normalize_sale_date
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import run_missing_days_email_scheduler
+from services.copilot_scheduled_tasks_service import run_copilot_scheduled_tasks
 from services.sensitive_ops_service import sanitize_error_text
 from services.cookieontop_service import is_cookieontop_config, fetch_sales as fetch_cookieontop_records
 from services.operations_agent_service import OperationsAgentWorker
@@ -3713,6 +3714,23 @@ async def run_missing_days_email_scheduler_if_due():
         logger.error(f"Missing-days email scheduler failed: {sanitize_error_text(e)}")
         return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
 
+
+async def run_copilot_scheduled_tasks_if_due():
+    if not supabase:
+        return {"executed": False, "reason": "supabase_not_configured"}
+    try:
+        result = await asyncio.to_thread(
+            lambda: run_copilot_scheduled_tasks(supabase, logger=logger)
+        )
+        if result.get("executed"):
+            logger.info("🤖 Copilot scheduled tasks executed: %s", result.get("runs"))
+        elif result.get("reason") not in {None, "tasks_table_unavailable"}:
+            logger.info("🤖 Copilot scheduled tasks skipped: %s", result)
+        return result
+    except Exception as e:
+        logger.error("Copilot scheduled tasks failed: %s", sanitize_error_text(e))
+        return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
+
 async def process_local_safe(local, semaphore):
     """
     Wraps the synchronous process_local_files in a semaphore and async thread,
@@ -3961,6 +3979,7 @@ async def run_worker_async():
             logger.info("😴 No active tasks for this hour.")
             run_deferred_big_data_jobs()
             email_scheduler_result = await run_missing_days_email_scheduler_if_due()
+            await run_copilot_scheduled_tasks_if_due()
             await run_connection_monitor_nightly_if_due()
             await _finish_worker_cycle(email_scheduler_result)
             return
@@ -3979,6 +3998,7 @@ async def run_worker_async():
         run_deferred_big_data_jobs()
         logger.info("🏁 Cycle finished.")
         email_scheduler_result = await run_missing_days_email_scheduler_if_due()
+        await run_copilot_scheduled_tasks_if_due()
         await run_connection_monitor_nightly_if_due()
         await _finish_worker_cycle(email_scheduler_result)
         

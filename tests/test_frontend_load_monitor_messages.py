@@ -21,6 +21,9 @@ def test_load_monitor_uses_operational_messages():
 
     assert "Diagnostico" in monitor
     assert "Accion recomendada" in monitor
+    assert "Resultado del contenido" in monitor
+    assert "No existen filas de datos para validar" in monitor
+    assert "el fallo ocurrio en conexion, descarga, validacion inicial o persistencia" not in monitor
     assert "describeLoadLog" in monitor
     assert "describeLoadLog" in import_manager
 

@@ -955,7 +955,7 @@ export interface MissingDaysSendNowResponse {
   message: string;
 }
 
-export type CopilotProvider = 'openai' | 'gemini';
+export type CopilotProvider = 'openai' | 'gemini' | 'openclaw';
 
 export interface CopilotSettings {
   enabled: boolean;
@@ -963,6 +963,7 @@ export interface CopilotSettings {
   model: string;
   api_key_configured: boolean;
   api_key_masked?: string;
+  gateway_configured?: boolean | null;
   available: boolean;
 }
 

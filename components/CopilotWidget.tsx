@@ -202,7 +202,9 @@ export const CopilotWidget: React.FC = () => {
 
   const providerName = useMemo(() => {
     if (!status?.provider) return 'Copilot';
-    return status.provider === 'gemini' ? 'Gemini' : 'ChatGPT';
+    if (status.provider === 'gemini') return 'Gemini';
+    if (status.provider === 'openclaw') return 'OpenClaw';
+    return 'ChatGPT';
   }, [status?.provider]);
 
   const loadStatus = async () => {

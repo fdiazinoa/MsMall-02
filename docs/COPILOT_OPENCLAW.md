@@ -18,11 +18,11 @@ Las solicitudes al gateway son deliberadamente independientes: no se envía `use
 Configurar en el servicio Railway que ejecuta `main.py`:
 
 ```text
-OPENCLAW_GATEWAY_URL=https://<dominio>/openclaw
+OPENCLAW_GATEWAY_URL=http://clawdbot-railway-template.railway.internal:3000/openclaw
 OPENCLAW_GATEWAY_TOKEN=<token del gateway>
 ```
 
-También se admite HTTP exclusivamente para `localhost` y dominios `*.railway.internal`. El token es una credencial de operador de OpenClaw: no debe llevar prefijo `VITE_`, guardarse en Supabase ni copiarse al frontend.
+MsMall y OpenClaw están en el mismo proyecto Railway, por lo que esta ruta usa la red privada y evita publicar el endpoint del Copilot en Internet. También se admite HTTPS para otros despliegues y HTTP exclusivamente para `localhost` o dominios `*.railway.internal`. El token es una credencial de operador de OpenClaw: no debe llevar prefijo `VITE_`, guardarse en Supabase ni copiarse al frontend.
 
 ## Configuración del gateway
 

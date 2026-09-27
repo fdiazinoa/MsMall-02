@@ -7,10 +7,11 @@ import { CopilotProvider, CopilotSettings as CopilotSettingsType } from '../type
 const DEFAULT_MODEL_BY_PROVIDER: Record<CopilotProvider, string> = {
   openai: 'gpt-4o-mini',
   gemini: 'gemini-1.5-flash',
+  openclaw: 'openclaw:msmall',
 };
 
 const providerLabel = (provider: CopilotProvider) => (
-  provider === 'gemini' ? 'Gemini' : 'ChatGPT / OpenAI'
+  provider === 'gemini' ? 'Gemini' : provider === 'openclaw' ? 'OpenClaw' : 'ChatGPT / OpenAI'
 );
 
 export const CopilotSettings: React.FC = () => {
@@ -181,6 +182,7 @@ export const CopilotSettings: React.FC = () => {
               >
                 <option value="openai">ChatGPT / OpenAI</option>
                 <option value="gemini">Gemini</option>
+                <option value="openclaw">OpenClaw (gateway privado)</option>
               </select>
             </div>
 
@@ -194,41 +196,60 @@ export const CopilotSettings: React.FC = () => {
               />
             </div>
 
-            <div className="lg:col-span-2 space-y-2">
-              <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
-                API key de {providerLabel(provider)}
-              </label>
-              <div className="relative">
-                <KeyRound size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => {
-                    setApiKey(e.target.value);
-                    if (e.target.value.trim()) setClearApiKey(false);
-                  }}
-                  placeholder={settings?.api_key_configured ? `Actual: ${settings.api_key_masked}` : 'Pegar nueva API key'}
-                  className="w-full rounded-xl border border-slate-300 pl-10 pr-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                />
+            {provider === 'openclaw' ? (
+              <div className="lg:col-span-2 rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+                <div className="flex items-start gap-3">
+                  <ShieldCheck size={18} className="mt-0.5 shrink-0 text-indigo-600" />
+                  <div>
+                    <p className="text-sm font-bold text-indigo-950">Credenciales privadas del gateway</p>
+                    <p className="mt-1 text-xs leading-5 text-indigo-800">
+                      Configura <code>OPENCLAW_GATEWAY_URL</code> y <code>OPENCLAW_GATEWAY_TOKEN</code> en el servicio backend de MsMall en Railway. El token no se guarda en Supabase ni se envía al navegador.
+                    </p>
+                    <p className="mt-2 text-xs font-bold text-indigo-900">
+                      Gateway: {settings?.gateway_configured ? 'configurado' : 'pendiente'} · Token: {settings?.api_key_configured ? 'configurado' : 'pendiente'}
+                    </p>
+                  </div>
+                </div>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="lg:col-span-2 space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                    API key de {providerLabel(provider)}
+                  </label>
+                  <div className="relative">
+                    <KeyRound size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="password"
+                      value={apiKey}
+                      onChange={(e) => {
+                        setApiKey(e.target.value);
+                        if (e.target.value.trim()) setClearApiKey(false);
+                      }}
+                      placeholder={settings?.api_key_configured ? `Actual: ${settings.api_key_masked}` : 'Pegar nueva API key'}
+                      className="w-full rounded-xl border border-slate-300 pl-10 pr-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </div>
+                </div>
 
-            <div className="lg:col-span-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl bg-slate-50 border border-slate-200 p-4">
-              <label className="inline-flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={clearApiKey}
-                  disabled={!settings?.api_key_configured || Boolean(apiKey.trim())}
-                  onChange={(e) => setClearApiKey(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-500"
-                />
-                Quitar API key actual
-              </label>
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-500">
-                <Trash2 size={14} />
-                {settings?.api_key_configured ? settings.api_key_masked : 'Sin clave guardada'}
-              </div>
-            </div>
+                <div className="lg:col-span-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl bg-slate-50 border border-slate-200 p-4">
+                  <label className="inline-flex items-center gap-2 text-sm font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={clearApiKey}
+                      disabled={!settings?.api_key_configured || Boolean(apiKey.trim())}
+                      onChange={(e) => setClearApiKey(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-500"
+                    />
+                    Quitar API key actual
+                  </label>
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-500">
+                    <Trash2 size={14} />
+                    {settings?.api_key_configured ? settings.api_key_masked : 'Sin clave guardada'}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
 

@@ -32,6 +32,7 @@ import xmltodict
 from ftplib import FTP
 import stat
 import urllib.error
+import urllib.parse
 import urllib.request
 from worker_importacion import (
     api_provider_name,
@@ -171,9 +172,14 @@ COPILOT_OPENAI_API_KEY_KEY = "COPILOT_OPENAI_API_KEY"
 COPILOT_GEMINI_API_KEY_KEY = "COPILOT_GEMINI_API_KEY"
 COPILOT_OPENAI_MODEL_KEY = "COPILOT_OPENAI_MODEL"
 COPILOT_GEMINI_MODEL_KEY = "COPILOT_GEMINI_MODEL"
+COPILOT_OPENCLAW_MODEL_KEY = "COPILOT_OPENCLAW_MODEL"
+OPENCLAW_GATEWAY_URL_ENV = "OPENCLAW_GATEWAY_URL"
+OPENCLAW_GATEWAY_TOKEN_ENV = "OPENCLAW_GATEWAY_TOKEN"
+COPILOT_OPENCLAW_AGENT_ID = "msmall"
 COPILOT_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "gemini": "gemini-1.5-flash",
+    "openclaw": "openclaw:msmall",
 }
 ADMIN_ROLES = {"admin", "superadmin", "super_admin", "administrador"}
 IT_ROLES = {"it", "tic"}
@@ -5409,7 +5415,9 @@ def _normalize_copilot_provider(value: Optional[str]) -> str:
     provider = str(value or "openai").strip().lower()
     if provider in {"chatgpt", "gpt", "open_ai"}:
         provider = "openai"
-    if provider not in {"openai", "gemini"}:
+    if provider in {"open_claw", "clawdbot"}:
+        provider = "openclaw"
+    if provider not in {"openai", "gemini", "openclaw"}:
         raise HTTPException(status_code=400, detail="Proveedor de Copilot invalido.")
     return provider
 
@@ -5419,7 +5427,24 @@ def _copilot_api_key_name(provider: str) -> str:
 
 
 def _copilot_model_key(provider: str) -> str:
-    return COPILOT_GEMINI_MODEL_KEY if provider == "gemini" else COPILOT_OPENAI_MODEL_KEY
+    if provider == "gemini":
+        return COPILOT_GEMINI_MODEL_KEY
+    if provider == "openclaw":
+        return COPILOT_OPENCLAW_MODEL_KEY
+    return COPILOT_OPENAI_MODEL_KEY
+
+
+def _openclaw_gateway_credentials() -> Tuple[str, str]:
+    return (
+        str(os.getenv(OPENCLAW_GATEWAY_URL_ENV) or "").strip(),
+        str(os.getenv(OPENCLAW_GATEWAY_TOKEN_ENV) or "").strip(),
+    )
+
+
+def _copilot_provider_secret(provider: str) -> str:
+    if provider == "openclaw":
+        return _openclaw_gateway_credentials()[1]
+    return _get_system_health_value(_copilot_api_key_name(provider)) or ""
 
 
 def _mask_secret(value: Optional[str]) -> str:
@@ -5441,15 +5466,22 @@ def _copilot_config_status() -> Dict[str, Any]:
         _get_system_health_value(_copilot_model_key(provider))
         or COPILOT_DEFAULT_MODELS[provider]
     )
-    api_key = _get_system_health_value(_copilot_api_key_name(provider)) or ""
+    if provider == "openclaw" and model not in {"openclaw:msmall", "agent:msmall"}:
+        model = COPILOT_DEFAULT_MODELS["openclaw"]
+    api_key = _copilot_provider_secret(provider)
+    gateway_url, _ = _openclaw_gateway_credentials()
     enabled = _copilot_enabled_from_value(_get_system_health_value(COPILOT_ENABLED_KEY))
+    provider_configured = bool(api_key)
+    if provider == "openclaw":
+        provider_configured = provider_configured and bool(gateway_url)
     return {
         "enabled": enabled,
         "provider": provider,
         "model": model,
         "api_key_configured": bool(api_key),
         "api_key_masked": _mask_secret(api_key),
-        "available": enabled and bool(api_key),
+        "gateway_configured": bool(gateway_url) if provider == "openclaw" else None,
+        "available": enabled and provider_configured,
     }
 
 
@@ -5457,6 +5489,20 @@ def _save_copilot_settings(payload: CopilotSettingsRequest) -> Dict[str, Any]:
     provider = _normalize_copilot_provider(payload.provider)
     model = str(payload.model or "").strip() or COPILOT_DEFAULT_MODELS[provider]
     api_key = None if payload.api_key is None else str(payload.api_key).strip()
+
+    if provider == "openclaw" and (payload.clear_api_key or api_key):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "El token de OpenClaw se administra mediante OPENCLAW_GATEWAY_TOKEN "
+                "en el backend de MsMall."
+            ),
+        )
+    if provider == "openclaw" and model not in {"openclaw:msmall", "agent:msmall"}:
+        raise HTTPException(
+            status_code=400,
+            detail="OpenClaw debe usar el agente aislado openclaw:msmall.",
+        )
 
     _upsert_system_health_value_sync(COPILOT_ENABLED_KEY, "true" if payload.enabled else "false")
     _upsert_system_health_value_sync(COPILOT_PROVIDER_KEY, provider)
@@ -6602,11 +6648,117 @@ def _call_gemini_copilot(api_key: str, model: str, context: Dict[str, Any], mess
         raise HTTPException(status_code=500, detail="Error inesperado consultando Gemini.")
 
 
+def _openclaw_chat_endpoint(gateway_url: str) -> str:
+    raw = str(gateway_url or "").strip().rstrip("/")
+    try:
+        parsed = urllib.parse.urlparse(raw)
+    except ValueError:
+        parsed = None
+    if (
+        not parsed
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HTTPException(status_code=503, detail="La URL privada de OpenClaw no es valida.")
+
+    hostname = parsed.hostname.lower()
+    if parsed.scheme == "http" and not (
+        hostname in {"127.0.0.1", "localhost", "::1"}
+        or hostname.endswith(".railway.internal")
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="OpenClaw requiere HTTPS o una URL privada de Railway.",
+        )
+
+    if parsed.path.endswith("/v1/chat/completions"):
+        return raw
+    if parsed.path.endswith("/v1"):
+        return f"{raw}/chat/completions"
+    return f"{raw}/v1/chat/completions"
+
+
+def _call_openclaw_copilot(
+    gateway_url: str,
+    gateway_token: str,
+    model: str,
+    context: Dict[str, Any],
+    message: str,
+    history: List[CopilotChatMessage],
+) -> str:
+    endpoint = _openclaw_chat_endpoint(gateway_url)
+    if model not in {"openclaw:msmall", "agent:msmall"}:
+        raise HTTPException(status_code=503, detail="El agente aislado msmall no esta seleccionado.")
+    messages = [{"role": "system", "content": _copilot_system_prompt()}]
+    messages.extend(_sanitize_copilot_history(history))
+    messages.append({"role": "user", "content": _build_copilot_user_context(context, message)})
+    payload = {
+        "model": model or COPILOT_DEFAULT_MODELS["openclaw"],
+        "messages": messages,
+        "temperature": 0.2,
+        "max_completion_tokens": 700,
+        "stream": False,
+    }
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {gateway_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": RESEND_USER_AGENT,
+            "x-openclaw-agent-id": COPILOT_OPENCLAW_AGENT_ID,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            raw_response = response.read(1_000_001)
+        if len(raw_response) > 1_000_000:
+            raise HTTPException(status_code=502, detail="OpenClaw devolvio una respuesta demasiado grande.")
+        parsed = json.loads(raw_response.decode("utf-8"))
+        return (
+            parsed.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        ) or "OpenClaw no devolvio una respuesta."
+    except urllib.error.HTTPError as exc:
+        raw_error = exc.read(4096).decode("utf-8", errors="replace")
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenClaw: {_extract_llm_error('Error consultando OpenClaw.', raw_error)}",
+        )
+    except urllib.error.URLError:
+        raise HTTPException(status_code=502, detail="No se pudo conectar con OpenClaw.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Copilot OpenClaw error: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="Error inesperado consultando OpenClaw.")
+
+
 def _call_copilot_provider(settings: Dict[str, Any], context: Dict[str, Any], message: str, history: List[CopilotChatMessage]) -> str:
     provider = _normalize_copilot_provider(settings.get("provider"))
-    api_key = _get_system_health_value(_copilot_api_key_name(provider)) or ""
+    api_key = _copilot_provider_secret(provider)
     if not api_key:
-        raise HTTPException(status_code=503, detail="Copilot no tiene API key configurada.")
+        raise HTTPException(status_code=503, detail="Copilot no tiene credenciales configuradas.")
+    if provider == "openclaw":
+        gateway_url, gateway_token = _openclaw_gateway_credentials()
+        if not gateway_url:
+            raise HTTPException(status_code=503, detail="Copilot no tiene gateway de OpenClaw configurado.")
+        return _call_openclaw_copilot(
+            gateway_url,
+            gateway_token,
+            settings.get("model") or "",
+            context,
+            message,
+            history,
+        )
     if provider == "gemini":
         return _call_gemini_copilot(api_key, settings.get("model") or "", context, message, history)
     return _call_openai_copilot(api_key, settings.get("model") or "", context, message, history)
@@ -6663,8 +6815,8 @@ async def chat_with_copilot(
     operational_intent = copilot_reports.report_intent(message, payload.log_text)
     if operational_intent and not _parse_copilot_email_request(message):
         return await asyncio.to_thread(_prepare_operational_report, payload, operator_ctx, operational_intent)
-    if not settings.get("api_key_configured") and not big_data_question:
-        raise HTTPException(status_code=503, detail="Copilot MsMall no tiene API key configurada.")
+    if not settings.get("available") and not big_data_question:
+        raise HTTPException(status_code=503, detail="Copilot MsMall no tiene proveedor disponible.")
 
     context_builder = (
         _build_big_data_copilot_context if big_data_question else _build_copilot_context

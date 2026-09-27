@@ -245,9 +245,11 @@ export const LoadMonitor: React.FC = () => {
 
   const selectedLogErrors = Array.isArray(selectedLog?.detalles) ? selectedLog.detalles : [];
   const selectedLogStatus = getNormalizedStatus(selectedLog);
-  const hasLineErrors = selectedLogErrors.length > 0;
-  const isExecutionFailure = selectedLogStatus === 'error' && !hasLineErrors;
   const selectedOperationalMessage = describeLoadLog(selectedLog);
+  const zeroDataReason = String(selectedLog?.metadata?.zero_data_reason || '').trim().toLowerCase();
+  const isZeroDataFailure = selectedLogStatus === 'error' && Boolean(zeroDataReason);
+  const hasLineErrors = selectedLogErrors.length > 0 && !isZeroDataFailure;
+  const isExecutionFailure = selectedLogStatus === 'error' && !hasLineErrors && !isZeroDataFailure;
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
@@ -504,14 +506,22 @@ export const LoadMonitor: React.FC = () => {
               <div>
                 <h4 className="mb-2 flex items-center gap-2 text-xs font-bold text-slate-800">
                   <AlertCircle size={16} className={isExecutionFailure ? 'text-red-500' : 'text-amber-500'} />
-                  {hasLineErrors
+                  {isZeroDataFailure
+                    ? 'Resultado del contenido'
+                    : hasLineErrors
                     ? `Resultado de Validacion (${selectedLogErrors.length} errores)`
                     : isExecutionFailure
                       ? selectedOperationalMessage.title
                       : 'Resultado de Validacion'}
                 </h4>
 
-                {hasLineErrors ? (
+                {isZeroDataFailure ? (
+                  <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
+                    <p className="text-xs font-medium text-amber-800">
+                      El archivo fue leido correctamente. No existen filas de datos para validar.
+                    </p>
+                  </div>
+                ) : hasLineErrors ? (
                   <div className="grid max-h-[180px] grid-cols-1 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
                     {selectedLogErrors.map((err, idx) => (
                       <div key={`${idx}-${err.linea || 0}`} className="flex items-start gap-2 rounded-lg border border-red-100 bg-red-50 p-2.5">
@@ -525,7 +535,7 @@ export const LoadMonitor: React.FC = () => {
                 ) : isExecutionFailure ? (
                   <div className="rounded-xl border border-red-100 bg-red-50 p-3">
                     <p className="text-xs text-red-700">
-                      No hay errores por linea: el fallo ocurrio en conexion, descarga, validacion inicial o persistencia.
+                      No se registraron errores por linea para este evento. Consulte el diagnostico indicado arriba.
                     </p>
                   </div>
                 ) : (

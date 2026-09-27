@@ -65,18 +65,6 @@ export const describeLoadLog = (log: LoadLogEntry | null): OperationalMessage =>
   const rowsRead = Number(metadata.rows_read);
   const rowsRejected = Number(metadata.rows_rejected);
 
-  // The final outcome is authoritative. A successful worker message such as
-  // "Insercion confirmada" must never be reclassified as a database error.
-  if (status === 'exito') {
-    return {
-      title: 'Carga completada.',
-      summary: rawMessage || `${processed} registros procesados correctamente.`,
-      cause: 'El archivo fue validado e insertado sin errores reportados.',
-      action: 'No requiere accion.',
-      category: 'Exito',
-    };
-  }
-
   if (text.includes('archivo nuevo no encontrado') || text.includes('0 pendientes')) {
     const summary = rawMessage.includes('ultimo archivo')
       ? rawMessage
@@ -264,6 +252,16 @@ export const describeLoadLog = (log: LoadLogEntry | null): OperationalMessage =>
       cause: 'Parte del archivo fue aceptada, pero algunos registros no cumplieron la validacion o no pudieron insertarse.',
       action: 'Revise las lineas con error, corrija el archivo y reprocese solo lo pendiente si aplica.',
       category: 'Validacion',
+    };
+  }
+
+  if (status === 'exito') {
+    return {
+      title: 'Carga completada.',
+      summary: rawMessage || `${processed} registros procesados correctamente.`,
+      cause: 'El archivo fue validado e insertado sin errores reportados.',
+      action: 'No requiere accion.',
+      category: 'Exito',
     };
   }
 

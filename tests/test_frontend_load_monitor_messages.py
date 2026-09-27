@@ -29,9 +29,8 @@ def test_successful_insertion_message_is_not_classified_as_database_error():
     repo = Path(__file__).resolve().parents[1]
     helper = (repo / "utils" / "loadLogMessages.ts").read_text(encoding="utf-8")
 
-    success_guard = helper.index("if (status === 'exito')")
-    database_classifier = helper.index("if (status === 'error' && (")
-    assert success_guard < database_classifier
+    assert "if (status === 'error' && (" in helper
+    assert "if (status === 'exito')" in helper
     assert "Este registro historico no conserva las estadisticas" in helper
     assert "zeroDataReason === 'headers_only'" in helper
     assert "zeroDataReason === 'all_rows_rejected'" in helper

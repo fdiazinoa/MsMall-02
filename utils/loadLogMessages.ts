@@ -60,6 +60,22 @@ export const describeLoadLog = (log: LoadLogEntry | null): OperationalMessage =>
   const processed = getLoadLogProcessedCount(log);
   const errors = getLoadLogErrorCount(log);
   const status = getLoadLogStatus(log);
+  const metadata = log?.metadata || {};
+  const zeroDataReason = String(metadata.zero_data_reason || '').trim().toLowerCase();
+  const rowsRead = Number(metadata.rows_read);
+  const rowsRejected = Number(metadata.rows_rejected);
+
+  // The final outcome is authoritative. A successful worker message such as
+  // "Insercion confirmada" must never be reclassified as a database error.
+  if (status === 'exito') {
+    return {
+      title: 'Carga completada.',
+      summary: rawMessage || `${processed} registros procesados correctamente.`,
+      cause: 'El archivo fue validado e insertado sin errores reportados.',
+      action: 'No requiere accion.',
+      category: 'Exito',
+    };
+  }
 
   if (text.includes('archivo nuevo no encontrado') || text.includes('0 pendientes')) {
     const summary = rawMessage.includes('ultimo archivo')
@@ -75,17 +91,59 @@ export const describeLoadLog = (log: LoadLogEntry | null): OperationalMessage =>
   }
 
   if (
-    text.includes('archivo leido con 0 datos')
+    Boolean(zeroDataReason)
+    || text.includes('archivo leido con 0 datos')
     || text.includes('archivo vacio')
     || text.includes('sin datos validos')
     || text.includes('no contiene registros')
     || text.includes('solo encabezado')
   ) {
+    if (zeroDataReason === 'empty_file') {
+      return {
+        title: 'El archivo esta vacio.',
+        summary: rawMessage,
+        cause: `El archivo recibido no contiene datos${Number.isFinite(Number(metadata.file_size_bytes)) ? ` (${Number(metadata.file_size_bytes)} bytes)` : ''}.`,
+        action: 'Solicite al locatario reenviar un archivo que contenga encabezados y filas de venta.',
+        category: 'Archivo',
+      };
+    }
+    if (zeroDataReason === 'headers_only') {
+      return {
+        title: 'El archivo solo contiene encabezados.',
+        summary: rawMessage,
+        cause: 'El importador reconocio la fila de encabezados, pero no encontro filas de datos debajo de ella.',
+        action: 'Solicite al locatario reenviar el archivo con las filas de venta.',
+        category: 'Archivo',
+      };
+    }
+    if (zeroDataReason === 'no_records') {
+      return {
+        title: 'El archivo no contiene registros.',
+        summary: rawMessage,
+        cause: 'La estructura del archivo fue leida correctamente, pero la coleccion de registros esta vacia.',
+        action: 'Solicite al locatario generar nuevamente el archivo con registros de venta.',
+        category: 'Archivo',
+      };
+    }
+    if (zeroDataReason === 'all_rows_rejected') {
+      const firstReason = rawError || 'Consulte los errores por linea registrados por el importador.';
+      return {
+        title: 'Todas las filas fueron rechazadas.',
+        summary: Number.isFinite(rowsRead)
+          ? `Se leyeron ${rowsRead} filas y ninguna paso la validacion inicial.`
+          : rawMessage,
+        cause: Number.isFinite(rowsRejected)
+          ? `${rowsRejected} filas fueron rechazadas. Primer motivo: ${firstReason}`
+          : `Primer motivo: ${firstReason}`,
+        action: 'Corrija los errores por linea indicados y vuelva a cargar el archivo.',
+        category: 'Validacion',
+      };
+    }
     return {
       title: 'Archivo leido con 0 datos.',
       summary: 'El archivo fue encontrado y leido, pero no contiene registros validos para cargar.',
-      cause: 'Puede estar vacio, contener solo encabezados o tener filas que no pasan la validacion inicial.',
-      action: 'Solicite al locatario reenviar el archivo con registros de venta o revise la linea donde inicia la data.',
+      cause: 'Este registro historico no conserva las estadisticas necesarias para determinar la causa exacta.',
+      action: 'Reprocese el archivo para obtener el diagnostico exacto de contenido y validacion.',
       category: 'Archivo',
     };
   }
@@ -182,14 +240,14 @@ export const describeLoadLog = (log: LoadLogEntry | null): OperationalMessage =>
     };
   }
 
-  if (
+  if (status === 'error' && (
     text.includes('insertar')
     || text.includes('insercion')
     || text.includes('base de datos')
     || text.includes('bd')
     || text.includes('persistencia')
     || text.includes('no se confirmo')
-  ) {
+  )) {
     return {
       title: 'Error al insertar informacion.',
       summary: rawMessage,
@@ -206,16 +264,6 @@ export const describeLoadLog = (log: LoadLogEntry | null): OperationalMessage =>
       cause: 'Parte del archivo fue aceptada, pero algunos registros no cumplieron la validacion o no pudieron insertarse.',
       action: 'Revise las lineas con error, corrija el archivo y reprocese solo lo pendiente si aplica.',
       category: 'Validacion',
-    };
-  }
-
-  if (status === 'exito') {
-    return {
-      title: 'Carga completada.',
-      summary: rawMessage || `${processed} registros procesados correctamente.`,
-      cause: 'El archivo fue validado e insertado sin errores reportados.',
-      action: 'No requiere accion.',
-      category: 'Exito',
     };
   }
 

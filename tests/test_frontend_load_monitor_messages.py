@@ -19,10 +19,22 @@ def test_load_monitor_uses_operational_messages():
     for message in expected_messages:
         assert message in helper
 
-    assert "Causa probable" in monitor
+    assert "Diagnostico" in monitor
     assert "Accion recomendada" in monitor
     assert "describeLoadLog" in monitor
     assert "describeLoadLog" in import_manager
+
+
+def test_successful_insertion_message_is_not_classified_as_database_error():
+    repo = Path(__file__).resolve().parents[1]
+    helper = (repo / "utils" / "loadLogMessages.ts").read_text(encoding="utf-8")
+
+    success_guard = helper.index("if (status === 'exito')")
+    database_classifier = helper.index("if (status === 'error' && (")
+    assert success_guard < database_classifier
+    assert "Este registro historico no conserva las estadisticas" in helper
+    assert "zeroDataReason === 'headers_only'" in helper
+    assert "zeroDataReason === 'all_rows_rejected'" in helper
 
 
 def test_load_monitor_requests_latest_1000_without_date_filter():

@@ -570,6 +570,17 @@ def _resolve_worker_processing_outcome(count: int, errors: list, stats: Optional
         )
         return estado, mensaje, True
 
+    zero_data_reason = str(stats.get("zero_data_reason") or "").strip().lower()
+    if zero_data_reason == "empty_file":
+        return "error", "Archivo vacio: no contiene contenido para procesar.", False
+    if zero_data_reason == "headers_only":
+        return "error", "Archivo con encabezados, pero sin filas de datos.", False
+    if zero_data_reason == "no_records":
+        return "error", "Archivo sin registros: la estructura fue leida, pero no contiene filas.", False
+    if zero_data_reason == "all_rows_rejected":
+        rows_read = int(stats.get("rows_read") or 0)
+        return "error", f"Se leyeron {rows_read} filas y ninguna paso la validacion inicial.", False
+
     if _is_empty_file_outcome(errors):
         return "error", "Archivo leido con 0 Datos", False
 
@@ -814,11 +825,20 @@ def process_file_logic(config, filename, content):
         "processing_error_count": 0,
         "date_min": None,
         "date_max": None,
+        "file_size_bytes": len(str(content or "").encode("utf-8")),
+        "rows_read": 0,
+        "rows_valid": 0,
+        "rows_rejected": 0,
+        "zero_data_reason": None,
     }
     
     try:
         file_type = config.get("file_type", "CSV").upper()
         raw_records = []
+
+        if not str(content or "").strip():
+            stats["zero_data_reason"] = "empty_file"
+            return 0, [{"linea": 0, "error": "El archivo esta vacio."}], stats
         
         # 1. Parse Content
         if file_type == "JSON":
@@ -851,8 +871,15 @@ def process_file_logic(config, filename, content):
             )
             raw_records = [_normalize_csv_row_keys(r) for r in reader]
             
+        stats["rows_read"] = len(raw_records)
         if not raw_records:
-            return 0, [{"linea": 0, "error": "Archivo vacío o sin datos válidos"}], stats
+            stats["zero_data_reason"] = "no_records" if file_type == "JSON" else "headers_only"
+            detail = (
+                "El archivo JSON no contiene registros."
+                if file_type == "JSON"
+                else "El archivo contiene encabezados, pero no filas de datos."
+            )
+            return 0, [{"linea": 0, "error": detail}], stats
             
         # Get store ID and Mall ID
         local_id = config.get('id')
@@ -1004,7 +1031,11 @@ def process_file_logic(config, filename, content):
                 detalles.append({"linea": i, "error": str(e)})
                 logger.error(f"Error en línea {i}: {e}")
 
+        stats["rows_valid"] = len(valid_rows)
+        stats["rows_rejected"] = len(detalles)
         stats["processing_error_count"] = len(detalles)
+        if raw_records and not valid_rows and detalles:
+            stats["zero_data_reason"] = "all_rows_rejected"
 
         if valid_rows:
             valid_rows, valid_line_numbers, duplicate_details = _filter_existing_sale_rows(
@@ -3143,6 +3174,8 @@ def process_local_files(config):
             for item in batch_files:
                 filename = item.filename
                 batch_id = str(uuid.uuid4())
+                errors = []
+                stats: Dict[str, Any] = {}
                 logger.info(f"🔄 [{processed_count + 1}/{len(batch_files)}] Procesando SFTP: {filename}")
                 
                 try:
@@ -3196,13 +3229,13 @@ def process_local_files(config):
                 except Exception as fe:
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
-                        config['nombre'], filename, "error", str(fe), batch_id,
+                        config['nombre'], filename, "error", str(fe), batch_id, errors,
                         mall_id=config.get("mall_id"),
                         local_id=config.get("id"),
                         canal=protocol,
                         records_processed=0,
-                        error_count=1,
-                        metadata={"source": "worker_auto_import", "exception": str(fe)},
+                        error_count=max(1, int((stats or {}).get("processing_error_count") or len(errors))),
+                        metadata={"source": "worker_auto_import", **(stats or {}), "exception": str(fe)},
                     )
                     try:
                         handle_post_process_sftp(
@@ -3294,6 +3327,8 @@ def process_local_files(config):
             processed_count = 0
             for filename in batch_files:
                 batch_id = str(uuid.uuid4())
+                errors = []
+                stats: Dict[str, Any] = {}
                 logger.info(f"🔄 [{processed_count + 1}/{len(batch_files)}] Procesando FTP: {filename}")
                 
                 try:
@@ -3346,13 +3381,13 @@ def process_local_files(config):
                 except Exception as fe:
                     logger.error(f"❌ Error crítico en archivo {filename}: {fe}")
                     insert_load_log(
-                        config['nombre'], filename, "error", str(fe), batch_id,
+                        config['nombre'], filename, "error", str(fe), batch_id, errors,
                         mall_id=config.get("mall_id"),
                         local_id=config.get("id"),
                         canal=protocol,
                         records_processed=0,
-                        error_count=1,
-                        metadata={"source": "worker_auto_import", "exception": str(fe)},
+                        error_count=max(1, int((stats or {}).get("processing_error_count") or len(errors))),
+                        metadata={"source": "worker_auto_import", **(stats or {}), "exception": str(fe)},
                     )
                     try:
                         handle_post_process_ftp(

@@ -848,9 +848,50 @@ def test_worker_empty_file_outcome_uses_zero_data_message(monkeypatch):
         },
     })
 
-    assert logs[0][0][3] == "Archivo leido con 0 Datos"
+    assert logs[0][0][3] == "Archivo con encabezados, pero sin filas de datos."
     assert logs[0][0][2] == "error"
+    assert logs[0][0][5] == [{"linea": 0, "error": "El archivo contiene encabezados, pero no filas de datos."}]
+    assert logs[0][1]["metadata"]["zero_data_reason"] == "headers_only"
+    assert logs[0][1]["metadata"]["rows_read"] == 0
     assert fake_sftp.renames == [("ventas_20260301.csv", "ERR_ventas_20260301.csv")]
+
+
+def test_worker_distinguishes_empty_file_from_headers_only(monkeypatch):
+    worker = _load_worker(monkeypatch)
+
+    count, errors, stats = worker.process_file_logic(
+        {"nombre": "Cafe", "id": "local-1", "mall_id": "mall-1", "file_type": "CSV"},
+        "ventas.csv",
+        "",
+    )
+
+    assert count == 0
+    assert errors == [{"linea": 0, "error": "El archivo esta vacio."}]
+    assert stats["zero_data_reason"] == "empty_file"
+    assert stats["file_size_bytes"] == 0
+
+
+def test_worker_reports_when_all_rows_fail_initial_validation(monkeypatch):
+    worker = _load_worker(monkeypatch)
+
+    count, errors, stats = worker.process_file_logic(
+        {
+            "nombre": "Cafe",
+            "id": "local-1",
+            "mall_id": "mall-1",
+            "file_type": "CSV",
+            "mapping_config": {"fecha_venta": "fecha", "total_bruto": "total"},
+        },
+        "ventas.csv",
+        "fecha,total\nfecha-invalida,100\n",
+    )
+    estado, mensaje, confirmed = worker._resolve_worker_processing_outcome(count, errors, stats)
+
+    assert (estado, confirmed) == ("error", False)
+    assert mensaje == "Se leyeron 1 filas y ninguna paso la validacion inicial."
+    assert stats["zero_data_reason"] == "all_rows_rejected"
+    assert stats["rows_read"] == 1
+    assert stats["rows_rejected"] == 1
 
 
 def test_worker_strips_legacy_custom_prefix_when_building_standard_marker(monkeypatch):

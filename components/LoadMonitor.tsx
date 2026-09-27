@@ -491,7 +491,7 @@ export const LoadMonitor: React.FC = () => {
                 <p className="mt-0.5 text-xs leading-5 text-slate-700">{selectedOperationalMessage.summary}</p>
                 <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
                   <div className="rounded-lg border border-indigo-100 bg-white/70 p-2.5">
-                    <p className="mb-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400">Causa probable</p>
+                    <p className="mb-0.5 text-[9px] font-bold uppercase tracking-widest text-slate-400">Diagnostico</p>
                     <p className="text-xs leading-5 text-slate-700">{selectedOperationalMessage.cause}</p>
                   </div>
                   <div className="rounded-lg border border-indigo-100 bg-white/70 p-2.5">

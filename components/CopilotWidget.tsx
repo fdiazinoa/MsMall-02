@@ -12,6 +12,18 @@ const SUGGESTED_PROMPTS = [
   'Mañana a las 8:00 a. m. envíame los locales con 7 días consecutivos sin registrar ventas',
 ];
 
+const formatDisplayName = (value: unknown): string => {
+  const normalized = String(value || '')
+    .replace(/[\r\n\t<>]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  return normalized
+    .split(' ')
+    .map((part) => (!part || part !== part.toLowerCase() ? part : `${part.charAt(0).toUpperCase()}${part.slice(1)}`))
+    .join(' ');
+};
+
 const renderInlineMarkdown = (text: string): React.ReactNode[] => {
   const nodes: React.ReactNode[] = [];
   const pattern = /\*\*(.+?)\*\*/g;
@@ -219,7 +231,7 @@ const CopilotScheduleActionCard: React.FC<{
 };
 
 export const CopilotWidget: React.FC = () => {
-  const { session, currentMall } = useAuth();
+  const { session, user, currentMall } = useAuth();
   const token = session?.access_token || '';
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<CopilotSettings | null>(null);
@@ -239,6 +251,21 @@ export const CopilotWidget: React.FC = () => {
 
   const mallId = currentMall?.id || '';
   const canAsk = Boolean(status?.available && mallId && token && !sending);
+  const displayName = useMemo(() => formatDisplayName(
+    user?.nombre_completo ||
+    user?.nombre ||
+    user?.name ||
+    session?.user?.user_metadata?.nombre ||
+    session?.user?.user_metadata?.full_name ||
+    session?.user?.user_metadata?.name ||
+    session?.user?.email?.split('@')[0]?.replace(/[._]+/g, ' ') ||
+    'usuario'
+  ), [session?.user?.email, session?.user?.user_metadata, user]);
+
+  const greeting = useMemo<CopilotChatMessage>(() => ({
+    role: 'assistant',
+    content: `**¡Hola, ${displayName}!**\n- Soy tu Copilot de MsMall para **${currentMall?.nombre || 'el mall seleccionado'}**.\n- Puedes preguntarme sobre ventas, locales, importadores, cargas, conexiones, reportes o procesos programados.`,
+  }), [currentMall?.nombre, displayName]);
 
   const providerName = useMemo(() => {
     if (!status?.provider) return 'Copilot';
@@ -267,11 +294,11 @@ export const CopilotWidget: React.FC = () => {
   };
 
   useEffect(() => {
-    setMessages([]);
+    setMessages(mallId ? [greeting] : []);
     setLogText('');
     setReportStart('');
     setReportEnd('');
-  }, [mallId, session?.user?.id]);
+  }, [greeting, mallId, session?.user?.id]);
 
   useEffect(() => {
     if (open) loadStatus();
@@ -404,7 +431,7 @@ export const CopilotWidget: React.FC = () => {
             </div>
 
             <div ref={scrollRef} className="h-[430px] max-h-[58vh] overflow-y-auto bg-slate-50 p-4 space-y-3">
-              {loadingStatus && messages.length === 0 && (
+              {loadingStatus && !status && (
                 <div className="flex items-center gap-2 text-sm text-slate-500">
                   <Loader2 size={16} className="animate-spin" />
                   Preparando contexto de MsMall...
@@ -429,7 +456,7 @@ export const CopilotWidget: React.FC = () => {
                 </div>
               )}
 
-              {messages.length === 0 && status?.available && (
+              {!messages.some((message) => message.role === 'user') && status?.available && (
                 <div className="rounded-xl border border-slate-200 bg-white p-4">
                   <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
                     <Sparkles size={16} className="text-indigo-500" />

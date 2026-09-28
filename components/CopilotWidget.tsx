@@ -24,6 +24,15 @@ const formatDisplayName = (value: unknown): string => {
     .join(' ');
 };
 
+const resolveDisplayName = (...values: unknown[]): string => {
+  const genericNames = new Set(['usuario', 'usuario msmall', 'msmall user', 'user']);
+  for (const value of values) {
+    const candidate = formatDisplayName(value);
+    if (candidate && !genericNames.has(candidate.toLocaleLowerCase('es'))) return candidate;
+  }
+  return 'Usuario';
+};
+
 const renderInlineMarkdown = (text: string): React.ReactNode[] => {
   const nodes: React.ReactNode[] = [];
   const pattern = /\*\*(.+?)\*\*/g;
@@ -251,28 +260,20 @@ export const CopilotWidget: React.FC = () => {
 
   const mallId = currentMall?.id || '';
   const canAsk = Boolean(status?.available && mallId && token && !sending);
-  const displayName = useMemo(() => formatDisplayName(
-    user?.nombre_completo ||
-    user?.nombre ||
-    user?.name ||
-    session?.user?.user_metadata?.nombre ||
-    session?.user?.user_metadata?.full_name ||
-    session?.user?.user_metadata?.name ||
-    session?.user?.email?.split('@')[0]?.replace(/[._]+/g, ' ') ||
-    'usuario'
+  const displayName = useMemo(() => resolveDisplayName(
+    user?.nombre,
+    user?.name,
+    session?.user?.user_metadata?.full_name,
+    session?.user?.user_metadata?.name,
+    session?.user?.user_metadata?.nombre,
+    user?.nombre_completo,
+    session?.user?.email?.split('@')[0]?.replace(/[._]+/g, ' ')
   ), [session?.user?.email, session?.user?.user_metadata, user]);
 
   const greeting = useMemo<CopilotChatMessage>(() => ({
     role: 'assistant',
     content: `**¡Hola, ${displayName}!**\n- Soy tu Copilot de MsMall para **${currentMall?.nombre || 'el mall seleccionado'}**.\n- Puedes preguntarme sobre ventas, locales, importadores, cargas, conexiones, reportes o procesos programados.`,
   }), [currentMall?.nombre, displayName]);
-
-  const providerName = useMemo(() => {
-    if (!status?.provider) return 'Copilot';
-    if (status.provider === 'gemini') return 'Gemini';
-    if (status.provider === 'openclaw') return 'OpenClaw';
-    return 'ChatGPT';
-  }, [status?.provider]);
 
   const loadStatus = async () => {
     if (!token || !mallId) {
@@ -406,7 +407,7 @@ export const CopilotWidget: React.FC = () => {
                 <div className="min-w-0">
                   <h3 className="text-sm font-bold leading-tight">Copilot MsMall</h3>
                   <p className="text-[11px] text-slate-300 truncate">
-                    {currentMall?.nombre || 'Mall seleccionado'} · {providerName}
+                    {currentMall?.nombre || 'Mall seleccionado'}
                   </p>
                 </div>
               </div>

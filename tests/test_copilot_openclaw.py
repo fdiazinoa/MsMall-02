@@ -6,6 +6,22 @@ from fastapi import HTTPException
 import main
 
 
+def test_display_name_prefers_real_identity_over_generic_profile_label():
+    assert main._resolve_display_name(
+        "Usuario MSMALL",
+        "Felix Diaz",
+        email="fdiaz@example.com",
+    ) == "Felix Diaz"
+
+
+def test_display_name_falls_back_to_email_when_only_generic_values_exist():
+    assert main._resolve_display_name(
+        "Usuario MSMALL",
+        "usuario",
+        email="felix.diaz@example.com",
+    ) == "felix diaz"
+
+
 class FakeResponse:
     def __init__(self, payload):
         self.payload = json.dumps(payload).encode("utf-8")

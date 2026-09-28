@@ -516,6 +516,15 @@ def _normalize_display_name(value: Any, email: Optional[str] = None) -> str:
     candidate = re.sub(r"[\r\n\t<>]+", " ", candidate)
     return re.sub(r"\s+", " ", candidate).strip()[:80]
 
+
+def _resolve_display_name(*values: Any, email: Optional[str] = None) -> str:
+    generic_names = {"usuario", "usuario msmall", "msmall user", "user"}
+    for value in values:
+        candidate = _normalize_display_name(value)
+        if candidate and candidate.casefold() not in generic_names:
+            return candidate
+    return _normalize_display_name(None, email)
+
 def _resolve_effective_role(email: Optional[str], role_candidates: List[Optional[str]]) -> str:
     if _is_system_admin_email(email):
         return "admin"
@@ -649,10 +658,10 @@ def _get_access_context_sync(user_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail="Supabase no configurado")
 
     email = None
-    metadata_name = None
+    metadata_names: List[Any] = []
     metadata_role = None
     profile_role = None
-    profile_name = None
+    profile_names: List[Any] = []
     mall_roles: List[str] = []
 
     try:
@@ -662,11 +671,11 @@ def _get_access_context_sync(user_id: str) -> Dict[str, Any]:
         user_metadata = _user_field(auth_user, "user_metadata", {}) or {}
         if isinstance(user_metadata, dict):
             metadata_role = user_metadata.get("rol") or user_metadata.get("role")
-            metadata_name = (
-                user_metadata.get("nombre")
-                or user_metadata.get("full_name")
-                or user_metadata.get("name")
-            )
+            metadata_names = [
+                user_metadata.get("full_name"),
+                user_metadata.get("name"),
+                user_metadata.get("nombre"),
+            ]
     except Exception as e:
         logger.warning(f"No se pudo cargar auth user para validar admin: {e}")
 
@@ -674,11 +683,11 @@ def _get_access_context_sync(user_id: str) -> Dict[str, Any]:
         prof = supabase.table("profiles").select("*").eq("id", user_id).maybe_single().execute()
         if prof and prof.data:
             profile_role = prof.data.get("role")
-            profile_name = (
-                prof.data.get("nombre_completo")
-                or prof.data.get("nombre")
-                or prof.data.get("name")
-            )
+            profile_names = [
+                prof.data.get("nombre"),
+                prof.data.get("name"),
+                prof.data.get("nombre_completo"),
+            ]
     except Exception as e:
         logger.warning(f"No se pudo cargar role de profiles para {user_id}: {e}")
 
@@ -734,7 +743,7 @@ def _get_access_context_sync(user_id: str) -> Dict[str, Any]:
     return {
         "user_id": user_id,
         "email": email,
-        "display_name": _normalize_display_name(profile_name or metadata_name, email),
+        "display_name": _resolve_display_name(*profile_names, *metadata_names, email=email),
         "role": role_key,
         "role_name": role_name,
         "legacy_role": effective_role,

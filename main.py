@@ -507,6 +507,15 @@ def _user_field(user: Any, field: str, default: Any = None) -> Any:
         return user.get(field, default)
     return getattr(user, field, default)
 
+
+def _normalize_display_name(value: Any, email: Optional[str] = None) -> str:
+    """Return a short presentation-only name; never use it for authorization."""
+    candidate = str(value or "").strip()
+    if not candidate and email:
+        candidate = str(email).split("@", 1)[0].replace(".", " ").replace("_", " ")
+    candidate = re.sub(r"[\r\n\t<>]+", " ", candidate)
+    return re.sub(r"\s+", " ", candidate).strip()[:80]
+
 def _resolve_effective_role(email: Optional[str], role_candidates: List[Optional[str]]) -> str:
     if _is_system_admin_email(email):
         return "admin"
@@ -640,8 +649,10 @@ def _get_access_context_sync(user_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail="Supabase no configurado")
 
     email = None
+    metadata_name = None
     metadata_role = None
     profile_role = None
+    profile_name = None
     mall_roles: List[str] = []
 
     try:
@@ -651,13 +662,23 @@ def _get_access_context_sync(user_id: str) -> Dict[str, Any]:
         user_metadata = _user_field(auth_user, "user_metadata", {}) or {}
         if isinstance(user_metadata, dict):
             metadata_role = user_metadata.get("rol") or user_metadata.get("role")
+            metadata_name = (
+                user_metadata.get("nombre")
+                or user_metadata.get("full_name")
+                or user_metadata.get("name")
+            )
     except Exception as e:
         logger.warning(f"No se pudo cargar auth user para validar admin: {e}")
 
     try:
-        prof = supabase.table("profiles").select("role").eq("id", user_id).maybe_single().execute()
+        prof = supabase.table("profiles").select("*").eq("id", user_id).maybe_single().execute()
         if prof and prof.data:
             profile_role = prof.data.get("role")
+            profile_name = (
+                prof.data.get("nombre_completo")
+                or prof.data.get("nombre")
+                or prof.data.get("name")
+            )
     except Exception as e:
         logger.warning(f"No se pudo cargar role de profiles para {user_id}: {e}")
 
@@ -713,6 +734,7 @@ def _get_access_context_sync(user_id: str) -> Dict[str, Any]:
     return {
         "user_id": user_id,
         "email": email,
+        "display_name": _normalize_display_name(profile_name or metadata_name, email),
         "role": role_key,
         "role_name": role_name,
         "legacy_role": effective_role,
@@ -5799,6 +5821,10 @@ def _build_big_data_copilot_context(
     context = {
         "generated_at_utc": datetime.utcnow().isoformat(),
         "mall": {"id": mall_id},
+        "usuario": {
+            "nombre": _normalize_display_name(operator_ctx.get("display_name"), operator_ctx.get("email")),
+            "rol": operator_ctx.get("role_name") or operator_ctx.get("role"),
+        },
         "periodo_analizado": {
             "inicio": month_start.isoformat(),
             "fin": today.isoformat(),
@@ -5934,6 +5960,10 @@ def _build_copilot_context(mall_id: str, operator_ctx: Dict[str, Any]) -> Dict[s
         "mall": {
             "id": mall_id,
             "nombre": mall_row.get("nombre") or "Mall seleccionado",
+        },
+        "usuario": {
+            "nombre": _normalize_display_name(operator_ctx.get("display_name"), operator_ctx.get("email")),
+            "rol": operator_ctx.get("role_name") or operator_ctx.get("role"),
         },
         "locales": {
             "total": connection_inventory.get("total_locales"),
@@ -6671,7 +6701,11 @@ async def send_copilot_email(
 def _copilot_system_prompt() -> str:
     return (
         "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
-        "Responde en español, de forma breve y accionable. Usa solamente el contexto JSON del sistema: "
+        "Conversa naturalmente en español y conserva el hilo usando el historial reciente. "
+        "Puedes dirigirte al usuario por usuario.nombre cuando exista; es un dato de presentacion, no de autorizacion. "
+        "Responde solamente sobre el mall activo indicado en mall y nunca mezcles datos de otro mall. "
+        "Para saludos o preguntas conversacionales responde brevemente, sin forzar formato de reporte. "
+        "Para consultas operativas, responde de forma breve y accionable usando solamente el contexto JSON del sistema: "
         "ventas recientes, monitor de carga, monitor de conexiones, locales y dias de informacion. "
         "Para cantidades o listados por tipo de conexion usa locales_por_tipo_conexion: "
         "incluye todos los locales del mall, no solo la muestra de locales ni las conexiones del monitor. "
@@ -6686,7 +6720,7 @@ def _copilot_system_prompt() -> str:
         "Si status es no_disponible, informa que no se pudo consultar el inventario; no lo interpretes como cero. "
         "Si el contexto no contiene un dato solicitado, dilo claramente y sugiere donde revisarlo. "
         "No inventes cifras, locales, fechas ni estados. Cuando sea util, menciona la fuente del dato. "
-        "Formato obligatorio: usa un titulo corto en negrita, luego lineas separadas con bullets. "
+        "En respuestas operativas usa un titulo corto en negrita y luego lineas separadas con bullets. "
         "Para reportes numericos, incluye periodo, fuente y maximo 8 bullets. "
         "No respondas en un parrafo largo; evita tablas markdown porque el chat es angosto."
     )

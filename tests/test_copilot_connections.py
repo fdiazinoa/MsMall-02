@@ -124,6 +124,7 @@ def context_namespace():
         "_load_copilot_locales": lambda *_: [],
         "_load_copilot_missing_days": lambda rows: {"evaluados": len(rows)},
         "_load_copilot_sales_summary": lambda rows: {"evaluados": len(rows)},
+        "_normalize_display_name": lambda value, email=None: value or (email or "").split("@")[0],
         "load_copilot_connection_inventory": load_copilot_connection_inventory,
         "CONNECTION_SOURCES": CONNECTION_SOURCES,
         "_connection_monitor_service": lambda: SimpleNamespace(get_status_summary=lambda **_: {}),
@@ -141,6 +142,24 @@ def test_context_uses_complete_inventory_without_expanding_sales_sample():
     assert result["ventas_recientes"] == {"evaluados": 0}
     assert result["locales_por_tipo_conexion"]["por_tipo"]["FTP"]["total"] == 90
     assert "locales_por_tipo_conexion" in scope["_copilot_system_prompt"]()
+
+
+def test_context_exposes_only_presentation_identity_and_active_mall():
+    scope = context_namespace()
+    result = scope["_build_copilot_context"](
+        "mall-1",
+        {"display_name": "Ana Pérez", "email": "ana@example.com", "role_name": "Auditora"},
+    )
+    assert result["mall"]["id"] == "mall-1"
+    assert result["usuario"] == {"nombre": "Ana Pérez", "rol": "Auditora"}
+    assert "email" not in result["usuario"]
+
+
+def test_prompt_supports_conversation_without_relaxing_mall_scope():
+    prompt = context_namespace()["_copilot_system_prompt"]()
+    assert "Conversa naturalmente" in prompt
+    assert "mall activo" in prompt
+    assert "nunca mezcles datos de otro mall" in prompt
 
 
 def test_context_query_failure_is_unavailable_not_zero():

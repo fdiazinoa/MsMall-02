@@ -269,8 +269,56 @@ def _normalize_text_for_csv(content: str) -> str:
 
 def _detect_delimiter(content: str) -> str:
     lines = [line for line in _normalize_text_for_csv(content).split("\n") if line.strip()]
-    first = lines[0] if lines else ""
-    return max([",", ";", "\t", "|"], key=lambda delimiter: first.count(delimiter))
+    sample = "\n".join(lines[:10])
+    candidates = [",", ";", "\t", "|"]
+    try:
+        return csv.Sniffer().sniff(sample, delimiters="".join(candidates)).delimiter
+    except Exception:
+        counts = {delimiter: sum(line.count(delimiter) for line in lines[:10]) for delimiter in candidates}
+        return max(counts, key=counts.get)
+
+
+def _worker_delimited_rows(
+    content: str,
+    constants: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], int, bool]:
+    """Parse CSV/TXT with the same header controls used by manual imports."""
+    normalized_content = _normalize_text_for_csv(content)
+    delimiter = _detect_delimiter(normalized_content)
+    configured_has_header = constants.get("_has_header")
+    has_header = True if configured_has_header in (None, "") else _parse_worker_bool(configured_has_header)
+    try:
+        data_start_row = max(1, int(str(constants.get("_data_start_row") or (2 if has_header else 1)).strip()))
+    except (TypeError, ValueError):
+        data_start_row = 2 if has_header else 1
+    if has_header:
+        data_start_row = max(2, data_start_row)
+
+    stream = io.StringIO(normalized_content)
+    if has_header:
+        reader = csv.DictReader(stream, delimiter=delimiter, skipinitialspace=True)
+        rows = [_normalize_csv_row_keys(row) for row in reader]
+        if data_start_row > 2:
+            rows = rows[data_start_row - 2:]
+        return rows, data_start_row, True
+
+    matrix_rows = [
+        row
+        for row in csv.reader(stream, delimiter=delimiter, skipinitialspace=True)
+        if any(str(cell or "").strip() for cell in row)
+    ]
+    if data_start_row > 1:
+        matrix_rows = matrix_rows[data_start_row - 1:]
+    if not matrix_rows:
+        return [], data_start_row, False
+
+    max_columns = max(len(row) for row in matrix_rows)
+    headers = [f"col_{index}" for index in range(1, max_columns + 1)]
+    rows = [
+        dict(zip(headers, list(row) + [""] * (max_columns - len(row))))
+        for row in matrix_rows
+    ]
+    return rows, data_start_row, False
 
 
 def _decode_worker_text(raw_bytes: bytes, is_json: bool = False) -> str:
@@ -835,6 +883,8 @@ def process_file_logic(config, filename, content):
     
     try:
         file_type = config.get("file_type", "CSV").upper()
+        mapping = config.get('mapping_config') or {}
+        constants = config.get('constants_config') or config.get('constants') or {}
         raw_records = []
 
         if not str(content or "").strip():
@@ -863,22 +913,23 @@ def process_file_logic(config, filename, content):
             except Exception as e:
                 return 0, [{"linea": 0, "error": f"Error parseando JSON: {e}"}], stats
         else:
-            # Default to CSV/TXT
-            normalized_content = _normalize_text_for_csv(content)
-            reader = csv.DictReader(
-                io.StringIO(normalized_content),
-                delimiter=_detect_delimiter(normalized_content),
-                skipinitialspace=True
-            )
-            raw_records = [_normalize_csv_row_keys(r) for r in reader]
+            # Default to CSV/TXT. Honor the same header and first-data-row
+            # settings as the manual importer so both paths parse identically.
+            raw_records, data_line_start, has_header = _worker_delimited_rows(content, constants)
             
         stats["rows_read"] = len(raw_records)
         if not raw_records:
-            stats["zero_data_reason"] = "no_records" if file_type == "JSON" else "headers_only"
+            stats["zero_data_reason"] = (
+                "no_records"
+                if file_type == "JSON"
+                else "headers_only" if has_header else "no_records"
+            )
             detail = (
                 "El archivo JSON no contiene registros."
                 if file_type == "JSON"
                 else "El archivo contiene encabezados, pero no filas de datos."
+                if has_header
+                else "El archivo no contiene filas de datos."
             )
             return 0, [{"linea": 0, "error": detail}], stats
             
@@ -891,9 +942,6 @@ def process_file_logic(config, filename, content):
         if not mall_id:
             return 0, [{"linea": 0, "error": "La configuración no tiene mall_id. Importación cancelada para evitar mezcla entre malls."}], stats
             
-        # Get mapping
-        mapping = config.get('mapping_config') or {}
-        constants = config.get('constants_config') or config.get('constants') or {}
         decimal_separator = constants.get("_decimal_separator", ".")
         moving_window_mode = _moving_window_enabled(constants)
         chars_to_remove = (
@@ -914,7 +962,9 @@ def process_file_logic(config, filename, content):
         valid_rows = []
         valid_line_numbers = []
 
-        for i, row in enumerate(raw_records, start=2):
+        data_line_start = data_line_start if file_type != "JSON" else 1
+        for record_index, row in enumerate(raw_records, start=1):
+            line_no = data_line_start + record_index - 1
             try:
                 normalized_row = _normalize_csv_row_keys(row)
                 lowered_row = {k.lower(): v for k, v in normalized_row.items()}
@@ -949,12 +999,12 @@ def process_file_logic(config, filename, content):
                 )
                 
                 if fecha_venta_raw and not fecha_venta:
-                     detalles.append({"linea": i, "error": f"Formato de fecha inválido: {fecha_venta_raw}"})
+                     detalles.append({"linea": line_no, "error": f"Formato de fecha inválido: {fecha_venta_raw}"})
                      continue
 
                 if _is_import_date_closed(fecha_venta, import_cutoff_date):
                     detalles.append({
-                        "linea": i,
+                        "linea": line_no,
                         "error": f"Fecha {fecha_venta} pertenece a un periodo cerrado (cierre hasta {import_cutoff_date})."
                     })
                     continue
@@ -962,7 +1012,7 @@ def process_file_logic(config, filename, content):
                 def resolve_transform_value(part: str) -> str:
                     clean_part = str(part or "").strip()
                     if clean_part in ("numero_registro", "linea", "_line_number"):
-                        return f"{i - 1:04d}"
+                        return f"{record_index:04d}"
                     if clean_part == "local_codigo":
                         return str(configured_local_code or "")
                     if clean_part == "fecha_venta" and fecha_venta:
@@ -975,7 +1025,7 @@ def process_file_logic(config, filename, content):
 
                 transform_mode = constants.get("_factura_numero_mode")
                 if transform_mode == "generated_sequence":
-                    factura_no = _format_generated_invoice(configured_local_code, fecha_venta, i - 1)
+                    factura_no = _format_generated_invoice(configured_local_code, fecha_venta, record_index)
                 elif transform_mode == "concat":
                     transform_fields = _split_transform_fields(constants.get("_factura_numero_concat_fields"))
                     separator = str(constants.get("_factura_numero_concat_separator", "-"))
@@ -996,18 +1046,18 @@ def process_file_logic(config, filename, content):
                 total_neto = clean_float(pick_value(mapping.get('total_neto', 'total_neto')))
                 
                 if not fecha_venta:
-                    detalles.append({"linea": i, "error": "Datos incompletos (Fecha faltante)"})
+                    detalles.append({"linea": line_no, "error": "Datos incompletos (Fecha faltante)"})
                     continue
 
                 if total_bruto == 0 and (total_impuestos != 0 or total_neto != 0):
                     detalles.append({
-                        "linea": i,
+                        "linea": line_no,
                         "error": "Datos inconsistentes (Total Bruto cero con impuestos o total neto distinto de cero)"
                     })
                     continue
 
                 if moving_window_mode and not factura_no:
-                    detalles.append({"linea": i, "error": "Datos incompletos (ID_Documento o No. Factura faltante)"})
+                    detalles.append({"linea": line_no, "error": "Datos incompletos (ID_Documento o No. Factura faltante)"})
                     continue
                 
                 payload = {
@@ -1023,14 +1073,14 @@ def process_file_logic(config, filename, content):
                     payload["mall_id"] = mall_id
 
                 valid_rows.append(payload)
-                valid_line_numbers.append(i)
+                valid_line_numbers.append(line_no)
                 if fecha_venta:
                     stats["date_min"] = min(stats["date_min"], fecha_venta) if stats["date_min"] else fecha_venta
                     stats["date_max"] = max(stats["date_max"], fecha_venta) if stats["date_max"] else fecha_venta
                 
             except Exception as e:
-                detalles.append({"linea": i, "error": str(e)})
-                logger.error(f"Error en línea {i}: {e}")
+                detalles.append({"linea": line_no, "error": str(e)})
+                logger.error(f"Error en línea {line_no}: {e}")
 
         stats["rows_valid"] = len(valid_rows)
         stats["rows_rejected"] = len(detalles)

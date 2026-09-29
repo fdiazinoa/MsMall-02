@@ -261,6 +261,71 @@ def test_worker_process_file_logic_generates_invoice_sequence(monkeypatch):
     ]
 
 
+def test_worker_processes_single_no_header_row_like_manual_jumbo_import(monkeypatch):
+    worker = _load_worker(monkeypatch)
+    fake_db = _FakeWorkerSupabase()
+    monkeypatch.setattr(worker, "supabase", fake_db)
+
+    content = "VT280926|28/09/2026|10:00||||118|18|100"
+    config = {
+        "nombre": "JUMBO",
+        "id": "local-jumbo",
+        "mall_id": "mall-agora",
+        "codigo_interno": "45",
+        "file_type": "TXT",
+        "mapping_config": {
+            "fecha_venta": "col_2",
+            "total_bruto": "col_7",
+            "total_impuestos": "col_8",
+            "total_neto": "col_9",
+        },
+        "constants_config": {
+            "_has_header": "false",
+            "_data_start_row": "1",
+            "_date_format": "DD/MM/YYYY",
+            "local_codigo": "45",
+            "_factura_numero_mode": "concat",
+            "_factura_numero_concat_fields": "col_1,col_2",
+            "_factura_numero_concat_separator": "-",
+        },
+    }
+
+    count, errors, stats = worker.process_file_logic(config, "VT280926.txt", content)
+
+    assert count == 1
+    assert errors == []
+    assert stats["rows_read"] == 1
+    assert stats["zero_data_reason"] is None
+    assert fake_db.tables["ventas"][0] == {
+        "local_id": "local-jumbo",
+        "mall_id": "mall-agora",
+        "fecha": "2026-09-28",
+        "factura_no": "VT280926-28092026",
+        "total_bruto": 118.0,
+        "total_impuestos": 18.0,
+        "total_neto": 100.0,
+    }
+
+
+def test_worker_no_header_data_start_row_skips_provider_preamble(monkeypatch):
+    worker = _load_worker(monkeypatch)
+
+    rows, line_start, has_header = worker._worker_delimited_rows(
+        "REPORTE DE VENTAS\nA;28/09/2026;118;18;100",
+        {"_has_header": "false", "_data_start_row": "2"},
+    )
+
+    assert has_header is False
+    assert line_start == 2
+    assert rows == [{
+        "col_1": "A",
+        "col_2": "28/09/2026",
+        "col_3": "118",
+        "col_4": "18",
+        "col_5": "100",
+    }]
+
+
 def test_worker_process_file_logic_rejects_closed_import_period(monkeypatch):
     worker = _load_worker(monkeypatch)
     fake_db = _FakeWorkerSupabase()

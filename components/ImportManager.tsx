@@ -311,7 +311,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
   // Manual Execution Modal State
   const [showManualModal, setShowManualModal] = useState(false);
-  const [manualFiles, setManualFiles] = useState<{ nombre: string, fecha: string, tamano: number }[]>([]);
+  const [manualFiles, setManualFiles] = useState<{ nombre: string, fecha: string | null, tamano: number }[]>([]);
   const [manualLoading, setManualLoading] = useState(false);
   const [manualLoadError, setManualLoadError] = useState<string | null>(null);
   const [executingFile, setExecutingFile] = useState<string | null>(null);
@@ -1249,6 +1249,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
     if (activeConfigId) {
       await refreshFileList(activeConfigId);
     }
+    await loadConfigs();
   };
 
   const handleSyncNow = async (id: string, name: string, configOverride?: ImportConfig) => {
@@ -1386,11 +1387,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
   ): Promise<{
     recovered: boolean;
     processedCount: number | null;
-    latestFiles: { nombre: string, fecha: string, tamano: number }[];
+    latestFiles: { nombre: string, fecha: string | null, tamano: number }[];
     renamedExists: boolean;
     originalExists: boolean;
   }> => {
-    let latestFiles: { nombre: string, fecha: string, tamano: number }[] = [];
+    let latestFiles: { nombre: string, fecha: string | null, tamano: number }[] = [];
     try {
       latestFiles = await ApiService.listRemoteFiles(config, authToken);
     } catch (error) {
@@ -1563,6 +1564,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       setFileStatuses(prev => ({ ...prev, [filename]: 'error' }));
     } finally {
       setExecutingFile(null);
+      void loadConfigs();
       // Only auto-close if successful or partial, NOT on error
       // Check current progressStep is tricky here due to closure, so we rely on checks above/logic
       // Actually, we can just check if we are NOT in error state? 
@@ -1685,6 +1687,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       setFileStatuses(prev => ({ ...prev, [targetFilename]: 'error' }));
     } finally {
       setExecutingFile(null);
+      void loadConfigs();
     }
   };
 
@@ -3734,7 +3737,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             </div>
                           </td>
                           <td className="px-5 py-4 text-xs text-slate-500">
-                            {new Date(file.fecha).toLocaleString()}
+                            {file.fecha ? new Date(file.fecha).toLocaleString() : 'No disponible'}
                           </td>
                           <td className="px-5 py-4 text-xs font-mono text-slate-500 text-right">
                             {(file.tamano / 1024).toFixed(1)} KB

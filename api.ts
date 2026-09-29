@@ -1558,9 +1558,9 @@ export const ApiService = {
     }
   },
 
-  async listRemoteFiles(config: ImportConfig, token?: string): Promise<{ nombre: string, fecha: string, tamano: number }[]> {
+  async listRemoteFiles(config: ImportConfig, token?: string): Promise<{ nombre: string, fecha: string | null, tamano: number }[]> {
     try {
-      return await fetchJsonWithBaseFallback<{ nombre: string, fecha: string, tamano: number }[]>(
+      return await fetchJsonWithBaseFallback<{ nombre: string, fecha: string | null, tamano: number }[]>(
         '/remote/list-files',
         {
           method: 'POST',

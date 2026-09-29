@@ -928,6 +928,37 @@ def _reactivate_local_after_success(config_data: Dict[str, Any], *, source: str)
             sanitize_sensitive_ops_error(e),
         )
 
+
+def _record_manual_execution(config_data: Dict[str, Any], *, source: str) -> None:
+    """Persist the last manual import attempt without hiding its primary result."""
+    local_id = config_data.get("id")
+    if not local_id:
+        return
+
+    try:
+        (
+            supabase.table("locales")
+            .update({
+                "ultima_ejecucion": datetime.now(
+                    ZoneInfo("America/Santo_Domingo")
+                ).isoformat(),
+            })
+            .eq("id", str(local_id))
+            .execute()
+        )
+        logger.info(
+            "Updated ultima_ejecucion for local %s after source=%s",
+            local_id,
+            source,
+        )
+    except Exception as e:
+        logger.warning(
+            "Manual import result saved, but ultima_ejecucion could not be updated "
+            "for local %s: %s",
+            local_id,
+            sanitize_sensitive_ops_error(e),
+        )
+
 def _apply_runtime_import_overrides(base_config: Dict[str, Any], runtime_config: Optional[Any]) -> Dict[str, Any]:
     if not runtime_config:
         return base_config
@@ -4626,7 +4657,7 @@ def _list_remote_files(config: Dict[str, Any]):
 
             seen_names = set()
 
-            def _append_file(name: str, size: int = 0):
+            def _append_file(name: str, size: int = 0, modified_at: Optional[str] = None):
                 clean_name = posixpath.basename((name or "").rstrip("/"))
                 if not clean_name or clean_name in seen_names:
                     return
@@ -4635,7 +4666,7 @@ def _list_remote_files(config: Dict[str, Any]):
                 seen_names.add(clean_name)
                 files.append({
                     "nombre": clean_name,
-                    "fecha": datetime.now().isoformat(), # FTP dates vary by server/listing format
+                    "fecha": modified_at,
                     "tamano": size
                 })
 
@@ -4647,7 +4678,22 @@ def _list_remote_files(config: Dict[str, Any]):
                     if (facts or {}).get("type") == "dir":
                         continue
                     file_size = int((facts or {}).get("size", 0) or 0)
-                    _append_file(name, file_size)
+                    modified_at = None
+                    raw_modified = str((facts or {}).get("modify") or "").strip()
+                    if raw_modified:
+                        try:
+                            ftp_modified = datetime.strptime(
+                                raw_modified.split(".", 1)[0],
+                                "%Y%m%d%H%M%S",
+                            ).replace(tzinfo=ZoneInfo("UTC"))
+                            modified_at = ftp_modified.isoformat()
+                        except ValueError:
+                            logger.warning(
+                                "FTP MLSD returned an invalid modify timestamp for %s: %s",
+                                name,
+                                raw_modified,
+                            )
+                    _append_file(name, file_size, modified_at)
             except Exception:
                 pass
 
@@ -4823,6 +4869,7 @@ async def _execute_manual_endpoint_impl(
                     "error_type": result.get("error_type"),
                 },
             )
+            _record_manual_execution(config_data, source=execution_source)
             risk_snapshot = None
             if records_processed > 0:
                 _reactivate_local_after_success(config_data, source=execution_source)
@@ -4961,6 +5008,7 @@ async def _execute_manual_endpoint_impl(
                 error_count=1,
                 metadata={"source": execution_source, "connection_error": error_msg},
             )
+            _record_manual_execution(config_data, source=execution_source)
             raise HTTPException(status_code=500, detail=f"Error de conexión remota ({protocolo}): {error_msg}")
 
         # 3. Procesar Contenido
@@ -4980,6 +5028,7 @@ async def _execute_manual_endpoint_impl(
                 error_count=len(detalles_errores),
                 metadata={"source": execution_source, "empty_payload": True},
             )
+            _record_manual_execution(config_data, source=execution_source)
             renaming_error = None
             try:
                 _rename_source_file("ERR_")
@@ -5028,6 +5077,7 @@ async def _execute_manual_endpoint_impl(
             error_count=len(detalles_errores or []),
             metadata={"source": execution_source},
         )
+        _record_manual_execution(config_data, source=execution_source)
 
         risk_snapshot = None
         if registros_exito > 0:
@@ -5078,6 +5128,7 @@ async def _execute_manual_endpoint_impl(
                 error_count=1,
                 metadata={"source": execution_source, "exception": str(e)},
             )
+            _record_manual_execution(config_data, source=execution_source)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if request_id and manual_exec_lock_acquired:

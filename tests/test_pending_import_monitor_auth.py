@@ -121,3 +121,97 @@ def test_successful_import_reactivates_only_suspended_local(monkeypatch):
         "source": "pending_import_monitor",
         "automatic_reactivation": True,
     }
+
+
+def test_manual_import_updates_last_execution_timestamp(monkeypatch):
+    main = _load_main(monkeypatch)
+    updates = []
+
+    class _FakeQuery:
+        def update(self, payload):
+            updates.append({"payload": payload})
+            return self
+
+        def eq(self, field, value):
+            updates[-1]["filter"] = (field, value)
+            return self
+
+        def execute(self):
+            return None
+
+    class _FakeSupabase:
+        def table(self, name):
+            assert name == "locales"
+            return _FakeQuery()
+
+    monkeypatch.setattr(main, "supabase", _FakeSupabase())
+
+    main._record_manual_execution(
+        {"id": "local-1"},
+        source="manual_remote_import",
+    )
+
+    assert updates[0]["filter"] == ("id", "local-1")
+    assert updates[0]["payload"]["ultima_ejecucion"].endswith("-04:00")
+
+
+def test_ftp_listing_uses_mlsd_modified_timestamp(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    class _FakeFtp:
+        def cwd(self, _path):
+            return None
+
+        def mlsd(self):
+            return [("ventas.txt", {
+                "type": "file",
+                "size": "128",
+                "modify": "20260929161129",
+            })]
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(main, "get_ftp_client", lambda *_args: _FakeFtp())
+
+    files = main._list_remote_files({
+        "protocolo": "FTP",
+        "host": "ftp.example.com",
+        "puerto": 21,
+        "usuario": "user",
+        "password": "secret",
+        "ruta_remota": ".",
+    })
+
+    assert files == [{
+        "nombre": "ventas.txt",
+        "fecha": "2026-09-29T16:11:29+00:00",
+        "tamano": 128,
+    }]
+
+
+def test_ftp_listing_does_not_invent_date_when_server_omits_it(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    class _FakeFtp:
+        def cwd(self, _path):
+            return None
+
+        def mlsd(self):
+            return [("ventas.txt", {"type": "file", "size": "0"})]
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(main, "get_ftp_client", lambda *_args: _FakeFtp())
+
+    files = main._list_remote_files({
+        "protocolo": "FTP",
+        "host": "ftp.example.com",
+        "puerto": 21,
+        "usuario": "user",
+        "password": "secret",
+        "ruta_remota": ".",
+    })
+
+    assert files[0]["fecha"] is None

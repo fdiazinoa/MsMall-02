@@ -4719,7 +4719,14 @@ def _list_remote_files(config: Dict[str, Any]):
                     _append_file(name, 0)
         finally:
             ftp.quit()
-    return sorted(files, key=lambda x: x["fecha"], reverse=True)
+    return sorted(
+        files,
+        key=lambda item: (
+            item.get("fecha") is not None,
+            item.get("fecha") or "",
+        ),
+        reverse=True,
+    )
 
 def _build_remote_listing_config(
     request_config: Dict[str, Any],

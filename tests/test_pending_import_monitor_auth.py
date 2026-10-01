@@ -198,7 +198,15 @@ def test_ftp_listing_does_not_invent_date_when_server_omits_it(monkeypatch):
             return None
 
         def mlsd(self):
-            return [("ventas.txt", {"type": "file", "size": "0"})]
+            return [
+                ("sin-fecha-1.txt", {"type": "file", "size": "0"}),
+                ("con-fecha.txt", {
+                    "type": "file",
+                    "size": "64",
+                    "modify": "20260930120000",
+                }),
+                ("sin-fecha-2.txt", {"type": "file", "size": "0"}),
+            ]
 
         def quit(self):
             return None
@@ -214,4 +222,10 @@ def test_ftp_listing_does_not_invent_date_when_server_omits_it(monkeypatch):
         "ruta_remota": ".",
     })
 
-    assert files[0]["fecha"] is None
+    assert [item["nombre"] for item in files] == [
+        "con-fecha.txt",
+        "sin-fecha-1.txt",
+        "sin-fecha-2.txt",
+    ]
+    assert files[1]["fecha"] is None
+    assert files[2]["fecha"] is None

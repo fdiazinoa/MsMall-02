@@ -1756,7 +1756,7 @@ export const ApiService = {
   async getLoadLogs(
     mallId?: string,
     token?: string,
-    options?: Partial<DateRange> & { limit?: number },
+    options?: Partial<DateRange> & { limit?: number; throwOnError?: boolean },
   ): Promise<LoadLogEntry[]> {
     try {
       const query = new URLSearchParams();
@@ -1780,6 +1780,7 @@ export const ApiService = {
       return Array.isArray(rows) ? rows.map(normalizeLoadLogRow) : [];
     } catch (error) {
       console.error('Error fetching load logs:', error);
+      if (options?.throwOnError) throw error;
       return [];
     }
   },

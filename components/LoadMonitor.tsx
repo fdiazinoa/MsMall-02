@@ -124,9 +124,10 @@ const SummaryTile = ({ label, value, subtle }: { label: string; value: React.Rea
 );
 
 export const LoadMonitor: React.FC = () => {
-  const { currentMall, session } = useAuth();
+  const { currentMall, session, isAdmin, isTic } = useAuth();
   const [logs, setLogs] = useState<LoadLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedLog, setSelectedLog] = useState<LoadLogEntry | null>(null);
   const [statusFilter, setStatusFilter] = useState<MonitorStatusFilter>('all');
@@ -135,13 +136,17 @@ export const LoadMonitor: React.FC = () => {
   const loadData = async () => {
     if (!currentMall?.id) return;
     setLoading(true);
+    setLoadError(null);
     try {
       const data = await ApiService.getLoadLogs(currentMall.id, session?.access_token, {
         limit: LOAD_MONITOR_MAX_LOGS,
+        throwOnError: true,
       });
       setLogs(data);
     } catch (e) {
       console.error(e);
+      setLogs([]);
+      setLoadError(e instanceof Error ? e.message : "No se pudo consultar el historial de cargas.");
     } finally {
       setLoading(false);
     }
@@ -255,16 +260,16 @@ export const LoadMonitor: React.FC = () => {
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex justify-between items-center">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Monitor de Cargas (TIC)</h2>
+          <h2 className="text-2xl font-bold text-slate-800">Monitor de Cargas</h2>
           <p className="text-slate-500">Auditoria en tiempo real de la ingesta de datos.</p>
         </div>
         <div className="flex items-center gap-3">
-          <button
+          {(isAdmin || isTic) && <button
             onClick={handleClearLogs}
             className="flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-xl text-sm font-bold transition-all border border-red-200"
           >
             <XCircle size={18} /> Limpiar Historial
-          </button>
+          </button>}
           <button
             onClick={loadData}
             className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
@@ -274,6 +279,8 @@ export const LoadMonitor: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {loadError && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{loadError}</div>}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard title="Cargas Exitosas" count={stats.exito} icon={CheckCircle2} color="text-green-600" bgColor="bg-green-50" />

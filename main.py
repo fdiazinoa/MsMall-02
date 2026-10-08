@@ -802,6 +802,12 @@ async def require_audit_read_access(user_id: str = Depends(get_current_user_id))
         raise HTTPException(status_code=403, detail="Permisos insuficientes para consultar logs.")
     return access_ctx
 
+async def require_load_logs_read_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    access_ctx = await _get_access_context(user_id)
+    if access_ctx["role"] not in {"admin", "it", "auditor"} and not _has_module_permission(access_ctx, "monitor", "view"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para ver Monitor de Cargas.")
+    return access_ctx
+
 def _get_user_mall_ids(user_id: str) -> List[str]:
     if not user_id or not supabase:
         return []
@@ -3290,7 +3296,7 @@ async def get_load_logs_secure(
     start_date: Optional[str] = Query(None, alias="start_date"),
     end_date: Optional[str] = Query(None, alias="end_date"),
     limit: int = Query(50, ge=1, le=1000),
-    operator_ctx: Dict[str, Any] = Depends(require_audit_read_access),
+    operator_ctx: Dict[str, Any] = Depends(require_load_logs_read_access),
 ):
     try:
         effective_mall_id = mall_id

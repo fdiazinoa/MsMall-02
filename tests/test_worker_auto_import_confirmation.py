@@ -967,3 +967,56 @@ def test_worker_strips_legacy_custom_prefix_when_building_standard_marker(monkey
         worker.AUTO_SUCCESS_PREFIX,
         ("MS02_",),
     ) == "PR_ventas_20260301.json"
+
+
+def test_worker_failed_download_remains_pending_and_next_run_succeeds(monkeypatch):
+    worker = _load_worker(monkeypatch)
+
+    for protocol in ("SFTP", "FTP"):
+        remote = _FakeSFTP({"Ventas kryolan2026-07-16.txt": b"sales"})
+        calls = []
+        logs = []
+
+        def download():
+            calls.append("download")
+            if len(calls) == 1:
+                raise TimeoutError("temporary transfer failure")
+            return b"sales"
+
+        def open_file(*_args):
+            return _FakeFile(download())
+
+        def retrbinary(_command, write):
+            write(download())
+
+        monkeypatch.setattr(remote, "open", open_file)
+        remote.cwd = lambda _path: None
+        remote.nlst = lambda: list(remote.files)
+        remote.retrbinary = retrbinary
+        remote.quit = lambda: None
+        monkeypatch.setattr(worker, "get_sftp_client", lambda *_args: (_FakeSSH(), remote))
+        monkeypatch.setattr(worker, "get_ftp_client", lambda *_args: remote)
+        monkeypatch.setattr(worker, "insert_load_log", lambda *args, **kwargs: logs.append(args))
+        monkeypatch.setattr(worker, "run_local_risk_analysis_if_possible", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(worker, "process_file_logic", lambda *_args: (1, [], {}))
+        config = {
+            "nombre": "KRYOLAN",
+            "id": "local-1",
+            "mall_id": "mall-1",
+            "sftp_protocol": protocol,
+            "sftp_host": "example.test",
+            "sftp_path": ".",
+            "file_type": "TXT",
+            "accion_post_procesado": "RENOMBRAR_BACKUP",
+        }
+
+        worker.process_local_files(config)
+        assert remote.renames == []
+        assert "Ventas kryolan2026-07-16.txt" in remote.files
+        assert logs[-1][2] == "error"
+
+        worker.process_local_files(config)
+        assert remote.renames == [
+            ("Ventas kryolan2026-07-16.txt", "PR_Ventas kryolan2026-07-16.txt")
+        ]
+        assert logs[-1][2] == "exito"

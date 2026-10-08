@@ -1346,7 +1346,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
   const filteredBatchCandidates = useMemo(() => {
     const matcher = maskToRegex(batchMask);
-    const nonProcessed = (manualFiles || []).filter((f) => !/^(PR_|ERR_)/i.test(f.nombre));
+    const nonProcessed = (manualFiles || []).filter((f) => !/^PR_/i.test(f.nombre));
     const matched = nonProcessed.filter((f) => matcher.test(f.nombre));
     return matched.sort((a, b) => {
       const at = new Date(a.fecha).getTime();

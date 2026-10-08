@@ -3227,6 +3227,7 @@ def process_local_files(config):
                 batch_id = str(uuid.uuid4())
                 errors = []
                 stats: Dict[str, Any] = {}
+                download_complete = False
                 logger.info(f"🔄 [{processed_count + 1}/{len(batch_files)}] Procesando SFTP: {filename}")
                 
                 try:
@@ -3236,6 +3237,7 @@ def process_local_files(config):
                             is_json=str(filename or "").lower().endswith(".json")
                         )
                     
+                    download_complete = True
                     count, errors, stats = _unpack_process_file_result(
                         process_file_logic(config, filename, content)
                     )
@@ -3288,6 +3290,10 @@ def process_local_files(config):
                         error_count=max(1, int((stats or {}).get("processing_error_count") or len(errors))),
                         metadata={"source": "worker_auto_import", **(stats or {}), "exception": str(fe)},
                     )
+                    if not download_complete:
+                        # A transfer failure says nothing about file validity. Keep
+                        # its name so the next scheduled execution can retry it.
+                        continue
                     try:
                         handle_post_process_sftp(
                             sftp,
@@ -3380,6 +3386,7 @@ def process_local_files(config):
                 batch_id = str(uuid.uuid4())
                 errors = []
                 stats: Dict[str, Any] = {}
+                download_complete = False
                 logger.info(f"🔄 [{processed_count + 1}/{len(batch_files)}] Procesando FTP: {filename}")
                 
                 try:
@@ -3391,6 +3398,7 @@ def process_local_files(config):
                         is_json=str(filename or "").lower().endswith(".json")
                     )
                     
+                    download_complete = True
                     count, errors, stats = _unpack_process_file_result(
                         process_file_logic(config, filename, content)
                     )
@@ -3440,6 +3448,9 @@ def process_local_files(config):
                         error_count=max(1, int((stats or {}).get("processing_error_count") or len(errors))),
                         metadata={"source": "worker_auto_import", **(stats or {}), "exception": str(fe)},
                     )
+                    if not download_complete:
+                        # Retry incomplete downloads on the next scheduled run.
+                        continue
                     try:
                         handle_post_process_ftp(
                             ftp,

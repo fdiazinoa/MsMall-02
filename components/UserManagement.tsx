@@ -6,7 +6,7 @@ import { UserPlus, Shield, ShieldCheck, ShieldAlert, CheckCircle2, UserCog, Buil
 import { RoleConfig, RolePermission } from '../types';
 
 const MODULES = [
-  ['dashboard', 'Dashboard BI'], ['sales_reports', 'Reportes de ventas'], ['stores', 'Locales'],
+  ['dashboard', 'Dashboard BI'], ['sales_reports', 'Reportes de ventas'], ['stores', 'Mantenimiento de Locales'],
   ['imports', 'Importaciones'], ['monitor', 'Monitor de cargas'], ['financial', 'Gestión financiera'],
   ['cube', 'Cubo de ventas'], ['comparisons', 'Comparativa de malls'], ['malls', 'Gestión de malls'],
   ['users', 'Usuarios'], ['roles', 'Roles y permisos'],

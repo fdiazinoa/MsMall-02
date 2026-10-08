@@ -236,8 +236,11 @@ const DefinitionOptionsEditor: React.FC<{
 };
 
 export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalogs }) => {
-  const { currentMall, isAdmin, isTic, session } = useAuth();
-  const canManageStores = isAdmin || isTic;
+  const { currentMall, isAdmin, isTic, session, canAccess } = useAuth();
+  const canManageStores = isAdmin || isTic || canAccess('stores');
+  const canCreateStores = isAdmin || isTic || canAccess('stores', 'create');
+  const canUpdateStores = isAdmin || isTic || canAccess('stores', 'update');
+  const canManageFieldDefinitions = isAdmin || isTic;
   const authToken = session?.access_token;
 
   const [stores, setStores] = useState<Store[]>([]);
@@ -376,6 +379,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (newStore.id ? !canUpdateStores : !canCreateStores) return;
     if (!currentMall?.id) {
       alert("Error: No se ha seleccionado un Mall.");
       return;
@@ -415,7 +419,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
         ? await ApiService.updateStore(storeToSave.id, storeToSave, authToken)
         : await ApiService.createStore(storeToSave, authToken);
 
-      if (activeFieldDefinitions.length > 0) {
+      if (canUpdateStores && activeFieldDefinitions.length > 0) {
         await ApiService.saveStoreCustomFields(savedStore.id, customValuesPayload, authToken);
       }
 
@@ -434,6 +438,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   };
 
   const handleDeactivate = async (store: Store) => {
+    if (!canUpdateStores) return;
     const today = new Intl.DateTimeFormat('sv-SE', {
       timeZone: 'America/Santo_Domingo',
     }).format(new Date());
@@ -458,6 +463,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   };
 
   const handleReactivateStore = async (store: Store) => {
+    if (!canUpdateStores) return;
     if (!confirm(`¿Reactivar "${store.nombre}"?\nEl importador no se encenderá automáticamente.`)) return;
     try {
       await ApiService.updateStore(store.id, {
@@ -473,12 +479,14 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   };
 
   const handleEdit = async (store: Store) => {
+    if (!canUpdateStores) return;
     setNewStore({ ...store });
     setShowForm(true);
     await loadStoreCustomFieldValues(store.id);
   };
 
   const handleNewStore = () => {
+    if (!canCreateStores) return;
     resetStoreForm();
     setShowForm(true);
   };
@@ -538,7 +546,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
   if (!canManageStores) {
     return (
       <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm font-medium">
-        Solo usuarios con rol IT o ADMIN pueden gestionar locales.
+        No tienes permiso para ver Mantenimiento de Locales.
       </div>
     );
   }
@@ -562,6 +570,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
             </button>
           )}
           <button
+            disabled={!canManageFieldDefinitions}
             onClick={() => setShowCustomFieldsManager(true)}
             className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition-all hover:bg-slate-50"
           >
@@ -570,6 +579,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
           </button>
           <button
             type="button"
+            disabled={!isAdmin && !isTic}
             onClick={() => setShowSalesPurge(true)}
             className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-600 transition-all hover:bg-red-100"
           >
@@ -577,6 +587,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
             Depurar ventas
           </button>
           <button
+            disabled={!canCreateStores}
             onClick={handleNewStore}
             className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md transition-all hover:bg-indigo-700 active:scale-95"
           >
@@ -754,7 +765,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
               </div>
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-5">
+            <fieldset disabled={!canUpdateStores} className="rounded-2xl border border-slate-200 bg-slate-50/60 p-5">
               <div className="flex items-center gap-3 mb-4">
                 <div className="rounded-lg bg-indigo-100 p-2 text-indigo-600">
                   <Layers3 size={18} />
@@ -837,7 +848,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                   })}
                 </div>
               )}
-            </div>
+            </fieldset>
 
             <div className="sticky bottom-0 flex justify-end gap-3 border-t border-slate-100 bg-white/95 pt-4 backdrop-blur">
               <button type="button" onClick={() => { setShowForm(false); resetStoreForm(); }} className="px-6 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors">Cancelar</button>
@@ -1139,6 +1150,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                     </td>
                     <td className="sticky right-0 z-10 bg-white px-4 py-3 text-right group-hover:bg-slate-50">
                       <div className="flex items-center justify-end gap-1">
+                        {canUpdateStores && <>
                         {store.activo !== false && store.processing_status === 'SUSPENDED_AUTH_ERROR' ? (
                           <button
                             onClick={async () => {
@@ -1169,6 +1181,7 @@ export const StoreMaintenance: React.FC<StoreMaintenanceProps> = ({ onOpenCatalo
                             )}
                           </>
                         )}
+                        </>}
                       </div>
                     </td>
                   </tr>

@@ -3355,7 +3355,7 @@ async def clear_load_logs(
 @app.post("/api/v1/locales/{local_id}/reactivate-processing", status_code=status.HTTP_200_OK)
 async def reactivate_local_processing(
     local_id: str,
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access)
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("stores", "update"))
 ):
     try:
         return _sensitive_ops_service().reactivate_local_processing(
@@ -3581,7 +3581,7 @@ async def get_stores():
 @app.post("/api/v1/locales", status_code=status.HTTP_201_CREATED)
 async def create_store_backend(
     payload: Dict[str, Any] = Body(...),
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("stores", "create")),
 ):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado")
@@ -3608,7 +3608,7 @@ async def create_store_backend(
 async def update_store_backend(
     local_id: str,
     payload: Dict[str, Any] = Body(...),
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("stores", "update")),
 ):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado")
@@ -3640,7 +3640,7 @@ async def update_store_backend(
 @app.delete("/api/v1/locales/{local_id}", status_code=status.HTTP_200_OK)
 async def delete_store_backend(
     local_id: str,
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("stores", "delete")),
 ):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase no configurado")
@@ -3660,7 +3660,7 @@ async def delete_store_backend(
 async def list_local_custom_fields(
     mall_id: str = Query(...),
     include_inactive: bool = Query(True),
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("stores", "view")),
 ):
     _ensure_operator_can_access_mall(operator_ctx, mall_id)
     return _local_custom_fields_service().list_definitions(mall_id, include_inactive=include_inactive)
@@ -3696,7 +3696,7 @@ async def update_local_custom_field(
 async def get_local_custom_fields(
     local_id: str,
     include_inactive: bool = Query(False),
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("stores", "view")),
 ):
     return _local_custom_fields_service().get_local_fields(
         local_id,
@@ -3710,7 +3710,7 @@ async def get_local_custom_fields(
 async def upsert_local_custom_fields(
     local_id: str,
     request: LocalCustomFieldValueUpsertRequest,
-    operator_ctx: Dict[str, Any] = Depends(require_it_or_admin_access),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("stores", "update")),
 ):
     return _local_custom_fields_service().upsert_local_values(
         local_id,

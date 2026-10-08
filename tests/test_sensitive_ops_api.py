@@ -392,7 +392,7 @@ def test_load_logs_endpoint_accepts_mall_query_without_current_mall_dependency(m
                 "detalles": [],
             }]
 
-    main.app.dependency_overrides[main.require_audit_read_access] = lambda: {"user_id": "u1", "role": "auditor"}
+    main.app.dependency_overrides[main.require_load_logs_read_access] = lambda: {"user_id": "u1", "role": "auditor"}
     monkeypatch.setattr(main, "_sensitive_ops_service", lambda: _Svc())
 
     try:

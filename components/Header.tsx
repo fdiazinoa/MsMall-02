@@ -24,7 +24,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     { id: 'comparisons', label: 'Comparativa Malls', visible: isAdmin || isTic || isAuditor || canAccess('comparisons') },
     { id: 'reports', label: 'Auditoría Ventas', visible: isAdmin || isTic || isAuditor },
     { id: 'operations', label: 'Operations Center', visible: isAdmin || isTic || isAuditor },
-    { id: 'monitor', label: 'Monitor de Cargas', visible: isAdmin || isTic },
+    { id: 'monitor', label: 'Monitor de Cargas', visible: isAdmin || isTic || canAccess('monitor') },
     { id: 'stores', label: 'Mantenimiento de Locales', visible: isAdmin || isTic || canAccess('stores') },
     { id: 'store-catalogs', label: 'Catálogos Locales', visible: isAdmin || isTic },
     { id: 'auto-import', label: 'Importación FTP', visible: isAdmin || isTic },

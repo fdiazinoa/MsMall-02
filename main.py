@@ -6771,6 +6771,29 @@ async def send_copilot_email(
     }
 
 
+def _copilot_conversational_answer(message: str) -> Optional[str]:
+    """Only complete, unambiguous conversational messages bypass live data."""
+    text = _normalize_store_catalog_key(message)
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if text in {
+        "hola", "hola copilot", "hola msmall", "buenas", "buenos dias",
+        "buenas tardes", "buenas noches", "hey", "saludos",
+    }:
+        return "¡Hola! ¿En qué puedo ayudarte con el mall seleccionado?"
+    if text in {"gracias", "muchas gracias", "ok gracias", "perfecto gracias"}:
+        return "¡Con gusto! Aquí estoy si necesitas algo más."
+    if text in {"como estas", "hola como estas", "que tal"}:
+        return "¡Hola! Estoy listo para ayudarte. ¿Qué necesitas revisar?"
+    if text in {"que puedes hacer", "en que puedes ayudarme", "ayuda"}:
+        return (
+            "Puedo ayudarte a consultar ventas, revisar cargas y conexiones, "
+            "identificar días sin información y preparar reportes del mall seleccionado. "
+            "¿Qué necesitas revisar?"
+        )
+    return None
+
+
 def _copilot_system_prompt() -> str:
     return (
         "Eres MsMall Copilot, el asistente operativo del sistema MsMall. "
@@ -7093,6 +7116,21 @@ async def chat_with_copilot(
         raise HTTPException(status_code=503, detail="Copilot MsMall esta desactivado.")
     if len(payload.log_text) > 100000:
         raise HTTPException(422, "El log supera 100,000 caracteres. Divide el archivo por período.")
+
+    # Keep mall authorization even when no operational context is needed.
+    # Attached logs/dates and mixed or ambiguous messages retain the existing route.
+    conversational_answer = _copilot_conversational_answer(message)
+    if conversational_answer and not (payload.log_text or payload.fecha_inicio or payload.fecha_fin):
+        _ensure_operator_can_access_mall(operator_ctx, mall_id)
+        return {
+            "answer": conversational_answer,
+            "provider": "deterministic",
+            "model": "copilot-conversation-v1",
+            "sources": [],
+            "attachments": [],
+            "email_actions": [],
+            "schedule_actions": [],
+        }
 
     try:
         schedule_request = parse_copilot_schedule_request(

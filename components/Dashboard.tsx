@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { lazy } from 'react';
 import { AppTab } from './appTabs';
 import { UploadForm } from './UploadForm';
 import { StoreImportTool } from './StoreImportTool';
@@ -22,6 +22,8 @@ import { ResendMessagingAdmin } from './ResendMessagingAdmin';
 import { SecurityTokenAdmin } from './SecurityTokenAdmin';
 import { CopilotSettings } from './CopilotSettings';
 
+const ImportBackup = lazy(() => import('./ImportBackup').then(module => ({ default: module.ImportBackup })));
+
 interface DashboardProps {
   activeTab: AppTab;
   setActiveTab: (tab: AppTab) => void;
@@ -37,6 +39,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab })
       return <OperationsCenter onOpenBigData={() => setActiveTab('big-data')} />;
     case 'reports':
       return <SalesReport />;
+    case 'import-backup':
+      return <ImportBackup />;
     case 'upload':
       return <UploadForm />;
     case 'store-import':

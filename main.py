@@ -17,10 +17,11 @@ import weakref
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import List, Optional, Dict, Any, Tuple, Set
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, Request, status, Body
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -92,6 +93,7 @@ from services.sales_gap_service import (
     load_actual_sales_dates_for_local,
 )
 from services.sales_query_service import fetch_sales_rows_keyset
+from services.import_backup_service import ImportBackupService, InvalidBackupSelection
 from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
 from services.missing_days_email_service import (
     DEFAULT_CONSOLIDATED_BODY_TEMPLATE,
@@ -471,6 +473,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Backup-Records"],
 )
 
 logger.info("CORS_LOCK_V1 origins=%s origin_regex=%s", _CORS_LOCK_V1_ORIGINS, _CORS_LOCK_V1_ORIGIN_REGEX)
@@ -8015,6 +8018,73 @@ from typing import Optional
 # Ensure supabase client is available. It is global in this file.
 export_service = ExportService(supabase)
 router_export = APIRouter(prefix="/api/v1/export", tags=["export"])
+
+
+class ImportBackupRequest(BaseModel):
+    fecha_inicio: date
+    fecha_fin: date
+    local_ids: Optional[List[UUID]] = None
+
+
+@router_export.get("/import-backup/stores")
+def get_import_backup_stores(
+    current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
+):
+    _ensure_operator_can_access_mall(operator_ctx, current_mall)
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Servicio de datos no disponible.")
+    return ImportBackupService(supabase).list_stores(current_mall)
+
+
+@router_export.post("/import-backup/csv")
+def export_import_backup_csv(
+    payload: ImportBackupRequest,
+    current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
+):
+    _ensure_operator_can_access_mall(operator_ctx, current_mall)
+    if payload.fecha_fin < payload.fecha_inicio:
+        raise HTTPException(status_code=400, detail="La fecha final debe ser igual o posterior a la inicial.")
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Servicio de datos no disponible.")
+    start, end = payload.fecha_inicio.isoformat(), payload.fecha_fin.isoformat()
+    try:
+        backup = ImportBackupService(supabase).generate(
+            current_mall, start, end,
+            [str(value) for value in payload.local_ids] if payload.local_ids is not None else None,
+        )
+    except InvalidBackupSelection as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Error generando backup de importaciones: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=500, detail="No se pudo generar el CSV completo. Inténtalo nuevamente.") from exc
+
+    try:
+        supabase.table("system_audit_logs").insert({
+            "usuario_id": operator_ctx.get("user_id"), "mall_id": current_mall,
+            "accion": "backup_importaciones_generado",
+            "detalle": f"CSV de ventas del {start} al {end}: {backup.records} registros.",
+            "metadata": {"fecha_inicio": start, "fecha_fin": end, "local_ids": backup.local_ids,
+                         "records": backup.records},
+        }).execute()
+    except Exception as exc:
+        logger.warning("No se pudo auditar la generación de backup: %s", sanitize_sensitive_ops_error(exc))
+
+    # Generate completely before sending headers so a failed query cannot deliver
+    # a partial CSV as a successful backup. Large files spill to temporary disk.
+    size = backup.file.seek(0, 2)
+    backup.file.seek(0)
+    safe_mall = re.sub(r"[^a-zA-Z0-9_-]", "", current_mall)
+    return StreamingResponse(
+        iter(lambda: backup.file.read(64 * 1024), b""),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="backup_{safe_mall}_{start}_{end}.csv"',
+            "Content-Length": str(size), "Cache-Control": "no-store", "X-Backup-Records": str(backup.records),
+        },
+        background=BackgroundTask(backup.file.close),
+    )
 
 
 

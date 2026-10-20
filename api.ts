@@ -576,6 +576,7 @@ export interface Store {
 }
 
 export type DashboardStore = Pick<Store, 'id' | 'mall_id' | 'nombre' | 'rubro' | 'tipo_negocio'>;
+export type ImportBackupStore = Pick<Store, 'id' | 'codigo_interno' | 'nombre' | 'activo'>;
 
 export type StoreCatalogFieldName = 'tipo_negocio' | 'rubro';
 
@@ -775,6 +776,46 @@ const toStorePersistenceError = (error: any): Error => {
 };
 
 export const ApiService = {
+  async getImportBackupStores(mallId: string, token: string, signal?: AbortSignal): Promise<ImportBackupStore[]> {
+    return fetchJsonWithBaseFallback<ImportBackupStore[]>(
+      '/export/import-backup/stores',
+      { headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal },
+      'No se pudieron cargar los locales para el backup'
+    );
+  },
+
+  async downloadImportBackup(
+    mallId: string, token: string, start: string, end: string,
+    localIds: string[] | null, signal: AbortSignal
+  ): Promise<{ blob: Blob; records: number | null }> {
+    const bases = getApiBaseUrls();
+    for (let index = 0; index < bases.length; index++) {
+      try {
+        const response = await fetch(`${bases[index]}/export/import-backup/csv`, {
+          method: 'POST', signal,
+          headers: withAuthHeaders(token, { 'X-Mall-Id': mallId, 'Content-Type': 'application/json', 'Accept': 'text/csv' }),
+          body: JSON.stringify({ fecha_inicio: start, fecha_fin: end, local_ids: localIds })
+        });
+        if (!response.ok) {
+          const previewProxy404 = bases[index] === BASE_URL && response.status === 404
+            && window.location.hostname.endsWith('vercel.app');
+          if ((response.status >= 500 || previewProxy404) && index < bases.length - 1) continue;
+          throw new Error(await parseErrorDetail(response, 'No se pudo generar el backup'));
+        }
+        if (!response.headers.get('Content-Type')?.toLowerCase().includes('text/csv')) {
+          if (index < bases.length - 1) continue;
+          throw new Error('El servidor devolvió una respuesta inesperada en lugar del CSV.');
+        }
+        const count = response.headers.get('X-Backup-Records');
+        return { blob: await response.blob(), records: count === null ? null : Number(count) };
+      } catch (error) {
+        if (!signal.aborted && isNetworkFetchFailure(error) && index < bases.length - 1) continue;
+        throw error;
+      }
+    }
+    throw new Error('No se pudo descargar el backup.');
+  },
+
   async getBigData<T>(path: string, mallId: string, startDate: string, endDate: string, token: string): Promise<T> {
     const params = new URLSearchParams({ mall_id: mallId, start_date: startDate, end_date: endDate });
     // Preview rewrites can briefly return 404; fetchJsonWithBaseFallback then

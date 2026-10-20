@@ -2,6 +2,7 @@ export type AppTab =
   | 'upload'
   | 'store-import'
   | 'reports'
+  | 'import-backup'
   | 'analytics'
   | 'big-data'
   | 'operations'

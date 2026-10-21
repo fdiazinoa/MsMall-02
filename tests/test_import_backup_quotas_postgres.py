@@ -362,3 +362,41 @@ def test_settings_permission_migration_only_grants_admin_and_preserves_revocatio
         assert [(row['can_view'],row['can_update']) for row in rows] == [(False,False),(False,False),(True,True)]
     finally:
         sql('drop table public.app_role_permissions; drop table public.app_roles;')
+
+
+def test_scheduled_claim_is_atomic_and_private_storage_is_not_readable():
+    sql('''create schema if not exists storage;
+        create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
+        create table storage.objects(id uuid default gen_random_uuid(),bucket_id text);
+        alter table storage.objects enable row level security;
+        grant usage on schema storage to anon,authenticated,service_role;
+        grant all on storage.objects to anon,authenticated,service_role;
+        create policy broad_legacy_policy on storage.objects for all to authenticated using(true) with check(true);
+        create table public.app_roles(id uuid primary key,key text);
+        create table public.app_role_permissions(role_id uuid references public.app_roles,module_key text,
+        can_view boolean,can_create boolean,can_update boolean,can_delete boolean,primary key(role_id,module_key));''')
+    try:
+        migration=next((Path(__file__).parents[1]/'supabase/migrations').glob('*_import_backup_schedules.sql')).read_text()
+        sql(migration)
+        sql("insert into storage.objects(bucket_id) values ('import-backups'),('other');")
+        assert sql("set role authenticated; select count(*) from storage.objects;")=='1'
+        assert sql("set role anon; select count(*) from storage.objects;")=='0'
+        assert sql("select public from storage.buckets where id='import-backups';")=='f'
+        assert sql("select has_table_privilege('authenticated','public.import_backup_artifacts','select');")=='f'
+        assert sql("select has_function_privilege('authenticated','public.claim_import_backup_schedule(uuid,timestamptz,timestamptz,timestamptz,uuid,date,date)','execute');")=='f'
+        schedule=str(uuid4())
+        sql(f"insert into public.import_backup_schedules(id,owner_id,mall_id,frequency,enabled,next_run_at) values('{schedule}','{USERS[0]}','{MALL}','monthly',true,now()-interval '1 day');")
+        row=json.loads(sql(f"select row_to_json(s) from public.import_backup_schedules s where id='{schedule}';"))
+        def claim(_):
+            query=f"select public.claim_import_backup_schedule('{schedule}','{row['next_run_at']}','{row['updated_at']}',now()+interval '30 days','{uuid4()}','2026-09-01','2026-09-30');"
+            return bool(sql(query))
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            assert sum(pool.map(claim,range(8)))==1
+        assert sql('select count(*) from public.import_backup_artifacts;')=='1'
+        assert json.loads(sql('select row_to_json(a) from public.import_backup_artifacts a;'))['object_path'].startswith(f'{MALL}/{USERS[0]}/importaciones/')
+        # Deleting an owner preserves keys for eventual private-object cleanup.
+        sql(f"delete from auth.users where id='{USERS[0]}';")
+        assert sql('select count(*) from public.import_backup_artifacts where owner_id is null;')=='1'
+        sql(f"insert into auth.users values('{USERS[0]}');")
+    finally:
+        sql('drop function if exists public.claim_import_backup_schedule(uuid,timestamptz,timestamptz,timestamptz,uuid,date,date); drop table if exists public.import_backup_artifacts,public.import_backup_schedules; drop table public.app_role_permissions,public.app_roles; drop schema storage cascade;')

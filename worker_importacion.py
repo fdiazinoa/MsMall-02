@@ -30,6 +30,7 @@ from services.date_parsing_service import normalize_sale_date
 from services.load_log_service import build_load_log_payload, insert_load_log_row
 from services.missing_days_email_service import run_missing_days_email_scheduler
 from services.copilot_scheduled_tasks_service import run_copilot_scheduled_tasks
+from services.import_backup_schedule_service import ImportBackupScheduleService
 from services.sensitive_ops_service import sanitize_error_text
 from services.cookieontop_service import is_cookieontop_config, fetch_sales as fetch_cookieontop_records
 from services.operations_agent_service import OperationsAgentWorker
@@ -3776,6 +3777,17 @@ async def run_missing_days_email_scheduler_if_due():
         return {"executed": False, "reason": "error", "error": sanitize_error_text(e)}
 
 
+async def run_import_backup_schedules_if_due():
+    if not supabase:
+        return {"executed": False, "reason": "supabase_not_configured"}
+    try:
+        return await asyncio.to_thread(ImportBackupScheduleService(supabase).run_due)
+    except Exception as exc:
+        # Backup failures never prevent the import cycle from completing.
+        logger.error("Automatic backup failed: %s", sanitize_error_text(exc))
+        return {"executed": False, "reason": "error"}
+
+
 async def run_copilot_scheduled_tasks_if_due():
     if not supabase:
         return {"executed": False, "reason": "supabase_not_configured"}
@@ -4042,6 +4054,7 @@ async def run_worker_async():
             email_scheduler_result = await run_missing_days_email_scheduler_if_due()
             await run_copilot_scheduled_tasks_if_due()
             await run_connection_monitor_nightly_if_due()
+            await run_import_backup_schedules_if_due()
             await _finish_worker_cycle(email_scheduler_result)
             return
 
@@ -4061,6 +4074,7 @@ async def run_worker_async():
         email_scheduler_result = await run_missing_days_email_scheduler_if_due()
         await run_copilot_scheduled_tasks_if_due()
         await run_connection_monitor_nightly_if_due()
+        await run_import_backup_schedules_if_due()
         await _finish_worker_cycle(email_scheduler_result)
         
     except Exception as e:

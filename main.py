@@ -21,7 +21,8 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, Request, status, Body
 from fastapi.responses import StreamingResponse
-from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
+import anyio
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -93,7 +94,8 @@ from services.sales_gap_service import (
     load_actual_sales_dates_for_local,
 )
 from services.sales_query_service import fetch_sales_rows_keyset
-from services.import_backup_service import ImportBackupService, InvalidBackupSelection
+from services.import_backup_service import ImportBackupService, InvalidBackupSelection, BackupSizeExceeded
+from services.import_backup_quota_service import ImportBackupQuotaService, BackupPolicy, BackupQuotaError
 from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
 from services.missing_days_email_service import (
     DEFAULT_CONSOLIDATED_BODY_TEMPLATE,
@@ -473,7 +475,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Backup-Records"],
+    expose_headers=["X-Backup-Records", "Retry-After"],
 )
 
 logger.info("CORS_LOCK_V1 origins=%s origin_regex=%s", _CORS_LOCK_V1_ORIGINS, _CORS_LOCK_V1_ORIGIN_REGEX)
@@ -8026,12 +8028,92 @@ class ImportBackupRequest(BaseModel):
     local_ids: Optional[List[UUID]] = None
 
 
+def _backup_quota_result(operation):
+    try:
+        return operation()
+    except BackupQuotaError as exc:
+        raise _backup_quota_http_error(exc) from exc
+
+
+def _backup_quota_http_error(exc):
+    return HTTPException(status_code=exc.status_code, detail=str(exc),
+                         headers={"Retry-After": str(exc.retry_after)} if exc.retry_after else None)
+
+
+def _backup_can_configure(operator_ctx):
+    if _is_system_admin_email(operator_ctx.get("email")):
+        return True
+    if operator_ctx.get("role") != "admin":
+        return False
+    if operator_ctx.get("has_role_assignment"):
+        return True  # Assigned roles are loaded from the server-owned RBAC tables.
+    try:
+        profiles = (supabase.table("profiles").select("role")
+                    .eq("id", operator_ctx["user_id"]).limit(1).execute().data or [])
+        return bool(profiles and _normalize_role(profiles[0].get("role")) in ADMIN_ROLES)
+    except Exception:
+        return False
+
+
+def _ensure_backup_mall_access(operator_ctx, mall_id):
+    # Legacy access contexts may include editable user_metadata role hints.
+    # Those hints cannot grant global quota configuration or cross-Mall access.
+    is_admin = _backup_can_configure(operator_ctx)
+    if not is_admin and mall_id not in _get_user_mall_ids(operator_ctx.get("user_id")):
+        raise HTTPException(status_code=403, detail="No tienes acceso a los backups de este Mall.")
+    return is_admin
+
+
+class BackupQuotaResponse(StreamingResponse):
+    def __init__(self, backup, lease, **kwargs):
+        self.backup, self.lease = backup, lease
+        super().__init__(self._chunks(), **kwargs)
+
+    def _chunks(self):
+        while chunk := self.backup.file.read(64 * 1024):
+            self.lease.check()
+            yield chunk
+
+    async def __call__(self, scope, receive, send):
+        failed = True
+        try:
+            await super().__call__(scope, receive, send)
+            failed = False
+        finally:
+            self.backup.file.close()
+            with anyio.CancelScope(shield=True):
+                await run_in_threadpool(self.lease.close, failed)
+
+
+@router_export.get("/import-backup/quota")
+def get_import_backup_quota(
+    current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
+):
+    can_configure = _ensure_backup_mall_access(operator_ctx, current_mall)
+    quota = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).status())
+    return {"quota": quota, "can_configure": can_configure}
+
+
+@router_export.put("/import-backup/settings")
+def configure_import_backup(
+    policy: BackupPolicy,
+    current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
+):
+    if not _ensure_backup_mall_access(operator_ctx, current_mall):
+        raise HTTPException(status_code=403, detail="Solo un administrador puede configurar los límites de backup.")
+    quota = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).configure(policy))
+    logger.info("Política global de backup actualizada por usuario %s: %s", operator_ctx["user_id"], policy.model_dump())
+    return {"quota": quota, "can_configure": True}
+
+
 @router_export.get("/import-backup/stores")
 def get_import_backup_stores(
     current_mall: str = Depends(get_current_mall),
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
 ):
-    _ensure_operator_can_access_mall(operator_ctx, current_mall)
+    _ensure_backup_mall_access(operator_ctx, current_mall)
     if not supabase:
         raise HTTPException(status_code=503, detail="Servicio de datos no disponible.")
     return ImportBackupService(supabase).list_stores(current_mall)
@@ -8043,20 +8125,38 @@ def export_import_backup_csv(
     current_mall: str = Depends(get_current_mall),
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
 ):
-    _ensure_operator_can_access_mall(operator_ctx, current_mall)
+    _ensure_backup_mall_access(operator_ctx, current_mall)
     if payload.fecha_fin < payload.fecha_inicio:
         raise HTTPException(status_code=400, detail="La fecha final debe ser igual o posterior a la inicial.")
     if not supabase:
         raise HTTPException(status_code=503, detail="Servicio de datos no disponible.")
     start, end = payload.fecha_inicio.isoformat(), payload.fecha_fin.isoformat()
+    service = ImportBackupService(supabase)
+    local_ids = [str(value) for value in payload.local_ids] if payload.local_ids is not None else None
     try:
-        backup = ImportBackupService(supabase).generate(
-            current_mall, start, end,
-            [str(value) for value in payload.local_ids] if payload.local_ids is not None else None,
-        )
+        stores = service.select_stores(current_mall, local_ids)
     except InvalidBackupSelection as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    lease = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall)
+                                .reserve((payload.fecha_fin - payload.fecha_inicio).days + 1))
+    backup = None
+    try:
+        lease.start()
+        backup = service.generate(
+            current_mall, start, end, local_ids, stores=stores,
+            max_bytes=lease.max_bytes, on_progress=lease.progress, check_active=lease.check,
+        )
+        size = backup.file.seek(0, 2)
+        backup.file.seek(0)
+        lease.prepare(size)
     except Exception as exc:
+        if backup:
+            backup.file.close()
+        lease.close(failed=True)
+        if isinstance(exc, BackupSizeExceeded):
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        if isinstance(exc, BackupQuotaError):
+            raise _backup_quota_http_error(exc) from exc
         logger.error("Error generando backup de importaciones: %s", sanitize_sensitive_ops_error(exc))
         raise HTTPException(status_code=500, detail="No se pudo generar el CSV completo. Inténtalo nuevamente.") from exc
 
@@ -8066,24 +8166,21 @@ def export_import_backup_csv(
             "accion": "backup_importaciones_generado",
             "detalle": f"CSV de ventas del {start} al {end}: {backup.records} registros.",
             "metadata": {"fecha_inicio": start, "fecha_fin": end, "local_ids": backup.local_ids,
-                         "records": backup.records},
+                         "records": backup.records, "bytes": size, "request_id": lease.request_id},
         }).execute()
     except Exception as exc:
         logger.warning("No se pudo auditar la generación de backup: %s", sanitize_sensitive_ops_error(exc))
 
     # Generate completely before sending headers so a failed query cannot deliver
     # a partial CSV as a successful backup. Large files spill to temporary disk.
-    size = backup.file.seek(0, 2)
-    backup.file.seek(0)
     safe_mall = re.sub(r"[^a-zA-Z0-9_-]", "", current_mall)
-    return StreamingResponse(
-        iter(lambda: backup.file.read(64 * 1024), b""),
+    return BackupQuotaResponse(
+        backup, lease,
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="backup_{safe_mall}_{start}_{end}.csv"',
             "Content-Length": str(size), "Cache-Control": "no-store", "X-Backup-Records": str(backup.records),
         },
-        background=BackgroundTask(backup.file.close),
     )
 
 

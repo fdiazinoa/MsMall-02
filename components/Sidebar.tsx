@@ -201,7 +201,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
           </>
         )}
 
-        {(isAdmin || isTic || canAccess('stores') || canAccess('malls') || canAccess('users') || canAccess('roles')) && (
+        {(isAdmin || isTic || canAccess('stores') || canAccess('malls') || canAccess('users') || canAccess('roles') || canAccess('backup_settings')) && (
           <>
             <div className="pt-4 pb-2 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Administración</div>
 
@@ -223,7 +223,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
               Catálogos Locales
             </button>}
 
-            {(isAdmin || canAccess('malls') || canAccess('users') || canAccess('roles')) && (
+            {(isAdmin || canAccess('malls') || canAccess('users') || canAccess('roles') || canAccess('backup_settings')) && (
               <>
                 {(isAdmin || canAccess('malls')) && <button
                   onClick={() => setActiveTab('malls')}
@@ -241,14 +241,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                   Usuarios y Roles
                 </button>}
-                {isAdmin && <>
-                <button
+                {canAccess('backup_settings') && <button
                   onClick={() => setActiveTab('backup-settings')}
                   className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'backup-settings' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
                 >
                   <Download className="w-5 h-5 shrink-0" />
                   <span className="text-left">Límites globales de backup</span>
-                </button>
+                </button>}
+
+                {isAdmin && <>
 
                 <button
                   onClick={() => setActiveTab('messaging')}

@@ -28,7 +28,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     { id: 'stores', label: 'Mantenimiento de Locales', visible: isAdmin || isTic || canAccess('stores') },
     { id: 'store-catalogs', label: 'Catálogos Locales', visible: isAdmin || isTic },
     { id: 'import-backup', label: 'Backup de importaciones', visible: canAccess('import_backup') },
-    { id: 'backup-settings', label: 'Límites globales de backup', visible: isAdmin },
+    { id: 'backup-settings', label: 'Límites globales de backup', visible: canAccess('backup_settings') },
     { id: 'auto-import', label: 'Importación FTP', visible: isAdmin || isTic },
     { id: 'erp-webservice', label: 'ERP Webservice', visible: isAdmin || isTic },
     { id: 'upload', label: 'Ingesta CSV', visible: isAdmin || isTic },

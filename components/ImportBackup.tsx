@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Loader2, Search, ShieldCheck } from 'lucide-react';
-import { ApiService, ImportBackupStore } from '../api';
+import { ApiService, ImportBackupStore, ImportBackupQuotaResponse } from '../api';
 import { useAuth } from '../context/AuthProvider';
+import { ImportBackupQuotaPanel } from './ImportBackupQuotaPanel';
 
 const formatDate = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 const COLUMNS = [
@@ -36,6 +37,43 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const downloadRequest = useRef<AbortController | null>(null);
+  const quotaRequest = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
+  const [quotaState, setQuotaState] = useState<ImportBackupQuotaResponse | null>(null);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
+  const [quotaFetchedAt, setQuotaFetchedAt] = useState(0);
+  const [now, setNow] = useState(Date.now);
+  const updateQuota = useCallback((state: ImportBackupQuotaResponse) => {
+    setQuotaState(state);
+    setQuotaError(null);
+    setQuotaFetchedAt(Date.now());
+    setNow(Date.now());
+  }, []);
+  const refreshQuota = useCallback(async () => {
+    quotaRequest.current?.abort();
+    const controller = new AbortController();
+    quotaRequest.current = controller;
+    try {
+      const result = await ApiService.getImportBackupQuota(mallId, token, controller.signal);
+      if (!controller.signal.aborted) { updateQuota(result); setQuotaError(null); }
+    } catch (cause) {
+      if (!controller.signal.aborted) setQuotaError(cause instanceof Error ? cause.message : 'No se pudo consultar la cuota.');
+    }
+  }, [mallId, token, updateQuota]);
+
+  useEffect(() => {
+    refreshQuota();
+    const refreshVisible = () => { if (document.visibilityState === 'visible') refreshQuota(); };
+    const interval = setInterval(refreshVisible, 30000);
+    window.addEventListener('focus', refreshVisible);
+    return () => { clearInterval(interval); window.removeEventListener('focus', refreshVisible); quotaRequest.current?.abort(); };
+  }, [refreshQuota]);
+
+  useEffect(() => {
+    if (!quotaState?.quota.user.cooldown_seconds) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [quotaState]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -50,19 +88,33 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
     return () => controller.abort();
   }, [mallId, token, retry]);
 
-  useEffect(() => () => downloadRequest.current?.abort(), []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; downloadRequest.current?.abort(); };
+  }, []);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const visibleStores = useMemo(() => {
     const term = search.trim().toLocaleLowerCase();
     return stores.filter(store => `${store.nombre} ${store.codigo_interno || ''}`.toLocaleLowerCase().includes(term));
   }, [stores, search]);
-  const dateError = !start || !end ? 'Selecciona ambas fechas.' : end < start ? 'La fecha final debe ser igual o posterior a la inicial.' : null;
+  const quota = quotaState?.quota;
+  const cooldown = Math.max(0, (quota?.user.cooldown_seconds || 0) - Math.floor((now - quotaFetchedAt) / 1000));
+  const days = Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000) + 1;
+  const dateError = !start || !end ? 'Selecciona ambas fechas.' : end < start ? 'La fecha final debe ser igual o posterior a la inicial.'
+    : quota && days > quota.limits.max_range_days ? `El período máximo es de ${quota.limits.max_range_days} días.` : null;
+  const quotaBlock = !quota ? 'Consultando tu cuota disponible…' : quotaError ? 'Actualiza la cuota antes de descargar.'
+    : quota.user.downloads_remaining === 0 ? 'Agotaste tus solicitudes disponibles para hoy.'
+    : quota.user.remaining_bytes === 0 ? 'Agotaste tu volumen diario de descarga.'
+    : quota.mall.remaining_bytes === 0 ? 'El Mall agotó su volumen diario de descarga.'
+    : quota.user.active >= quota.limits.user_concurrency ? 'Ya tienes una descarga en curso.'
+    : quota.mall.active >= quota.limits.mall_concurrency ? 'El Mall alcanzó su límite de descargas simultáneas.'
+    : cooldown > 0 ? `Espera ${cooldown} segundos para solicitar otro CSV.` : null;
   const selectionError = !allStores && selectedIds.length === 0 ? 'Selecciona al menos un local.' : null;
 
   const handleDownload = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (dateError || selectionError || loading || loadError || downloading || stores.length === 0) return;
+    if (dateError || selectionError || quotaBlock || loading || loadError || downloading || stores.length === 0) return;
     const controller = new AbortController();
     downloadRequest.current = controller;
     setDownloading(true);
@@ -87,7 +139,7 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
     } finally {
       if (downloadRequest.current === controller) {
         downloadRequest.current = null;
-        setDownloading(false);
+        if (mounted.current) { setDownloading(false); refreshQuota(); }
       }
     }
   };
@@ -98,6 +150,9 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
         <h1 className="text-2xl font-bold text-slate-900">Backup de importaciones</h1>
         <p className="mt-1 text-sm text-slate-500">Descarga las ventas almacenadas de {mallName} en un archivo CSV.</p>
       </div>
+      {quotaState && <ImportBackupQuotaPanel state={quotaState} cooldown={cooldown} mallId={mallId} token={token}
+        onUpdate={updateQuota} onRefresh={refreshQuota} />}
+      {quotaError && <p role="alert" className="text-sm text-red-600">{quotaError} <button type="button" onClick={refreshQuota} className="underline">Reintentar consulta de cuota</button></p>}
       <form onSubmit={handleDownload} className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
         <fieldset disabled={downloading} className="space-y-5">
           <legend className="mb-3 font-semibold text-slate-800">Período por fecha de venta</legend>
@@ -154,13 +209,14 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
         {!loading && !loadError && stores.length === 0 && <p role="status" className="text-sm text-slate-500">El Mall seleccionado no tiene locales registrados.</p>}
         {selectionError && <p role="alert" className="text-sm text-red-600">{selectionError}</p>}
         <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-4">
-          <button type="submit" disabled={downloading || loading || Boolean(loadError || dateError || selectionError) || stores.length === 0}
+          <button type="submit" disabled={downloading || loading || Boolean(loadError || dateError || selectionError || quotaBlock) || stores.length === 0}
             className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
             {downloading ? <Loader2 size={18} className="animate-spin" aria-hidden="true" /> : <Download size={18} aria-hidden="true" />}
             {downloading ? 'Generando CSV…' : 'Descargar CSV'}
           </button>
           {downloading && <button type="button" onClick={() => { downloadRequest.current?.abort(); setDownloading(false); }} className="text-sm text-slate-600">Cancelar descarga</button>}
         </div>
+        {!downloading && quotaBlock && <p className="text-sm text-amber-700">{quotaBlock}</p>}
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         {success && <p role="status" className="text-sm text-emerald-700">{success}</p>}
       </form>

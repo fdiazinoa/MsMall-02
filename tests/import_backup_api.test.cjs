@@ -96,3 +96,37 @@ test('store selector uses the same authorized Mall context and supports cancella
   const stores = await api.getImportBackupStores('mall', 'token', controller.signal);
   assert.equal(stores[0].activo, false);
 });
+
+test('quota availability is fetched for the authenticated user and active Mall', async () => {
+  const api = harness(async (url, init) => {
+    assert.equal(url, '/api/v1/export/import-backup/quota');
+    assert.equal(init.headers['X-Mall-Id'], 'mall-a');
+    assert.equal(init.headers.Authorization, 'Bearer token');
+    return new Response(JSON.stringify({ quota: { user: { downloads_remaining: 7 } }, can_configure: false }));
+  });
+  const state = await api.getImportBackupQuota('mall-a', 'token');
+  assert.equal(state.quota.user.downloads_remaining, 7);
+  assert.equal(state.can_configure, false);
+});
+
+test('global quota settings are sent as an authenticated PUT', async () => {
+  const policy = { max_file_mb: 50, user_daily_mb: 200, mall_daily_mb: 1000 };
+  const api = harness(async (url, init) => {
+    assert.equal(url, '/api/v1/export/import-backup/settings');
+    assert.equal(init.method, 'PUT');
+    assert.equal(init.headers.Authorization, 'Bearer token');
+    assert.deepEqual(JSON.parse(init.body), policy);
+    return new Response(JSON.stringify({ quota: { limits: policy }, can_configure: true }));
+  });
+  assert.equal((await api.saveImportBackupPolicy('mall', 'token', policy)).quota.limits.max_file_mb, 50);
+});
+
+test('quota rejection is displayed without a fallback download attempt', async () => {
+  let calls = 0;
+  const api = harness(async () => {
+    calls++;
+    return new Response(JSON.stringify({ detail: 'Puedes reintentar en 60 segundos.' }), { status: 429, headers: { 'Retry-After': '60' } });
+  }, { VITE_DIRECT_BACKEND_BASE_URL: 'https://backend.example.test' });
+  await assert.rejects(api.downloadImportBackup('mall', 'token', '2026-01-01', '2026-01-31', null, new AbortController().signal), /60 segundos/);
+  assert.equal(calls, 1);
+});

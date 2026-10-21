@@ -95,6 +95,7 @@ from services.sales_gap_service import (
 )
 from services.sales_query_service import fetch_sales_rows_keyset
 from services.import_backup_service import ImportBackupService, InvalidBackupSelection, BackupSizeExceeded
+from services.import_backup_schedule_service import ImportBackupScheduleService, BackupSchedule
 from services.import_backup_quota_service import ImportBackupQuotaService, BackupPolicy, BackupQuotaError
 from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
 from services.missing_days_email_service import (
@@ -194,7 +195,7 @@ IT_ROLES = {"it", "tic"}
 RBAC_ACTIONS = {"view", "create", "update", "delete"}
 FACTORY_ROLE_PERMISSIONS: Dict[str, Dict[str, Dict[str, bool]]] = {
     "admin": {module: {action: True for action in RBAC_ACTIONS} for module in (
-        "dashboard", "sales_reports", "import_backup", "backup_settings", "stores", "imports", "monitor", "financial",
+        "dashboard", "sales_reports", "import_backup", "backup_settings", "backup_schedules", "stores", "imports", "monitor", "financial",
         "cube", "comparisons", "malls", "users", "roles",
     )},
     "it": {
@@ -8153,6 +8154,70 @@ def get_import_backup_stores(
     if not supabase:
         raise HTTPException(status_code=503, detail="Servicio de datos no disponible.")
     return JSONResponse(ImportBackupService(supabase).list_stores(current_mall), headers={"Cache-Control": "no-store"})
+
+
+def require_backup_schedule_access(action):
+    async def dependency(user_id: str = Depends(get_current_user_id)):
+        context = await require_module_permission("backup_schedules", action)(user_id)
+        if not _has_module_permission(context, "import_backup", "view"):
+            raise HTTPException(status_code=403, detail="Necesitas permiso de Backup de importaciones.")
+        return context
+    return dependency
+
+
+def _backup_schedule_result(operation):
+    try:
+        return operation()
+    except InvalidBackupSelection as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Error en programación de backup: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=503, detail="No se pudo acceder a la programación de backups. Reintenta más tarde.") from exc
+
+
+@router_export.get("/import-backup/schedule")
+def get_backup_schedule(current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_backup_schedule_access("view"))):
+    _ensure_backup_mall_access(operator_ctx, current_mall)
+    result = _backup_schedule_result(lambda: ImportBackupScheduleService(supabase).list(operator_ctx["user_id"], current_mall))
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@router_export.put("/import-backup/schedule")
+def save_backup_schedule(config: BackupSchedule, current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_backup_schedule_access("view"))):
+    _ensure_backup_mall_access(operator_ctx, current_mall)
+    service = ImportBackupScheduleService(supabase)
+    existing = _backup_schedule_result(lambda: service.schedule(operator_ctx["user_id"], current_mall))
+    action = "update" if existing else "create"
+    if not _has_module_permission(operator_ctx, "backup_schedules", action):
+        raise HTTPException(status_code=403, detail="No tienes permiso para guardar esta programación.")
+    return JSONResponse(_backup_schedule_result(lambda: service.save(operator_ctx["user_id"], current_mall, config, existing)), headers={"Cache-Control": "no-store"})
+
+
+@router_export.delete("/import-backup/schedule")
+def delete_backup_schedule(current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_backup_schedule_access("delete"))):
+    _ensure_backup_mall_access(operator_ctx, current_mall)
+    return JSONResponse(_backup_schedule_result(lambda: ImportBackupScheduleService(supabase).delete(operator_ctx["user_id"], current_mall)), headers={"Cache-Control": "no-store"})
+
+
+@router_export.post("/import-backup/artifacts/{artifact_id}/csv")
+def download_backup_artifact(artifact_id: UUID, current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_backup_schedule_access("view"))):
+    _ensure_backup_mall_access(operator_ctx, current_mall)
+    try:
+        backup, lease, artifact = ImportBackupScheduleService(supabase).download(operator_ctx["user_id"], current_mall, str(artifact_id))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BackupQuotaError as exc:
+        raise _backup_quota_http_error(exc) from exc
+    except Exception as exc:
+        logger.error("No se pudo descargar backup privado: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(status_code=503, detail="No se pudo descargar el archivo privado.") from exc
+    return BackupQuotaResponse(backup, lease, media_type="text/csv; charset=utf-8", headers={
+        "Content-Disposition": f'attachment; filename="{artifact["filename"]}"',
+        "Content-Length": str(artifact["bytes"]), "Cache-Control": "no-store", "X-Backup-Records": str(backup.records)})
 
 
 @router_export.post("/import-backup/csv")

@@ -577,6 +577,17 @@ export interface Store {
 
 export type DashboardStore = Pick<Store, 'id' | 'mall_id' | 'nombre' | 'rubro' | 'tipo_negocio'>;
 export type ImportBackupStore = Pick<Store, 'id' | 'codigo_interno' | 'nombre' | 'activo'>;
+export interface ImportBackupScheduleConfig {
+  frequency: 'weekly' | 'fortnightly' | 'monthly'; run_hour: number; folder: string;
+  local_ids: string[] | null; retention_days: number; enabled: boolean;
+}
+export interface ImportBackupScheduleState {
+  schedule: (ImportBackupScheduleConfig & { id: string; next_run_at: string }) | null;
+  artifacts: Array<{ id: string; start_date: string; end_date: string; status: string; filename: string;
+    bytes: number; records: number; error: string | null; created_at: string; expires_at: string }>;
+  automation_enabled: boolean; timezone: string; max_file_mb: number;
+}
+
 export interface ImportBackupPolicy {
   user_concurrency: number;
   mall_concurrency: number;
@@ -795,6 +806,25 @@ const toStorePersistenceError = (error: any): Error => {
 };
 
 export const ApiService = {
+  async getImportBackupSchedule(mallId: string, token: string, signal?: AbortSignal): Promise<ImportBackupScheduleState> {
+    return fetchJsonWithBaseFallback<ImportBackupScheduleState>('/export/import-backup/schedule',
+      { headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal }, 'No se pudo consultar la programación');
+  },
+  async saveImportBackupSchedule(mallId: string, token: string, config: ImportBackupScheduleConfig, signal?: AbortSignal): Promise<ImportBackupScheduleState> {
+    return fetchJsonWithBaseFallback<ImportBackupScheduleState>('/export/import-backup/schedule', {
+      method: 'PUT', headers: withAuthHeaders(token, { 'X-Mall-Id': mallId, 'Content-Type': 'application/json' }),
+      body: JSON.stringify(config), signal
+    }, 'No se pudo guardar la programación');
+  },
+  async deleteImportBackupSchedule(mallId: string, token: string, signal?: AbortSignal): Promise<ImportBackupScheduleState> {
+    return fetchJsonWithBaseFallback<ImportBackupScheduleState>('/export/import-backup/schedule', {
+      method: 'DELETE', headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal
+    }, 'No se pudo eliminar la programación');
+  },
+  async downloadStoredImportBackup(mallId: string, token: string, artifactId: string, signal: AbortSignal) {
+    return ApiService.downloadImportBackup(mallId, token, '', '', null, signal, artifactId);
+  },
+
   async getImportBackupQuota(mallId: string, token: string, signal?: AbortSignal): Promise<ImportBackupQuotaResponse> {
     return fetchJsonWithBaseFallback<ImportBackupQuotaResponse>('/export/import-backup/quota',
       { headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal }, 'No se pudo consultar la cuota de backup');
@@ -823,12 +853,12 @@ export const ApiService = {
 
   async downloadImportBackup(
     mallId: string, token: string, start: string, end: string,
-    localIds: string[] | null, signal: AbortSignal
+    localIds: string[] | null, signal: AbortSignal, artifactId?: string
   ): Promise<{ blob: Blob; records: number | null }> {
     const bases = getApiBaseUrls();
     for (let index = 0; index < bases.length; index++) {
       try {
-        const response = await fetch(`${bases[index]}/export/import-backup/csv`, {
+        const response = await fetch(`${bases[index]}/export/import-backup/${artifactId ? `artifacts/${encodeURIComponent(artifactId)}/csv` : 'csv'}`, {
           method: 'POST', signal,
           headers: withAuthHeaders(token, { 'X-Mall-Id': mallId, 'Content-Type': 'application/json', 'Accept': 'text/csv' }),
           body: JSON.stringify({ fecha_inicio: start, fecha_fin: end, local_ids: localIds })

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Loader2, Search, ShieldCheck } from 'lucide-react';
 import { ApiService, ImportBackupStore, ImportBackupQuotaResponse } from '../api';
 import { useAuth } from '../context/AuthProvider';
+import { ImportBackupSchedulePanel } from './ImportBackupSchedulePanel';
 import { ImportBackupQuotaPanel } from './ImportBackupQuotaPanel';
 
 const formatDate = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
@@ -24,6 +25,7 @@ export const ImportBackup: React.FC = () => {
 };
 
 const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> = ({ mallId, mallName, token }) => {
+  const { canAccess } = useAuth();
   const [start, setStart] = useState(() => formatDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
   const [end, setEnd] = useState(() => formatDate(new Date()));
   const [stores, setStores] = useState<ImportBackupStore[]>([]);
@@ -151,6 +153,7 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
         <p className="mt-1 text-sm text-slate-500">Descarga las ventas almacenadas de {mallName} en un archivo CSV.</p>
       </div>
       {quotaState && <ImportBackupQuotaPanel state={quotaState} cooldown={cooldown} onRefresh={refreshQuota} />}
+      {canAccess('backup_schedules') && <ImportBackupSchedulePanel mallId={mallId} token={token} stores={stores} onDownloaded={refreshQuota} />}
       {quotaError && <p role="alert" className="text-sm text-red-600">{quotaError} <button type="button" onClick={refreshQuota} className="underline">Reintentar consulta de cuota</button></p>}
       <form onSubmit={handleDownload} className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
         <fieldset disabled={downloading} className="space-y-5">

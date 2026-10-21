@@ -260,6 +260,7 @@ def test_http_download_enforces_real_quota_and_releases_reservation_on_size_erro
     body = {"fecha_inicio": "2026-01-01", "fecha_fin": "2026-01-31"}
     quota = client.get("/api/v1/export/import-backup/quota", headers=headers)
     assert quota.status_code == 200 and not quota.json()["can_configure"]
+    assert quota.headers["cache-control"] == "no-store"
     first = client.post("/api/v1/export/import-backup/csv", json=body, headers=headers)
     assert first.status_code == 200
     denied = client.post("/api/v1/export/import-backup/csv", json=body, headers=headers)

@@ -20,7 +20,7 @@ from typing import List, Optional, Dict, Any, Tuple, Set
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, Request, status, Body
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 import anyio
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -8092,7 +8092,7 @@ def get_import_backup_quota(
 ):
     can_configure = _ensure_backup_mall_access(operator_ctx, current_mall)
     quota = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).status())
-    return {"quota": quota, "can_configure": can_configure}
+    return JSONResponse({"quota": quota, "can_configure": can_configure}, headers={"Cache-Control": "no-store"})
 
 
 @router_export.put("/import-backup/settings")
@@ -8105,7 +8105,7 @@ def configure_import_backup(
         raise HTTPException(status_code=403, detail="Solo un administrador puede configurar los límites de backup.")
     quota = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).configure(policy))
     logger.info("Política global de backup actualizada por usuario %s: %s", operator_ctx["user_id"], policy.model_dump())
-    return {"quota": quota, "can_configure": True}
+    return JSONResponse({"quota": quota, "can_configure": True}, headers={"Cache-Control": "no-store"})
 
 
 @router_export.get("/import-backup/stores")
@@ -8116,7 +8116,7 @@ def get_import_backup_stores(
     _ensure_backup_mall_access(operator_ctx, current_mall)
     if not supabase:
         raise HTTPException(status_code=503, detail="Servicio de datos no disponible.")
-    return ImportBackupService(supabase).list_stores(current_mall)
+    return JSONResponse(ImportBackupService(supabase).list_stores(current_mall), headers={"Cache-Control": "no-store"})
 
 
 @router_export.post("/import-backup/csv")

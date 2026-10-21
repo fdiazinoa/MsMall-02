@@ -26,6 +26,10 @@ class InvalidBackupSelection(ValueError):
     pass
 
 
+class BackupSizeExceeded(ValueError):
+    pass
+
+
 @dataclass
 class GeneratedBackup:
     file: BinaryIO
@@ -101,7 +105,7 @@ class ImportBackupService:
                 last_id = next_id
         return traces
 
-    def generate(self, mall_id: str, start: str, end: str, local_ids: Optional[List[str]]) -> GeneratedBackup:
+    def select_stores(self, mall_id: str, local_ids: Optional[List[str]]) -> List[Dict[str, Any]]:
         stores = self.list_stores(mall_id)
         stores_by_id = {row["id"]: row for row in stores}
         if local_ids is not None:
@@ -109,6 +113,12 @@ class ImportBackupService:
                 raise InvalidBackupSelection("Selecciona locales que pertenezcan al Mall activo.")
             requested_ids = set(local_ids)
             stores = [row for row in stores if row["id"] in requested_ids]
+        return stores
+
+    def generate(self, mall_id: str, start: str, end: str, local_ids: Optional[List[str]],
+                 *, stores=None, max_bytes=None, on_progress=None, check_active=None) -> GeneratedBackup:
+        stores = self.select_stores(mall_id, local_ids) if stores is None else stores
+        stores_by_id = {row["id"]: row for row in stores}
         selected_ids = [row["id"] for row in stores]
         malls = self.db.table("malls").select("nombre").eq("id", mall_id).limit(1).execute().data or []
         mall_name = malls[0].get("nombre") if malls else ""
@@ -118,11 +128,18 @@ class ImportBackupService:
         records = 0
 
         def flush():
-            output.write(buffer.getvalue().encode("utf-8"))
+            data = buffer.getvalue().encode("utf-8")
+            if max_bytes is not None and output.tell() + len(data) > max_bytes:
+                raise BackupSizeExceeded("El CSV supera el tamaño permitido o la cuota disponible. Reduce el período o los locales.")
+            output.write(data)
             buffer.seek(0)
             buffer.truncate(0)
+            if on_progress:
+                on_progress(output.tell())
 
         try:
+            if max_bytes is not None and max_bytes < 3:
+                raise BackupSizeExceeded("La cuota disponible no alcanza para este CSV.")
             output.write(b"\xef\xbb\xbf")  # Excel-compatible UTF-8.
             writer.writerow(CSV_COLUMNS)
             flush()
@@ -130,6 +147,8 @@ class ImportBackupService:
                 scoped_ids = selected_ids[offset:offset + STORE_BATCH_SIZE]
                 cursor = None
                 while True:
+                    if check_active:
+                        check_active()
                     # The verified parent locales define tenancy, including legacy sales
                     # whose denormalized ventas.mall_id may be missing.
                     query = (self.db.table("ventas").select(SALES_FIELDS)

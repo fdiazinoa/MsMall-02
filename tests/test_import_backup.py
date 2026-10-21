@@ -238,6 +238,16 @@ def api(monkeypatch):
     monkeypatch.setattr(main, "supabase", db)
     monkeypatch.setattr(main, "_get_access_context", get_access)
     monkeypatch.setattr(main, "_get_user_mall_ids", lambda _: [MALL])
+    # Existing CSV regressions isolate accounting; shared-DB quota behavior has
+    # its own PostgreSQL integration suite.
+    class Lease:
+        request_id = "test-request"
+        max_bytes = 50_000_000
+        start = check = lambda self: None
+        progress = prepare = lambda self, size: None
+        close = lambda self, failed=False: None
+
+    monkeypatch.setattr(main, "ImportBackupQuotaService", lambda *_: SimpleNamespace(reserve=lambda days: Lease()))
     previous = main.app.dependency_overrides.copy()
     main.app.dependency_overrides[main.get_current_user_id] = lambda: "user-1"
     try:

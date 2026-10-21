@@ -577,6 +577,25 @@ export interface Store {
 
 export type DashboardStore = Pick<Store, 'id' | 'mall_id' | 'nombre' | 'rubro' | 'tipo_negocio'>;
 export type ImportBackupStore = Pick<Store, 'id' | 'codigo_interno' | 'nombre' | 'activo'>;
+export interface ImportBackupPolicy {
+  user_concurrency: number;
+  mall_concurrency: number;
+  min_interval_seconds: number;
+  user_daily_downloads: number;
+  max_file_mb: number;
+  user_daily_mb: number;
+  mall_daily_mb: number;
+  max_range_days: number;
+}
+export interface ImportBackupQuota {
+  quota_day: string;
+  resets_at: string;
+  timezone: string;
+  limits: ImportBackupPolicy;
+  user: { downloads_used: number; downloads_remaining: number; used_bytes: number; reserved_bytes: number; remaining_bytes: number; active: number; cooldown_seconds: number };
+  mall: { used_bytes: number; reserved_bytes: number; remaining_bytes: number; active: number };
+}
+export interface ImportBackupQuotaResponse { quota: ImportBackupQuota; can_configure: boolean }
 
 export type StoreCatalogFieldName = 'tipo_negocio' | 'rubro';
 
@@ -776,6 +795,19 @@ const toStorePersistenceError = (error: any): Error => {
 };
 
 export const ApiService = {
+  async getImportBackupQuota(mallId: string, token: string, signal?: AbortSignal): Promise<ImportBackupQuotaResponse> {
+    return fetchJsonWithBaseFallback<ImportBackupQuotaResponse>('/export/import-backup/quota',
+      { headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal }, 'No se pudo consultar la cuota de backup');
+  },
+
+  async saveImportBackupPolicy(mallId: string, token: string, policy: ImportBackupPolicy, signal?: AbortSignal): Promise<ImportBackupQuotaResponse> {
+    return fetchJsonWithBaseFallback<ImportBackupQuotaResponse>('/export/import-backup/settings', {
+      method: 'PUT', signal,
+      headers: withAuthHeaders(token, { 'X-Mall-Id': mallId, 'Content-Type': 'application/json' }),
+      body: JSON.stringify(policy)
+    }, 'No se pudieron guardar los límites de backup');
+  },
+
   async getImportBackupStores(mallId: string, token: string, signal?: AbortSignal): Promise<ImportBackupStore[]> {
     return fetchJsonWithBaseFallback<ImportBackupStore[]>(
       '/export/import-backup/stores',

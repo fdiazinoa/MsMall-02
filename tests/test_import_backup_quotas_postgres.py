@@ -246,7 +246,7 @@ def test_http_download_enforces_real_quota_and_releases_reservation_on_size_erro
         pass
 
     db = DB([sale()])
-    access = {"user_id": USERS[0], "role": "auditor", "permissions": {"sales_reports": {"view": True}}}
+    access = {"user_id": USERS[0], "role": "auditor", "permissions": {"import_backup": {"view": True}}}
 
     async def context(_):
         return access
@@ -314,3 +314,28 @@ def test_mid_stream_disconnect_closes_file_and_releases_slot(monkeypatch):
     quota = rpc()["quota"]
     assert quota["user"]["active"] == quota["user"]["reserved_bytes"] == 0
     assert quota["user"]["used_bytes"] == 100
+
+
+def test_backup_permission_migration_preserves_existing_access_and_explicit_revocations():
+    sql('''create table public.app_roles(id uuid primary key);
+        create table public.app_role_permissions(
+            role_id uuid references public.app_roles, module_key text,
+            can_view boolean, can_create boolean, can_update boolean, can_delete boolean,
+            primary key(role_id,module_key));''')
+    try:
+        for user in USERS[:3]:
+            sql(f"insert into public.app_roles values ('{user}');")
+        sql(f"""insert into public.app_role_permissions values
+            ('{USERS[0]}','sales_reports',true,true,false,false),
+            ('{USERS[1]}','sales_reports',false,false,false,false),
+            ('{USERS[2]}','sales_reports',true,false,false,false),
+            ('{USERS[2]}','import_backup',false,false,false,false);""")
+        migration = next((Path(__file__).parents[1] / 'supabase/migrations').glob('*_import_backup_role_permissions.sql')).read_text()
+        sql(migration)
+        sql(migration)
+        rows = json.loads(sql("select json_agg(p order by role_id) from public.app_role_permissions p where module_key='import_backup';"))
+        assert len(rows) == 3
+        assert [row['can_view'] for row in rows] == [True, False, False]
+        assert all(not row['can_create'] and not row['can_update'] and not row['can_delete'] for row in rows)
+    finally:
+        sql('drop table public.app_role_permissions; drop table public.app_roles;')

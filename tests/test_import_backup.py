@@ -230,7 +230,7 @@ def test_empty_period_is_a_valid_header_only_csv():
 def api(monkeypatch):
     import main
     db = Database([sale()])
-    access = {"role": "custom_auditor", "user_id": "user-1", "permissions": {"sales_reports": {"view": True}}}
+    access = {"role": "custom_auditor", "user_id": "user-1", "permissions": {"import_backup": {"view": True}}}
 
     async def get_access(_user_id):
         return access
@@ -282,7 +282,7 @@ def test_api_requires_permission_and_mall_membership_for_both_routes(api, path):
                                   headers={"X-Mall-Id": mall},
                                   **({"json": {"fecha_inicio": "2026-01-01", "fecha_fin": "2026-01-31"}} if path == "/csv" else {}))
     assert call(OTHER_MALL).status_code == 403
-    api.access["permissions"]["sales_reports"]["view"] = False
+    api.access["permissions"]["import_backup"]["view"] = False
     assert call(MALL).status_code == 403
     assert api.db.queries == []
 
@@ -320,3 +320,38 @@ def test_new_routes_reject_missing_authentication():
     import main
     client = ASGIClient(main.app)
     assert client.get("/api/v1/export/import-backup/stores", headers={"X-Mall-Id": MALL}).status_code in {401, 403}
+
+
+def test_sales_report_permission_does_not_grant_backup_access(api):
+    api.access["permissions"] = {"sales_reports": {"view": True}}
+    assert request_csv(api).status_code == 403
+    assert not api.db.writes
+
+
+@pytest.mark.parametrize("method,path", [("GET", "quota"), ("GET", "stores"), ("POST", "csv")])
+def test_backup_routes_require_independent_permission(api, method, path):
+    api.access["permissions"] = {"sales_reports": {"view": True}, "import_backup": {"view": False}}
+    response = api.client.request(method, "/api/v1/export/import-backup/" + path,
+        headers={"X-Mall-Id": MALL}, json={"fecha_inicio": "2026-01-01", "fecha_fin": "2026-01-31"})
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+def test_settings_require_actual_admin_not_backup_permission(api, method):
+    response = api.client.request(method, "/api/v1/export/import-backup/settings",
+        headers={"X-Mall-Id": MALL}, json={})
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+def test_admin_settings_work_without_backup_download_permission(api, monkeypatch, method):
+    api.access.update(role="admin", has_role_assignment=True, permissions={})
+    calls = []
+    monkeypatch.setattr(api.main, "ImportBackupQuotaService", lambda *_: SimpleNamespace(
+        status=lambda: {"limits": {}}, configure=lambda policy: calls.append(policy) or {"limits": {}}))
+    response = api.client.request(method, "/api/v1/export/import-backup/settings",
+        headers={"X-Mall-Id": MALL}, json={})
+    assert response.status_code == 200
+    assert response.json()["can_configure"] is True
+    assert response.headers["cache-control"] == "no-store"
+    assert len(calls) == (method == "PUT")

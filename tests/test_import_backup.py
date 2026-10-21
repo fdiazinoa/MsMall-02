@@ -337,7 +337,7 @@ def test_backup_routes_require_independent_permission(api, method, path):
 
 
 @pytest.mark.parametrize("method", ["GET", "PUT"])
-def test_settings_require_actual_admin_not_backup_permission(api, method):
+def test_settings_require_settings_permission_not_download_permission(api, method):
     response = api.client.request(method, "/api/v1/export/import-backup/settings",
         headers={"X-Mall-Id": MALL}, json={})
     assert response.status_code == 403
@@ -345,7 +345,7 @@ def test_settings_require_actual_admin_not_backup_permission(api, method):
 
 @pytest.mark.parametrize("method", ["GET", "PUT"])
 def test_admin_settings_work_without_backup_download_permission(api, monkeypatch, method):
-    api.access.update(role="admin", has_role_assignment=True, permissions={})
+    api.access.update(role="admin", has_role_assignment=True, permissions={"backup_settings": {"view": True, "update": True}})
     calls = []
     monkeypatch.setattr(api.main, "ImportBackupQuotaService", lambda *_: SimpleNamespace(
         status=lambda: {"limits": {}}, configure=lambda policy: calls.append(policy) or {"limits": {}}))
@@ -355,3 +355,35 @@ def test_admin_settings_work_without_backup_download_permission(api, monkeypatch
     assert response.json()["can_configure"] is True
     assert response.headers["cache-control"] == "no-store"
     assert len(calls) == (method == "PUT")
+
+
+@pytest.mark.parametrize("role", ["custom_limits", "admin"])
+@pytest.mark.parametrize("view,update,method,expected", [
+    (False,False,"GET",403), (False,False,"PUT",403),
+    (True,False,"GET",200), (True,False,"PUT",403),
+    (True,True,"GET",200), (True,True,"PUT",200),
+    (False,True,"GET",403), (False,True,"PUT",403),
+])
+def test_global_settings_permissions_are_authoritative(api, monkeypatch, role, view, update, method, expected):
+    api.access.update(role=role, has_role_assignment=True, permissions={"backup_settings": {"view": view,"update": update}})
+    writes = []
+    monkeypatch.setattr(api.main, "ImportBackupQuotaService", lambda *_: SimpleNamespace(
+        status=lambda: {}, configure=lambda policy: writes.append(policy) or {}))
+    response = api.client.request(method,"/api/v1/export/import-backup/settings", headers={"X-Mall-Id":MALL}, json={})
+    assert response.status_code == expected
+    assert len(writes) == (method == "PUT" and expected == 200)
+    if expected == 200:
+        assert response.json()["can_configure"] == (view and update)
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+def test_delegating_global_settings_does_not_grant_cross_mall_access(api, method):
+    api.access.update(has_role_assignment=True, permissions={"backup_settings": {"view": True,"update": True}})
+    response = api.client.request(method,"/api/v1/export/import-backup/settings",headers={"X-Mall-Id":OTHER_MALL},json={})
+    assert response.status_code == 403
+    assert not api.db.writes
+
+
+def test_settings_permission_does_not_grant_download_permission(api):
+    api.access.update(has_role_assignment=True, permissions={"backup_settings": {"view": True,"update": True}})
+    assert request_csv(api).status_code == 403

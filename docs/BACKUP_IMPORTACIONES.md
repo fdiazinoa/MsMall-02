@@ -173,5 +173,7 @@ pruebas se omiten; las pruebas unitarias y HTTP restantes se ejecutan normalment
 
 - **Herramientas → Backup de importaciones** requiere `import_backup.view`, independiente de `sales_reports.view`. El permiso **Ver** habilita consultar locales, cuota y descargar CSV; se configura en Usuarios y Roles.
 - La migración `import_backup_role_permissions` copia el acceso de Reportes de ventas de cada rol existente, sin sobrescribir permisos de Backup ya definidos. Después se administra por separado.
-- **Administración → Límites globales de backup** es exclusivo de administradores validados por el servidor. No depende del permiso de descarga; GET/PUT `/api/v1/export/import-backup/settings` comprueban ese acceso administrativo.
+- **Administración → Límites globales de backup** requiere `backup_settings.view` para consultar y `backup_settings.update` (junto con Ver) para guardar, configurables en Usuarios y Roles como **Configurar límites globales de backup**. Son independientes del permiso de descarga; GET/PUT `/api/v1/export/import-backup/settings` validan Ver/Editar en el servidor. El permiso Editar cambia los límites de todos los usuarios y Malls. La asignación no amplía el acceso a los datos de otros Malls.
 - La cuota disponible sigue visible en Backup; su panel no contiene controles administrativos.
+
+- La migración `import_backup_settings_permissions` habilita Ver/Editar inicialmente solo a Administrador y conserva las concesiones o revocaciones existentes. Los demás roles pueden recibir estos permisos explícitamente. Los administradores legados verificados conservan compatibilidad mientras se asigna su rol RBAC.

@@ -27,7 +27,7 @@ test('sales reports alone does not expose backup navigation', () => {
   assert(!html.includes('Backup de importaciones'));
 });
 test('admin settings appear in Administración before Herramientas', () => {
-  const html = render('Sidebar', 'Sidebar', auth(['import_backup'], true), { activeTab: 'backup-settings' });
+  const html = render('Sidebar', 'Sidebar', auth(['import_backup', 'backup_settings'], true), { activeTab: 'backup-settings' });
   assert(html.indexOf('Administración') < html.indexOf('Límites globales de backup'));
   assert(html.indexOf('Límites globales de backup') < html.indexOf('Herramientas'));
 });
@@ -45,6 +45,21 @@ test('quota stays visible without administrative controls or removed legend', ()
 });
 test('non-admin cannot render the global settings form', () => {
   const html = render('ImportBackupSettings', 'ImportBackupSettings', auth(['import_backup']));
-  assert(html.includes('Solo un administrador'));
+  assert(html.includes('No tienes permiso'));
   assert(!html.includes('Guardar límites'));
+  assert(!html.includes('Guardar límites'));
+});
+
+test('delegated limits-only role sees settings in Administración without user or import management', () => {
+  const html = render('Sidebar', 'Sidebar', auth(['backup_settings']), { activeTab: 'backup-settings' });
+  assert(html.includes('Límites globales de backup'));
+  assert(html.indexOf('Administración') < html.indexOf('Límites globales de backup'));
+  assert(!html.includes('Usuarios y Roles'));
+  assert(!html.includes('Seguridad Tokens'));
+  assert(!html.includes('Importación FTP'));
+  assert(!html.includes('Backup de importaciones'));
+});
+test('admin role with explicitly revoked settings permission cannot see settings', () => {
+  const html = render('Sidebar', 'Sidebar', auth(['import_backup'], true), { activeTab: 'analytics' });
+  assert(!html.includes('Límites globales de backup'));
 });

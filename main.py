@@ -194,7 +194,7 @@ IT_ROLES = {"it", "tic"}
 RBAC_ACTIONS = {"view", "create", "update", "delete"}
 FACTORY_ROLE_PERMISSIONS: Dict[str, Dict[str, Dict[str, bool]]] = {
     "admin": {module: {action: True for action in RBAC_ACTIONS} for module in (
-        "dashboard", "sales_reports", "import_backup", "stores", "imports", "monitor", "financial",
+        "dashboard", "sales_reports", "import_backup", "backup_settings", "stores", "imports", "monitor", "financial",
         "cube", "comparisons", "malls", "users", "roles",
     )},
     "it": {
@@ -8043,7 +8043,7 @@ def _backup_quota_http_error(exc):
                          headers={"Retry-After": str(exc.retry_after)} if exc.retry_after else None)
 
 
-def _backup_can_configure(operator_ctx):
+def _backup_is_admin(operator_ctx):
     if _is_system_admin_email(operator_ctx.get("email")):
         return True
     if operator_ctx.get("role") != "admin":
@@ -8058,10 +8058,24 @@ def _backup_can_configure(operator_ctx):
         return False
 
 
+def _backup_has_settings_permission(operator_ctx, action):
+    if _is_system_admin_email(operator_ctx.get("email")):
+        return True
+    if operator_ctx.get("has_role_assignment"):
+        return (_has_module_permission(operator_ctx, "backup_settings", "view")
+                and _has_module_permission(operator_ctx, "backup_settings", action))
+    # Keep verified legacy administrators operational until RBAC assignment.
+    return _backup_is_admin(operator_ctx)
+
+
+def _backup_can_configure(operator_ctx):
+    return _backup_has_settings_permission(operator_ctx, "update")
+
+
 def _ensure_backup_mall_access(operator_ctx, mall_id):
     # Legacy access contexts may include editable user_metadata role hints.
     # Those hints cannot grant global quota configuration or cross-Mall access.
-    is_admin = _backup_can_configure(operator_ctx)
+    is_admin = _backup_is_admin(operator_ctx)
     if not is_admin and mall_id not in _get_user_mall_ids(operator_ctx.get("user_id")):
         raise HTTPException(status_code=403, detail="No tienes acceso a los backups de este Mall.")
     return is_admin
@@ -8093,38 +8107,41 @@ def get_import_backup_quota(
     current_mall: str = Depends(get_current_mall),
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
-    can_configure = _ensure_backup_mall_access(operator_ctx, current_mall)
+    _ensure_backup_mall_access(operator_ctx, current_mall)
+    can_configure = _backup_can_configure(operator_ctx)
     quota = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).status())
     return JSONResponse({"quota": quota, "can_configure": can_configure}, headers={"Cache-Control": "no-store"})
 
 
-async def require_backup_admin_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
-    access_ctx = await _get_access_context(user_id)
-    if not _backup_can_configure(access_ctx):
-        raise HTTPException(status_code=403, detail="Solo un administrador puede configurar los límites de backup.")
-    return access_ctx
+def require_backup_settings_permission(action):
+    async def dependency(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+        access_ctx = await _get_access_context(user_id)
+        if not _backup_has_settings_permission(access_ctx, action):
+            raise HTTPException(status_code=403, detail="No tienes permiso para configurar los límites globales de backup.")
+        return access_ctx
+    return dependency
 
 
 @router_export.get("/import-backup/settings")
 def get_import_backup_settings(
     current_mall: str = Depends(get_current_mall),
-    operator_ctx: Dict[str, Any] = Depends(require_backup_admin_access),
+    operator_ctx: Dict[str, Any] = Depends(require_backup_settings_permission("view")),
 ):
+    _ensure_backup_mall_access(operator_ctx, current_mall)
     quota = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).status())
-    return JSONResponse({"quota": quota, "can_configure": True}, headers={"Cache-Control": "no-store"})
+    return JSONResponse({"quota": quota, "can_configure": _backup_can_configure(operator_ctx)}, headers={"Cache-Control": "no-store"})
 
 
 @router_export.put("/import-backup/settings")
 def configure_import_backup(
     policy: BackupPolicy,
     current_mall: str = Depends(get_current_mall),
-    operator_ctx: Dict[str, Any] = Depends(require_backup_admin_access),
+    operator_ctx: Dict[str, Any] = Depends(require_backup_settings_permission("update")),
 ):
-    if not _ensure_backup_mall_access(operator_ctx, current_mall):
-        raise HTTPException(status_code=403, detail="Solo un administrador puede configurar los límites de backup.")
+    _ensure_backup_mall_access(operator_ctx, current_mall)
     quota = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).configure(policy))
     logger.info("Política global de backup actualizada por usuario %s: %s", operator_ctx["user_id"], policy.model_dump())
-    return JSONResponse({"quota": quota, "can_configure": True}, headers={"Cache-Control": "no-store"})
+    return JSONResponse({"quota": quota, "can_configure": _backup_can_configure(operator_ctx)}, headers={"Cache-Control": "no-store"})
 
 
 @router_export.get("/import-backup/stores")

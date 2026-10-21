@@ -270,8 +270,9 @@ def test_http_download_enforces_real_quota_and_releases_reservation_on_size_erro
     assert quota["user"]["used_bytes"] == len(first.content)
     assert quota["user"]["active"] == quota["user"]["reserved_bytes"] == 0
     assert client.request("PUT", "/api/v1/export/import-backup/settings", headers=headers, json={}).status_code == 403
-    access["role"] = "admin"
+    access["role"] = "delegated_limits"
     access["has_role_assignment"] = True
+    access["permissions"]["backup_settings"] = {"view": True, "update": True}
     updated = client.request("PUT", "/api/v1/export/import-backup/settings", headers=headers, json={"max_file_mb": 1})
     assert updated.status_code == 200 and updated.json()["quota"]["limits"]["max_file_mb"] == 1
     assert updated.json()["quota"]["user"]["used_bytes"] == len(first.content)
@@ -337,5 +338,27 @@ def test_backup_permission_migration_preserves_existing_access_and_explicit_revo
         assert len(rows) == 3
         assert [row['can_view'] for row in rows] == [True, False, False]
         assert all(not row['can_create'] and not row['can_update'] and not row['can_delete'] for row in rows)
+    finally:
+        sql('drop table public.app_role_permissions; drop table public.app_roles;')
+
+
+def test_settings_permission_migration_only_grants_admin_and_preserves_revocations():
+    sql('''create table public.app_roles(id uuid primary key, key text);
+        create table public.app_role_permissions(
+            role_id uuid references public.app_roles, module_key text,
+            can_view boolean, can_create boolean, can_update boolean, can_delete boolean,
+            primary key(role_id,module_key));''')
+    try:
+        sql(f"insert into public.app_roles values ('{USERS[0]}','admin'),('{USERS[1]}','auditor'),('{USERS[2]}','custom');")
+        migration = next((Path(__file__).parents[1] / 'supabase/migrations').glob('*_import_backup_settings_permissions.sql')).read_text()
+        sql(migration)
+        rows = json.loads(sql("select json_agg(p order by role_id) from public.app_role_permissions p where module_key='backup_settings';"))
+        assert [(row['can_view'],row['can_update']) for row in rows] == [(True,True),(False,False),(False,False)]
+        assert all(not row['can_create'] and not row['can_delete'] for row in rows)
+        sql(f"update public.app_role_permissions set can_view=false,can_update=false where role_id='{USERS[0]}';")
+        sql(f"update public.app_role_permissions set can_view=true,can_update=true where role_id='{USERS[2]}';")
+        sql(migration)
+        rows = json.loads(sql("select json_agg(p order by role_id) from public.app_role_permissions p where module_key='backup_settings';"))
+        assert [(row['can_view'],row['can_update']) for row in rows] == [(False,False),(False,False),(True,True)]
     finally:
         sql('drop table public.app_role_permissions; drop table public.app_roles;')

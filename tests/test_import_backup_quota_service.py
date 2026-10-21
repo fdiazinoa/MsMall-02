@@ -87,7 +87,8 @@ def test_editable_admin_hint_cannot_change_global_policy_or_bypass_mall_membersh
 
 def test_server_assigned_admin_can_configure_global_policy(monkeypatch):
     import main
-    assert main._backup_can_configure({"role": "admin", "has_role_assignment": True})
+    assert main._backup_can_configure({"role": "admin", "has_role_assignment": True,
+        "permissions": {"backup_settings": {"view": True, "update": True}}})
     db = Database()
     db.rows["profiles"] = [{"id": "admin-user", "role": "admin"}]
     monkeypatch.setattr(main, "supabase", db)

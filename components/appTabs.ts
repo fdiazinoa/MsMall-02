@@ -3,6 +3,7 @@ export type AppTab =
   | 'store-import'
   | 'reports'
   | 'import-backup'
+  | 'backup-settings'
   | 'analytics'
   | 'big-data'
   | 'operations'

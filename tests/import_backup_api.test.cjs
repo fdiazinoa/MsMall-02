@@ -130,3 +130,14 @@ test('quota rejection is displayed without a fallback download attempt', async (
   await assert.rejects(api.downloadImportBackup('mall', 'token', '2026-01-01', '2026-01-31', null, new AbortController().signal), /60 segundos/);
   assert.equal(calls, 1);
 });
+
+
+test('admin settings load separately from download quota with authenticated Mall context', async () => {
+  const api = harness(async (url, init) => {
+    assert.equal(url, '/api/v1/export/import-backup/settings');
+    assert.equal(init.headers.Authorization, 'Bearer token');
+    assert.equal(init.headers['X-Mall-Id'], 'mall');
+    return new Response(JSON.stringify({ quota: { limits: { max_file_mb: 50 } }, can_configure: true }));
+  });
+  assert.equal((await api.getImportBackupPolicy('mall', 'token')).quota.limits.max_file_mb, 50);
+});

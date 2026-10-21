@@ -800,6 +800,11 @@ export const ApiService = {
       { headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal }, 'No se pudo consultar la cuota de backup');
   },
 
+  async getImportBackupPolicy(mallId: string, token: string, signal?: AbortSignal): Promise<ImportBackupQuotaResponse> {
+    return fetchJsonWithBaseFallback<ImportBackupQuotaResponse>('/export/import-backup/settings',
+      { headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal }, 'No se pudieron consultar los límites de backup');
+  },
+
   async saveImportBackupPolicy(mallId: string, token: string, policy: ImportBackupPolicy, signal?: AbortSignal): Promise<ImportBackupQuotaResponse> {
     return fetchJsonWithBaseFallback<ImportBackupQuotaResponse>('/export/import-backup/settings', {
       method: 'PUT', signal,

@@ -24,6 +24,8 @@ import { CopilotSettings } from './CopilotSettings';
 
 const ImportBackup = lazy(() => import('./ImportBackup').then(module => ({ default: module.ImportBackup })));
 
+const ImportBackupSettings = lazy(() => import('./ImportBackupSettings').then(module => ({ default: module.ImportBackupSettings })));
+
 interface DashboardProps {
   activeTab: AppTab;
   setActiveTab: (tab: AppTab) => void;
@@ -39,6 +41,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab })
       return <OperationsCenter onOpenBigData={() => setActiveTab('big-data')} />;
     case 'reports':
       return <SalesReport />;
+    case 'backup-settings':
+      return <ImportBackupSettings />;
     case 'import-backup':
       return <ImportBackup />;
     case 'upload':

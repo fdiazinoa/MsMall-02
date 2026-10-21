@@ -14,8 +14,8 @@ const COLUMNS = [
 
 export const ImportBackup: React.FC = () => {
   const { currentMall, session, canAccess } = useAuth();
-  if (!canAccess('sales_reports')) {
-    return <p role="alert" className="p-6 text-slate-600">No tienes permiso para descargar datos de ventas.</p>;
+  if (!canAccess('import_backup')) {
+    return <p role="alert" className="p-6 text-slate-600">No tienes permiso para acceder al backup de importaciones.</p>;
   }
   if (!currentMall?.id || !session?.access_token) {
     return <p className="p-6 text-slate-600">Selecciona un Mall para descargar sus importaciones.</p>;
@@ -150,8 +150,7 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
         <h1 className="text-2xl font-bold text-slate-900">Backup de importaciones</h1>
         <p className="mt-1 text-sm text-slate-500">Descarga las ventas almacenadas de {mallName} en un archivo CSV.</p>
       </div>
-      {quotaState && <ImportBackupQuotaPanel state={quotaState} cooldown={cooldown} mallId={mallId} token={token}
-        onUpdate={updateQuota} onRefresh={refreshQuota} />}
+      {quotaState && <ImportBackupQuotaPanel state={quotaState} cooldown={cooldown} onRefresh={refreshQuota} />}
       {quotaError && <p role="alert" className="text-sm text-red-600">{quotaError} <button type="button" onClick={refreshQuota} className="underline">Reintentar consulta de cuota</button></p>}
       <form onSubmit={handleDownload} className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
         <fieldset disabled={downloading} className="space-y-5">

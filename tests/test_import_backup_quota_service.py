@@ -60,7 +60,7 @@ def test_missing_migration_returns_503_from_api_without_querying_sales(monkeypat
     db = Database([sale()])
 
     async def context(_):
-        return {"user_id": "user", "role": "admin", "permissions": {"sales_reports": {"view": True}}}
+        return {"user_id": "user", "role": "admin", "permissions": {"import_backup": {"view": True}}}
 
     monkeypatch.setattr(main, "supabase", db)
     monkeypatch.setattr(main, "_get_access_context", context)

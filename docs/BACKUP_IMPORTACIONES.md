@@ -167,3 +167,11 @@ tener los roles `anon`, `authenticated` y `service_role` (este último con BYPAS
 y ejecutarse con un propietario con permisos DDL. La suite recrea `public` y `auth`
 únicamente en esa base y rechaza otras direcciones/nombres. Sin la variable, esas
 pruebas se omiten; las pruebas unitarias y HTTP restantes se ejecutan normalmente.
+
+
+### Navegación y permisos
+
+- **Herramientas → Backup de importaciones** requiere `import_backup.view`, independiente de `sales_reports.view`. El permiso **Ver** habilita consultar locales, cuota y descargar CSV; se configura en Usuarios y Roles.
+- La migración `import_backup_role_permissions` copia el acceso de Reportes de ventas de cada rol existente, sin sobrescribir permisos de Backup ya definidos. Después se administra por separado.
+- **Administración → Límites globales de backup** es exclusivo de administradores validados por el servidor. No depende del permiso de descarga; GET/PUT `/api/v1/export/import-backup/settings` comprueban ese acceso administrativo.
+- La cuota disponible sigue visible en Backup; su panel no contiene controles administrativos.

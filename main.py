@@ -194,11 +194,12 @@ IT_ROLES = {"it", "tic"}
 RBAC_ACTIONS = {"view", "create", "update", "delete"}
 FACTORY_ROLE_PERMISSIONS: Dict[str, Dict[str, Dict[str, bool]]] = {
     "admin": {module: {action: True for action in RBAC_ACTIONS} for module in (
-        "dashboard", "sales_reports", "stores", "imports", "monitor", "financial",
+        "dashboard", "sales_reports", "import_backup", "stores", "imports", "monitor", "financial",
         "cube", "comparisons", "malls", "users", "roles",
     )},
     "it": {
         "dashboard": {"view": True}, "sales_reports": {"view": True, "create": True},
+        "import_backup": {"view": True},
         "stores": {"view": True, "create": True, "update": True},
         "imports": {"view": True, "create": True, "update": True},
         "monitor": {"view": True, "create": True, "update": True},
@@ -206,11 +207,13 @@ FACTORY_ROLE_PERMISSIONS: Dict[str, Dict[str, Dict[str, bool]]] = {
     },
     "auditor": {
         "dashboard": {"view": True}, "sales_reports": {"view": True},
+        "import_backup": {"view": True},
         "monitor": {"view": True}, "financial": {"view": True}, "cube": {"view": True},
         "comparisons": {"view": True},
     },
     "visualizador": {
         "dashboard": {"view": True}, "sales_reports": {"view": True},
+        "import_backup": {"view": True},
         "financial": {"view": True}, "cube": {"view": True}, "comparisons": {"view": True},
     },
 }
@@ -8088,18 +8091,34 @@ class BackupQuotaResponse(StreamingResponse):
 @router_export.get("/import-backup/quota")
 def get_import_backup_quota(
     current_mall: str = Depends(get_current_mall),
-    operator_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
     can_configure = _ensure_backup_mall_access(operator_ctx, current_mall)
     quota = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).status())
     return JSONResponse({"quota": quota, "can_configure": can_configure}, headers={"Cache-Control": "no-store"})
 
 
+async def require_backup_admin_access(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    access_ctx = await _get_access_context(user_id)
+    if not _backup_can_configure(access_ctx):
+        raise HTTPException(status_code=403, detail="Solo un administrador puede configurar los límites de backup.")
+    return access_ctx
+
+
+@router_export.get("/import-backup/settings")
+def get_import_backup_settings(
+    current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_backup_admin_access),
+):
+    quota = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).status())
+    return JSONResponse({"quota": quota, "can_configure": True}, headers={"Cache-Control": "no-store"})
+
+
 @router_export.put("/import-backup/settings")
 def configure_import_backup(
     policy: BackupPolicy,
     current_mall: str = Depends(get_current_mall),
-    operator_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
+    operator_ctx: Dict[str, Any] = Depends(require_backup_admin_access),
 ):
     if not _ensure_backup_mall_access(operator_ctx, current_mall):
         raise HTTPException(status_code=403, detail="Solo un administrador puede configurar los límites de backup.")
@@ -8111,7 +8130,7 @@ def configure_import_backup(
 @router_export.get("/import-backup/stores")
 def get_import_backup_stores(
     current_mall: str = Depends(get_current_mall),
-    operator_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
     _ensure_backup_mall_access(operator_ctx, current_mall)
     if not supabase:
@@ -8123,7 +8142,7 @@ def get_import_backup_stores(
 def export_import_backup_csv(
     payload: ImportBackupRequest,
     current_mall: str = Depends(get_current_mall),
-    operator_ctx: Dict[str, Any] = Depends(require_module_permission("sales_reports", "view")),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
     _ensure_backup_mall_access(operator_ctx, current_mall)
     if payload.fecha_fin < payload.fecha_inicio:

@@ -177,3 +177,31 @@ pruebas se omiten; las pruebas unitarias y HTTP restantes se ejecutan normalment
 - La cuota disponible sigue visible en Backup; su panel no contiene controles administrativos.
 
 - La migración `import_backup_settings_permissions` habilita Ver/Editar inicialmente solo a Administrador y conserva las concesiones o revocaciones existentes. Los demás roles pueden recibir estos permisos explícitamente. Los administradores legados verificados conservan compatibilidad mientras se asigna su rol RBAC.
+
+### Backups automáticos en almacenamiento privado
+
+En Herramientas → Backup de importaciones, **Backups automáticos** permite mantener una programación por usuario y Mall:
+
+- Semanal: lunes, con las ventas de lunes a domingo de la semana anterior.
+- Quincenal: el día 16 exporta del 1 al 15; el día 1 exporta del 16 al último día del mes anterior.
+- Mensual: día 1, con las ventas de todo el mes anterior.
+- Hora configurable de 00:00 a 23:00, zona America/Santo_Domingo. Valor inicial 02:00.
+- Todos los locales o una selección validada dentro del Mall. Carpeta privada relativa (por ejemplo `reportes/ventas`); no admite rutas locales, URLs o `..`.
+- Retención de 7 a 90 días; valor inicial 30. Un cambio de retención aplica a archivos nuevos. El historial muestra hasta 50 ejecuciones recientes.
+
+El módulo de roles **Backups automáticos** (`backup_schedules`) concede Ver (consultar historial y descargar), Agregar (crear), Editar (actualizar/pausar) y Eliminar (quitar la programación). También requiere `import_backup.view`. Inicialmente solo Administrador lo tiene habilitado. Las programaciones y archivos se limitan al usuario propietario y al Mall autorizado; ni siquiera un administrador usa estas rutas para descargar los archivos de otro propietario. El worker vuelve a comprobar la asignación RBAC y los permisos Ver/Agregar antes de cada ejecución. Revocar permisos o borrar la cuenta impide nuevos backups.
+
+El worker procesa como máximo una programación por ciclo, después de las importaciones. Un claim atómico por programación/hora evita duplicados entre réplicas. Cuando se recupera de una caída ejecuta el slot atrasado pendiente y avanza a una fecha futura, sin generar todos los períodos omitidos. Las ejecuciones fallidas quedan visibles y el siguiente intento automático corresponde al siguiente período; no se reintentan indefinidamente ni se ignoran las cuotas. Si se necesita recuperar un período fallido puede usarse la descarga manual.
+
+Tanto la generación como cada descarga reservan cuota diaria/concurrencia mediante el control compartido existente. Los archivos automáticos tienen además un máximo de 50 MB, compatible con el bucket privado; si la política global o la cuota restante es menor se usa ese límite menor. Nunca se publica un CSV parcial. El CSV en Storage está completo antes de mostrarse Disponible. Los datos de ventas solo se consultan; no se alteran importaciones ni POS.
+
+El bucket dedicado `import-backups` es privado y tiene una política restrictiva que impide lectura/escritura directa de `anon`/`authenticated`, incluso si existen políticas antiguas permisivas. Solo el backend accede a los objetos. **No se emiten URLs firmadas reutilizables**: la descarga usa POST `/api/v1/export/import-backup/artifacts/{id}/csv`, valida usuario/Mall/permisos y aplica cuota en cada solicitud. El worker elimina objetos vencidos en lotes y conserva los registros para indicar su vencimiento. Las claves de archivos sobreviven a la eliminación de cuentas/programaciones para permitir esa limpieza; los archivos vencidos se rechazan aunque todavía no se haya ejecutado la limpieza física.
+
+#### Puesta en producción
+
+1. Aplicar `supabase/migrations/20261021181842_import_backup_schedules.sql`. Crea tablas backend-only, claim, permisos y bucket. No modifica ventas ni tablas POS.
+2. Desplegar backend, frontend y worker desde el mismo commit de main.
+3. Configurar `ENABLE_SCHEDULED_IMPORT_BACKUPS=true` en API **y** worker. La bandera está desactivada por defecto para mantener la compatibilidad operativa; con la bandera apagada se pueden guardar programaciones pero la pantalla indica que falta activar el servicio. Mantener activo el worker también permite la limpieza de archivos vencidos. No se utiliza el scheduler embebido de la API.
+4. Asignar permisos Backups automáticos y Backup de importaciones al rol propietario. La programación se crea pausada por defecto y el usuario debe activarla.
+
+La verificación local usa una base PostgreSQL desechable para cuotas/claim/RLS y dobles de almacenamiento privado para generación, limpieza y descargas; no requiere extraer ventas de producción.

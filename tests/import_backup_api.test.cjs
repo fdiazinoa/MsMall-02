@@ -141,3 +141,33 @@ test('admin settings load separately from download quota with authenticated Mall
   });
   assert.equal((await api.getImportBackupPolicy('mall', 'token')).quota.limits.max_file_mb, 50);
 });
+
+test('automatic backup settings use authenticated owner context and validated API path', async () => {
+  const requests = [];
+  const api = harness(async (url, init) => {
+    requests.push({url,...init});
+    assert.equal(init.headers.Authorization,'Bearer token');
+    assert.equal(init.headers['X-Mall-Id'],'mall');
+    return new Response(JSON.stringify({schedule:null,artifacts:[],automation_enabled:false}));
+  });
+  const config={frequency:'fortnightly',run_hour:2,folder:'reportes/ventas',local_ids:['store'],retention_days:30,enabled:true};
+  await api.getImportBackupSchedule('mall','token');
+  await api.saveImportBackupSchedule('mall','token',config);
+  await api.deleteImportBackupSchedule('mall','token');
+  assert(requests.every(r=>r.url==='/api/v1/export/import-backup/schedule'));
+  assert.equal(requests[1].method,'PUT');
+  assert.deepEqual(JSON.parse(requests[1].body),config);
+  assert.equal(requests[2].method,'DELETE');
+});
+
+test('stored backup downloads stay behind authenticated quota-protected endpoint', async () => {
+  const api=harness(async(url,init)=>{
+    assert.equal(url,'/api/v1/export/import-backup/artifacts/file-id/csv');
+    assert.equal(init.method,'POST');
+    assert.equal(init.headers.Authorization,'Bearer token');
+    assert.equal(init.headers['X-Mall-Id'],'mall');
+    return csvResponse();
+  });
+  const result=await api.downloadStoredImportBackup('mall','token','file-id',new AbortController().signal);
+  assert.equal(result.records,1);
+});

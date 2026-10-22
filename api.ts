@@ -853,15 +853,15 @@ export const ApiService = {
 
   async downloadImportBackup(
     mallId: string, token: string, start: string, end: string,
-    localIds: string[] | null, signal: AbortSignal, artifactId?: string
+    localIds: string[] | null, signal: AbortSignal, artifactId?: string, configurationKind?: 'locales' | 'importadores' | 'ftp' | 'webservice'
   ): Promise<{ blob: Blob; records: number | null }> {
     const bases = getApiBaseUrls();
     for (let index = 0; index < bases.length; index++) {
       try {
-        const response = await fetch(`${bases[index]}/export/import-backup/${artifactId ? `artifacts/${encodeURIComponent(artifactId)}/csv` : 'csv'}`, {
+        const response = await fetch(`${bases[index]}/export/import-backup/${artifactId ? `artifacts/${encodeURIComponent(artifactId)}/csv` : configurationKind ? `configuration/${configurationKind}/csv` : 'csv'}`, {
           method: 'POST', signal,
           headers: withAuthHeaders(token, { 'X-Mall-Id': mallId, 'Content-Type': 'application/json', 'Accept': 'text/csv' }),
-          body: JSON.stringify({ fecha_inicio: start, fecha_fin: end, local_ids: localIds })
+          body: JSON.stringify(configurationKind ? { local_ids: localIds } : { fecha_inicio: start, fecha_fin: end, local_ids: localIds })
         });
         if (!response.ok) {
           const previewProxy404 = bases[index] === BASE_URL && response.status === 404

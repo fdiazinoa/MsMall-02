@@ -6,6 +6,13 @@ import { ImportBackupSchedulePanel } from './ImportBackupSchedulePanel';
 import { ImportBackupQuotaPanel } from './ImportBackupQuotaPanel';
 
 const formatDate = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+type BackupKind = 'ventas' | 'locales' | 'importadores' | 'ftp' | 'webservice';
+const CONFIGURATIONS: { kind: Exclude<BackupKind, 'ventas'>; label: string; module: string }[] = [
+  { kind: 'locales', label: 'Mantenimiento de locales', module: 'stores' },
+  { kind: 'importadores', label: 'Otros importadores (API y carpetas locales)', module: 'imports' },
+  { kind: 'ftp', label: 'FTP / SFTP', module: 'imports' },
+  { kind: 'webservice', label: 'Webservice', module: 'imports' },
+];
 const COLUMNS = [
   'id_registro', 'mall_id', 'mall_nombre', 'local_id', 'codigo_local', 'local_nombre',
   'fecha_venta', 'hora_transaccion', 'numero_transaccion', 'tipo_registro', 'total_bruto',
@@ -25,7 +32,7 @@ export const ImportBackup: React.FC = () => {
 };
 
 const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> = ({ mallId, mallName, token }) => {
-  const { canAccess } = useAuth();
+  const { canAccess, role } = useAuth();
   const [start, setStart] = useState(() => formatDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
   const [end, setEnd] = useState(() => formatDate(new Date()));
   const [stores, setStores] = useState<ImportBackupStore[]>([]);
@@ -114,26 +121,26 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
     : cooldown > 0 ? `Espera ${cooldown} segundos para solicitar otro CSV.` : null;
   const selectionError = !allStores && selectedIds.length === 0 ? 'Selecciona al menos un local.' : null;
 
-  const handleDownload = async (event: React.FormEvent) => {
+  const handleDownload = async (event: React.SyntheticEvent, kind: BackupKind = 'ventas') => {
     event.preventDefault();
-    if (dateError || selectionError || quotaBlock || loading || loadError || downloading || stores.length === 0) return;
+    if ((kind === 'ventas' && dateError) || selectionError || quotaBlock || loading || loadError || downloading || (kind === 'ventas' && stores.length === 0)) return;
     const controller = new AbortController();
     downloadRequest.current = controller;
     setDownloading(true);
     setError(null);
     setSuccess(null);
     try {
-      const result = await ApiService.downloadImportBackup(mallId, token, start, end, allStores ? null : selectedIds, controller.signal);
+      const result = await ApiService.downloadImportBackup(mallId, token, start, end, allStores ? null : selectedIds, controller.signal, undefined, kind === 'ventas' ? undefined : kind);
       if (controller.signal.aborted) return;
       const url = URL.createObjectURL(result.blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `backup_${mallId}_${start}_${end}.csv`;
+      link.download = kind === 'ventas' ? `backup_${mallId}_${start}_${end}.csv` : `backup_${kind}_${mallId}_${formatDate(new Date())}.csv`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setSuccess(result.records === 0
+      setSuccess(kind !== 'ventas' ? `CSV de ${CONFIGURATIONS.find(item => item.kind === kind)?.label} descargado${result.records === null ? '' : `: ${result.records.toLocaleString()} registros`}.` : result.records === 0
         ? 'No hay ventas en el período y los locales seleccionados. Se descargó un CSV con los encabezados.'
         : `CSV descargado${result.records === null ? '' : `: ${result.records.toLocaleString()} registros`}.`);
     } catch (cause) {
@@ -155,7 +162,7 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
       {quotaState && <ImportBackupQuotaPanel state={quotaState} cooldown={cooldown} onRefresh={refreshQuota} />}
       {canAccess('backup_schedules') && <ImportBackupSchedulePanel mallId={mallId} token={token} stores={stores} onDownloaded={refreshQuota} />}
       {quotaError && <p role="alert" className="text-sm text-red-600">{quotaError} <button type="button" onClick={refreshQuota} className="underline">Reintentar consulta de cuota</button></p>}
-      <form onSubmit={handleDownload} className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
+      <form onSubmit={event => void handleDownload(event)} className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
         <fieldset disabled={downloading} className="space-y-5">
           <legend className="mb-3 font-semibold text-slate-800">Período por fecha de venta</legend>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -222,6 +229,19 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         {success && <p role="status" className="text-sm text-emerald-700">{success}</p>}
       </form>
+      <section aria-label="Backup de configuraciones" className="space-y-3 rounded-2xl border border-slate-200 bg-white p-5">
+        <h2 className="text-lg font-bold text-slate-800">Backup de configuraciones</h2>
+        <p className="text-sm text-slate-600">Descarga un CSV independiente por módulo, con su configuración actual. Usa la selección de locales anterior; el período de ventas no se aplica.</p>
+        <p className="text-xs text-slate-500">Solo descarga manual. Cada archivo consume tu cuota disponible. Las contraseñas, usuarios de conexión, tokens y parámetros de autenticación se omiten. Las conexiones FTP compartidas del Mall se incluyen al seleccionar todos los locales.</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {CONFIGURATIONS.filter(item => canAccess(item.module) && (item.kind !== 'webservice' || role === 'admin' || role === 'it')).map(item => <button
+            key={item.kind} type="button" onClick={event => void handleDownload(event, item.kind)}
+            disabled={downloading || loading || Boolean(loadError || selectionError || quotaBlock)}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-indigo-200 px-4 py-3 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50">
+            <Download size={16} aria-hidden="true" />Descargar {item.label}
+          </button>)}
+        </div>
+      </section>
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
         <p className="flex items-center gap-2 font-medium"><ShieldCheck size={18} aria-hidden="true" />Una fila por registro, con sus importes almacenados.</p>
         <p className="mt-2">Las fechas de importación y los datos de origen se incluyen cuando están disponibles. Los campos desconocidos quedan vacíos.</p>

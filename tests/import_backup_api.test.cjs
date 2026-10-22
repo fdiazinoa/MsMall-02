@@ -171,3 +171,19 @@ test('stored backup downloads stay behind authenticated quota-protected endpoint
   const result=await api.downloadStoredImportBackup('mall','token','file-id',new AbortController().signal);
   assert.equal(result.records,1);
 });
+
+
+test('configuration snapshots use distinct paths, preserve selection and omit sale dates', async () => {
+  const requests = [];
+  const api = harness(async (url, init) => { requests.push({ url, ...init }); return csvResponse(); });
+  for (const kind of ['locales', 'importadores', 'ftp', 'webservice']) {
+    await api.downloadImportBackup('mall', 'token', '', '', ['local'], new AbortController().signal, undefined, kind);
+  }
+  assert.equal(new Set(requests.map(request => request.url)).size, 4);
+  for (const request of requests) {
+    assert.match(request.url, /\/configuration\/(locales|importadores|ftp|webservice)\/csv$/);
+    assert.equal(request.headers['X-Mall-Id'], 'mall');
+    assert.equal(request.headers.Authorization, 'Bearer token');
+    assert.deepEqual(JSON.parse(request.body), { local_ids: ['local'] });
+  }
+});

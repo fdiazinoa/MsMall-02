@@ -95,6 +95,7 @@ from services.sales_gap_service import (
 )
 from services.sales_query_service import fetch_sales_rows_keyset
 from services.import_backup_service import ImportBackupService, InvalidBackupSelection, BackupSizeExceeded
+from services.configuration_backup_service import ConfigurationBackupService
 from services.import_backup_schedule_service import ImportBackupScheduleService, BackupSchedule
 from services.import_backup_quota_service import ImportBackupQuotaService, BackupPolicy, BackupQuotaError
 from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
@@ -8226,6 +8227,35 @@ def export_import_backup_csv(
     current_mall: str = Depends(get_current_mall),
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
+    return _generate_manual_backup(payload, current_mall, operator_ctx)
+
+
+class ConfigurationBackupRequest(BaseModel):
+    local_ids: Optional[List[UUID]] = None
+
+
+@router_export.post("/import-backup/configuration/{kind}/csv")
+def export_configuration_backup_csv(
+    kind: str,
+    payload: ConfigurationBackupRequest,
+    current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
+):
+    if kind not in {"locales", "importadores", "ftp", "webservice"}:
+        raise HTTPException(status_code=404, detail="Tipo de backup no disponible.")
+    module = "stores" if kind == "locales" else "imports"
+    if not _has_module_permission(operator_ctx, module, "view"):
+        raise HTTPException(status_code=403, detail="No tienes permiso para consultar esta configuración.")
+    # ERP receiver settings currently require the same IT/admin access as their
+    # maintenance endpoint; exporting must not widen that access.
+    if kind == "webservice" and operator_ctx.get("role") not in {"admin", "it"}:
+        raise HTTPException(status_code=403, detail="La configuración webservice requiere rol IT o ADMIN.")
+    today = datetime.now(ZoneInfo("America/Santo_Domingo")).date()
+    request = ImportBackupRequest(fecha_inicio=today, fecha_fin=today, local_ids=payload.local_ids)
+    return _generate_manual_backup(request, current_mall, operator_ctx, kind)
+
+
+def _generate_manual_backup(payload, current_mall, operator_ctx, kind="ventas"):
     _ensure_backup_mall_access(operator_ctx, current_mall)
     if payload.fecha_fin < payload.fecha_inicio:
         raise HTTPException(status_code=400, detail="La fecha final debe ser igual o posterior a la inicial.")
@@ -8243,10 +8273,11 @@ def export_import_backup_csv(
     backup = None
     try:
         lease.start()
-        backup = service.generate(
-            current_mall, start, end, local_ids, stores=stores,
-            max_bytes=lease.max_bytes, on_progress=lease.progress, check_active=lease.check,
-        )
+        options = dict(stores=stores, max_bytes=lease.max_bytes, on_progress=lease.progress, check_active=lease.check)
+        if kind == "ventas":
+            backup = service.generate(current_mall, start, end, local_ids, **options)
+        else:
+            backup = ConfigurationBackupService(supabase).generate(current_mall, kind, local_ids, **options)
         size = backup.file.seek(0, 2)
         backup.file.seek(0)
         lease.prepare(size)
@@ -8264,9 +8295,9 @@ def export_import_backup_csv(
     try:
         supabase.table("system_audit_logs").insert({
             "usuario_id": operator_ctx.get("user_id"), "mall_id": current_mall,
-            "accion": "backup_importaciones_generado",
-            "detalle": f"CSV de ventas del {start} al {end}: {backup.records} registros.",
-            "metadata": {"fecha_inicio": start, "fecha_fin": end, "local_ids": backup.local_ids,
+            "accion": "backup_importaciones_generado" if kind == "ventas" else "backup_configuracion_generado",
+            "detalle": f"CSV de {kind} del {start} al {end}: {backup.records} registros.",
+            "metadata": {"tipo_backup": kind, "fecha_inicio": start, "fecha_fin": end, "local_ids": backup.local_ids,
                          "records": backup.records, "bytes": size, "request_id": lease.request_id},
         }).execute()
     except Exception as exc:
@@ -8275,11 +8306,13 @@ def export_import_backup_csv(
     # Generate completely before sending headers so a failed query cannot deliver
     # a partial CSV as a successful backup. Large files spill to temporary disk.
     safe_mall = re.sub(r"[^a-zA-Z0-9_-]", "", current_mall)
+    filename = (f"backup_{safe_mall}_{start}_{end}.csv" if kind == "ventas"
+                else f"backup_{kind}_{safe_mall}_{start}.csv")
     return BackupQuotaResponse(
         backup, lease,
         media_type="text/csv; charset=utf-8",
         headers={
-            "Content-Disposition": f'attachment; filename="backup_{safe_mall}_{start}_{end}.csv"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Content-Length": str(size), "Cache-Control": "no-store", "X-Backup-Records": str(backup.records),
         },
     )

@@ -63,3 +63,35 @@ test('admin role with explicitly revoked settings permission cannot see settings
   const html = render('Sidebar', 'Sidebar', auth(['import_backup'], true), { activeTab: 'analytics' });
   assert(!html.includes('Límites globales de backup'));
 });
+
+test('manual configuration backups follow module permissions and keep sales separate', () => {
+  const source = fs.readFileSync(`${__dirname}/../components/ImportBackup.tsx`, 'utf8');
+  const code = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, esModuleInterop: true }
+  }).outputText;
+  function backupHtml(permissions, role = 'custom') {
+    const context = { exports: {}, require: id => {
+      if (id.includes('AuthProvider')) return { useAuth: () => ({ ...auth(permissions), role, currentMall: { id: 'mall', nombre: 'Mall' }, session: { access_token: 'session' } }) };
+      if (id === '../api') return {};
+      if (id.includes('ImportBackupSchedulePanel')) return { ImportBackupSchedulePanel: () => null };
+      if (id.includes('ImportBackupQuotaPanel')) return { ImportBackupQuotaPanel: () => null };
+      return require(id);
+    } };
+    vm.runInNewContext(code, context);
+    return renderToStaticMarkup(React.createElement(context.exports.ImportBackup));
+  }
+  const restricted = backupHtml(['import_backup']);
+  assert(!restricted.includes('Descargar Mantenimiento'));
+  assert(!restricted.includes('Descargar FTP'));
+  const stores = backupHtml(['import_backup', 'stores']);
+  assert(stores.includes('Descargar Mantenimiento de locales'));
+  assert(!stores.includes('Descargar FTP'));
+  const imports = backupHtml(['import_backup', 'imports']);
+  assert(imports.includes('Descargar FTP / SFTP'));
+  assert(imports.includes('Descargar Otros importadores'));
+  assert(!imports.includes('Descargar Webservice'));
+  const admin = backupHtml(['import_backup', 'stores', 'imports'], 'admin');
+  assert(admin.includes('Descargar Webservice'));
+  assert(admin.includes('Solo descarga manual'));
+  assert(admin.includes('el período de ventas no se aplica'));
+});

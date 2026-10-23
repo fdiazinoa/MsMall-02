@@ -28,6 +28,8 @@ interface RevealState {
   kind: RevealKind;
   title: string;
   warning: string;
+  mallId?: string;
+  localId?: string;
   clientId?: string;
   clientSecret?: string;
   accessToken?: string;
@@ -231,6 +233,8 @@ const RevealModal: React.FC<{
   const downloadAll = () => {
     const lines = [
       `Título: ${state.title}`,
+      state.mallId ? `mall_id=${state.mallId}` : '',
+      state.localId ? `local_id=${state.localId}` : '',
       state.clientId ? `client_id=${state.clientId}` : '',
       state.clientSecret ? `client_secret=${state.clientSecret}` : '',
       state.accessToken ? `access_token=${state.accessToken}` : '',
@@ -257,6 +261,15 @@ const RevealModal: React.FC<{
           </div>
         </div>
 
+        {[{ label: 'Mall ID', value: state.mallId }, { label: 'Local ID', value: state.localId }].filter(field => field.value).map(field => (
+          <div key={field.label} className="space-y-1">
+            <label className="block text-xs font-bold uppercase tracking-widest text-slate-500">{field.label}</label>
+            <div className="flex gap-2">
+              <input aria-label={field.label} readOnly value={field.value} className="min-w-0 flex-1 border border-slate-300 rounded-lg px-3 py-2 font-mono text-xs" />
+              <button type="button" aria-label={`Copiar ${field.label}`} onClick={() => copyField(field.label, field.value)} className="px-3 py-2 rounded-lg border border-slate-300 hover:bg-slate-50"><Copy size={16} /></button>
+            </div>
+          </div>
+        ))}
         {state.clientId && (
           <div className="space-y-1">
             <label className="block text-xs font-bold uppercase tracking-widest text-slate-500">Client ID</label>
@@ -641,6 +654,8 @@ export const SecurityTokenAdmin: React.FC = () => {
         kind: 'service-account-secret',
         title: 'Service Account creado',
         warning: created.warning || 'Este secreto no volverá a mostrarse completo.',
+        mallId,
+        localId,
         clientId: created.client_id,
         clientSecret: created.client_secret,
       });
@@ -718,6 +733,8 @@ export const SecurityTokenAdmin: React.FC = () => {
         kind: 'token-pair',
         title: 'Token creado',
         warning: 'Los tokens completos solo se muestran una vez. Guárdelos de forma segura.',
+        mallId,
+        localId: tokenForm.token_type === 'exporter' ? localId : undefined,
         accessToken: created.access_token,
         refreshToken: created.refresh_token,
       });
@@ -754,6 +771,8 @@ export const SecurityTokenAdmin: React.FC = () => {
         kind: 'service-account-secret',
         title: `Secreto regenerado (${row.name || row.client_id})`,
         warning: regenerated.warning || 'Este secreto no volverá a mostrarse completo.',
+        mallId: row.mall_id,
+        localId: row.local_id || undefined,
         clientId: regenerated.client_id,
         clientSecret: regenerated.client_secret,
       });
@@ -823,6 +842,8 @@ export const SecurityTokenAdmin: React.FC = () => {
         kind: 'token-pair',
         title: `Token regenerado (${row.token_type})`,
         warning: 'Los tokens completos solo se muestran una vez. Guárdelos de forma segura.',
+        mallId: row.mall_id,
+        localId: row.local_id || undefined,
         accessToken: regenerated.access_token,
         refreshToken: regenerated.refresh_token,
       });

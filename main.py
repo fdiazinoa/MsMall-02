@@ -96,6 +96,7 @@ from services.sales_gap_service import (
 from services.sales_query_service import fetch_sales_rows_keyset
 from services.import_backup_service import ImportBackupService, InvalidBackupSelection, BackupSizeExceeded
 from services.configuration_backup_service import ConfigurationBackupService
+from services.backup_restore_service import BackupRestoreService, MAX_BYTES as RESTORE_MAX_BYTES
 from services.import_backup_schedule_service import ImportBackupScheduleService, BackupSchedule
 from services.import_backup_quota_service import ImportBackupQuotaService, BackupPolicy, BackupQuotaError
 from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
@@ -8232,6 +8233,30 @@ def export_import_backup_csv(
 
 class ConfigurationBackupRequest(BaseModel):
     local_ids: Optional[List[UUID]] = None
+
+
+@router_export.post("/import-backup/restore/{kind}")
+async def restore_backup_csv(
+    kind: str,
+    file: UploadFile = File(...),
+    apply: bool = Query(False),
+    current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
+):
+    if not _ensure_backup_mall_access(operator_ctx, current_mall):
+        raise HTTPException(403, "La restauración de backups requiere un administrador.")
+    if not supabase:
+        raise HTTPException(503, "Servicio de datos no disponible.")
+    content = await file.read(RESTORE_MAX_BYTES + 1)
+    try:
+        return await run_in_threadpool(BackupRestoreService(supabase).run, content, current_mall, kind, apply)
+    except (ValueError, UnicodeError, csv.Error) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        logger.error("Backup restore failed: %s", sanitize_sensitive_ops_error(exc))
+        raise HTTPException(503, "No se pudo consultar la base de datos. Reintenta la validación.") from exc
+    finally:
+        await file.close()
 
 
 @router_export.post("/import-backup/configuration/{kind}/csv")

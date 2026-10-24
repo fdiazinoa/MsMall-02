@@ -233,3 +233,9 @@ test('SQL dumps reject HTML and never retry generation after errors', async () =
   await assert.rejects(api.downloadDatabaseBackup('mall', 'token', 'mall', new AbortController().signal), /ZIP/);
   assert.equal(calls, 1);
 });
+
+
+test('SQL capability errors preserve HTTP status for bounded availability retries', async () => {
+  const api = harness(async () => new Response(JSON.stringify({ detail: 'Not Found' }), { status: 404 }));
+  await assert.rejects(api.getDatabaseBackupCapabilities('mall', 'token', new AbortController().signal), error => error.status === 404);
+});

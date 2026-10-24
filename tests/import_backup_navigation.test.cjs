@@ -74,6 +74,7 @@ test('manual configuration backups follow module permissions and keep sales sepa
       if (id.includes('AuthProvider')) return { useAuth: () => ({ ...auth(permissions), role, currentMall: { id: 'mall', nombre: 'Mall' }, session: { access_token: 'session' } }) };
       if (id === '../api') return {};
       if (id.includes('ImportBackupSchedulePanel')) return { ImportBackupSchedulePanel: () => null };
+      if (id.includes('DatabaseBackupPanel')) return { DatabaseBackupPanel: () => null };
       if (id.includes('ImportBackupRestore')) return { ImportBackupRestore: () => null };
       if (id.includes('ImportBackupQuotaPanel')) return { ImportBackupQuotaPanel: () => null };
       return require(id);

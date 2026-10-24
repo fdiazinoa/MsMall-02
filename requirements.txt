@@ -17,3 +17,5 @@ reportlab
 PyJWT
 pytest
 holidays==0.101
+
+psycopg[binary]==3.3.6

@@ -206,3 +206,30 @@ test('restore sends multipart file, preview flag, authenticated Mall and explici
   await api.restoreImportBackup('mall-a', 'session-token', 'ventas', file, true, controller.signal);
   assert.equal(calls[1].url, '/api/v1/export/import-backup/restore/ventas?apply=true');
 });
+
+
+test('SQL capabilities use authenticated Mall and platform export performs one request', async () => {
+  const calls = [];
+  const api = harness(async (url, init) => {
+    calls.push({url, init});
+    if (url.endsWith('capabilities')) return Response.json({enabled: true, mall: true, platform: false});
+    return new Response('ZIP', {headers: {'Content-Type': 'application/zip'}});
+  });
+  const signal = new AbortController().signal;
+  const caps = await api.getDatabaseBackupCapabilities('mall-1', 'token', signal);
+  assert.equal(caps.platform, false);
+  assert.equal(calls[0].init.headers['X-Mall-Id'], 'mall-1');
+  const blob = await api.downloadDatabaseBackup('mall-1', 'token', 'platform', signal);
+  assert.equal(calls[1].url, '/api/v1/export/import-backup/database/platform');
+  assert.equal(calls[1].init.method, 'POST');
+  assert.equal(calls[1].init.headers.Authorization, 'Bearer token');
+  assert.equal(await blob.text(), 'ZIP');
+  assert.equal(calls.length, 2);
+});
+
+test('SQL dumps reject HTML and never retry generation after errors', async () => {
+  let calls = 0;
+  const api = harness(async () => { calls++; return new Response('<html>error</html>', {headers: {'Content-Type': 'text/html'}}); });
+  await assert.rejects(api.downloadDatabaseBackup('mall', 'token', 'mall', new AbortController().signal), /ZIP/);
+  assert.equal(calls, 1);
+});

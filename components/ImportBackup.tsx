@@ -33,7 +33,14 @@ export const ImportBackup: React.FC = () => {
 };
 
 const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> = ({ mallId, mallName, token }) => {
-  const { canAccess, role } = useAuth();
+  const { canAccess, role, isAdmin } = useAuth();
+  const [activeTab, setActiveTab] = useState('backup');
+  const tabs = [
+    { id: 'backup', label: 'Backup' },
+    ...(isAdmin ? [{ id: 'restore', label: 'Restore' }] : []),
+    ...(canAccess('backup_schedules') ? [{ id: 'schedule', label: 'Programación' }] : []),
+  ];
+  const selectedTab = tabs.some(tab => tab.id === activeTab) ? activeTab : 'backup';
   const [start, setStart] = useState(() => formatDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
   const [end, setEnd] = useState(() => formatDate(new Date()));
   const [stores, setStores] = useState<ImportBackupStore[]>([]);
@@ -158,11 +165,30 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
     <section className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Backup de importaciones</h1>
-        <p className="mt-1 text-sm text-slate-500">Descarga las ventas almacenadas de {mallName} en un archivo CSV.</p>
+        <p className="mt-1 text-sm text-slate-500">Gestiona los backups, la recuperación y las programaciones de {mallName}.</p>
       </div>
+      <div role="tablist" aria-label="Gestión de backups" className="flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-50 p-1">
+        {tabs.map((tab, index) => <button key={tab.id} type="button" role="tab"
+          id={`backup-tab-${tab.id}`} aria-controls={`backup-panel-${tab.id}`} aria-selected={selectedTab === tab.id}
+          tabIndex={selectedTab === tab.id ? 0 : -1}
+          onClick={() => setActiveTab(tab.id)}
+          onKeyDown={event => {
+            let target = index;
+            if (event.key === 'ArrowRight') target = (index + 1) % tabs.length;
+            else if (event.key === 'ArrowLeft') target = (index - 1 + tabs.length) % tabs.length;
+            else if (event.key === 'Home') target = 0;
+            else if (event.key === 'End') target = tabs.length - 1;
+            else return;
+            event.preventDefault();
+            setActiveTab(tabs[target].id);
+            document.getElementById(`backup-tab-${tabs[target].id}`)?.focus();
+          }}
+          className={`whitespace-nowrap rounded-lg px-5 py-2.5 text-sm font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-600 ${selectedTab === tab.id ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-white/70'}`}>
+          {tab.label}
+        </button>)}
+      </div>
+      <div role="tabpanel" id="backup-panel-backup" aria-labelledby="backup-tab-backup" hidden={selectedTab !== 'backup'} className="space-y-5">
       {quotaState && <ImportBackupQuotaPanel state={quotaState} cooldown={cooldown} onRefresh={refreshQuota} />}
-      {canAccess('backup_schedules') && <ImportBackupSchedulePanel mallId={mallId} token={token} stores={stores} onDownloaded={refreshQuota} />}
-      <ImportBackupRestore mallId={mallId} token={token} />
       {quotaError && <p role="alert" className="text-sm text-red-600">{quotaError} <button type="button" onClick={refreshQuota} className="underline">Reintentar consulta de cuota</button></p>}
       <form onSubmit={event => void handleDownload(event)} className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
         <fieldset disabled={downloading} className="space-y-5">
@@ -252,6 +278,14 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
           <ul className="mt-3 grid gap-1 text-xs sm:grid-cols-2 lg:grid-cols-3">{COLUMNS.map(column => <li key={column}>{column}</li>)}</ul>
         </details>
       </div>
+      </div>
+      {isAdmin && <div role="tabpanel" id="backup-panel-restore" aria-labelledby="backup-tab-restore" hidden={selectedTab !== 'restore'}>
+        <ImportBackupRestore mallId={mallId} token={token} />
+      </div>}
+      {canAccess('backup_schedules') && <div role="tabpanel" id="backup-panel-schedule" aria-labelledby="backup-tab-schedule" hidden={selectedTab !== 'schedule'}>
+        {quotaState && <ImportBackupQuotaPanel state={quotaState} cooldown={cooldown} onRefresh={refreshQuota} />}
+        <ImportBackupSchedulePanel mallId={mallId} token={token} stores={stores} onDownloaded={refreshQuota} />
+      </div>}
     </section>
   );
 }

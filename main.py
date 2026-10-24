@@ -97,6 +97,7 @@ from services.sales_query_service import fetch_sales_rows_keyset
 from services.import_backup_service import ImportBackupService, InvalidBackupSelection, BackupSizeExceeded
 from services.configuration_backup_service import ConfigurationBackupService
 from services.backup_restore_service import BackupRestoreService, MAX_BYTES as RESTORE_MAX_BYTES
+from services.database_backup_service import DatabaseBackupService, DatabaseBackupUnavailable, configuration as database_backup_ready
 from services.import_backup_schedule_service import ImportBackupScheduleService, BackupSchedule
 from services.import_backup_quota_service import ImportBackupQuotaService, BackupPolicy, BackupQuotaError
 from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
@@ -8233,6 +8234,65 @@ def export_import_backup_csv(
 
 class ConfigurationBackupRequest(BaseModel):
     local_ids: Optional[List[UUID]] = None
+
+
+def _database_backup_permissions(operator_ctx, mall_id):
+    global_admin = _is_system_admin_email(operator_ctx.get("email"))
+    can_mall = global_admin or (_backup_is_admin(operator_ctx)
+                               and mall_id in _get_user_mall_ids(operator_ctx.get("user_id")))
+    return {"mall": bool(can_mall), "platform": global_admin}
+
+
+@router_export.get("/import-backup/database/capabilities")
+def database_backup_capabilities(
+    current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
+):
+    permissions = _database_backup_permissions(operator_ctx, current_mall)
+    return {"enabled": database_backup_ready(), **permissions}
+
+
+@router_export.post("/import-backup/database/{backup_scope}")
+def download_database_backup(
+    backup_scope: str,
+    current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
+):
+    if backup_scope not in {"mall", "platform"}:
+        raise HTTPException(404, "Alcance no disponible.")
+    if not _database_backup_permissions(operator_ctx, current_mall)[backup_scope]:
+        raise HTTPException(403, "El backup completo requiere administrador global; el backup por Mall requiere administrador asignado al Mall.")
+    if not database_backup_ready():
+        raise HTTPException(503, "Los backups SQL no están habilitados en este servidor.")
+    lease = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).reserve(1))
+    backup = None
+    try:
+        lease.start()
+        backup = DatabaseBackupService().generate(backup_scope, current_mall, max_bytes=lease.max_bytes,
+                                                 on_progress=lease.progress, check_active=lease.check)
+        size = backup.file.seek(0, 2)
+        backup.file.seek(0)
+        lease.progress(size)
+        lease.prepare(size)
+    except Exception as exc:
+        if backup:
+            backup.file.close()
+        lease.close(failed=True)
+        if isinstance(exc, BackupQuotaError):
+            raise _backup_quota_http_error(exc) from exc
+        if isinstance(exc, BackupSizeExceeded):
+            raise HTTPException(413, str(exc)) from exc
+        if isinstance(exc, DatabaseBackupUnavailable):
+            raise HTTPException(503, str(exc)) from exc
+        # Connection strings and PostgreSQL stderr must never reach logs or responses.
+        logger.error("Database backup failed scope=%s user=%s error_type=%s", backup_scope, operator_ctx["user_id"], type(exc).__name__)
+        raise HTTPException(503, "No se pudo generar el backup SQL. Revisa la configuración del servidor.") from exc
+    logger.info("Database backup generated scope=%s mall=%s user=%s bytes=%s", backup_scope, current_mall, operator_ctx["user_id"], size)
+    name = f"backup_{backup_scope}_{current_mall}_{datetime.now(ZoneInfo('America/Santo_Domingo')):%Y%m%d_%H%M%S}.zip"
+    return BackupQuotaResponse(backup, lease, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @router_export.post("/import-backup/restore/{kind}")

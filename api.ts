@@ -851,6 +851,25 @@ export const ApiService = {
     );
   },
 
+  async getDatabaseBackupCapabilities(mallId: string, token: string, signal: AbortSignal): Promise<{ enabled: boolean; mall: boolean; platform: boolean }> {
+    return fetchJsonWithBaseFallback('/export/import-backup/database/capabilities', {
+      headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
+    }, 'No se pudieron consultar los permisos de backup SQL.');
+  },
+
+  async downloadDatabaseBackup(mallId: string, token: string, scope: 'mall' | 'platform', signal: AbortSignal): Promise<Blob> {
+    // One explicit request: never automatically retry an expensive full dump.
+    const base = getApiBaseUrls()[0];
+    const response = await fetch(`${base}/export/import-backup/database/${scope}`, {
+      method: 'POST', headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
+    });
+    if (!response.ok) throw new Error(await parseErrorDetail(response, 'No se pudo generar el backup SQL.'));
+    if (!response.headers.get('Content-Type')?.toLowerCase().startsWith('application/zip')) {
+      throw new Error('El servidor no devolvió un ZIP de backup válido.');
+    }
+    return response.blob();
+  },
+
   async restoreImportBackup(mallId: string, token: string, kind: string, file: File, apply: boolean, signal: AbortSignal): Promise<{
     total: number; pendientes: number; omitidos: number; restaurados: number; applied: boolean;
     errores: { line: number; error: string }[];

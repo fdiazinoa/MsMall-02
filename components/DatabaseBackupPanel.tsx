@@ -12,10 +12,26 @@ export const DatabaseBackupPanel: React.FC<{ mallId: string; mallName: string; t
   useEffect(() => {
     const controller = new AbortController();
     setCapabilities(null); setError('');
-    ApiService.getDatabaseBackupCapabilities(mallId, token, controller.signal).then(result => {
-      if (!controller.signal.aborted) setCapabilities(result);
-    }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'No se pudieron verificar los permisos.'); });
-    return () => { controller.abort(); request.current?.abort(); };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async (attempt = 0) => {
+      try {
+        const result = await ApiService.getDatabaseBackupCapabilities(mallId, token, controller.signal);
+        if (!controller.signal.aborted) setCapabilities(result);
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        // Frontend and backend deployments may become available at different times.
+        const status = (err as { status?: number })?.status;
+        if (status === 404 && attempt < 3) {
+          timer = setTimeout(() => void load(attempt + 1), 1000 * 2 ** attempt);
+          return;
+        }
+        setError(status === 404
+          ? 'El servicio de backups SQL todavía no está disponible. Reintenta cuando termine la actualización del servidor.'
+          : err instanceof Error ? err.message : 'No se pudo verificar la disponibilidad.');
+      }
+    };
+    void load();
+    return () => { controller.abort(); clearTimeout(timer); request.current?.abort(); };
   }, [mallId, token, retry]);
 
   const download = async (scope: 'mall' | 'platform') => {
@@ -41,8 +57,6 @@ export const DatabaseBackupPanel: React.FC<{ mallId: string; mallName: string; t
 
   return <section aria-label="Backups SQL" className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
     <h2 className="text-lg font-bold text-slate-800">Backup del Mall y de la plataforma</h2>
-    <p className="text-sm text-slate-600">Descarga SQL en un ZIP. El backup del Mall incluye sus registros y relaciones identificables; el completo incluye la base lógica y roles sin contraseñas de PostgreSQL. No incluye archivos físicos de Storage ni código o variables del servidor.</p>
-    <p className="text-sm text-amber-800">Estos SQL pueden incluir credenciales guardadas. Protégelos. No se restauran desde CSV. El backup por Mall requiere un esquema compatible y usuarios/catálogos compartidos existentes. Se aplican las cuotas de descarga del usuario y del Mall activo, también para el backup completo.</p>
     {!capabilities && !error && <p role="status" className="text-sm">Verificando disponibilidad…</p>}
     {capabilities && !capabilities.enabled && <p className="text-sm text-amber-800">Backups SQL no habilitados. El administrador debe configurar la conexión de backups en el servidor.</p>}
     {capabilities && !capabilities.mall && !capabilities.platform && <p className="text-sm text-slate-600">Se requiere un administrador asignado a este Mall. El backup completo es exclusivo del administrador global.</p>}
@@ -52,6 +66,6 @@ export const DatabaseBackupPanel: React.FC<{ mallId: string; mallName: string; t
     </div>
     {busy && <p role="status" className="text-sm">Generando backup… Puede tardar varios minutos. Mantén esta pantalla abierta.</p>}
     {success && <p role="status" className="text-sm text-emerald-700">{success}</p>}
-    {error && <p role="alert" className="text-sm text-red-700">{error} {!capabilities && <button type="button" onClick={() => setRetry(value => value + 1)} className="underline">Reintentar permisos</button>}</p>}
+    {error && <p role="alert" className="text-sm text-red-700">{error} {!capabilities && <button type="button" onClick={() => setRetry(value => value + 1)} className="underline">Reintentar</button>}</p>}
   </section>;
 };

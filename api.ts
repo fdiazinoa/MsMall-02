@@ -526,7 +526,7 @@ const fetchJsonWithBaseFallback = async <T>(
       }
 
       const detail = await parseErrorDetail(response, fallbackMessage);
-      throw new Error(detail);
+      throw Object.assign(new Error(detail), { status: response.status });
     } catch (error: any) {
       const normalizedError = didTimeout
         ? new Error('Tiempo de espera agotado consultando el servidor remoto.')

@@ -857,10 +857,10 @@ export const ApiService = {
     }, 'No se pudieron consultar los permisos de backup SQL.');
   },
 
-  async downloadDatabaseBackup(mallId: string, token: string, scope: 'mall', signal: AbortSignal): Promise<Blob> {
+  async downloadDatabaseBackup(mallId: string, token: string, scope: 'mall', signal: AbortSignal, start: string, end: string): Promise<Blob> {
     // One explicit request: never automatically retry an expensive full dump.
     const base = getApiBaseUrls()[0];
-    const response = await fetch(`${base}/export/import-backup/database/${scope}`, {
+    const response = await fetch(`${base}/export/import-backup/database/${scope}?${new URLSearchParams({ fecha_inicio: start, fecha_fin: end })}`, {
       method: 'POST', headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
     });
     if (!response.ok) throw new Error(await parseErrorDetail(response, 'No se pudo generar el backup SQL.'));

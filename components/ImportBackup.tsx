@@ -38,6 +38,7 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
   const [activeTab, setActiveTab] = useState('backup');
   const tabs = [
     { id: 'backup', label: 'Backup' },
+    { id: 'sql', label: 'Backup SQL' },
     ...(isAdmin ? [{ id: 'restore', label: 'Restore' }] : []),
     ...(canAccess('backup_schedules') ? [{ id: 'schedule', label: 'Programación' }] : []),
   ];
@@ -189,7 +190,6 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
         </button>)}
       </div>
       <div role="tabpanel" id="backup-panel-backup" aria-labelledby="backup-tab-backup" hidden={selectedTab !== 'backup'} className="space-y-5">
-      <DatabaseBackupPanel mallId={mallId} mallName={mallName} token={token} onDownloaded={refreshQuota} />
       {quotaState && <ImportBackupQuotaPanel state={quotaState} cooldown={cooldown} onRefresh={refreshQuota} />}
       {quotaError && <p role="alert" className="text-sm text-red-600">{quotaError} <button type="button" onClick={refreshQuota} className="underline">Reintentar consulta de cuota</button></p>}
       <form onSubmit={event => void handleDownload(event)} className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
@@ -280,6 +280,10 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
           <ul className="mt-3 grid gap-1 text-xs sm:grid-cols-2 lg:grid-cols-3">{COLUMNS.map(column => <li key={column}>{column}</li>)}</ul>
         </details>
       </div>
+      </div>
+      <div role="tabpanel" id="backup-panel-sql" aria-labelledby="backup-tab-sql" hidden={selectedTab !== 'sql'} className="space-y-5">
+        <DatabaseBackupPanel mallId={mallId} mallName={mallName} token={token} onDownloaded={refreshQuota} />
+        {quotaState && <ImportBackupQuotaPanel state={quotaState} cooldown={cooldown} onRefresh={refreshQuota} />}
       </div>
       {isAdmin && <div role="tabpanel" id="backup-panel-restore" aria-labelledby="backup-tab-restore" hidden={selectedTab !== 'restore'}>
         <ImportBackupRestore mallId={mallId} token={token} />

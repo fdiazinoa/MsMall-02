@@ -219,8 +219,8 @@ test('SQL capabilities use authenticated Mall and Mall export performs one reque
   const caps = await api.getDatabaseBackupCapabilities('mall-1', 'token', signal);
   assert.equal(caps.platform, false);
   assert.equal(calls[0].init.headers['X-Mall-Id'], 'mall-1');
-  const blob = await api.downloadDatabaseBackup('mall-1', 'token', 'mall', signal);
-  assert.equal(calls[1].url, '/api/v1/export/import-backup/database/mall');
+  const blob = await api.downloadDatabaseBackup('mall-1', 'token', 'mall', signal, '2026-01-01', '2026-01-31');
+  assert.equal(calls[1].url, '/api/v1/export/import-backup/database/mall?fecha_inicio=2026-01-01&fecha_fin=2026-01-31');
   assert.equal(calls[1].init.method, 'POST');
   assert.equal(calls[1].init.headers.Authorization, 'Bearer token');
   assert.equal(await blob.text(), 'ZIP');
@@ -230,7 +230,7 @@ test('SQL capabilities use authenticated Mall and Mall export performs one reque
 test('SQL dumps reject HTML and never retry generation after errors', async () => {
   let calls = 0;
   const api = harness(async () => { calls++; return new Response('<html>error</html>', {headers: {'Content-Type': 'text/html'}}); });
-  await assert.rejects(api.downloadDatabaseBackup('mall', 'token', 'mall', new AbortController().signal), /ZIP/);
+  await assert.rejects(api.downloadDatabaseBackup('mall', 'token', 'mall', new AbortController().signal, '2026-01-01', '2026-01-31'), /ZIP/);
   assert.equal(calls, 1);
 });
 

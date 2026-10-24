@@ -239,3 +239,16 @@ test('SQL capability errors preserve HTTP status for bounded availability retrie
   const api = harness(async () => new Response(JSON.stringify({ detail: 'Not Found' }), { status: 404 }));
   await assert.rejects(api.getDatabaseBackupCapabilities('mall', 'token', new AbortController().signal), error => error.status === 404);
 });
+
+
+test('missing SQL period is rejected before requesting a backup', async () => {
+  let calls = 0;
+  const api = harness(async () => { calls++; throw Error('must not fetch'); });
+  await assert.rejects(api.downloadDatabaseBackup('mall', 'token', 'mall', new AbortController().signal), /fecha inicial y final/);
+  assert.equal(calls, 0);
+});
+
+test('legacy date validation errors explain the required period instead of Field required', async () => {
+  const api = harness(async () => Response.json({ detail: [{ type: 'missing', loc: ['query', 'fecha_inicio'], msg: 'Field required' }] }, { status: 422 }));
+  await assert.rejects(api.downloadDatabaseBackup('mall', 'token', 'mall', new AbortController().signal, '2026-01-01', '2026-01-31'), /fecha inicial y final/);
+});

@@ -75,6 +75,9 @@ const parseErrorDetail = async (response: Response, fallbackMessage: string): Pr
         const first = parsed.detail[0];
         if (typeof first === 'string' && first.trim()) return first;
         if (first && typeof first === 'object') {
+          if (first.type === 'missing' && Array.isArray(first.loc) && first.loc.some((field: string) => field === 'fecha_inicio' || field === 'fecha_fin')) {
+            return 'Selecciona fecha inicial y final. Si estás descargando un backup SQL, actualiza la página y utiliza la pestaña Backup SQL.';
+          }
           if (typeof first.msg === 'string' && first.msg.trim()) return first.msg;
           if (typeof first.message === 'string' && first.message.trim()) return first.message;
         }
@@ -858,6 +861,7 @@ export const ApiService = {
   },
 
   async downloadDatabaseBackup(mallId: string, token: string, scope: 'mall', signal: AbortSignal, start: string, end: string): Promise<Blob> {
+    if (!start || !end) throw new Error('Selecciona fecha inicial y final en la pestaña Backup SQL. Si no aparece, actualiza la página.');
     // One explicit request: never automatically retry an expensive full dump.
     const base = getApiBaseUrls()[0];
     const response = await fetch(`${base}/export/import-backup/database/${scope}?${new URLSearchParams({ fecha_inicio: start, fecha_fin: end })}`, {

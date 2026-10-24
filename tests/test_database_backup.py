@@ -284,7 +284,10 @@ def test_api_rejects_invalid_date_range_before_generation(api, monkeypatch):
     monkeypatch.setattr(api.main, 'database_backup_ready', lambda: True)
     monkeypatch.setattr(api.main.DatabaseBackupService, 'generate', lambda *_a, **_k: pytest.fail('must not generate'))
     url = '/api/v1/export/import-backup/database/mall'
-    assert api.client.post(url, headers={'X-Mall-Id': MALL}).status_code == 422
+    missing = api.client.post(url, headers={'X-Mall-Id': MALL})
+    assert missing.status_code == 409
+    assert 'Actualiza la página' in missing.json()['detail']
+    assert api.client.post(url + '?fecha_inicio=2026-01-01', headers={'X-Mall-Id': MALL}).status_code == 409
     assert api.client.post(url + '?fecha_inicio=2026-02-01&fecha_fin=2026-01-01', headers={'X-Mall-Id': MALL}).status_code == 400
 
 

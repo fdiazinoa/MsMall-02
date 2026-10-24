@@ -39,7 +39,7 @@ def test_api_platform_is_global_only_and_mall_admin_needs_membership(api, monkey
     monkeypatch.setattr(api.main, 'database_backup_ready', lambda: True)
     api.access['role'] = 'admin'
     response = api.client.post('/api/v1/export/import-backup/database/platform', headers={'X-Mall-Id': MALL})
-    assert response.status_code == 403
+    assert response.status_code == 404
     caps = api.client.get('/api/v1/export/import-backup/database/capabilities', headers={'X-Mall-Id': MALL}).json()
     assert caps == {'enabled': True, 'mall': True, 'platform': False}
     response = api.client.post('/api/v1/export/import-backup/database/mall', headers={'X-Mall-Id': OTHER_MALL})
@@ -47,7 +47,7 @@ def test_api_platform_is_global_only_and_mall_admin_needs_membership(api, monkey
     assert not api.db.writes
 
 
-@pytest.mark.parametrize('scope', ['mall', 'platform'])
+@pytest.mark.parametrize('scope', ['mall'])
 def test_global_admin_receives_zip_with_private_headers(api, monkeypatch, scope):
     api.access['email'] = next(iter(api.main.SYSTEM_ADMIN_EMAILS))
     calls = []
@@ -76,7 +76,7 @@ def test_database_errors_never_expose_connection_string(api, monkeypatch):
     def fail(*_a, **_k):
         raise RuntimeError('postgres://user:secret-pass@private-host/db')
     monkeypatch.setattr(api.main.DatabaseBackupService, 'generate', fail)
-    response = api.client.post('/api/v1/export/import-backup/database/platform', headers={'X-Mall-Id': MALL})
+    response = api.client.post('/api/v1/export/import-backup/database/mall', headers={'X-Mall-Id': MALL})
     assert response.status_code == 503
     assert 'secret-pass' not in response.text and 'private-host' not in response.text
 
@@ -227,3 +227,14 @@ def test_dsn_is_not_passed_as_process_argument(local_postgres, monkeypatch):
     service._command = inspect_command
     backup = service.generate('platform', MALL, max_bytes=5_000_000, on_progress=lambda _: None, check_active=lambda: None)
     backup.file.close()
+
+
+def test_platform_download_removed_even_for_global_admin(api, monkeypatch):
+    api.access['email'] = next(iter(api.main.SYSTEM_ADMIN_EMAILS))
+    monkeypatch.setattr(api.main, 'database_backup_ready', lambda: True)
+    monkeypatch.setattr(api.main.DatabaseBackupService, 'generate', lambda *_a, **_k: pytest.fail('Platform generation must not run'))
+    response = api.client.post('/api/v1/export/import-backup/database/platform', headers={'X-Mall-Id': MALL})
+    assert response.status_code == 404
+    caps = api.client.get('/api/v1/export/import-backup/database/capabilities', headers={'X-Mall-Id': MALL}).json()
+    assert caps['platform'] is False
+    assert caps['mall'] is True

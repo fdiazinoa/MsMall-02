@@ -208,7 +208,7 @@ test('restore sends multipart file, preview flag, authenticated Mall and explici
 });
 
 
-test('SQL capabilities use authenticated Mall and platform export performs one request', async () => {
+test('SQL capabilities use authenticated Mall and Mall export performs one request', async () => {
   const calls = [];
   const api = harness(async (url, init) => {
     calls.push({url, init});
@@ -219,8 +219,8 @@ test('SQL capabilities use authenticated Mall and platform export performs one r
   const caps = await api.getDatabaseBackupCapabilities('mall-1', 'token', signal);
   assert.equal(caps.platform, false);
   assert.equal(calls[0].init.headers['X-Mall-Id'], 'mall-1');
-  const blob = await api.downloadDatabaseBackup('mall-1', 'token', 'platform', signal);
-  assert.equal(calls[1].url, '/api/v1/export/import-backup/database/platform');
+  const blob = await api.downloadDatabaseBackup('mall-1', 'token', 'mall', signal);
+  assert.equal(calls[1].url, '/api/v1/export/import-backup/database/mall');
   assert.equal(calls[1].init.method, 'POST');
   assert.equal(calls[1].init.headers.Authorization, 'Bearer token');
   assert.equal(await blob.text(), 'ZIP');

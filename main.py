@@ -8240,7 +8240,7 @@ def _database_backup_permissions(operator_ctx, mall_id):
     global_admin = _is_system_admin_email(operator_ctx.get("email"))
     can_mall = global_admin or (_backup_is_admin(operator_ctx)
                                and mall_id in _get_user_mall_ids(operator_ctx.get("user_id")))
-    return {"mall": bool(can_mall), "platform": global_admin}
+    return {"mall": bool(can_mall), "platform": False}
 
 
 @router_export.get("/import-backup/database/capabilities")
@@ -8258,10 +8258,10 @@ def download_database_backup(
     current_mall: str = Depends(get_current_mall),
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
-    if backup_scope not in {"mall", "platform"}:
+    if backup_scope != "mall":
         raise HTTPException(404, "Alcance no disponible.")
     if not _database_backup_permissions(operator_ctx, current_mall)[backup_scope]:
-        raise HTTPException(403, "El backup completo requiere administrador global; el backup por Mall requiere administrador asignado al Mall.")
+        raise HTTPException(403, "El backup por Mall requiere un administrador asignado al Mall.")
     if not database_backup_ready():
         raise HTTPException(503, "Los backups SQL no están habilitados en este servidor.")
     lease = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).reserve(1))

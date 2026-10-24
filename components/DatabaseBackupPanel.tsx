@@ -34,17 +34,17 @@ export const DatabaseBackupPanel: React.FC<{ mallId: string; mallName: string; t
     return () => { controller.abort(); clearTimeout(timer); request.current?.abort(); };
   }, [mallId, token, retry]);
 
-  const download = async (scope: 'mall' | 'platform') => {
+  const download = async () => {
     if (busy) return;
     const controller = new AbortController();
     request.current = controller;
     setBusy(true); setError(''); setSuccess('');
     try {
-      const blob = await ApiService.downloadDatabaseBackup(mallId, token, scope, controller.signal);
+      const blob = await ApiService.downloadDatabaseBackup(mallId, token, 'mall', controller.signal);
       if (controller.signal.aborted) return;
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.href = url; link.download = `backup_${scope}_${mallId}_${new Date().toISOString().slice(0, 10)}.zip`;
+      link.href = url; link.download = `backup_mall_${mallId}_${new Date().toISOString().slice(0, 10)}.zip`;
       document.body.appendChild(link); link.click(); link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setSuccess('ZIP generado. Guarda el archivo en un lugar protegido; contiene datos sensibles.');
@@ -56,13 +56,12 @@ export const DatabaseBackupPanel: React.FC<{ mallId: string; mallName: string; t
   };
 
   return <section aria-label="Backups SQL" className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
-    <h2 className="text-lg font-bold text-slate-800">Backup del Mall y de la plataforma</h2>
+    <h2 className="text-lg font-bold text-slate-800">Backup del Mall seleccionado</h2>
     {!capabilities && !error && <p role="status" className="text-sm">Verificando disponibilidad…</p>}
     {capabilities && !capabilities.enabled && <p className="text-sm text-amber-800">Backups SQL no habilitados. El administrador debe configurar la conexión de backups en el servidor.</p>}
-    {capabilities && !capabilities.mall && !capabilities.platform && <p className="text-sm text-slate-600">Se requiere un administrador asignado a este Mall. El backup completo es exclusivo del administrador global.</p>}
+    {capabilities && !capabilities.mall && <p className="text-sm text-slate-600">Se requiere un administrador asignado a este Mall.</p>}
     <div className="flex flex-wrap gap-3">
-      {capabilities?.mall && <button type="button" disabled={busy || !capabilities.enabled} onClick={() => void download('mall')} className="rounded-xl border border-indigo-200 px-4 py-3 text-sm font-semibold text-indigo-700 disabled:opacity-50">Descargar backup de {mallName}</button>}
-      {capabilities?.platform && <button type="button" disabled={busy || !capabilities.enabled} onClick={() => void download('platform')} className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50">Descargar backup completo de la plataforma</button>}
+      {capabilities?.mall && <button type="button" disabled={busy || !capabilities.enabled} onClick={() => void download()} className="rounded-xl border border-indigo-200 px-4 py-3 text-sm font-semibold text-indigo-700 disabled:opacity-50">Descargar backup de {mallName}</button>}
     </div>
     {busy && <p role="status" className="text-sm">Generando backup… Puede tardar varios minutos. Mantén esta pantalla abierta.</p>}
     {success && <p role="status" className="text-sm text-emerald-700">{success}</p>}

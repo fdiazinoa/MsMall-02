@@ -1,4 +1,6 @@
-# Backups SQL por Mall y plataforma
+# Backups SQL por Mall
+
+> La descarga completa de plataforma fue retirada de la aplicación. La API devuelve `platform: false` por compatibilidad con clientes anteriores y rechaza ese alcance con HTTP 404, incluso para el administrador global. Solo queda disponible el backup del Mall seleccionado. Las referencias al formato completo más abajo documentan el generador interno anterior, sin acceso desde la aplicación.
 
 En **Backups → Backup**, la sección **Backup del Mall y de la plataforma** permite descargar un ZIP SQL independiente de los CSV existentes. No hay endpoint de restauración SQL y estos archivos no se aceptan en Restore desde CSV.
 

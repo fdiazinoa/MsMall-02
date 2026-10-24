@@ -15,7 +15,7 @@ function harness(fetch, env = {}) {
     exports: {}, require: () => ({}), testEnv: env,
     window: { location: { hostname: 'msmall.vercel.app' } },
     console: { warn() {}, error() {} }, fetch,
-    URLSearchParams, AbortController, setTimeout, clearTimeout
+    URLSearchParams, FormData, AbortController, setTimeout, clearTimeout
   };
   vm.runInNewContext(code, context);
   return context.exports.ApiService;
@@ -186,4 +186,23 @@ test('configuration snapshots use distinct paths, preserve selection and omit sa
     assert.equal(request.headers.Authorization, 'Bearer token');
     assert.deepEqual(JSON.parse(request.body), { local_ids: ['local'] });
   }
+});
+
+
+test('restore sends multipart file, preview flag, authenticated Mall and explicit apply', async () => {
+  const calls = [];
+  const api = harness(async (url, init) => {
+    calls.push({ url, init });
+    return Response.json({ total: 1, pendientes: 1, omitidos: 0, restaurados: 0, errores: [], preview: [] });
+  });
+  const file = new File(['id\\n'], 'backup.csv', { type: 'text/csv' });
+  const controller = new AbortController();
+  await api.restoreImportBackup('mall-a', 'session-token', 'ventas', file, false, controller.signal);
+  assert.equal(calls[0].url, '/api/v1/export/import-backup/restore/ventas?apply=false');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer session-token');
+  assert.equal(calls[0].init.headers['X-Mall-Id'], 'mall-a');
+  assert.equal(calls[0].init.headers['Content-Type'], undefined);
+  assert.equal(calls[0].init.body.get('file').name, 'backup.csv');
+  await api.restoreImportBackup('mall-a', 'session-token', 'ventas', file, true, controller.signal);
+  assert.equal(calls[1].url, '/api/v1/export/import-backup/restore/ventas?apply=true');
 });

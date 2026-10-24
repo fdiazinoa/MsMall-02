@@ -851,6 +851,19 @@ export const ApiService = {
     );
   },
 
+  async restoreImportBackup(mallId: string, token: string, kind: string, file: File, apply: boolean, signal: AbortSignal): Promise<{
+    total: number; pendientes: number; omitidos: number; restaurados: number; applied: boolean;
+    errores: { line: number; error: string }[];
+    preview: { line: number; status: string; label: string; id: string | null }[];
+  }> {
+    const body = new FormData();
+    body.append('file', file);
+    return fetchJsonWithBaseFallback(`/export/import-backup/restore/${encodeURIComponent(kind)}?apply=${apply}`, {
+      method: 'POST', body, signal,
+      headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }),
+    }, 'No se pudo restaurar el CSV.', { timeoutMs: 900000, retryOnTimeout: false });
+  },
+
   async downloadImportBackup(
     mallId: string, token: string, start: string, end: string,
     localIds: string[] | null, signal: AbortSignal, artifactId?: string, configurationKind?: 'locales' | 'importadores' | 'ftp' | 'webservice'

@@ -74,6 +74,7 @@ test('manual configuration backups follow module permissions and keep sales sepa
       if (id.includes('AuthProvider')) return { useAuth: () => ({ ...auth(permissions), role, currentMall: { id: 'mall', nombre: 'Mall' }, session: { access_token: 'session' } }) };
       if (id === '../api') return {};
       if (id.includes('ImportBackupSchedulePanel')) return { ImportBackupSchedulePanel: () => null };
+      if (id.includes('ImportBackupRestore')) return { ImportBackupRestore: () => null };
       if (id.includes('ImportBackupQuotaPanel')) return { ImportBackupQuotaPanel: () => null };
       return require(id);
     } };
@@ -94,4 +95,15 @@ test('manual configuration backups follow module permissions and keep sales sepa
   assert(admin.includes('Descargar Webservice'));
   assert(admin.includes('Solo descarga manual'));
   assert(admin.includes('el período de ventas no se aplica'));
+});
+
+
+test('restore section is admin-only and describes validation and safe activation', () => {
+  assert.equal(render('ImportBackupRestore', 'ImportBackupRestore', { isAdmin: false }, { mallId: 'mall', token: 'token' }), '');
+  const html = render('ImportBackupRestore', 'ImportBackupRestore', { isAdmin: true }, { mallId: 'mall', token: 'token' });
+  assert(html.includes('Restaurar desde CSV'));
+  assert(html.includes('Validar y previsualizar'));
+  assert(html.includes('MANUAL'));
+  assert(html.includes('no se sobrescriben'));
+  assert(html.includes('Archivo CSV'));
 });

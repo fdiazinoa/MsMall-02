@@ -7,7 +7,7 @@ import tempfile
 import time
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -16,6 +16,23 @@ from services.import_backup_service import BackupSizeExceeded, GeneratedBackup
 
 class DatabaseBackupUnavailable(Exception):
     pass
+
+
+def connection_error_message(exc):
+    # Classify internally; never return PostgreSQL's raw DSN/host/user/password.
+    text = str(exc).lower()
+    code = getattr(exc, 'sqlstate', None)
+    if code == '57014' or 'statement timeout' in text:
+        return 'La consulta PostgreSQL excedió el tiempo permitido. Reduce el período del backup SQL y vuelve a intentar.'
+    if code in {'28P01', '28000'} or 'password authentication failed' in text or 'tenant or user not found' in text:
+        return 'No se pudo autenticar en PostgreSQL. Revisa usuario y contraseña de BACKUP_DATABASE_URL en Railway.'
+    if 'ssl' in text or 'certificate' in text:
+        return 'No se pudo establecer la conexión TLS con PostgreSQL. Revisa sslmode y la configuración de la conexión.'
+    if 'could not translate host name' in text or 'name or service not known' in text:
+        return 'No se pudo resolver el servidor PostgreSQL. Revisa el host de BACKUP_DATABASE_URL.'
+    if 'network is unreachable' in text or 'timeout' in text or 'timed out' in text or 'connection refused' in text:
+        return 'No se pudo conectar con PostgreSQL. Revisa red y puerto; para Railway utiliza el Session pooler de Supabase.'
+    return 'La conexión PostgreSQL no está disponible. Revisa BACKUP_DATABASE_URL: usuario, contraseña, puerto y modo Session pooler.'
 
 
 def configuration():
@@ -31,7 +48,7 @@ class Table:
     parents: list  # (child column, parent table, parent column), public simple FKs
 
 
-def scope_predicates(tables, mall):
+def scope_predicates(tables, mall, start=None, end=None):
     """Positive ownership only: never export an unclassified table unfiltered."""
     from psycopg import sql
     mall = str(UUID(mall))
@@ -49,6 +66,14 @@ def scope_predicates(tables, mall):
             predicates[name] = predicate
         elif 'mall_id' in table.columns:
             predicates[name] = sql.SQL('t.mall_id = {}::uuid').format(sql.Literal(mall))
+    if start is not None:
+        if 'ventas' not in tables or 'fecha' not in tables['ventas'].columns:
+            raise DatabaseBackupUnavailable('No se pudo identificar la fecha de ventas para aplicar el período.')
+        for name, column in (('ventas', 'fecha'), ('logs_carga', 'fecha_hora')):
+            if name in predicates and column in tables[name].columns:
+                predicates[name] = sql.SQL('({}) AND t.{} >= {}::date AND t.{} < {}::date').format(
+                    predicates[name], sql.Identifier(column), sql.Literal(start), sql.Identifier(column),
+                    sql.Literal((date.fromisoformat(end) + timedelta(days=1)).isoformat()))
     # First classify the closure, then compose predicates in dependency order.
     # This includes every scoped parent, not only the first one discovered.
     selected = set(predicates)
@@ -58,16 +83,20 @@ def scope_predicates(tables, mall):
         if not added:
             break
         selected.update(added)
+    roots, predicates = predicates, {}
     for name in table_order(tables, selected):
-        if name in predicates:
-            continue
         parents = [(column, parent, key) for column, parent, key in tables[name].parents if parent in predicates]
         checks, nonnull = [], []
         for column, parent, key in parents:
             checks.append(sql.SQL('(t.{column} IS NULL OR EXISTS (SELECT 1 FROM (SELECT t.{key} FROM public.{parent} t WHERE {predicate}) p WHERE p.{key} = t.{column}))').format(
                 column=sql.Identifier(column), key=sql.Identifier(key), parent=sql.Identifier(parent), predicate=predicates[parent]))
             nonnull.append(sql.SQL('t.{} IS NOT NULL').format(sql.Identifier(column)))
-        predicates[name] = sql.SQL('({}) AND ({})').format(sql.SQL(' AND ').join(checks), sql.SQL(' OR ').join(nonnull))
+        if name in roots:
+            predicates[name] = sql.SQL('({})').format(roots[name])
+            if checks:
+                predicates[name] += sql.SQL(' AND ({})').format(sql.SQL(' AND ').join(checks))
+        else:
+            predicates[name] = sql.SQL('({}) AND ({})').format(sql.SQL(' AND ').join(checks), sql.SQL(' OR ').join(nonnull))
     return predicates
 
 
@@ -130,10 +159,16 @@ class DatabaseBackupService:
                 tables[row['child']].parents.append((row['child_column'], row['parent'], row['key']))
         return tables
 
-    def generate(self, scope, mall, *, max_bytes, on_progress, check_active):
+    def generate(self, scope, mall, *, max_bytes, on_progress, check_active, start=None, end=None):
         if scope not in {'mall', 'platform'}:
             raise ValueError('Alcance inválido.')
         mall = str(UUID(mall))
+        if (start is None) != (end is None):
+            raise ValueError('Indica ambas fechas del backup SQL.')
+        if start is not None:
+            start, end = date.fromisoformat(start).isoformat(), date.fromisoformat(end).isoformat()
+            if end < start or end == '9999-12-31':
+                raise ValueError('Período SQL inválido.')
         if not configuration():
             raise DatabaseBackupUnavailable('Los backups SQL no están habilitados en este servidor.')
         import psycopg
@@ -167,6 +202,7 @@ class DatabaseBackupService:
                 with connect(os.environ['BACKUP_DATABASE_URL'], connect_timeout=10, row_factory=dict_row) as conn:
                     conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
                     conn.execute("SET LOCAL statement_timeout = '540s'")
+                    conn.execute("SET LOCAL TIME ZONE 'America/Santo_Domingo'")
                     snapshot = conn.execute('SELECT pg_export_snapshot() AS snapshot').fetchone()['snapshot']
                     flags = ['--no-password', '--no-owner', '--lock-wait-timeout=10000', f'--snapshot={snapshot}']
                     if scope == 'mall':
@@ -176,7 +212,9 @@ class DatabaseBackupService:
                                 'mall_id': mall if scope == 'mall' else None,
                                 'generated_at': datetime.now(timezone.utc).isoformat(),
                                 'storage_files_included': False, 'contains_sensitive_data': True,
-                                'restore_via_csv': False, 'role_passwords_included': False}
+                                'restore_via_csv': False, 'role_passwords_included': False,
+                                'date_range': {'start': start, 'end': end, 'timezone': 'America/Santo_Domingo'} if start else None,
+                                'date_filtered_tables': ['ventas.fecha', 'logs_carga.fecha_hora'] if start else []}
                     if scope == 'platform':
                         self._command(['pg_dump', *flags, '--data-only', '--exclude-table-data=storage.buckets_vectors',
                                        '--exclude-table-data=storage.vector_indexes'], root / 'data.sql', env, check, deadline)
@@ -189,7 +227,7 @@ class DatabaseBackupService:
                             raise DatabaseBackupUnavailable('La base configurada no contiene las tablas de MsMall.')
                         if not conn.execute('SELECT id FROM public.malls WHERE id = %s', (mall,)).fetchone():
                             raise ValueError('Mall no encontrado en la base de backups.')
-                        predicates = scope_predicates(tables, mall)
+                        predicates = scope_predicates(tables, mall, start, end)
                         order = table_order(tables, predicates)
                         with (root / 'data.sql').open('wb') as output:
                             output.write(b'-- Mall data only. Restore into compatible schema with shared catalogs/users already present.\nBEGIN;\nSET standard_conforming_strings = on;\n')
@@ -218,6 +256,9 @@ class DatabaseBackupService:
                     raise BackupSizeExceeded('El ZIP supera la cuota disponible.')
                 archive.seek(0)
                 return GeneratedBackup(archive, 0, [])
+        except psycopg.OperationalError as exc:
+            archive.close()
+            raise DatabaseBackupUnavailable(connection_error_message(exc)) from exc
         except BaseException:
             archive.close()
             raise

@@ -8252,24 +8252,27 @@ def database_backup_capabilities(
     return {"enabled": database_backup_ready(), **permissions}
 
 
-@router_export.post("/import-backup/database/{backup_scope}")
+@router_export.post("/import-backup/database/mall")
 def download_database_backup(
-    backup_scope: str,
+    fecha_inicio: date = Query(...),
+    fecha_fin: date = Query(...),
     current_mall: str = Depends(get_current_mall),
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
-    if backup_scope != "mall":
-        raise HTTPException(404, "Alcance no disponible.")
+    backup_scope = "mall"
     if not _database_backup_permissions(operator_ctx, current_mall)[backup_scope]:
         raise HTTPException(403, "El backup por Mall requiere un administrador asignado al Mall.")
     if not database_backup_ready():
         raise HTTPException(503, "Los backups SQL no están habilitados en este servidor.")
-    lease = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).reserve(1))
+    if fecha_fin < fecha_inicio or fecha_fin == date.max:
+        raise HTTPException(400, "La fecha final debe ser igual o posterior a la inicial y anterior al año 10000.")
+    lease = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).reserve((fecha_fin - fecha_inicio).days + 1))
     backup = None
     try:
         lease.start()
         backup = DatabaseBackupService().generate(backup_scope, current_mall, max_bytes=lease.max_bytes,
-                                                 on_progress=lease.progress, check_active=lease.check)
+                                                 on_progress=lease.progress, check_active=lease.check,
+                                                 start=fecha_inicio.isoformat(), end=fecha_fin.isoformat())
         size = backup.file.seek(0, 2)
         backup.file.seek(0)
         lease.progress(size)

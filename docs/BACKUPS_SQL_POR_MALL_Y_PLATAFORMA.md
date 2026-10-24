@@ -2,7 +2,7 @@
 
 > La descarga completa de plataforma fue retirada de la aplicación. La API devuelve `platform: false` por compatibilidad con clientes anteriores y rechaza ese alcance con HTTP 404, incluso para el administrador global. Solo queda disponible el backup del Mall seleccionado. Las referencias al formato completo más abajo documentan el generador interno anterior, sin acceso desde la aplicación.
 
-En **Backups → Backup**, la sección **Backup del Mall y de la plataforma** permite descargar un ZIP SQL independiente de los CSV existentes. No hay endpoint de restauración SQL y estos archivos no se aceptan en Restore desde CSV.
+En **Backups → Backup SQL**, la sección **Backup del Mall y de la plataforma** permite descargar un ZIP SQL independiente de los CSV existentes. No hay endpoint de restauración SQL y estos archivos no se aceptan en Restore desde CSV.
 
 ## Permisos
 
@@ -57,3 +57,12 @@ No se ha configurado el DSN ni habilitado esta función en producción como part
 La suite levanta un clúster PostgreSQL desechable **solo en socket UNIX local**, con dos Malls y tablas relacionadas. Genera ambos ZIP, comprueba exclusión del otro Mall, incluye ventas legacy y dependencias indirectas, excluye tablas globales del archivo por Mall, rechaza relaciones cruzadas y reproduce el SQL en tablas vacías con claves foráneas dentro de ese clúster. También prueba permisos, ausencia de secretos en errores, cuotas, formato de respuesta y opción deshabilitada.
 
 No utiliza el DSN de producción para las pruebas. No se ejecutan backups ni restauraciones de producción. No se modifican esquema, permisos, POS ni los CSV actuales.
+
+
+## Pestaña Backup SQL y fechas
+
+La descarga SQL del Mall se ubica en la pestaña **Backup SQL**, separada de los CSV. Requiere fecha inicial y final, inicialmente del mes actual; ambas fechas están incluidas. El período se envía al servidor y se aplica a `ventas.fecha` y `logs_carga.fecha_hora`, en zona `America/Santo_Domingo`. Los descendientes por FK siguen los padres incluidos en el período. Locales, configuraciones y otras tablas sin este filtro temporal conservan su alcance completo por Mall. Por tanto, el período no constituye un filtro global de cada timestamp de la base.
+
+La reserva de cuota utiliza la duración real del período y respeta el máximo de días configurado. El ZIP incluye el período y la zona horaria en `manifest.json`. No utiliza el selector de fechas de los CSV.
+
+Un `OperationalError` al abrir PostgreSQL no se corrige reduciendo fechas. La aplicación ahora clasifica fallos de autenticación, TLS, DNS y red en mensajes seguros; nunca muestra el mensaje original con host, usuario o contraseña. Revisar `BACKUP_DATABASE_URL` en Railway según el diagnóstico, manteniendo el modo Session pooler. La mera presencia de la variable y los binarios habilita los botones; no garantiza que la contraseña/conexión sea válida.

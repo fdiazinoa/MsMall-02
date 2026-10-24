@@ -4,6 +4,7 @@ import { ApiService, ImportBackupStore, ImportBackupQuotaResponse } from '../api
 import { useAuth } from '../context/AuthProvider';
 import { ImportBackupSchedulePanel } from './ImportBackupSchedulePanel';
 import { ImportBackupQuotaPanel } from './ImportBackupQuotaPanel';
+import { ImportBackupRestore } from './ImportBackupRestore';
 
 const formatDate = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 type BackupKind = 'ventas' | 'locales' | 'importadores' | 'ftp' | 'webservice';
@@ -161,6 +162,7 @@ const BackupForm: React.FC<{ mallId: string; mallName: string; token: string }> 
       </div>
       {quotaState && <ImportBackupQuotaPanel state={quotaState} cooldown={cooldown} onRefresh={refreshQuota} />}
       {canAccess('backup_schedules') && <ImportBackupSchedulePanel mallId={mallId} token={token} stores={stores} onDownloaded={refreshQuota} />}
+      <ImportBackupRestore mallId={mallId} token={token} />
       {quotaError && <p role="alert" className="text-sm text-red-600">{quotaError} <button type="button" onClick={refreshQuota} className="underline">Reintentar consulta de cuota</button></p>}
       <form onSubmit={event => void handleDownload(event)} className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
         <fieldset disabled={downloading} className="space-y-5">

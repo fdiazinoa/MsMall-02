@@ -8254,14 +8254,16 @@ def database_backup_capabilities(
 
 @router_export.post("/import-backup/database/mall")
 def download_database_backup(
-    fecha_inicio: date = Query(...),
-    fecha_fin: date = Query(...),
+    fecha_inicio: Optional[date] = Query(None),
+    fecha_fin: Optional[date] = Query(None),
     current_mall: str = Depends(get_current_mall),
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
     backup_scope = "mall"
     if not _database_backup_permissions(operator_ctx, current_mall)[backup_scope]:
         raise HTTPException(403, "El backup por Mall requiere un administrador asignado al Mall.")
+    if fecha_inicio is None or fecha_fin is None:
+        raise HTTPException(409, "Actualiza la página para cargar la pestaña Backup SQL y selecciona fecha inicial y final antes de descargar.")
     if not database_backup_ready():
         raise HTTPException(503, "Los backups SQL no están habilitados en este servidor.")
     if fecha_fin < fecha_inicio or fecha_fin == date.max:

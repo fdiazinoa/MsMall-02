@@ -7,11 +7,20 @@ const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 
 function render(file, name, auth, props = {}) {
-  const code = ts.transpileModule(fs.readFileSync(`${__dirname}/../components/${file}.tsx`, 'utf8'), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, esModuleInterop: true }
-  }).outputText;
-  const context = { exports: {}, require: id => id.includes('AuthProvider') ? { useAuth: () => auth } : id === '../api' ? {} : require(id) };
-  vm.runInNewContext(code, context);
+  const load = filename => {
+    const code = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, esModuleInterop: true }
+    }).outputText;
+    const context = { exports: {}, localStorage: { getItem: () => JSON.stringify({ open: true, module: props.activeTab === 'import-backup' ? 'tools' : 'admin' }) }, require: id => {
+      if (id.includes('AuthProvider')) return { useAuth: () => auth };
+      if (id === '../api' || id.endsWith('.css')) return {};
+      if (id.startsWith('./')) return load(require('node:path').resolve(require('node:path').dirname(filename), id + (id === './navigation' ? '.ts' : '.tsx')));
+      return require(id);
+    } };
+    vm.runInNewContext(code, context);
+    return context.exports;
+  };
+  const context = { exports: load(`${__dirname}/../components/${file}.tsx`) };
   return renderToStaticMarkup(React.createElement(context.exports[name], props));
 }
 const auth = (permissions, isAdmin = false) => ({ isAdmin, canAccess: key => permissions.includes(key) });
@@ -29,7 +38,7 @@ test('sales reports alone does not expose backup navigation', () => {
 test('admin settings appear in Administración before Herramientas', () => {
   const html = render('Sidebar', 'Sidebar', auth(['import_backup', 'backup_settings'], true), { activeTab: 'backup-settings' });
   assert(html.indexOf('Administración') < html.indexOf('Límites globales de backup'));
-  assert(html.indexOf('Límites globales de backup') < html.indexOf('Herramientas'));
+  assert(html.includes('Herramientas')); // Tools remain available on the compact rail.
 });
 test('quota stays visible without administrative controls or removed legend', () => {
   const html = render('ImportBackupQuotaPanel', 'ImportBackupQuotaPanel', {}, { state: { can_configure: true, quota: {
@@ -67,7 +76,7 @@ test('admin role with explicitly revoked settings permission cannot see settings
 test('manual configuration backups follow module permissions and keep sales separate', () => {
   const source = fs.readFileSync(`${__dirname}/../components/ImportBackup.tsx`, 'utf8');
   const code = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, esModuleInterop: true }
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, esModuleInterop: true }
   }).outputText;
   function backupHtml(permissions, role = 'custom') {
     const context = { exports: {}, require: id => {

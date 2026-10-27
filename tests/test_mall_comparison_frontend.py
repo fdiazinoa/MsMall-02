@@ -7,13 +7,13 @@ ROOT = Path(__file__).parents[1]
 def test_comparison_workspace_preserves_period_view_and_adds_cross_mall_view():
     dashboard = (ROOT / 'components' / 'Dashboard.tsx').read_text()
     workspace = (ROOT / 'components' / 'ComparisonsWorkspace.tsx').read_text()
-    sidebar = (ROOT / 'components' / 'Sidebar.tsx').read_text()
+    sidebar = (ROOT / 'components' / 'navigation.ts').read_text()
 
     assert 'ComparisonsWorkspace' in dashboard
     assert '<MallComparison />' in workspace
     assert '<PeriodComparison />' in workspace
     assert 'Comparativa Malls' in sidebar
-    assert "canAccess('comparisons')" in sidebar
+    assert "reporting('comparisons')" in sidebar
 
 
 def test_cross_mall_view_has_required_dimensions_and_authenticated_api_call():

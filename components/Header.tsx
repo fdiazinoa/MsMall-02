@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthProvider';
 import { Building, ChevronDown, Activity, AlertCircle } from 'lucide-react';
 import { supabase } from '../api';
 import { AppTab } from './appTabs';
+import { visibleNavigation } from './navigation';
 
 interface HeaderProps {
   activeTab: AppTab;
@@ -14,31 +15,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
   const [systemStatus, setSystemStatus] = useState<'operational' | 'down' | 'loading'>('loading');
   const [lastHeartbeat, setLastHeartbeat] = useState<string | null>(null);
 
-  const mobileTabs: Array<{ id: AppTab; label: string; visible: boolean }> = [
-    { id: 'analytics', label: 'Dashboard BI', visible: true },
-    { id: 'big-data', label: 'Big Data', visible: true },
-    { id: 'operations', label: 'Operations Center', visible: true },
-    { id: 'insights', label: 'Inteligencia IA', visible: true },
-    { id: 'financial', label: 'Gestión Financiera', visible: true },
-    { id: 'cube', label: 'Cubo de Ventas', visible: true },
-    { id: 'comparisons', label: 'Comparativa Malls', visible: isAdmin || isTic || isAuditor || canAccess('comparisons') },
-    { id: 'reports', label: 'Auditoría Ventas', visible: isAdmin || isTic || isAuditor },
-    { id: 'operations', label: 'Operations Center', visible: isAdmin || isTic || isAuditor },
-    { id: 'monitor', label: 'Monitor de Cargas', visible: isAdmin || isTic || canAccess('monitor') },
-    { id: 'stores', label: 'Mantenimiento de Locales', visible: isAdmin || isTic || canAccess('stores') },
-    { id: 'store-catalogs', label: 'Catálogos Locales', visible: isAdmin || isTic },
-    { id: 'import-backup', label: 'Backup de importaciones', visible: canAccess('import_backup') },
-    { id: 'backup-settings', label: 'Límites globales de backup', visible: canAccess('backup_settings') },
-    { id: 'auto-import', label: 'Importación FTP', visible: isAdmin || isTic },
-    { id: 'erp-webservice', label: 'ERP Webservice', visible: isAdmin || isTic },
-    { id: 'upload', label: 'Ingesta CSV', visible: isAdmin || isTic },
-    { id: 'store-import', label: 'Importador Locales', visible: isAdmin || isTic },
-    { id: 'malls', label: 'Gestión de Malls', visible: isAdmin },
-    { id: 'users', label: 'Usuarios y Roles', visible: isAdmin },
-    { id: 'messaging', label: 'Mensajería Resend', visible: isAdmin },
-    { id: 'copilot', label: 'Copilot MsMall', visible: isAdmin },
-    { id: 'security', label: 'Seguridad Tokens', visible: isAdmin }
-  ];
+  const mobileTabs = visibleNavigation({ isAdmin, isTic, isAuditor, canAccess });
 
   useEffect(() => {
     const checkHealth = async () => {
@@ -151,7 +128,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             onChange={(e) => setActiveTab(e.target.value as AppTab)}
             className="w-full appearance-none bg-slate-100 border border-slate-200 text-slate-700 font-medium py-2 px-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           >
-            {mobileTabs.filter(t => t.visible).map(tab => (
+            {mobileTabs.map(tab => (
               <option key={tab.id} value={tab.id}>{tab.label}</option>
             ))}
           </select>

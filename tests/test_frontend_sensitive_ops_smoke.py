@@ -75,8 +75,10 @@ def test_frontend_sensitive_ops_use_backend_api_paths():
     assert "title=\"Inactivar local\"" in store_maintenance
     assert "ApiService.deleteStore(store.id" not in store_maintenance
     assert "case 'store-import':" in dashboard
-    assert "Importador Locales" in header
-    assert "Importador Locales" in sidebar
+    navigation = (repo / "components" / "navigation.ts").read_text(encoding="utf-8")
+    assert "Importador Locales" in navigation
+    assert "visibleNavigation" in header
+    assert "RetailNavigation" in sidebar
     assert "ApiService.getStores(currentMall.id, true)" in store_import_tool
     assert "await ApiService.createStore(payload, authToken)" in store_import_tool
     assert "await ApiService.updateStore(existing.id, { ...payload, id: existing.id }, authToken)" in store_import_tool

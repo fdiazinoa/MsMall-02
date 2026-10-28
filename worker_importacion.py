@@ -1686,7 +1686,44 @@ def _is_invupos_config(config: Dict[str, Any], constants: Optional[Dict[str, Any
     )
 
 
+def _is_ventas_plazas_config(config: Dict[str, Any]) -> bool:
+    constants = _webservice_constants(config)
+    return str(constants.get("provider") or "").lower() == "ventas_plazas"
+
+
+def fetch_ventas_plazas_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+    config = _normalize_worker_import_config(config)
+    constants = _webservice_constants(config)
+    id_tpv = str(_webservice_config_value(config, constants, "idTpv", "ruta_remota", "sftp_path") or "").strip()
+    equipment = str(_webservice_config_value(config, constants, "equipment_id", "usuario", "sftp_user") or "").strip()
+    token = str(config.get("password") or config.get("sftp_pass") or "").strip()
+    if not id_tpv or id_tpv == "." or not equipment or not token:
+        raise ValueError("Ventas Plazas requiere ID TPV, X-Equipment-Id y token JWT")
+    start, end = _bundaberg_date_range(config)
+    query = urllib.parse.urlencode({"idTpv": id_tpv, "fechaDesde": start.replace("-", ""), "fechaHasta": end.replace("-", "")})
+    response = _api_json_request(
+        "GET", f"{_api_base_url(config)}?{query}",
+        headers={"Authorization": f"Bearer {token}", "X-Equipment-Id": equipment, "Content-Type": "application/json"},
+        timeout=max(5, _webservice_int_value(config, constants, WEBSERVICE_TIMEOUT_SECONDS, "timeout_seconds")),
+        allow_list=True,
+    )
+    sales = response if isinstance(response, list) else response.get("ventas")
+    if not isinstance(sales, list) or any(not isinstance(row, dict) for row in sales):
+        raise RuntimeError("Respuesta Ventas Plazas invalida: se esperaba una lista de ventas")
+    rows = []
+    for sale in sales:
+        mapped = _map_studio_g_sale(config, sale, id_tpv)
+        if not mapped:
+            raise RuntimeError("Venta Plazas sin fecha o identificador valido")
+        if not mapped.get("comprobante"):
+            mapped["factura_no"] = mapped["factura_no"].replace("STUDIOG-", "PLAZAS-", 1)
+        rows.append(mapped)
+    return rows, f"Ventas Plazas {id_tpv} {start}..{end}"
+
+
 def api_provider_name(config: Dict[str, Any]) -> str:
+    if _is_ventas_plazas_config(config):
+        return "ventas_plazas"
     if _is_invupos_config(config):
         return "invupos"
     if is_cookieontop_config(config):
@@ -1928,7 +1965,8 @@ def _api_json_request(
     headers: Optional[Dict[str, str]] = None,
     body: Optional[Dict[str, Any]] = None,
     timeout: int = WEBSERVICE_TIMEOUT_SECONDS,
-) -> Dict[str, Any]:
+    allow_list: bool = False,
+) -> Any:
     payload = None
     request_headers = {"Accept": "application/json", **(headers or {})}
     if body is not None:
@@ -1963,7 +2001,7 @@ def _api_json_request(
     except urllib.error.URLError as exc:
         raise RuntimeError(f"No se pudo conectar al proveedor API: {exc.reason}") from exc
 
-    if not isinstance(parsed, dict):
+    if not isinstance(parsed, dict) and not (allow_list and isinstance(parsed, list)):
         raise RuntimeError("Respuesta API inesperada: se esperaba objeto JSON")
     return parsed
 
@@ -2649,6 +2687,117 @@ def process_studio_g_api(config: Dict[str, Any], *, write_load_log: bool = True)
         }
 
 
+def process_ventas_plazas_api(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
+    config = _normalize_worker_import_config(config)
+    local_name = config.get("nombre") or "Ventas Plazas"
+    batch_id = str(uuid.uuid4())
+    try:
+        rows, source_name = fetch_ventas_plazas_sales(config)
+        failed_dates = []
+        inserted, skipped = _insert_studio_g_sales(config, rows)
+        message = f"API Ventas Plazas: {inserted} ventas importadas"
+        if skipped:
+            message += f", {skipped} duplicadas omitidas"
+        if not rows:
+            message = "API Ventas Plazas: 0 ventas encontradas para el rango"
+        details = [
+            {
+                "linea": 0,
+                "fecha": item["fecha"],
+                "tipo": "studio_g_date_error",
+                "error": item["error"],
+            }
+            for item in failed_dates
+        ]
+        status = "partial" if failed_dates else "success"
+        if failed_dates:
+            failed_labels = ", ".join(item["fecha"] for item in failed_dates[:10])
+            if len(failed_dates) > 10:
+                failed_labels += f" y {len(failed_dates) - 10} mas"
+            message += (
+                f". Importacion parcial: {len(failed_dates)} fecha(s) pendientes "
+                f"de reintento ({failed_labels})"
+            )
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                source_name,
+                "parcial" if failed_dates else "exito",
+                message,
+                batch_id,
+                details,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal="API",
+                records_processed=inserted,
+                error_count=len(failed_dates),
+                metadata={
+                    "source": "worker_ventas_plazas_api",
+                    "records_received": len(rows),
+                    "duplicate_skipped": skipped,
+                    "fallback_strategy": "daily" if failed_dates else None,
+                    "failed_dates": [item["fecha"] for item in failed_dates],
+                },
+            )
+        if inserted > 0 and write_load_log:
+            run_local_risk_analysis_if_possible(config, trigger="worker_ventas_plazas_api")
+        return {
+            "ok": True,
+            "status": status,
+            "message": message,
+            "records_processed": inserted,
+            "source_name": source_name,
+            "canal": "API",
+            "provider": "ventas_plazas",
+            "worker_source": "worker_ventas_plazas_api",
+            "records_received": len(rows),
+            "duplicate_skipped": skipped,
+            "processed_files": 1 if rows else 0,
+            "failed_files": len(failed_dates),
+            "total_pending": len(rows),
+            "batch_size": 1 if rows else 0,
+            "failed_dates": [item["fecha"] for item in failed_dates],
+            "details": details,
+        }
+    except Exception as exc:
+        message = f"Fallo API Ventas Plazas: {sanitize_error_text(exc)}"
+        error_type = (
+            "studio_g_sales_unavailable"
+            if isinstance(exc, StudioGSalesUnavailable)
+            else "ventas_plazas_api_error"
+        )
+        details = [{"linea": 0, "tipo": error_type, "error": message}]
+        if write_load_log:
+            insert_load_log(
+                local_name,
+                "Ventas Plazas API",
+                "error",
+                message,
+                batch_id,
+                mall_id=config.get("mall_id"),
+                local_id=config.get("id"),
+                canal="API",
+                records_processed=0,
+                error_count=1,
+                metadata={
+                    "source": "worker_ventas_plazas_api",
+                    "exception": sanitize_error_text(exc),
+                    "error_type": error_type,
+                },
+            )
+        return {
+            "ok": False,
+            "status": "error",
+            "message": message,
+            "records_processed": 0,
+            "source_name": "Ventas Plazas API",
+            "canal": "API",
+            "error_type": error_type,
+            "worker_source": "worker_ventas_plazas_api",
+            "details": details,
+        }
+
+
 def fetch_cookieontop_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
     normalized = dict(config)
     constants = dict(_webservice_constants(config))
@@ -3091,6 +3240,8 @@ def _process_generic_webservice_import(
 def process_webservice_import(config: Dict[str, Any], *, write_load_log: bool = True) -> Dict[str, Any]:
     normalized = _normalize_worker_import_config(config)
     protocol = str(normalized.get("sftp_protocol") or normalized.get("protocolo") or "").strip().upper()
+    if protocol == "API" and _is_ventas_plazas_config(normalized):
+        return process_ventas_plazas_api(normalized, write_load_log=write_load_log)
     if protocol == "API" and _is_invupos_config(normalized):
         return process_invupos_api(normalized, write_load_log=write_load_log)
     if protocol == "API" and is_cookieontop_config(normalized):

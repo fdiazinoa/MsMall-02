@@ -40,6 +40,7 @@ from worker_importacion import (
     api_provider_name,
     fetch_bundaberg_sales,
     fetch_cookieontop_sales,
+    fetch_ventas_plazas_sales,
     fetch_generic_webservice_records,
     fetch_invupos_sales,
     fetch_studio_g_sales,
@@ -2807,6 +2808,8 @@ def _test_remote_connection_sync(
             provider = api_provider_name(api_config)
             if provider == "invupos":
                 rows, _, _ = fetch_invupos_sales(api_config)
+            elif provider == "ventas_plazas":
+                rows, _ = fetch_ventas_plazas_sales(api_config)
             elif provider == "cookieontop":
                 rows, _ = fetch_cookieontop_sales(api_config)
             elif provider == "bundaberg":
@@ -2817,6 +2820,7 @@ def _test_remote_connection_sync(
             provider_label = (
                 "InvuPOS"
                 if provider == "invupos"
+                else "Ventas Plazas" if provider == "ventas_plazas"
                 else "CookieOnTop" if provider == "cookieontop"
                 else "Bundaberg" if provider == "bundaberg" else "Studio G"
             )
@@ -2875,6 +2879,11 @@ def _api_config_from_remote_request(
     fecha_fin: Optional[str] = None,
 ) -> Dict[str, Any]:
     provider = str(req.provider or "").strip().lower()
+    if provider == "ventas_plazas":
+        config = _studio_g_config_from_remote_request(req, fecha_inicio, fecha_fin)
+        config["constants_config"]["provider"] = "ventas_plazas"
+        config.update(id="ventas-plazas-preview", nombre="Ventas Plazas API")
+        return config
     if provider in {"invupos", "invu_pos", "invu"} or (
         "invupos.com" in req.host.lower() and "invuapipos" in req.host.lower()
     ):
@@ -2924,6 +2933,10 @@ def _api_config_from_remote_request(
 def _api_preview_rows(req: RemoteRequest) -> List[Dict[str, Any]]:
     provider_config = _api_config_from_remote_request(req)
     provider = api_provider_name(provider_config)
+    if provider == "ventas_plazas":
+        previous = (datetime.now(ZoneInfo("America/Santo_Domingo")).date() - timedelta(days=1)).isoformat()
+        rows, _ = fetch_ventas_plazas_sales(_api_config_from_remote_request(req, previous, previous))
+        return rows
     if provider == "invupos":
         rows, _, _ = fetch_invupos_sales(provider_config)
         if rows:
@@ -3141,6 +3154,7 @@ def _list_remote_files_sync(req: RemoteRequest):
                     "nombre": (
                         "WEBSERVICE_API"
                         if protocol == "WEBSERVICE"
+                        else "VENTAS_PLAZAS_API" if provider == "ventas_plazas"
                         else "COOKIEONTOP_API" if provider == "cookieontop"
                         else "INVUPOS_API" if provider == "invupos"
                         else "BUNDABERG_API" if provider == "bundaberg"
@@ -4614,6 +4628,7 @@ def _list_remote_files(config: Dict[str, Any]):
             "nombre": (
                 "WEBSERVICE_API"
                 if protocol == "WEBSERVICE"
+                else "VENTAS_PLAZAS_API" if provider == "ventas_plazas"
                 else "COOKIEONTOP_API" if provider == "cookieontop"
                 else "INVUPOS_API" if provider == "invupos"
                 else "BUNDABERG_API" if provider == "bundaberg"

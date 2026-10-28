@@ -136,8 +136,11 @@ const withWebserviceDefaults = (config: ImportConfig): ImportConfig => {
   };
 };
 
+const ventasPlazasEndpoint = 'https://egord.ddns.net/api/Ventas/ConsultarVentasPlazas';
+
 const getApiProvider = (config: Partial<ImportConfig>) => {
   const explicit = String(config.constants?.provider || '').trim().toLowerCase();
+  if (explicit === 'ventas_plazas') return 'ventas_plazas';
   if (['invupos', 'invu_pos', 'invu'].includes(explicit)) return 'invupos';
   if (String(config.host || '').toLowerCase().includes('invupos.com/invuapipos')) return 'invupos';
   if (explicit === 'cookieontop' || String(config.host || '').startsWith('https://api.citrus.com.do/cookieontop')) return 'cookieontop';
@@ -1081,10 +1084,14 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         alert('Indica el Client ID de Studio G.');
         return;
       }
+      if (selectedApiProvider === 'ventas_plazas' && !editingConfig.usuario.trim()) {
+        alert('Indica el X-Equipment-Id autorizado.');
+        return;
+      }
       const existingApiConfig = configs.some(config => config.id === editingConfig.id && config.protocolo === 'API');
       if (!existingApiConfig && !tempPassword.trim() && !editingConfig.password?.trim()) {
         alert(
-          selectedApiProvider === 'cookieontop' ? 'Indica el token Bearer de CookieOnTop.' : selectedApiProvider === 'invupos'
+          selectedApiProvider === 'ventas_plazas' ? 'Indica el token JWT de Ventas Plazas.' : selectedApiProvider === 'cookieontop' ? 'Indica el token Bearer de CookieOnTop.' : selectedApiProvider === 'invupos'
             ? 'Indica la APIKEY de InvuPOS.'
             : selectedApiProvider === 'bundaberg'
               ? 'Indica la API key de Bundaberg.'
@@ -2261,11 +2268,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                               setEditingConfig({
                                 ...editingConfig,
                                 constants,
-                                host: provider === 'cookieontop' ? cookieontopEndpoint : provider === 'invupos'
+                                host: provider === 'ventas_plazas' ? ventasPlazasEndpoint : provider === 'cookieontop' ? cookieontopEndpoint : provider === 'invupos'
                                   ? invuposEndpoint
                                   : provider === 'bundaberg'
                                     ? bundabergEndpoint
-                                    : ([bundabergEndpoint, invuposEndpoint, cookieontopEndpoint].includes(editingConfig.host) ? 'https://alcagora.ddns.net' : editingConfig.host),
+                                    : ([bundabergEndpoint, invuposEndpoint, cookieontopEndpoint, ventasPlazasEndpoint].includes(editingConfig.host) ? 'https://alcagora.ddns.net' : editingConfig.host),
                                 usuario: provider !== 'studio_g' ? '' : editingConfig.usuario,
                                 password: '',
                                 ruta_remota: provider === 'cookieontop' ? '' : provider === 'invupos'
@@ -2276,6 +2283,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                               });
                             }}
                           >
+                            <option value="ventas_plazas">Ventas Plazas / EGO / Lattliv</option>
                             <option value="studio_g">Studio G</option>
                             <option value="bundaberg">Bundaberg / Ágora</option>
                             <option value="invupos">InvuPOS</option>
@@ -2373,7 +2381,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         {editingConfig.protocolo === 'WEBSERVICE'
                           ? (isMalalaWebservice ? 'Autenticación dinámica MALALA' : 'Autenticación Bearer token')
                           : editingConfig.protocolo === 'API'
-                          ? (selectedApiProvider === 'cookieontop' ? 'Autenticación Bearer token' : ['bundaberg', 'invupos'].includes(selectedApiProvider) ? 'Autenticación API key' : 'Autenticación Client Credentials')
+                          ? (['cookieontop', 'ventas_plazas'].includes(selectedApiProvider) ? 'Autenticación Bearer token' : ['bundaberg', 'invupos'].includes(selectedApiProvider) ? 'Autenticación API key' : 'Autenticación Client Credentials')
                           : 'Credenciales de Acceso'}
                       </label>
                       <div className="space-y-3">
@@ -2382,7 +2390,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder={editingConfig.protocolo === 'API' ? 'Client ID' : isMalalaWebservice ? 'Usuario MALALA' : 'Nombre de usuario'}
+                            placeholder={editingConfig.protocolo === 'API' ? (selectedApiProvider === 'ventas_plazas' ? 'X-Equipment-Id autorizado' : 'Client ID') : isMalalaWebservice ? 'Usuario MALALA' : 'Nombre de usuario'}
                             value={editingConfig.usuario}
                             onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
                           />
@@ -2399,7 +2407,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                               : editingConfig.protocolo === 'WEBSERVICE'
                                 ? (isMalalaWebservice ? 'Client Secret de MALALA' : 'Token Bearer del WebService')
                                 : editingConfig.protocolo === 'API'
-                                ? (selectedApiProvider === 'cookieontop' ? 'Token Bearer de CookieOnTop' : selectedApiProvider === 'invupos' ? 'APIKEY de InvuPOS' : selectedApiProvider === 'bundaberg' ? 'API key de Bundaberg' : 'Client Secret')
+                                ? (selectedApiProvider === 'ventas_plazas' ? 'Token JWT de Ventas Plazas' : selectedApiProvider === 'cookieontop' ? 'Token Bearer de CookieOnTop' : selectedApiProvider === 'invupos' ? 'APIKEY de InvuPOS' : selectedApiProvider === 'bundaberg' ? 'API key de Bundaberg' : 'Client Secret')
                                 : 'Contraseña o Frase de paso SSH'}
                             value={tempPassword}
                             onChange={e => setTempPassword(e.target.value)}
@@ -2432,7 +2440,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                         <div>
                           <p className="text-[10px] font-black uppercase tracking-widest text-cyan-700">Periodo de consulta API</p>
                           <p className="text-xs text-cyan-700 mt-1">
-                            Define qué fechas pedirá {selectedApiProvider === 'cookieontop' ? 'CookieOnTop' : selectedApiProvider === 'bundaberg' ? 'Bundaberg' : 'Studio G'} al procesar esta conexión.
+                            Define qué fechas pedirá {selectedApiProvider === 'ventas_plazas' ? 'Ventas Plazas' : selectedApiProvider === 'cookieontop' ? 'CookieOnTop' : selectedApiProvider === 'bundaberg' ? 'Bundaberg' : 'Studio G'} al procesar esta conexión.
                           </p>
                         </div>
                         <div className="grid grid-cols-2 gap-2">

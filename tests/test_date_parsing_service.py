@@ -28,3 +28,11 @@ def test_normalize_spanish_excel_meridiem_respects_selected_date_order():
     value = "7/5/2026 12:00:00 a. m."
     assert normalize_sale_date(value, "DD/MM/YYYY") == "2026-05-07"
     assert normalize_sale_date(value, "MM/DD/YYYY") == "2026-07-05"
+
+
+def test_explicit_mm_dd_hyphen_format_preserves_month_first_order():
+    assert normalize_sale_date("10-14-2026", "MM-DD-YYYY") == "2026-10-14"
+    assert normalize_sale_date("11-01-2026", "MM-DD-YYYY") == "2026-11-01"
+    assert normalize_sale_date("11-12-2026", "MM-DD-YYYY") == "2026-11-12"
+    assert normalize_sale_date("02-30-2026", "MM-DD-YYYY") is None
+    assert normalize_sale_date("14-10-2026", "MM-DD-YYYY") is None

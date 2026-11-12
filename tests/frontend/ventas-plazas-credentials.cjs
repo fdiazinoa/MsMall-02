@@ -19,7 +19,7 @@ function render(protocol, provider) {
     editingConfig: { protocolo: protocol, usuario: 'equipment-test' }, selectedApiProvider: provider
   }));
 }
-assert.match(render('API', 'ventas_plazas'), /placeholder="X-Equipment-Id autorizado"/);
+assert.match(render('API', 'ventas_plazas'), /placeholder="X-Equipment-Id \(opcional\)"/);
 assert.match(render('API', 'ventas_plazas'), /value="equipment-test"/);
 assert.match(render('API', 'studio_g'), /placeholder="Client ID"/);
 for (const provider of ['cookieontop', 'invupos', 'bundaberg']) {
@@ -52,7 +52,7 @@ async function testConnection(overrides = {}, password = 'jwt-test', stored = fa
 }
 (async () => {
   for (const [overrides, expected] of [
-    [{ host: '' }, /endpoint/], [{ ruta_remota: '.' }, /ID TPV/], [{ usuario: '' }, /X-Equipment-Id/]
+    [{ host: '' }, /endpoint/], [{ ruta_remota: '.' }, /ID TPV/]
   ]) {
     const result = await testConnection(overrides);
     assert.equal(result.requests.length, 0);
@@ -68,5 +68,8 @@ async function testConnection(overrides = {}, password = 'jwt-test', stored = fa
     assert.equal(valid.requests[0][0].usuario, 'equipment-test');
     assert.equal(valid.requests[0][0].ruta_remota, 'M021944');
   }
+  const tokenOnly = await testConnection({ usuario: '' });
+  assert.equal(tokenOnly.requests.length, 1);
+  assert.equal(tokenOnly.requests[0][0].usuario, '');
   console.log('Connection validation and provider: 6 scenarios passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -937,10 +937,31 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
 
   const handleTestConnection = async () => {
     if (testingConnection) return;
+    if (editingConfig.protocolo === 'API' && selectedApiProvider === 'ventas_plazas') {
+      if (!editingConfig.host.trim()) {
+        alert('Indica el endpoint del proveedor API.');
+        return;
+      }
+      if (!editingConfig.ruta_remota.trim() || editingConfig.ruta_remota === '.') {
+        alert('Indica el ID TPV del proveedor API.');
+        return;
+      }
+      if (!editingConfig.usuario.trim()) {
+        alert('Indica el X-Equipment-Id autorizado.');
+        return;
+      }
+      if (!tempPassword.trim() && !hasStoredCredential && !editingConfig.password?.trim()) {
+        alert('Indica el token JWT de Ventas Plazas.');
+        return;
+      }
+    }
     console.log("Iniciando prueba de conexión...");
     setTestingConnection(true);
     try {
-      const result = await ApiService.testConnection(editingConfig, tempPassword, authToken);
+      const testConfig = editingConfig.protocolo === 'API'
+        ? { ...editingConfig, constants: { ...editingConfig.constants, provider: selectedApiProvider } }
+        : editingConfig;
+      const result = await ApiService.testConnection(testConfig, tempPassword, authToken);
       console.log("Resultado prueba recibida:", result);
       alert(result.message);
     } catch (error: any) {
@@ -2385,7 +2406,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           : 'Credenciales de Acceso'}
                       </label>
                       <div className="space-y-3">
-                        {(editingConfig.protocolo !== 'WEBSERVICE' || isMalalaWebservice) && !(editingConfig.protocolo === 'API' && selectedApiProvider !== 'studio_g') && (
+                        {(editingConfig.protocolo !== 'WEBSERVICE' || isMalalaWebservice) && !(editingConfig.protocolo === 'API' && !['studio_g', 'ventas_plazas'].includes(selectedApiProvider)) && (
                         <div className="relative">
                           <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input

@@ -1697,13 +1697,16 @@ def fetch_ventas_plazas_sales(config: Dict[str, Any]) -> Tuple[List[Dict[str, An
     id_tpv = str(_webservice_config_value(config, constants, "idTpv", "ruta_remota", "sftp_path") or "").strip()
     equipment = str(_webservice_config_value(config, constants, "equipment_id", "usuario", "sftp_user") or "").strip()
     token = str(config.get("password") or config.get("sftp_pass") or "").strip()
-    if not id_tpv or id_tpv == "." or not equipment or not token:
-        raise ValueError("Ventas Plazas requiere ID TPV, X-Equipment-Id y token JWT")
+    if not id_tpv or id_tpv == "." or not token:
+        raise ValueError("Ventas Plazas requiere ID TPV y token JWT")
     start, end = _bundaberg_date_range(config)
     query = urllib.parse.urlencode({"idTpv": id_tpv, "fechaDesde": start.replace("-", ""), "fechaHasta": end.replace("-", "")})
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    if equipment:
+        headers["X-Equipment-Id"] = equipment
     response = _api_json_request(
         "GET", f"{_api_base_url(config)}?{query}",
-        headers={"Authorization": f"Bearer {token}", "X-Equipment-Id": equipment, "Content-Type": "application/json"},
+        headers=headers,
         timeout=max(5, _webservice_int_value(config, constants, WEBSERVICE_TIMEOUT_SECONDS, "timeout_seconds")),
         allow_list=True,
     )

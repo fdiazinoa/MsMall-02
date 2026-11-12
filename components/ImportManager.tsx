@@ -136,7 +136,7 @@ const withWebserviceDefaults = (config: ImportConfig): ImportConfig => {
   };
 };
 
-const ventasPlazasEndpoint = 'https://egord.ddns.net/api/Ventas/ConsultarVentasPlazas';
+const ventasPlazasEndpoint = 'https://egord.ddns.net/api/Ventas/ConsultarVentas';
 
 const getApiProvider = (config: Partial<ImportConfig>) => {
   const explicit = String(config.constants?.provider || '').trim().toLowerCase();
@@ -946,10 +946,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
         alert('Indica el ID TPV del proveedor API.');
         return;
       }
-      if (!editingConfig.usuario.trim()) {
-        alert('Indica el X-Equipment-Id autorizado.');
-        return;
-      }
       if (!tempPassword.trim() && !hasStoredCredential && !editingConfig.password?.trim()) {
         alert('Indica el token JWT de Ventas Plazas.');
         return;
@@ -1103,10 +1099,6 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       }
       if (selectedApiProvider === 'studio_g' && !editingConfig.usuario.trim()) {
         alert('Indica el Client ID de Studio G.');
-        return;
-      }
-      if (selectedApiProvider === 'ventas_plazas' && !editingConfig.usuario.trim()) {
-        alert('Indica el X-Equipment-Id autorizado.');
         return;
       }
       const existingApiConfig = configs.some(config => config.id === editingConfig.id && config.protocolo === 'API');
@@ -2323,7 +2315,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                             placeholder={editingConfig.protocolo === 'WEBSERVICE'
                               ? malalaSalesEndpoint
                               : editingConfig.protocolo === 'API'
-                                ? (selectedApiProvider === 'cookieontop' ? cookieontopEndpoint : selectedApiProvider === 'invupos' ? invuposEndpoint : selectedApiProvider === 'bundaberg' ? bundabergEndpoint : 'https://alcagora.ddns.net')
+                                ? (selectedApiProvider === 'ventas_plazas' ? ventasPlazasEndpoint : selectedApiProvider === 'cookieontop' ? cookieontopEndpoint : selectedApiProvider === 'invupos' ? invuposEndpoint : selectedApiProvider === 'bundaberg' ? bundabergEndpoint : 'https://alcagora.ddns.net')
                               : 'sftp.tu-tienda.com'}
                             value={editingConfig.host}
                             onChange={e => setEditingConfig({ ...editingConfig, host: e.target.value })}
@@ -2411,7 +2403,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           <Server size={18} className="absolute left-3.5 top-3 text-slate-300" />
                           <input
                             type="text" className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-slate-200 outline-none"
-                            placeholder={editingConfig.protocolo === 'API' ? (selectedApiProvider === 'ventas_plazas' ? 'X-Equipment-Id autorizado' : 'Client ID') : isMalalaWebservice ? 'Usuario MALALA' : 'Nombre de usuario'}
+                            placeholder={editingConfig.protocolo === 'API' ? (selectedApiProvider === 'ventas_plazas' ? 'X-Equipment-Id (opcional)' : 'Client ID') : isMalalaWebservice ? 'Usuario MALALA' : 'Nombre de usuario'}
                             value={editingConfig.usuario}
                             onChange={e => setEditingConfig({ ...editingConfig, usuario: e.target.value })}
                           />

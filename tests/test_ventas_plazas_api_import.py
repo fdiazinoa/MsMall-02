@@ -5,7 +5,7 @@ import worker_importacion as worker
 
 def config():
     return {"id": "ego-local", "mall_id": "megacentro", "sftp_protocol": "API",
-            "sftp_host": "https://egord.ddns.net/api/Ventas/ConsultarVentasPlazas",
+            "sftp_host": "https://egord.ddns.net/api/Ventas/ConsultarVentas",
             "sftp_user": "authorized-equipment", "sftp_pass": "test-jwt", "sftp_path": "TPV-TEST",
             "constants_config": {"provider": "ventas_plazas", "_api_date_mode": "custom",
                                  "_api_fecha_inicio": "2026-10-01", "_api_fecha_fin": "2026-10-27"}}
@@ -30,7 +30,7 @@ def test_contract_and_mapping(monkeypatch, wrapped):
     assert "Ventas Plazas" in source
 
 
-@pytest.mark.parametrize("field", ["sftp_user", "sftp_pass", "sftp_path"])
+@pytest.mark.parametrize("field", ["sftp_pass", "sftp_path"])
 def test_required_credentials(field):
     cfg = config()
     cfg[field] = ""
@@ -92,3 +92,15 @@ def test_connection_test_dispatches_to_plazas_without_studio_credentials(monkeyp
     assert "Ventas Plazas" in result["message"]
     assert received[0]["sftp_path"] == "M021944"
     assert received[0]["sftp_user"] == "equipment"
+
+
+@pytest.mark.parametrize("equipment", ["", "   "])
+def test_token_only_without_equipment_header(monkeypatch, equipment):
+    cfg = config()
+    cfg["sftp_user"] = equipment
+    def request(method, url, **kwargs):
+        assert url.startswith("https://egord.ddns.net/api/Ventas/ConsultarVentas?")
+        assert kwargs["headers"] == {"Authorization": "Bearer test-jwt", "Content-Type": "application/json"}
+        return []
+    monkeypatch.setattr(worker, "_api_json_request", request)
+    assert worker.fetch_ventas_plazas_sales(cfg)[0] == []

@@ -54,6 +54,7 @@ _FORMAT_GROUPS: Dict[str, Sequence[str]] = {
         "%m/%d/%Y",
         "%m-%d-%Y",
     ),
+    "MM-DD-YYYY": ("%m-%d-%Y",),
     "YYYY/MM/DD": (
         "%Y/%m/%d %H:%M:%S.%f",
         "%Y/%m/%d %H:%M:%S",

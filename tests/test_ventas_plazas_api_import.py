@@ -79,3 +79,16 @@ def test_list_response_only_enabled_for_plazas(monkeypatch):
     assert worker._api_json_request("GET", "https://example.test", allow_list=True) == []
     with pytest.raises(RuntimeError, match="objeto JSON"):
         worker._api_json_request("GET", "https://example.test")
+
+
+def test_connection_test_dispatches_to_plazas_without_studio_credentials(monkeypatch):
+    import main
+    received = []
+    monkeypatch.setattr(main, "fetch_ventas_plazas_sales", lambda cfg: (received.append(cfg) or [], "Plazas"))
+    monkeypatch.setattr(main, "fetch_studio_g_sales", lambda *_: pytest.fail("No debe entrar a Studio G"))
+    req = main.RemoteRequest(protocolo="API", host=config()["sftp_host"], usuario="equipment", password="jwt", ruta="M021944", provider="ventas_plazas")
+    result = main._test_remote_connection_sync(req)
+    assert result["status"] == "success"
+    assert "Ventas Plazas" in result["message"]
+    assert received[0]["sftp_path"] == "M021944"
+    assert received[0]["sftp_user"] == "equipment"

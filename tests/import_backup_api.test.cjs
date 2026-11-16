@@ -25,6 +25,33 @@ const csvResponse = () => new Response('\ufeffid_registro,fecha_venta\r\n1,2026-
   headers: { 'Content-Type': 'text/csv; charset=utf-8', 'X-Backup-Records': '1' }
 });
 
+test('differential baseline lookup is scoped and complete backups omit date filters', async () => {
+  const calls = [];
+  const api = harness(async (url, init) => {
+    calls.push({ url, init });
+    return url.endsWith('/baseline')
+      ? new Response(JSON.stringify({ baseline: { id: 'base-a' } }), { headers: { 'Content-Type': 'application/json' } })
+      : new Response('zip', { headers: { 'Content-Type': 'application/zip' } });
+  });
+  const signal = new AbortController().signal;
+  assert.equal((await api.getDatabaseBackupBaseline('mall-a', 'token-a', signal)).baseline.id, 'base-a');
+  await api.downloadDatabaseBackup('mall-a', 'token-a', 'mall', signal, '', '', 'base');
+  await api.downloadDatabaseBackup('mall-a', 'token-a', 'mall', signal, '', '', 'differential', 'base-a');
+  assert.equal(calls[0].url, '/api/v1/export/import-backup/database/baseline');
+  assert.equal(calls[1].url, '/api/v1/export/import-backup/database/mall?mode=base');
+  assert.equal(calls[2].url, '/api/v1/export/import-backup/database/mall?mode=differential&base_id=base-a');
+  for (const call of calls) {
+    assert.equal(call.init.headers.Authorization, 'Bearer token-a');
+    assert.equal(call.init.headers['X-Mall-Id'], 'mall-a');
+    assert.equal(call.init.signal, signal);
+  }
+});
+
+test('a differential without a base does not generate a request', async () => {
+  const api = harness(() => { throw Error('must not fetch'); });
+  await assert.rejects(api.downloadDatabaseBackup('mall-a', 'token-a', 'mall', new AbortController().signal, '', '', 'differential'), /completo base/);
+});
+
 test('CSV request carries session, Mall, sale dates and selected store IDs', async () => {
   let request;
   const api = harness(async (url, init) => { request = { url, ...init }; return csvResponse(); });

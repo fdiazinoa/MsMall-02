@@ -854,17 +854,25 @@ export const ApiService = {
     );
   },
 
-  async getDatabaseBackupCapabilities(mallId: string, token: string, signal: AbortSignal): Promise<{ enabled: boolean; mall: boolean; platform: boolean }> {
+  async getDatabaseBackupCapabilities(mallId: string, token: string, signal: AbortSignal): Promise<{ enabled: boolean; mall: boolean; platform: boolean; differential?: boolean }> {
     return fetchJsonWithBaseFallback('/export/import-backup/database/capabilities', {
       headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
     }, 'No se pudieron consultar los permisos de backup SQL.');
   },
 
-  async downloadDatabaseBackup(mallId: string, token: string, scope: 'mall', signal: AbortSignal, start: string, end: string): Promise<Blob> {
-    if (!start || !end) throw new Error('Selecciona fecha inicial y final en la pestaña Backup SQL. Si no aparece, actualiza la página.');
+  async getDatabaseBackupBaseline(mallId: string, token: string, signal: AbortSignal): Promise<{ baseline: { id: string; created_at: string; row_count: number; sql_bytes: number } | null }> {
+    return fetchJsonWithBaseFallback('/export/import-backup/database/baseline', {
+      headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
+    }, 'No se pudo consultar la base del diferencial.');
+  },
+
+  async downloadDatabaseBackup(mallId: string, token: string, scope: 'mall', signal: AbortSignal, start: string, end: string, mode: 'period' | 'base' | 'differential' = 'period', baseId?: string): Promise<Blob> {
+    if (mode === 'period' && (!start || !end)) throw new Error('Selecciona fecha inicial y final en la pestaña Backup SQL. Si no aparece, actualiza la página.');
+    if (mode === 'differential' && !baseId) throw new Error('Genera y conserva un respaldo completo base antes del diferencial.');
+    const params = mode === 'period' ? { fecha_inicio: start, fecha_fin: end } : { mode, ...(mode === 'differential' ? { base_id: baseId! } : {}) };
     // One explicit request: never automatically retry an expensive full dump.
     const base = getApiBaseUrls()[0];
-    const response = await fetch(`${base}/export/import-backup/database/${scope}?${new URLSearchParams({ fecha_inicio: start, fecha_fin: end })}`, {
+    const response = await fetch(`${base}/export/import-backup/database/${scope}?${new URLSearchParams(params)}`, {
       method: 'POST', headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
     });
     if (!response.ok) throw new Error(await parseErrorDetail(response, 'No se pudo generar el backup SQL.'));

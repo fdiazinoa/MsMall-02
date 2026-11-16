@@ -99,6 +99,7 @@ from services.import_backup_service import ImportBackupService, InvalidBackupSel
 from services.configuration_backup_service import ConfigurationBackupService
 from services.backup_restore_service import BackupRestoreService, MAX_BYTES as RESTORE_MAX_BYTES
 from services.database_backup_service import DatabaseBackupService, DatabaseBackupUnavailable, configuration as database_backup_ready
+from services.differential_backup_service import DifferentialBackupService, DifferentialSelectionError, enabled as differential_backup_ready
 from services.import_backup_schedule_service import ImportBackupScheduleService, BackupSchedule
 from services.import_backup_quota_service import ImportBackupQuotaService, BackupPolicy, BackupQuotaError
 from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
@@ -8264,36 +8265,68 @@ def database_backup_capabilities(
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
     permissions = _database_backup_permissions(operator_ctx, current_mall)
-    return {"enabled": database_backup_ready(), **permissions}
+    result = {"enabled": database_backup_ready(), **permissions}
+    if differential_backup_ready():
+        result["differential"] = True
+    return result
+
+
+@router_export.get("/import-backup/database/baseline")
+def database_backup_baseline(
+    current_mall: str = Depends(get_current_mall),
+    operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
+):
+    if not _database_backup_permissions(operator_ctx, current_mall)["mall"]:
+        raise HTTPException(403, "El backup por Mall requiere un administrador asignado al Mall.")
+    try:
+        return JSONResponse({"baseline": DifferentialBackupService().baseline(current_mall)}, headers={"Cache-Control": "no-store"})
+    except DatabaseBackupUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @router_export.post("/import-backup/database/mall")
 def download_database_backup(
     fecha_inicio: Optional[date] = Query(None),
     fecha_fin: Optional[date] = Query(None),
+    mode: str = Query('period', pattern='^(period|base|differential)$'),
+    base_id: Optional[UUID] = Query(None),
     current_mall: str = Depends(get_current_mall),
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
     backup_scope = "mall"
     if not _database_backup_permissions(operator_ctx, current_mall)[backup_scope]:
         raise HTTPException(403, "El backup por Mall requiere un administrador asignado al Mall.")
-    if fecha_inicio is None or fecha_fin is None:
+    if mode == 'period' and (fecha_inicio is None or fecha_fin is None):
         raise HTTPException(409, "Actualiza la página para cargar la pestaña Backup SQL y selecciona fecha inicial y final antes de descargar.")
     if not database_backup_ready():
         raise HTTPException(503, "Los backups SQL no están habilitados en este servidor.")
-    if fecha_fin < fecha_inicio or fecha_fin == date.max:
+    if mode != 'period':
+        if not differential_backup_ready():
+            raise HTTPException(503, "La opción diferencial no está habilitada en este servidor.")
+        if fecha_inicio is not None or fecha_fin is not None:
+            raise HTTPException(422, "Los completos base y diferenciales no admiten filtros de fecha.")
+        if (mode == 'differential') != (base_id is not None):
+            raise HTTPException(422, "Indica la base únicamente para un respaldo diferencial.")
+    if mode == 'period' and (fecha_fin < fecha_inicio or fecha_fin == date.max):
         raise HTTPException(400, "La fecha final debe ser igual o posterior a la inicial y anterior al año 10000.")
-    lease = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).reserve((fecha_fin - fecha_inicio).days + 1))
+    days = (fecha_fin - fecha_inicio).days + 1 if mode == 'period' else 1
+    lease = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).reserve(days))
     backup = None
     try:
         lease.start()
-        backup = DatabaseBackupService().generate(backup_scope, current_mall, max_bytes=lease.max_bytes,
-                                                 on_progress=lease.progress, check_active=lease.check,
-                                                 start=fecha_inicio.isoformat(), end=fecha_fin.isoformat())
+        if mode == 'period':
+            backup = DatabaseBackupService().generate(backup_scope, current_mall, max_bytes=lease.max_bytes,
+                                                     on_progress=lease.progress, check_active=lease.check,
+                                                     start=fecha_inicio.isoformat(), end=fecha_fin.isoformat())
+        else:
+            backup = DifferentialBackupService().generate_snapshot(mode, current_mall, base_id=base_id,
+                        max_bytes=lease.max_bytes, on_progress=lease.progress, check_active=lease.check,
+                        on_ready=lease.prepare)
         size = backup.file.seek(0, 2)
         backup.file.seek(0)
         lease.progress(size)
-        lease.prepare(size)
+        if mode == 'period':
+            lease.prepare(size)
     except Exception as exc:
         if backup:
             backup.file.close()
@@ -8304,11 +8337,13 @@ def download_database_backup(
             raise HTTPException(413, str(exc)) from exc
         if isinstance(exc, DatabaseBackupUnavailable):
             raise HTTPException(503, str(exc)) from exc
+        if isinstance(exc, DifferentialSelectionError):
+            raise HTTPException(409, str(exc)) from exc
         # Connection strings and PostgreSQL stderr must never reach logs or responses.
         logger.error("Database backup failed scope=%s user=%s error_type=%s", backup_scope, operator_ctx["user_id"], type(exc).__name__)
         raise HTTPException(503, "No se pudo generar el backup SQL. Revisa la configuración del servidor.") from exc
     logger.info("Database backup generated scope=%s mall=%s user=%s bytes=%s", backup_scope, current_mall, operator_ctx["user_id"], size)
-    name = f"backup_{backup_scope}_{current_mall}_{datetime.now(ZoneInfo('America/Santo_Domingo')):%Y%m%d_%H%M%S}.zip"
+    name = f"backup_{backup_scope}_{mode}_{current_mall}_{datetime.now(ZoneInfo('America/Santo_Domingo')):%Y%m%d_%H%M%S}.zip"
     return BackupQuotaResponse(backup, lease, media_type="application/zip", headers={
         "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",

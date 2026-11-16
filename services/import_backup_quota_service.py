@@ -13,7 +13,7 @@ class BackupPolicy(BaseModel):
     mall_concurrency: int = Field(default=2, ge=1, le=50)
     min_interval_seconds: int = Field(default=60, ge=1, le=86400)
     user_daily_downloads: int = Field(default=10, ge=1, le=10000)
-    max_file_mb: int = Field(default=50, ge=1, le=1000)
+    max_file_mb: int = Field(default=50, ge=1, le=5000)
     user_daily_mb: int = Field(default=200, ge=1, le=100000)
     mall_daily_mb: int = Field(default=1000, ge=1, le=1000000)
     max_range_days: int = Field(default=90, ge=1, le=3660)

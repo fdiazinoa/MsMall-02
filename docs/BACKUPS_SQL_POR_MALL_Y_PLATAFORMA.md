@@ -66,3 +66,103 @@ La descarga SQL del Mall se ubica en la pestaña **Backup SQL**, separada de los
 La reserva de cuota utiliza la duración real del período y respeta el máximo de días configurado. El ZIP incluye el período y la zona horaria en `manifest.json`. No utiliza el selector de fechas de los CSV.
 
 Un `OperationalError` al abrir PostgreSQL no se corrige reduciendo fechas. La aplicación ahora clasifica fallos de autenticación, TLS, DNS y red en mensajes seguros; nunca muestra el mensaje original con host, usuario o contraseña. Revisar `BACKUP_DATABASE_URL` en Railway según el diagnóstico, manteniendo el modo Session pooler. La mera presencia de la variable y los binarios habilita los botones; no garantiza que la contraseña/conexión sea válida.
+
+## Opción diferencial por Mall
+
+Deshabilitada por defecto. Requiere las migraciones `database_backup_differential` y
+`database_backup_file_ceiling`, además de `ENABLE_DIFFERENTIAL_BACKUPS=true` en el
+backend y los requisitos habituales de `ENABLE_DATABASE_BACKUPS`. El usuario de
+`BACKUP_DATABASE_URL` necesita leer los datos y administrar las dos tablas privadas
+de `msmall_backup`; las claves REST no conceden este acceso. No conceder ese esquema
+a `anon`, `authenticated` o `service_role` ni añadirlo a los esquemas expuestos.
+
+La pestaña ofrece tres modos cuando está habilitada:
+
+- **SQL por período:** conserva el comportamiento existente; no sirve como base.
+- **Completo para base diferencial:** captura todo el alcance del Mall sin fechas,
+  genera `schema.sql`, `data.sql` y `manifest.json` y registra claves primarias y
+  huellas SHA-256 de las filas exportadas. Solo escribe estos metadatos privados;
+  no modifica tablas operativas ni instala triggers. Una generación exitosa
+  reemplaza la única base vigente de ese Mall. Si falla antes de terminar el ZIP,
+  la transacción revierte y conserva la base anterior.
+- **Diferencial:** usa el ID de la base vigente y el mismo alcance, compara el estado
+  actual completo de las filas con las huellas y exporta altas, modificaciones y
+  eliminaciones acumuladas desde esa base. Incluye correcciones de ventas antiguas,
+  cambios de claves y filas que salieron del alcance por cambios de pertenencia.
+  No usa `fecha`, `created_at` ni `updated_at` para detectar cambios. No avanza la
+  base: cada diferencial se compara siempre con el completo original.
+
+El completo y las huellas comparten un snapshot PostgreSQL `REPEATABLE READ`.
+Cada diferencial utiliza otro snapshot coherente y solo lee. Un advisory lock
+exclusivo por Mall evita generar/reemplazar bases y diferenciales simultáneamente,
+sin bloquear las escrituras ordinarias de importación. Los locks de lectura del
+catálogo sí pueden bloquear DDL; hay timeout. Las tablas del alcance necesitan una
+clave primaria exportable. Se admiten claves primarias compuestas, pero se rechazan
+relaciones foráneas compuestas y ciclos que no se pueden ordenar con seguridad.
+El alcance conserva las exclusiones y limitaciones del backup por Mall existente.
+
+La huella del esquema normaliza los tokens aleatorios de `pg_dump` y compara la
+estructura de `public` antes de exportar. Si el esquema cambia, falta la base, fue
+reemplazada o corresponde a otro Mall, se exige crear un completo nuevo. Cambiar la
+versión de `pg_dump` también puede requerir una base nueva. No hay migración
+automática de esquemas durante una recuperación diferencial.
+
+### Recuperación y conservación
+
+Conservar el ZIP completo original y el diferencial deseado. El sistema almacena
+**huellas**, no una copia recuperable del completo: si se pierde el ZIP base, hay
+que generar otro completo. La referencia en pantalla acredita generación, no que
+el usuario haya conservado su descarga. Incluso si se interrumpe una descarga
+después de generar el ZIP, la nueva referencia puede haber reemplazado la anterior.
+Los respaldos ya descargados siguen siendo utilizables con su base original.
+
+Procedimiento administrativo, solo en una base de recuperación compatible y
+aislada:
+
+1. Preparar esquema y dependencias compartidas (Auth, catálogos y otros requisitos
+   no incluidos). `schema.sql` es estructura común: no ejecutarlo en producción.
+   Un dump de esquema puede contener `CREATE SCHEMA public`; preparar el destino
+   vacío de acuerdo con ese SQL y sus dependencias, sin eliminar esquemas operativos.
+2. Restaurar `data.sql` del completo con `psql -X -v ON_ERROR_STOP=1`. Se registra
+   el ID base en `msmall_restore.baselines` dentro de la misma transacción.
+3. Restaurar `data.sql` de **un** diferencial de esa base. El SQL verifica y bloquea
+   su marcador, carga tablas temporales, elimina hijos antes de padres y aplica
+   inserciones/actualizaciones en orden de dependencias. Incluye columnas identity
+   con `OVERRIDING SYSTEM VALUE` y omite las columnas calculadas.
+4. Validar los datos, permisos, triggers y secuencias antes de poner el destino en
+   servicio. Como en el backup por Mall existente, las dependencias globales y los
+   valores de secuencias no se reconstruyen automáticamente.
+
+Nunca encadenar diferenciales. Para recuperar otro punto, preparar de nuevo el
+completo original y aplicar únicamente el diferencial elegido. El marcador cambia
+al finalizar y rechaza reejecuciones, bases equivocadas o aplicar un diferencial
+sobre otro. No detecta ediciones manuales hechas al destino después del completo;
+el destino debe permanecer reservado a la recuperación. No hay endpoint que
+ejecute estos SQL ni se restaura sobre producción desde la aplicación.
+
+### Cuotas, costo y límites de esta entrega
+
+Todos los modos usan los permisos, reservas, cuotas diarias, timeout de diez minutos
+y controles de tamaño existentes. Los modos base/diferencial no admiten fechas;
+reservan una solicitud, no un período de ventas. El máximo administrativo admitido
+por archivo pasa de 1.000 a **5.000 MB**, sin elevar el valor configurado (50 MB por
+defecto), la cuota diaria ni la cantidad de solicitudes. Para generar bases grandes
+hay que configurar explícitamente una cuota suficiente. Esta entrega no implementa
+planes comerciales, cuotas mensuales ni programación automática de diferenciales.
+
+Las huellas consumen espacio en PostgreSQL proporcional al número de filas de la
+base; al reemplazar una base se eliminan lógicamente las huellas anteriores (el
+espacio físico se recupera según el mantenimiento de PostgreSQL). La comparación
+recorre datos del Mall y calcula hashes en el servidor. Reduce la transferencia de
+filas sin cambios, pero no elimina el costo de CPU, lecturas ni generación de
+esquema. No se promete un tamaño diferencial fijo.
+
+Validación local con PostgreSQL desechable: completo + diferencial se reproducen
+en otra base con FKs reales, claves compuestas, columnas identity/calculadas,
+correcciones con fechas antiguas, altas, eliminaciones y preservación del otro
+Mall. Se prueban límites, cancelación, rollback de metadatos, cambio de esquema,
+bases ausentes/obsoletas, permisos y flag apagado. No se han medido el tiempo,
+disco temporal, memoria del navegador (la descarga usa Blob) ni restauración de
+los respaldos multi-GB de Agora/Santiago. Validar esa capacidad antes de habilitar
+la opción o comprometer una oferta comercial. No se aplican estas migraciones ni
+se activa la opción en producción como parte de la creación del PR.

@@ -7,7 +7,7 @@ const POLICY_FIELDS: Array<{ key: keyof ImportBackupPolicy; label: string; max: 
   { key: 'mall_concurrency', label: 'Simultáneas por Mall', max: 50 },
   { key: 'min_interval_seconds', label: 'Segundos entre solicitudes', max: 86400 },
   { key: 'user_daily_downloads', label: 'Solicitudes diarias por usuario', max: 10000 },
-  { key: 'max_file_mb', label: 'MB máximos por archivo', max: 1000 },
+  { key: 'max_file_mb', label: 'MB máximos por archivo', max: 5000 },
   { key: 'user_daily_mb', label: 'MB diarios por usuario', max: 100000 },
   { key: 'mall_daily_mb', label: 'MB diarios por Mall', max: 1000000 },
   { key: 'max_range_days', label: 'Días máximos por solicitud', max: 3660 }

@@ -318,3 +318,34 @@ def test_admin_cannot_give_client_second_local_or_convert_staff_implicitly(porta
     assert client.post('/api/v1/admin/portal/grants', json={'user_id': USER, 'local_id': LOCAL}).status_code == 409
     db.auth.admin.get_user_by_id = lambda uid: SimpleNamespace(user=SimpleNamespace(app_metadata={}))
     assert client.post('/api/v1/admin/portal/grants', json={'user_id': OTHER, 'local_id': LOCAL}).status_code == 400
+
+
+@pytest.mark.parametrize('role', ['admin', 'custom_role'])
+def test_admin_portal_locals_only_returns_active_mall(portal, monkeypatch, role):
+    client, db = portal
+    other_mall = str(uuid4())
+    other_local = str(uuid4())
+    db.rows['locales'].extend([
+        {**db.rows['locales'][0], 'id': other_local, 'mall_id': other_mall},
+        {**db.rows['locales'][0], 'id': str(uuid4()), 'activo': False},
+    ])
+    async def access_context(user_id):
+        return {'user_id': USER, 'role': role, 'permissions': {'users': {'update': True}}}
+    monkeypatch.setattr(main, '_get_access_context', access_context)
+    monkeypatch.setattr(main, '_get_user_mall_ids', lambda uid: [MALL, other_mall])
+    response = client.get('/api/v1/admin/portal/locals', params={'mall_id': MALL})
+    assert response.status_code == 200, response.text
+    assert [row['id'] for row in response.json()] == [LOCAL]
+    response = client.get('/api/v1/admin/portal/locals', params={'mall_id': other_mall})
+    assert [row['id'] for row in response.json()] == [other_local]
+    assert client.get('/api/v1/admin/portal/locals').status_code == 422
+
+
+def test_admin_portal_locals_requires_access_to_requested_mall(portal, monkeypatch):
+    client, db = portal
+    async def access_context(user_id):
+        return {'user_id': USER, 'role': 'custom_role', 'permissions': {'users': {'update': True}}}
+    monkeypatch.setattr(main, '_get_access_context', access_context)
+    monkeypatch.setattr(main, '_get_user_mall_ids', lambda uid: [MALL])
+    response = client.get('/api/v1/admin/portal/locals', params={'mall_id': str(uuid4())})
+    assert response.status_code == 403

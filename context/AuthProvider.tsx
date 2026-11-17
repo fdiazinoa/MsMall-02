@@ -80,6 +80,12 @@ export const AuthProvider = ({ children }) => {
                 clearTimeout(pendingLoad);
                 // Start Supabase queries after the auth callback releases its lock.
                 pendingLoad = setTimeout(() => {
+                    if (session.user.app_metadata?.portal_client) {
+                        setUser(session.user); setRole('cliente'); setPermissions({});
+                        setMalls([]); setCurrentMall(null); setMallsError(null);
+                        setMallsLoading(false); setLoading(false);
+                        return;
+                    }
                     fetchEffectiveAccessRole(session.access_token);
                     fetchProfile(session.user.id);
                     fetchUserMalls(session.access_token, session.user.id);

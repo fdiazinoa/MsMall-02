@@ -185,3 +185,7 @@ El frontend usa `resetPasswordForEmail()` y procesa el evento `PASSWORD_RECOVERY
 - Webhooks de Notificación (Slack/Email).
 - Exportación PDF/Excel de informes firmados.
 - Módulo de Conciliación automática.
+
+### Portal de clientes para carga de ventas
+
+El portal `/portal-cliente` permite cargar CSV/TXT, JSON y tablas HTML, mapear columnas, validar e importar ventas con historial propio. Cada cuenta está vinculada a un único local y sólo accede al portal. Se activa de forma independiente de FTP/SFTP; ver [operación y activación](docs/PORTAL_CLIENTES_INGESTA.md).

@@ -22,6 +22,8 @@ import { ResendMessagingAdmin } from './ResendMessagingAdmin';
 import { SecurityTokenAdmin } from './SecurityTokenAdmin';
 import { CopilotSettings } from './CopilotSettings';
 
+const PortalClientsManagement = lazy(() => import('./PortalClientsManagement').then(module => ({ default: module.PortalClientsManagement })));
+
 const ImportBackup = lazy(() => import('./ImportBackup').then(module => ({ default: module.ImportBackup })));
 
 const ImportBackupSettings = lazy(() => import('./ImportBackupSettings').then(module => ({ default: module.ImportBackupSettings })));
@@ -55,6 +57,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ activeTab, setActiveTab })
       return <StoreCatalogManager />;
     case 'users':
       return <UserManagement />;
+    case 'portal-clients':
+      return <PortalClientsManagement />;
     case 'security':
       return <SecurityTokenAdmin />;
     case 'auto-import':

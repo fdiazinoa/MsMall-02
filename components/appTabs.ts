@@ -10,6 +10,7 @@ export type AppTab =
   | 'stores'
   | 'store-catalogs'
   | 'users'
+  | 'portal-clients'
   | 'auto-import'
   | 'erp-webservice'
   | 'monitor'

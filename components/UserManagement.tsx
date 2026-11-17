@@ -3,7 +3,6 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import { UserPlus, Shield, ShieldCheck, ShieldAlert, CheckCircle2, UserCog, Building2, Plus, Save, Trash2, Mail } from 'lucide-react';
-import { ClientPortalAdmin } from './ClientPortalAdmin';
 import { RoleConfig, RolePermission } from '../types';
 
 const MODULES = [
@@ -63,7 +62,7 @@ export const UserManagement: React.FC = () => {
     setLoading(true);
     try {
       const data = await ApiService.getUsers(session.access_token);
-      setUsers(data);
+      setUsers(data.filter(user => !user.portal_client));
     } catch (e) {
       console.error(e);
     } finally {
@@ -271,8 +270,6 @@ export const UserManagement: React.FC = () => {
           Nuevo Usuario
         </button>
       </div>
-
-      {import.meta.env.VITE_CLIENT_PORTAL_ENABLED === 'true' && <ClientPortalAdmin token={session.access_token} users={users} onCreated={loadUsers} />}
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">

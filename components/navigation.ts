@@ -32,6 +32,7 @@ export const navigationItems: { id: AppTab; label: string; module: NavigationMod
   { id: 'store-catalogs', label: 'Catálogos Locales', module: 'admin', allowed: staffed('stores') },
   { id: 'malls', label: 'Gestión de Malls', module: 'admin', allowed: a => Boolean(a.isAdmin) || a.canAccess('malls') },
   { id: 'users', label: 'Usuarios y Roles', module: 'admin', allowed: a => Boolean(a.isAdmin) || a.canAccess('users') || a.canAccess('roles') },
+  { id: 'portal-clients', label: 'Clientes del portal', module: 'admin', allowed: a => Boolean(a.isAdmin) || a.canAccess('users') },
   { id: 'backup-settings', label: 'Límites globales de backup', module: 'admin', allowed: permission('backup_settings') },
   { id: 'messaging', label: 'Mensajería Resend', module: 'admin', allowed: a => Boolean(a.isAdmin) },
   { id: 'copilot', label: 'Copilot MsMall', module: 'admin', allowed: a => Boolean(a.isAdmin) },

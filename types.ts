@@ -743,6 +743,7 @@ export type OperationsCollectionName = 'events' | 'findings' | 'anomalies' | 'ob
 export type UserRole = 'admin' | 'it' | 'tic' | 'auditor' | 'mall_manager';
 
 export interface User {
+  portal_client?: boolean;
   id: string;
   nombre: string;
   email: string;

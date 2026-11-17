@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '../api';
 import { useAuth } from '../context/AuthProvider';
 import { UserPlus, Shield, ShieldCheck, ShieldAlert, CheckCircle2, UserCog, Building2, Plus, Save, Trash2, Mail } from 'lucide-react';
+import { ClientPortalAdmin } from './ClientPortalAdmin';
 import { RoleConfig, RolePermission } from '../types';
 
 const MODULES = [
@@ -16,6 +17,7 @@ const MODULES = [
 ] as const;
 
 const ROLE_STYLES: Record<string, { label: string, color: string, icon: any }> = {
+  cliente: { label: 'Cliente (portal)', color: 'bg-indigo-50 text-indigo-600 border-indigo-100', icon: Shield },
   admin: { label: 'Administrador', color: 'bg-rose-50 text-rose-600 border-rose-100', icon: ShieldCheck },
   it: { label: 'IT', color: 'bg-amber-50 text-amber-700 border-amber-100', icon: ShieldAlert },
   tic: { label: 'IT', color: 'bg-amber-50 text-amber-700 border-amber-100', icon: ShieldAlert },
@@ -270,6 +272,8 @@ export const UserManagement: React.FC = () => {
         </button>
       </div>
 
+      {import.meta.env.VITE_CLIENT_PORTAL_ENABLED === 'true' && <ClientPortalAdmin token={session.access_token} users={users} onCreated={loadUsers} />}
+
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
           <div className="w-full lg:max-w-sm">
@@ -460,6 +464,8 @@ export const UserManagement: React.FC = () => {
                         </button>
                       )}
                       <button
+                        disabled={user.portal_client}
+                        title={user.portal_client ? "Gestiona sus locales en el panel del portal" : undefined}
                         onClick={() => openAssignmentModal(user)}
                         className="flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-800"
                       >

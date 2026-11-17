@@ -3622,3 +3622,11 @@ export const ApiService = {
     );
   },
 };
+
+// Portal requests share the deployed API routing and session authentication.
+export function portalRequest<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
+  return fetchJsonWithBaseFallback<T>(path, {
+    ...init,
+    headers: { ...init.headers, Authorization: `Bearer ${token}` },
+  }, 'No se pudo completar la operación del portal', { timeoutMs: 180000, retryOnTimeout: false });
+}

@@ -1,4 +1,4 @@
-import React, { useState, Suspense } from 'react';
+import React, { lazy, useState, Suspense } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
@@ -17,6 +17,8 @@ console.error = (...args: any[]) => {
   }
   originalConsoleError(...args);
 };
+
+const ClientPortal = lazy(() => import('./components/ClientPortal').then(module => ({ default: module.ClientPortal })));
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AppTab>('analytics');
@@ -98,7 +100,7 @@ const App: React.FC = () => {
         <div className="max-w-md w-full bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
           <img src="/msmall-icon-192.png" alt="MSMALL" className="w-16 h-16 rounded-2xl mx-auto mb-6 shadow-lg shadow-indigo-500/20" />
           <h2 className="text-2xl font-bold mb-2 text-center">Bienvenido a MSMALL</h2>
-          <p className="text-slate-400 mb-8 text-center">Inicia sesión para acceder al sistema de auditoría.</p>
+          <p className="text-slate-400 mb-8 text-center">{window.location.pathname === '/portal-cliente' ? 'Inicia sesión para cargar tus archivos de ventas.' : 'Inicia sesión para acceder al sistema de auditoría.'}</p>
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
@@ -168,6 +170,10 @@ const App: React.FC = () => {
         </div>
       </div>
     );
+  }
+
+  if (session.user.app_metadata?.portal_client || window.location.pathname === '/portal-cliente') {
+    return <Suspense fallback={<p role="status" className="p-8">Cargando portal…</p>}><ClientPortal /></Suspense>;
   }
 
   return (

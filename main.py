@@ -642,13 +642,19 @@ def _find_auth_user_by_email(email: str) -> Optional[Any]:
             return u
     return None
 
-def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)):
+def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security), request: Request = None):
     token = credentials.credentials
     try:
         # Verify token with Supabase
         user = supabase.auth.get_user(token)
         if not user or not user.user:
             raise HTTPException(status_code=401, detail="Invalid token")
+        if (getattr(user.user, "app_metadata", None) or {}).get("portal_client"):
+            allowed = request is not None and (request.url.path.startswith("/api/v1/portal/") or request.url.path in {
+                "/api/v1/users/me/access", "/api/v1/users/me/malls",
+            })
+            if not allowed:
+                raise HTTPException(status_code=403, detail="Esta cuenta sólo tiene acceso al portal de clientes.")
         return user.user.id
     except HTTPException:
         raise
@@ -682,6 +688,9 @@ def _get_access_context_sync(user_id: str) -> Dict[str, Any]:
         auth_result = supabase.auth.admin.get_user_by_id(user_id)
         auth_user = _extract_auth_user(auth_result)
         email = _user_field(auth_user, "email")
+        if (_user_field(auth_user, "app_metadata", {}) or {}).get("portal_client"):
+            return {"user_id": user_id, "email": email, "role": "cliente", "legacy_role": "cliente",
+                    "permissions": {}, "has_role_assignment": False}
         user_metadata = _user_field(auth_user, "user_metadata", {}) or {}
         if isinstance(user_metadata, dict):
             metadata_role = user_metadata.get("rol") or user_metadata.get("role")
@@ -1968,7 +1977,7 @@ def _is_import_date_closed(sale_date: str, cutoff_date: Optional[str]) -> bool:
     return bool(sale_date and cutoff_date and sale_date <= cutoff_date)
 
 
-def process_file_content(content: str, filename: str, config: Dict[str, Any], batch_id: str, mall_id: str = None):
+def process_file_content(content: str, filename: str, config: Dict[str, Any], batch_id: str, mall_id: str = None, *, dry_run: bool = False):
     """
     Parses content based on config mapping and inserts into Supabase 'ventas' table.
     Returns (success_count, errors_list).
@@ -2299,6 +2308,8 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                 )
                 if effective_mall_id:
                     query = query.eq("mall_id", effective_mall_id)
+                if config.get("_portal_local_id"):
+                    query = query.eq("id", config["_portal_local_id"])
                 res = query.execute()
                 for loc in res.data:
                     code_key = str(loc.get('codigo_interno') or '').strip().upper()
@@ -2453,6 +2464,9 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
 
             if inserts:
                 supabase.table("ventas").insert(inserts).execute()
+
+        if dry_run:
+            return len(records_to_insert), errors
 
         # Insertion into Supabase
         if records_to_insert and supabase:
@@ -8858,6 +8872,7 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_module_per
                 "email": email,
                 "nombre": metadata_name,
                 "metadata": metadata,
+                "portal_client": bool((_user_field(u, "app_metadata", {}) or {}).get("portal_client")),
                 "last_sign_in_at": _user_field(u, "last_sign_in_at"),
                 "created_at": _user_field(u, "created_at"),
                 "_role_candidates": [metadata_rol, metadata_role]
@@ -8902,6 +8917,8 @@ async def admin_get_users(admin_ctx: Dict[str, Any] = Depends(require_module_per
             u['rol'] = assigned_role.get("key") if assigned_role else effective_role
             u['role_id'] = assigned_role.get("id") if assigned_role else None
             u['role_name'] = assigned_role.get("nombre") if assigned_role else effective_role.title()
+            if u.get("portal_client"):
+                u.update(rol="cliente", role_id=None, role_name="Cliente (portal)")
             u.pop("_role_candidates", None)
             result.append(u)
             
@@ -8986,6 +9003,8 @@ async def admin_create_user(payload: AdminCreateUserRequest, admin_ctx: Dict[str
         user_previously_existed = existing_user is not None
 
         if existing_user:
+            if (_user_field(existing_user, "app_metadata", {}) or {}).get("portal_client"):
+                raise HTTPException(status_code=400, detail="Esta cuenta es de portal; gestiona sus locales en Acceso al portal de clientes.")
             created_user_id = _user_field(existing_user, "id")
             existing_meta = _user_field(existing_user, "user_metadata", {}) or {}
             if not isinstance(existing_meta, dict):
@@ -9049,6 +9068,9 @@ async def admin_assign_malls(target_user_id: str, payload: UserMallAssignment, a
     Assign a list of malls to a user.
     """
     try:
+        target = _extract_auth_user(supabase.auth.admin.get_user_by_id(target_user_id))
+        if (_user_field(target, "app_metadata", {}) or {}).get("portal_client"):
+            raise HTTPException(status_code=400, detail="Asigna locales desde el panel del portal, sin membresías de mall.")
         role_id, role = _resolve_role_assignment(payload.role_id, payload.rol)
         _assign_rbac_role(target_user_id, role_id, admin_ctx.get("user_id"))
 
@@ -9089,6 +9111,11 @@ async def admin_update_user(
         auth_user = _extract_auth_user(auth_result)
         if not auth_user or not _user_field(auth_user, "id"):
             raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+
+        if (_user_field(auth_user, "app_metadata", {}) or {}).get("portal_client") and any(
+            value is not None for value in (payload.rol, payload.role_id, payload.mall_ids)
+        ):
+            raise HTTPException(status_code=400, detail="Las cuentas de portal no reciben roles internos ni malls; utiliza el panel del portal.")
 
         current_email = (_user_field(auth_user, "email") or "").strip().lower()
         current_metadata = _user_field(auth_user, "user_metadata", {}) or {}
@@ -10001,6 +10028,18 @@ def get_sales_gaps(
 
 
 app.include_router(router_export)
+
+
+# Client portal uses explicit local grants and never receives FTP credentials.
+from routers.client_portal import create_client_portal_router
+app.include_router(create_client_portal_router(
+    get_db=lambda: supabase, authenticate=get_current_user_id,
+    admin_create=require_module_permission("users", "create"),
+    admin_update=require_module_permission("users", "update"),
+    process_content=process_file_content, analyze_content=_perform_mapping_analysis,
+    log_upload=insert_load_log, ensure_mall_access=_ensure_operator_can_access_mall,
+    user_mall_ids=_get_user_mall_ids,
+))
 
 if __name__ == "__main__":
     import uvicorn

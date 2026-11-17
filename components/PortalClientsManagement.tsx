@@ -5,7 +5,7 @@ import type { User } from '../types';
 import { ClientPortalAdmin } from './ClientPortalAdmin';
 
 export function PortalClientsManagement() {
-  const { session, isAdmin, canAccess } = useAuth();
+  const { session, isAdmin, canAccess, currentMall } = useAuth();
   const token = session?.access_token;
   const allowed = isAdmin || canAccess('users');
   const enabled = import.meta.env.VITE_CLIENT_PORTAL_ENABLED === 'true';
@@ -34,6 +34,8 @@ export function PortalClientsManagement() {
   if (!allowed) return <p role="alert" className="rounded-xl bg-amber-50 p-4 text-amber-800">No tienes permiso para gestionar clientes del portal.</p>;
   if (!enabled) return <p role="status" className="rounded-xl bg-amber-50 p-4 text-amber-800">La gestión de clientes del portal no está habilitada.</p>;
 
+  if (!currentMall?.id) return <p role="status" className="rounded-xl bg-amber-50 p-4 text-amber-800">Selecciona un mall para gestionar los clientes del portal.</p>;
+
   return <div className="space-y-5">
     <div>
       <h2 className="text-xl font-bold text-slate-800">Clientes del portal</h2>
@@ -42,6 +44,6 @@ export function PortalClientsManagement() {
     {loading ? <p role="status" className="rounded-xl bg-white p-5 text-slate-600">Cargando cuentas de clientes…</p> : error ? <div role="alert" className="rounded-xl bg-red-50 p-5 text-red-800"><p>{error}</p><button className="mt-3 font-semibold underline" onClick={() => {
       setLoading(true);
       refreshClients().then(() => setError('')).catch(cause => setError(cause instanceof Error ? cause.message : 'No se pudieron cargar las cuentas.')).finally(() => setLoading(false));
-    }}>Reintentar</button></div> : <ClientPortalAdmin token={token} users={clients} onCreated={refreshClients} />}
+    }}>Reintentar</button></div> : <React.Fragment key={currentMall.id}><ClientPortalAdmin mallId={currentMall.id} token={token} users={clients} onCreated={refreshClients} /></React.Fragment>}
   </div>;
 }

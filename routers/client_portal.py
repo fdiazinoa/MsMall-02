@@ -149,14 +149,10 @@ def create_client_portal_router(*, get_db, authenticate, admin_create, admin_upd
             raise HTTPException(503, 'No se pudo completar el envío. Consulta el historial antes de reintentar.') from exc
 
     @router.get('/api/v1/admin/portal/locals')
-    def admin_locals(ctx=Depends(admin_update)):
-        query = db().table('locales').select('id,nombre,codigo_interno,mall_id').eq('activo', True)
-        if ctx.get('role') != 'admin':
-            mall_ids = user_mall_ids(ctx['user_id'])
-            if not mall_ids:
-                return []
-            query = query.in_('mall_id', mall_ids)
-        return query.execute().data or []
+    def admin_locals(mall_id: UUID, ctx=Depends(admin_update)):
+        client = db()
+        ensure_mall_access(ctx, str(mall_id))
+        return client.table('locales').select('id,nombre,codigo_interno,mall_id').eq('activo', True).eq('mall_id', str(mall_id)).execute().data or []
 
     @router.get('/api/v1/admin/portal/grants')
     def grants(user_id: UUID, ctx=Depends(admin_update)):

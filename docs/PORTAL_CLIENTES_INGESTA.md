@@ -6,6 +6,7 @@
 - Cada cuenta de cliente está vinculada a **un único local**. La página muestra su nombre y código como texto; el cliente no puede seleccionar ni enviar otro destino.
 - El backend resuelve el destino exclusivamente desde `client_portal_grants.user_id`, después de verificar la sesión. La base impide dos vínculos para el mismo usuario.
 - Crear las cuentas desde **Administración → Clientes del portal**. Se marcan mediante `app_metadata.portal_client`, que sólo puede editar el servidor. No asignarles roles internos ni membresías de mall; los endpoints administrativos existentes rechazan esas asignaciones para estas cuentas.
+- El selector administrativo de locales muestra únicamente los locales activos del mall seleccionado en la cabecera. Cambiar de mall reinicia el formulario para descartar selecciones anteriores.
 - Las cuentas externas se administran en Clientes del portal y se excluyen de la lista de Usuarios y Roles, reservada al personal interno.
 - Las cuentas de portal ven sólo esta página y su historial. No se muestran navegación interna, dashboards ni credenciales FTP. El backend bloquea sus llamadas a rutas internas que utilizan la dependencia de autenticación principal.
 - El administrador puede retirar el vínculo y asignar otro local. Retirar el vínculo bloquea inmediatamente nuevas cargas y consultas de historial, y elimina los mapeos vinculados; preserva la auditoría de cargas.

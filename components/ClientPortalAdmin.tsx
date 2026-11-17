@@ -2,9 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { portalRequest } from '../api';
 import { PortalLocal } from './ClientPortal';
 
-interface Props { token: string; users: { id: string; email: string; portal_client?: boolean }[]; onCreated: () => Promise<void> }
+interface Props { mallId: string; token: string; users: { id: string; email: string; portal_client?: boolean }[]; onCreated: () => Promise<void> }
 const input = 'w-full rounded-lg border border-slate-300 bg-white px-3 py-2';
-export function ClientPortalAdmin({ token, users, onCreated }: Props) {
+export function ClientPortalAdmin({ mallId, token, users, onCreated }: Props) {
   const [locals, setLocals] = useState<PortalLocal[]>([]);
   const [localId, setLocalId] = useState('');
   const [userId, setUserId] = useState('');
@@ -16,11 +16,13 @@ export function ClientPortalAdmin({ token, users, onCreated }: Props) {
   const [error, setError] = useState('');
   useEffect(() => {
     let ignore = false;
-    portalRequest<PortalLocal[]>('/admin/portal/locals', token).then(data => {
-      if (!ignore) { setLocals(data); setLocalId(data[0]?.id || ''); }
+    setLocals([]); setLocalId('');
+    portalRequest<PortalLocal[]>(`/admin/portal/locals?mall_id=${encodeURIComponent(mallId)}`, token).then(data => {
+      const mallLocals = data.filter(local => local.mall_id === mallId);
+      if (!ignore) { setLocals(mallLocals); setLocalId(mallLocals[0]?.id || ''); }
     }).catch(e => { if (!ignore) setError(e.message); });
     return () => { ignore = true; };
-  }, [token]);
+  }, [token, mallId]);
   useEffect(() => {
     let ignore = false;
     setGrants([]);

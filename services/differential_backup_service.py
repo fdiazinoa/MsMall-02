@@ -77,7 +77,7 @@ class DifferentialBackupService(DatabaseBackupService):
         return sql.SQL("sha256(convert_to(jsonb_build_array({})::text, 'UTF8'))").format(
             sql.SQL(', ').join(sql.SQL('t.{}').format(sql.Identifier(col)) for col in columns))
 
-    def generate_snapshot(self, mode, mall, *, base_id=None, max_bytes, on_progress, check_active, on_ready=None):
+    def generate_snapshot(self, mode, mall, *, base_id=None, max_bytes, on_progress, check_active, on_ready=None, on_archive_ready=None):
         self._ready()
         if mode not in {'base', 'differential'}:
             raise DifferentialSelectionError('Tipo de backup inválido.')
@@ -243,6 +243,11 @@ class DifferentialBackupService(DatabaseBackupService):
                 if archive.tell() > max_bytes:
                     raise BackupSizeExceeded('El ZIP supera la cuota disponible.')
                 check()
+                if on_archive_ready is not None:
+                    archive.seek(0)
+                    on_archive_ready(archive, manifest, check)
+                    archive.seek(0, 2)
+                    check()
                 if on_ready is not None:
                     on_ready(archive.tell())
                 # Committing the private baseline only happens after the entire archive succeeds.

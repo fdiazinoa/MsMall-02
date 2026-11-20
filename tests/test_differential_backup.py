@@ -56,6 +56,20 @@ def test_complete_and_differential_roundtrip_with_deletes_old_edits_and_mall_iso
             id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, mall_id uuid,
             amount integer, doubled integer GENERATED ALWAYS AS (amount * 2) STORED, note text);
             CREATE TABLE composite_keys (mall_id uuid, code integer, note text, PRIMARY KEY (mall_id, code));''')
+        conn.execute('''CREATE TABLE scenarios_comp (id uuid PRIMARY KEY,mall_id uuid,UNIQUE(id,mall_id));
+            CREATE TABLE actions_comp (id uuid PRIMARY KEY,scenario_id uuid,mall_id uuid,note text,
+              FOREIGN KEY(scenario_id,mall_id) REFERENCES scenarios_comp(id,mall_id) ON DELETE CASCADE);
+            CREATE TABLE grants_comp (user_id uuid,local_id uuid REFERENCES locales(id),PRIMARY KEY(user_id,local_id));
+            CREATE TABLE mappings_comp (id uuid PRIMARY KEY,user_id uuid,local_id uuid,note text,
+              FOREIGN KEY(user_id,local_id) REFERENCES grants_comp(user_id,local_id) ON DELETE CASCADE);
+            CREATE TABLE inherited_comp (id uuid PRIMARY KEY,scenario_id uuid,scenario_mall uuid,note text,
+              FOREIGN KEY(scenario_id,scenario_mall) REFERENCES scenarios_comp(id,mall_id) ON DELETE CASCADE);''')
+        scenario,foreign_scenario,actor=[str(uuid4()) for _ in range(3)]
+        conn.execute('INSERT INTO scenarios_comp VALUES (%s,%s),(%s,%s)',(scenario,MALL,foreign_scenario,OTHER_MALL))
+        conn.execute("INSERT INTO actions_comp VALUES (%s,%s,%s,'OWN_ACTION'),(%s,%s,%s,'FOREIGN_ACTION')",(str(uuid4()),scenario,MALL,str(uuid4()),foreign_scenario,OTHER_MALL))
+        conn.execute('INSERT INTO grants_comp VALUES (%s,%s),(%s,%s)',(actor,LOCAL,actor,FOREIGN))
+        conn.execute("INSERT INTO mappings_comp VALUES (%s,%s,%s,'OWN_MAPPING'),(%s,%s,%s,'FOREIGN_MAPPING')",(str(uuid4()),actor,LOCAL,str(uuid4()),actor,FOREIGN))
+        conn.execute("INSERT INTO inherited_comp VALUES (%s,%s,%s,'OWN_INHERITED'),(%s,%s,%s,'FOREIGN_INHERITED'),(%s,NULL,NULL,'UNOWNED_NULL'),(%s,NULL,%s,'UNOWNED_PARTIAL')",(str(uuid4()),scenario,MALL,str(uuid4()),foreign_scenario,OTHER_MALL,str(uuid4()),str(uuid4()),MALL))
         conn.execute('INSERT INTO measurements (mall_id,amount,note) VALUES (%s,2,%s)', (MALL, 'BASE_GENERATED'))
         conn.execute('INSERT INTO composite_keys VALUES (%s,1,%s),(%s,2,%s)', (MALL, 'BASE_COMPOSITE', MALL, 'DELETE_COMPOSITE'))
     try:
@@ -65,6 +79,8 @@ def test_complete_and_differential_roundtrip_with_deletes_old_edits_and_mall_iso
         assert set(complete) == {'schema.sql', 'data.sql', 'manifest.json'}
         assert 'FOREIGN_SALE' not in complete['data.sql'].decode()
         assert 'GLOBAL_SECRET' not in complete['data.sql'].decode()
+        assert b'OWN_INHERITED' in complete['data.sql'] and b'OWN_MAPPING' in complete['data.sql']
+        assert b'UNOWNED_' not in complete['data.sql'] and b'FOREIGN_' not in complete['data.sql']
         assert service.baseline(MALL)['id'] == base_id
         assert service.baseline(OTHER_MALL) is None
 
@@ -82,6 +98,9 @@ def test_complete_and_differential_roundtrip_with_deletes_old_edits_and_mall_iso
             conn.execute("INSERT INTO measurements (mall_id,amount,note) VALUES (%s,5,'NEW_IDENTITY')", (MALL,))
             conn.execute("UPDATE composite_keys SET note = 'CHANGED_COMPOSITE' WHERE mall_id = %s AND code = 1", (MALL,))
             conn.execute('DELETE FROM composite_keys WHERE mall_id = %s AND code = 2', (MALL,))
+            conn.execute("UPDATE inherited_comp SET note='UPDATED_INHERITED' WHERE note='OWN_INHERITED'")
+            conn.execute("UPDATE actions_comp SET scenario_id=%s,mall_id=%s,note='FOREIGN_MOVED' WHERE note='OWN_ACTION'",(foreign_scenario,OTHER_MALL))
+            conn.execute('DELETE FROM grants_comp WHERE local_id=%s',(LOCAL,))
         diff = archive(service, 'differential', base_id=base_id)
         assert b'UPDATED_OLD_DATE' in diff['data.sql']
         assert b'NEW_OTHER' in diff['data.sql']
@@ -108,6 +127,10 @@ def test_complete_and_differential_roundtrip_with_deletes_old_edits_and_mall_iso
                 assert conn.execute("SELECT count(*) FROM otras WHERE nota = 'NEW_OTHER'").fetchone()[0] == 1
                 assert conn.execute('SELECT amount,doubled FROM measurements ORDER BY id').fetchall() == [(4, 8), (5, 10)]
                 assert conn.execute('SELECT code,note FROM composite_keys').fetchall() == [(1, 'CHANGED_COMPOSITE')]
+                assert conn.execute('SELECT count(*) FROM mappings_comp').fetchone()[0]==0
+                assert conn.execute('SELECT count(*) FROM grants_comp').fetchone()[0]==0
+                assert conn.execute('SELECT count(*) FROM actions_comp').fetchone()[0]==0
+                assert conn.execute('SELECT note FROM inherited_comp').fetchall()==[('UPDATED_INHERITED',)]
                 assert conn.execute('SELECT nombre FROM locales WHERE id = %s', (FOREIGN,)).fetchone()[0] == 'FOREIGN_LOCAL'
             # Prevent a replay, chaining, or a differential applied without its matching full base.
             replay = restore(target, diff['data.sql'], succeeds=False)
@@ -126,7 +149,7 @@ def test_complete_and_differential_roundtrip_with_deletes_old_edits_and_mall_iso
         assert b'OWN_LEGACY' not in later['data.sql']
     finally:
         with psycopg.connect(local_postgres) as conn:
-            conn.execute('DROP TABLE measurements, composite_keys')
+            conn.execute('DROP TABLE measurements, composite_keys, actions_comp, mappings_comp, inherited_comp, grants_comp, scenarios_comp')
 
 
 def test_missing_cross_mall_stale_base_schema_changes_and_quota_rollback(service, local_postgres):

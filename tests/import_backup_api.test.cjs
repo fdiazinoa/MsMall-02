@@ -310,3 +310,19 @@ test('legacy date validation errors explain the required period instead of Field
   const api = harness(async () => Response.json({ detail: [{ type: 'missing', loc: ['query', 'fecha_inicio'], msg: 'Field required' }] }, { status: 422 }));
   await assert.rejects(api.downloadDatabaseBackup('mall', 'token', 'mall', new AbortController().signal, '2026-01-01', '2026-01-31'), /fecha inicial y final/);
 });
+
+test('Windows package contains public configuration only and preserves authenticated Mall context', async () => {
+  const calls = [];
+  const api = harness(async (url, init) => {
+    calls.push({url, init});
+    return new Response('zip', {headers: {'Content-Type': 'application/zip'}});
+  }, {VITE_SUPABASE_ANON_KEY:'sb_publishable_publicconfig'});
+  const signal = new AbortController().signal;
+  await api.downloadWindowsSQLBackupPackage('mall-a', 'token-a', signal);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, '/api/v1/export/import-backup/database/windows-package');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer token-a');
+  assert.equal(calls[0].init.headers['X-Mall-Id'], 'mall-a');
+  assert.equal(calls[0].init.signal, signal);
+  assert.deepEqual(JSON.parse(calls[0].init.body), {publishable_key:'sb_publishable_publicconfig'});
+});

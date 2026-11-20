@@ -201,53 +201,79 @@ fallidos consumen presupuesto; los procesos interrumpidos conservan la reserva a
 vencer su lease. No se factura un excedente. Esta política interna no cancela los
 costos de infraestructura de la cuenta.
 
-### Automáticos configurables
+### Automáticos en una carpeta Windows (modalidad vigente)
 
-En **Backups → Backup SQL**, un administrador asignado al Mall puede activar o
-pausar la generación diaria y elegir una hora entre 00:00 y 23:00, en Santo Domingo.
-Se crea un completo inicial, se renueva al cambiar de mes y se genera un diferencial
-por día. El primer día se crea el completo y luego el diferencial. Si no existe una
-copia almacenada de la base vigente, el programador crea un completo recuperable
-nuevo antes de generar más diferenciales.
+En **Backups → Backup SQL**, **Descargar instalador para Windows** entrega un ZIP
+para el Mall seleccionado. Incluye Python sin dependencias externas, instalador
+PowerShell, instrucciones y configuración pública. No contiene contraseña,
+conexión PostgreSQL, service-role ni sesión del navegador. Se requieren Windows,
+Python 3.11+ y un usuario MsMall administrador asignado al Mall. Cada instalación
+atiende un Mall; instalar una sola tarea por Mall.
 
-Se conservan siete días de diferenciales y sus completos necesarios. La base vigente
-se conserva mientras siga vigente; las anteriores, mientras tengan diferenciales
-retenidos. La tabla de archivos muestra el ID de referencia para emparejarlos.
-La recuperación sigue necesitando el completo original más **un** diferencial y las
-dependencias globales descritas arriba, en un entorno de recuperación compatible.
+El instalador permite cambiar carpeta y hora:
 
-El bucket dedicado `sql-backups` es privado y no tiene políticas para clientes. Los
-ZIP se almacenan en fragmentos de 8 MB, dentro del límite por objeto del bucket,
-sin cargar un archivo multi-GB en RAM ni modificar el bucket CSV. El backend
-reconstruye el flujo con autenticación y reserva semanal. No se emiten URLs públicas
-ni firmadas que permitan evadir la cuota. Se comprueban tamaños de fragmentos y el
-total del archivo. El navegador mantiene el mecanismo Blob existente, que requiere
-memoria suficiente para descargar archivos grandes.
+```powershell
+.\Instalar.ps1 -Destino 'D:\Respaldos\MsMall' -Hora '02:00' -SinSesionAbierta
+```
 
-El worker ejecuta el programador SQL en un proceso hijo separado del ciclo de
-importación. Hay una instancia local y claims PostgreSQL de quince minutos para
-evitar duplicaciones entre réplicas. Cada ejecución procesa hasta cuatro trabajos;
-cada generación conserva el timeout de diez minutos. Las importaciones no esperan
-al backup. Una pausa/cambio de hora durante la subida aborta la nueva base antes
-del commit. Una subida completa puede recuperarse de los metadatos tras un fallo de
-proceso; los fragmentos incompletos se eliminan al caducar.
+Por defecto usa `C:\Respaldos\MsMall` y 02:00 según la zona horaria de Windows.
+Para hora dominicana configurar la zona del equipo a Santo Domingo. El equipo debe
+estar encendido y con Internet. La tarea utiliza `StartWhenAvailable` para recuperar
+una ejecución perdida cuando el equipo vuelve a estar disponible. El modo normal
+requiere sesión Windows abierta; `-SinSesionAbierta` solicita la contraseña Windows
+de la misma cuenta y registra ejecución desatendida. Puede requerir permisos de
+administrador y derecho de inicio de sesión por lotes según la política del equipo.
+Referencia: https://learn.microsoft.com/powershell/module/scheduledtasks/register-scheduledtask
 
-### Activación
+El cliente inicia sesión con el usuario existente de MsMall y guarda únicamente el
+refresh token cifrado con DPAPI para el usuario/equipo. Nunca guarda la contraseña.
+Se renueva la sesión antes de cada ejecución y se guarda la rotación antes de pedir
+el respaldo. Si la sesión se revoca o vence, ejecutar `Instalar.ps1 -LoginOnly`.
+La carpeta de sesión y las subcarpetas de respaldos tienen ACL de la cuenta,
+SYSTEM y administradores. El servidor vuelve a comprobar permisos y cuota.
 
-1. Aplicar `sql_backup_weekly_traffic` y `sql_backup_daily_schedules` después de las
-   migraciones diferenciales. No incluyen IDs de clientes ni activan planes.
-2. Crear el grupo en `traffic_plans`, asignar solo los Malls autorizados mediante
-   `traffic_malls` y configurar sus horarios en `sql_schedules`.
-3. API y worker: `ENABLE_SQL_BACKUP_WEEKLY_QUOTA=true`,
-   `ENABLE_SCHEDULED_SQL_BACKUPS=true` y las variables existentes para backups SQL y
-   diferenciales. El worker necesita el mismo `BACKUP_DATABASE_URL` (referencia de
-   Railway al servicio API) y sus credenciales de Supabase. `Dockerfile.worker`
-   incorpora el cliente PostgreSQL.
-4. Habilitar el grupo y las programaciones. `next_run_at=now()` permite crear las
-   bases iniciales en el siguiente ciclo. Luego se usa la hora elegida. Guardar el
-   formulario programa la siguiente ocurrencia futura de esa hora.
+El completo inicial y la renovación mensual se descargan directamente desde el
+endpoint SQL existente. Los días siguientes se descarga un diferencial. Si el
+completo local del ID vigente falta o no pasa la validación, se genera un completo
+nuevo. Un completo generado el mismo día cubre esa ejecución. Los ZIP se escriben
+en `.part`, se validan tamaño, CRC, Mall, modo y base, y se publican mediante rename.
+Se genera SHA-256. Las repeticiones del día con un archivo local verificado no
+vuelven a descargar; no se sobrescriben completos previos. No se borran archivos
+locales automáticamente; el administrador debe definir su retención y capacidad.
 
-Los Malls no asignados conservan la política anterior. La API exige permiso SQL y
-pertenencia al Mall para consultar, configurar y descargar. Las cuotas se comprueban
-en el servidor; los valores del navegador no pueden ampliarlas. La programación no
-crea cobros, suscripciones ni enlaces de descarga fuera del control de tráfico.
+**No se suben nuevos ZIP a Supabase Storage.** La generación utiliza disco temporal
+del servidor, eliminado al cerrar la respuesta. Las tablas privadas con metadatos
+y huellas por fila siguen ocupando base de datos porque son necesarias para calcular
+diferenciales. Para restaurar se requiere el completo original y **un** diferencial
+compatible; nunca encadenar diferenciales. Mantener las dependencias globales de
+recuperación descritas arriba.
+
+### Retirada de la programación en Storage
+
+Mantener `ENABLE_SCHEDULED_SQL_BACKUPS=false` en API y worker y las filas afectadas
+de `sql_schedules` con `enabled=false`. La API rechaza reactivarlas mientras la
+flag está deshabilitada. Los ZIP anteriores del bucket privado `sql-backups` siguen
+disponibles para descarga autenticada y sujeta a cuota. No se borran durante la
+instalación: transferir y verificar las copias necesarias antes de autorizar su
+eliminación. Con el programador desactivado, su limpieza automática tampoco corre.
+
+La infraestructura anterior se conserva por compatibilidad: objetos privados
+fragmentados en 8 MB y tablas `sql_schedules`/`sql_artifacts`. No es el destino de
+las nuevas tareas Windows. No reactivar el worker de Storage junto con una tarea
+local: un completo nuevo cambia la base vigente.
+
+### Activación de cuota y cliente local
+
+1. Mantener las migraciones diferenciales y `sql_backup_weekly_traffic`. Las tablas
+   anteriores de programación se mantienen para consultar/descargar archivos previos.
+2. Grupo de 40 GB compartido en `traffic_plans`, Malls autorizados en `traffic_malls`.
+3. API: backups SQL/diferenciales y `ENABLE_SQL_BACKUP_WEEKLY_QUOTA=true`;
+   `ENABLE_SCHEDULED_SQL_BACKUPS=false`. Worker: mantener la flag SQL automática
+   deshabilitada. Las importaciones y programaciones CSV conservan su operación.
+4. Descargar el paquete de cada Mall, instalar en Windows, validar el primer completo
+   y comprobar la tarea. No considerar activada la descarga local antes de esa prueba.
+
+Pruebas automatizadas verifican empaquetado, permisos, archivos parciales/corruptos,
+base local, cambios de base y sesión, cuota y exportación/restauración SQL en una base
+local desechable. DPAPI, PowerShell y Programador de tareas requieren validación en
+el Windows del cliente; no quedan certificados por las pruebas ejecutadas en macOS.

@@ -20,7 +20,7 @@ from typing import List, Optional, Dict, Any, Tuple, Set
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, Request, status, Body
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from fastapi.encoders import jsonable_encoder
 from starlette.concurrency import run_in_threadpool
 import anyio
@@ -102,7 +102,8 @@ from services.backup_restore_service import BackupRestoreService, MAX_BYTES as R
 from services.database_backup_service import DatabaseBackupService, DatabaseBackupUnavailable, configuration as database_backup_ready
 from services.differential_backup_service import DifferentialBackupService, DifferentialSelectionError, enabled as differential_backup_ready
 from services.sql_backup_traffic_service import SQLBackupTrafficService, enabled as sql_weekly_quota_ready
-from services.sql_backup_schedule_service import SQLBackupScheduleService, SQLBackupSchedule
+from services.sql_backup_schedule_service import SQLBackupScheduleService, SQLBackupSchedule, automation_enabled as sql_cloud_automation_ready
+from services.windows_backup_package_service import WindowsBackupPackageRequest, build_windows_package
 from services.import_backup_schedule_service import ImportBackupScheduleService, BackupSchedule
 from services.import_backup_quota_service import ImportBackupQuotaService, BackupPolicy, BackupQuotaError
 from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
@@ -8329,6 +8330,20 @@ def _require_sql_admin(operator_ctx,mall):
         raise HTTPException(503,'El plan gratuito de backups SQL no está habilitado.')
 
 
+@router_export.post('/import-backup/database/windows-package')
+def sql_backup_windows_package(payload: WindowsBackupPackageRequest,
+    current_mall: str=Depends(get_current_mall),
+    operator_ctx: Dict[str,Any]=Depends(require_module_permission('import_backup','view'))):
+    _require_sql_admin(operator_ctx,current_mall)
+    try:
+        content = build_windows_package(current_mall, SUPABASE_URL, payload.publishable_key)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return Response(content, media_type='application/zip', headers={
+        'Content-Disposition': f'attachment; filename="MsMall_Windows_{UUID(current_mall)}.zip"',
+        'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff'})
+
+
 @router_export.get('/import-backup/database/schedule')
 def sql_backup_schedule_state(current_mall: str=Depends(get_current_mall),
     operator_ctx: Dict[str,Any]=Depends(require_module_permission('import_backup','view'))):
@@ -8343,6 +8358,8 @@ def sql_backup_schedule_state(current_mall: str=Depends(get_current_mall),
 def sql_backup_schedule_save(payload: SQLBackupSchedule,current_mall: str=Depends(get_current_mall),
     operator_ctx: Dict[str,Any]=Depends(require_module_permission('import_backup','view'))):
     _require_sql_admin(operator_ctx,current_mall)
+    if payload.enabled and not sql_cloud_automation_ready():
+        raise HTTPException(409, 'La generación automática en Storage está deshabilitada. Configura la descarga en Windows.')
     try:
         return JSONResponse(jsonable_encoder(SQLBackupScheduleService(supabase).save(current_mall,payload)),headers={'Cache-Control':'no-store'})
     except BackupQuotaError as exc:

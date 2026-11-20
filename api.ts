@@ -892,6 +892,18 @@ export const ApiService = {
     }, 'No se pudo guardar la programación SQL.');
   },
 
+  async downloadWindowsSQLBackupPackage(mallId: string, token: string, signal: AbortSignal): Promise<Blob> {
+    if (!SUPABASE_ANON_KEY) throw new Error('Falta la configuración pública de inicio de sesión.');
+    const base = getApiBaseUrls()[0];
+    const response = await fetch(`${base}/export/import-backup/database/windows-package`, {
+      method: 'POST', headers: withAuthHeaders(token, { 'X-Mall-Id': mallId, 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ publishable_key: SUPABASE_ANON_KEY }), signal,
+    });
+    if (!response.ok) throw new Error(await parseErrorDetail(response, 'No se pudo preparar el cliente Windows.'));
+    if (!response.headers.get('Content-Type')?.toLowerCase().startsWith('application/zip')) throw new Error('El servidor no devolvió un ZIP válido.');
+    return response.blob();
+  },
+
   async downloadSQLBackupArtifact(mallId: string, token: string, id: string, signal: AbortSignal): Promise<Blob> {
     const base = getApiBaseUrls()[0];
     const response = await fetch(`${base}/export/import-backup/database/artifacts/${encodeURIComponent(id)}`, {

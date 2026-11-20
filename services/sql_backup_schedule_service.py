@@ -163,7 +163,8 @@ class SQLBackupScheduleService:
             retry=utc_now()+timedelta(hours=1)
             if isinstance(exc,BackupQuotaError) and exc.reason=='weekly_bytes':
                 quota=SQLBackupTrafficService(mall).status()['quota']
-                retry=datetime.fromisoformat(quota['resets_at'])
+                reset=datetime.fromisoformat(quota['resets_at'])
+                retry=next_daily(config['run_hour'],reset-timedelta(seconds=1))
             self._finish_schedule(config,retry,reason)
             log.warning('SQL backup deferred mall=%s reason=%s',mall,reason)
             if lease: lease.close(failed=True)

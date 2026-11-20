@@ -8370,9 +8370,11 @@ def sql_backup_artifact_download(artifact_id: UUID,current_mall: str=Depends(get
                 await super().__call__(scope,receive,send)
                 failed=False
             finally:
-                chunks.close()
-                with anyio.CancelScope(shield=True):
-                    await run_in_threadpool(lease.close,failed)
+                try:
+                    chunks.close()
+                finally:
+                    with anyio.CancelScope(shield=True):
+                        await run_in_threadpool(lease.close,failed)
     return ArtifactResponse(chunks,media_type='application/zip',headers={
         'Content-Disposition':f'attachment; filename="backup_{row["mode"]}_{current_mall}_{artifact_id}.zip"',
         'Content-Length':str(row['bytes']),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})

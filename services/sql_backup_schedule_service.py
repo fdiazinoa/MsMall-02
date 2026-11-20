@@ -9,7 +9,9 @@ import psycopg
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
-from services.differential_backup_service import DifferentialBackupService
+from services.differential_backup_service import DifferentialBackupService, DifferentialSelectionError
+from services.database_backup_service import DatabaseBackupUnavailable
+from services.import_backup_service import BackupSizeExceeded
 from services.import_backup_quota_service import BackupQuotaError
 from services.sql_backup_traffic_service import SQLBackupTrafficService, TrafficQuotaError
 
@@ -166,7 +168,8 @@ class SQLBackupScheduleService:
                 reset=datetime.fromisoformat(quota['resets_at'])
                 retry=next_daily(config['run_hour'],reset-timedelta(seconds=1))
             self._finish_schedule(config,retry,reason)
-            log.warning('SQL backup deferred mall=%s reason=%s',mall,reason)
+            safe_detail=str(exc) if isinstance(exc,(DatabaseBackupUnavailable,DifferentialSelectionError,BackupSizeExceeded)) else ''
+            log.warning('SQL backup deferred mall=%s reason=%s error_type=%s detail=%s',mall,reason,type(exc).__name__,safe_detail)
             if lease: lease.close(failed=True)
             return {'executed':False,'reason':reason}
         finally:

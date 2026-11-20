@@ -83,6 +83,8 @@ def test_complete_and_differential_roundtrip_with_deletes_old_edits_and_mall_iso
         assert b'UNOWNED_' not in complete['data.sql'] and b'FOREIGN_' not in complete['data.sql']
         assert service.baseline(MALL)['id'] == base_id
         assert service.baseline(OTHER_MALL) is None
+        with psycopg.connect(local_postgres) as conn:
+            assert conn.execute("SELECT reltuples FROM pg_class WHERE oid='msmall_backup.row_fingerprints'::regclass").fetchone()[0]>0
 
         # No changes -> no source row payload in the differential, no schema replay.
         empty = archive(service, 'differential', base_id=base_id)

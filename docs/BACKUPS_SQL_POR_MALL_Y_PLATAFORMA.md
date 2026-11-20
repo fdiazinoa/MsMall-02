@@ -94,6 +94,10 @@ La pestaña ofrece tres modos cuando está habilitada:
 
 El completo y las huellas comparten un snapshot PostgreSQL `REPEATABLE READ`.
 Cada diferencial utiliza otro snapshot coherente y solo lee. Un advisory lock
+Cada completo actualiza las estadísticas de las huellas antes de publicar la base,
+para que el primer diferencial no planifique joins como si la tabla estuviera vacía.
+Esta operación de mantenimiento se limita a los metadatos privados del backup.
+Un advisory lock
 exclusivo por Mall evita generar/reemplazar bases y diferenciales simultáneamente,
 sin bloquear las escrituras ordinarias de importación. Los locks de lectura del
 catálogo sí pueden bloquear DDL; hay timeout. Las tablas del alcance necesitan una

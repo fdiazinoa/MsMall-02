@@ -270,6 +270,10 @@ class DifferentialBackupService(DatabaseBackupService):
                 total_sql = sum(p.stat().st_size for p in root.iterdir())
                 if mode == 'base':
                     conn.execute('UPDATE msmall_backup.baselines SET row_count = %s, sql_bytes = %s WHERE id = %s', (sum(r['rows'] for r in counts.values()), total_sql, base_id))
+                    # A new baseline can add millions of rows. Do not let its first
+                    # differential plan joins against an apparently empty hash table.
+                    conn.execute('ANALYZE msmall_backup.row_fingerprints')
+                    check()
                 manifest = {'format': 'msmall-postgres-differential-v1', 'scope': 'mall', 'mode': mode,
                             'mall_id': mall, 'base_id': base_id, 'export_id': export_id,
                             'generated_at': datetime.now(timezone.utc).isoformat(), 'schema_hash': schema_hash,

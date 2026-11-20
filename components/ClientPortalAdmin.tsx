@@ -2,7 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { portalRequest } from '../api';
 import { PortalLocal } from './ClientPortal';
 
-interface Props { mallId: string; token: string; users: { id: string; email: string; portal_client?: boolean }[]; onCreated: () => Promise<void> }
+export interface PortalClientAccount { id: string; email: string; portal_client: boolean; mall_id: string }
+
+interface Props { mallId: string; token: string; users: PortalClientAccount[]; onCreated: () => Promise<void> }
 const input = 'w-full rounded-lg border border-slate-300 bg-white px-3 py-2';
 export function ClientPortalAdmin({ mallId, token, users, onCreated }: Props) {
   const [locals, setLocals] = useState<PortalLocal[]>([]);
@@ -26,11 +28,11 @@ export function ClientPortalAdmin({ mallId, token, users, onCreated }: Props) {
   useEffect(() => {
     let ignore = false;
     setGrants([]);
-    if (userId) portalRequest<{ local_id: string }[]>(`/admin/portal/grants?user_id=${userId}`, token)
+    if (userId) portalRequest<{ local_id: string }[]>(`/admin/portal/grants?user_id=${encodeURIComponent(userId)}&mall_id=${encodeURIComponent(mallId)}`, token)
       .then(rows => { if (!ignore) setGrants(rows.map(row => row.local_id)); })
       .catch(e => { if (!ignore) setError(e.message); });
     return () => { ignore = true; };
-  }, [userId, token]);
+  }, [userId, token, mallId]);
   async function mutate(path: string, method: string, body: object) {
     setBusy(true); setError(''); setMessage('');
     try {
@@ -56,7 +58,7 @@ export function ClientPortalAdmin({ mallId, token, users, onCreated }: Props) {
       <label className="text-sm">Contraseña inicial<input type="password" autoComplete="new-password" required minLength={8} disabled={busy} className={`${input} mt-1`} value={password} onChange={e => setPassword(e.target.value)} /></label>
       <button disabled={busy || !localId} className="rounded-lg bg-indigo-600 px-4 py-2 text-white disabled:opacity-50">Crear cuenta de cliente</button>
     </form>
-    <div className="space-y-3 border-t pt-4"><label className="block text-sm">Vincular o desvincular una cuenta de cliente<select disabled={busy} className={`${input} mt-1`} value={userId} onChange={e => setUserId(e.target.value)}><option value="">Selecciona una cuenta de cliente</option>{users.filter(user => user.portal_client).map(user => <option key={user.id} value={user.id}>{user.email}</option>)}</select></label>
+    <div className="space-y-3 border-t pt-4"><label className="block text-sm">Vincular o desvincular una cuenta de cliente<select disabled={busy} className={`${input} mt-1`} value={userId} onChange={e => setUserId(e.target.value)}><option value="">Selecciona una cuenta de cliente</option>{users.filter(user => user.portal_client && user.mall_id === mallId).map(user => <option key={user.id} value={user.id}>{user.email}</option>)}</select></label>
       {userId && <><p className="text-sm text-slate-500">Local vinculado: {grants.map(id => locals.find(local => local.id === id)?.nombre || id).join(', ') || 'Ninguno'}</p><div className="flex flex-wrap gap-3"><button disabled={busy || !localId || grants.length > 0} onClick={() => mutate('/admin/portal/grants', 'POST', { user_id: userId, local_id: localId })} className="rounded-lg border px-4 py-2 disabled:opacity-50">Vincular local a la cuenta</button><button disabled={busy || !grants.includes(localId)} onClick={() => mutate('/admin/portal/grants', 'DELETE', { user_id: userId, local_id: localId })} className="rounded-lg border border-red-200 px-4 py-2 text-red-700 disabled:opacity-50">Retirar acceso al local</button></div></>}
     </div>
   </section>;

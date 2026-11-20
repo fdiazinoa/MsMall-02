@@ -231,6 +231,7 @@ def test_admin_portal_endpoints_require_internal_authorization(portal):
     try:
         for method, path, payload in [
             ('GET', '/api/v1/admin/portal/locals', None),
+            ('GET', '/api/v1/admin/portal/clients', None),
             ('POST', '/api/v1/admin/portal/grants', {'user_id': USER, 'local_id': LOCAL}),
             ('DELETE', '/api/v1/admin/portal/grants', {'user_id': USER, 'local_id': LOCAL}),
             ('POST', '/api/v1/admin/portal/clients', {'email': 'client@example.test', 'password': 'example-password', 'local_id': LOCAL}),
@@ -303,7 +304,7 @@ def test_admin_creates_portal_only_account_with_one_bound_local(portal, monkeypa
     db.auth = SimpleNamespace(admin=SimpleNamespace(create_user=create_user))
     response = client.post('/api/v1/admin/portal/clients', json={'email': 'client@example.test', 'password': 'temporary-password', 'local_id': LOCAL})
     assert response.status_code == 200, response.text
-    assert created[0]['app_metadata'] == {'portal_client': True}
+    assert created[0]['app_metadata'] == {'portal_client': True, 'portal_mall_id': MALL}
     assert not created[0].get('user_metadata', {}).get('role')
     assert {'user_id': OTHER, 'local_id': LOCAL} in db.rows['client_portal_grants']
     assert not db.rows.get('usuarios_malls')
@@ -349,3 +350,89 @@ def test_admin_portal_locals_requires_access_to_requested_mall(portal, monkeypat
     monkeypatch.setattr(main, '_get_user_mall_ids', lambda uid: [MALL])
     response = client.get('/api/v1/admin/portal/locals', params={'mall_id': str(uuid4())})
     assert response.status_code == 403
+
+
+@pytest.fixture
+def mall_admin(portal, monkeypatch):
+    client, db = portal
+    other_mall, other_local = str(uuid4()), str(uuid4())
+    db.rows['locales'].append({**db.rows['locales'][0], 'id': other_local, 'mall_id': other_mall})
+    db.rows['client_portal_grants'].append({'user_id': OTHER, 'local_id': other_local})
+    users = {
+        USER: SimpleNamespace(id=USER, email='legacy-a@example.test', app_metadata={'portal_client': True, 'provider': 'email'}),
+        OTHER: SimpleNamespace(id=OTHER, email='client-b@example.test', app_metadata={'portal_client': True, 'portal_mall_id': other_mall}),
+    }
+    async def access_context(user_id):
+        return {'user_id': USER, 'role': 'admin', 'permissions': {'users': {'update': True, 'create': True}}}
+    monkeypatch.setattr(main, '_get_access_context', access_context)
+    monkeypatch.setattr(main, '_list_all_auth_users', lambda: list(users.values()))
+    def update_user(uid, payload):
+        users[uid].app_metadata = payload['app_metadata']
+        return SimpleNamespace(user=users[uid])
+    db.auth = SimpleNamespace(admin=SimpleNamespace(
+        get_user_by_id=lambda uid: SimpleNamespace(user=users[uid]), update_user_by_id=update_user))
+    return client, db, users, other_mall, other_local
+
+
+def test_client_list_is_scoped_to_mall_and_supports_legacy_links(mall_admin):
+    client, db, users, other_mall, other_local = mall_admin
+    unlinked, internal = str(uuid4()), str(uuid4())
+    users[unlinked] = SimpleNamespace(id=unlinked, email='unlinked-a@example.test', app_metadata={'portal_client': True, 'portal_mall_id': MALL})
+    users[internal] = SimpleNamespace(id=internal, email='staff@example.test', app_metadata={})
+    rows = client.get('/api/v1/admin/portal/clients', params={'mall_id': MALL})
+    assert rows.status_code == 200, rows.text
+    assert {row['id'] for row in rows.json()} == {USER, unlinked}
+    assert all(row['mall_id'] == MALL for row in rows.json())
+    rows = client.get('/api/v1/admin/portal/clients', params={'mall_id': other_mall}).json()
+    assert [row['id'] for row in rows] == [OTHER]
+    assert client.get('/api/v1/admin/portal/clients').status_code == 422
+
+
+def test_revoking_legacy_link_preserves_mall_and_allows_same_mall_relink(mall_admin):
+    client, db, users, other_mall, other_local = mall_admin
+    response = client.request('DELETE', '/api/v1/admin/portal/grants', json={'user_id': USER, 'local_id': LOCAL})
+    assert response.status_code == 200, response.text
+    assert users[USER].app_metadata == {'portal_client': True, 'provider': 'email', 'portal_mall_id': MALL}
+    assert not any(row['user_id'] == USER for row in db.rows['client_portal_grants'])
+    assert [row['id'] for row in client.get('/api/v1/admin/portal/clients', params={'mall_id': MALL}).json()] == [USER]
+    assert client.post('/api/v1/admin/portal/grants', json={'user_id': USER, 'local_id': other_local}).status_code == 403
+    assert client.post('/api/v1/admin/portal/grants', json={'user_id': USER, 'local_id': LOCAL}).status_code == 200
+
+
+def test_foreign_mall_client_cannot_be_read_linked_or_revoked(mall_admin):
+    client, db, users, other_mall, other_local = mall_admin
+    original = copy.deepcopy(db.rows['client_portal_grants'])
+    assert client.get('/api/v1/admin/portal/grants', params={'user_id': OTHER, 'mall_id': MALL}).status_code == 403
+    assert client.get('/api/v1/admin/portal/grants', params={'user_id': OTHER, 'mall_id': other_mall}).status_code == 200
+    assert client.post('/api/v1/admin/portal/grants', json={'user_id': OTHER, 'local_id': LOCAL}).status_code == 403
+    assert client.request('DELETE', '/api/v1/admin/portal/grants', json={'user_id': OTHER, 'local_id': LOCAL}).status_code == 403
+    assert db.rows['client_portal_grants'] == original
+
+
+def test_failed_legacy_mall_preservation_does_not_remove_link(mall_admin):
+    client, db, users, other_mall, other_local = mall_admin
+    original = copy.deepcopy(db.rows['client_portal_grants'])
+    def unavailable(*args): raise RuntimeError('auth unavailable')
+    db.auth.admin.update_user_by_id = unavailable
+    response = client.request('DELETE', '/api/v1/admin/portal/grants', json={'user_id': USER, 'local_id': LOCAL})
+    assert response.status_code == 503
+    assert db.rows['client_portal_grants'] == original
+
+
+def test_client_list_denies_unassigned_mall_for_delegated_admin(mall_admin, monkeypatch):
+    client, db, users, other_mall, other_local = mall_admin
+    async def access_context(user_id):
+        return {'user_id': USER, 'role': 'custom_role', 'permissions': {'users': {'update': True}}}
+    monkeypatch.setattr(main, '_get_access_context', access_context)
+    monkeypatch.setattr(main, '_get_user_mall_ids', lambda uid: [MALL])
+    assert client.get('/api/v1/admin/portal/clients', params={'mall_id': other_mall}).status_code == 403
+    assert client.get('/api/v1/admin/portal/clients', params={'mall_id': MALL}).status_code == 200
+
+
+def test_legacy_account_with_no_mall_evidence_is_not_shown_globally(mall_admin):
+    client, db, users, other_mall, other_local = mall_admin
+    orphan = str(uuid4())
+    users[orphan] = SimpleNamespace(id=orphan, email='orphan@example.test', app_metadata={'portal_client': True})
+    for mall in (MALL, other_mall):
+        assert orphan not in {row['id'] for row in client.get('/api/v1/admin/portal/clients', params={'mall_id': mall}).json()}
+    assert client.post('/api/v1/admin/portal/grants', json={'user_id': orphan, 'local_id': LOCAL}).status_code == 403

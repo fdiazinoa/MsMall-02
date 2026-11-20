@@ -25,7 +25,7 @@ class Grant(BaseModel):
     local_id: UUID
 
 
-def create_client_portal_router(*, get_db, authenticate, admin_create, admin_update, process_content, analyze_content, log_upload, ensure_mall_access, user_mall_ids):
+def create_client_portal_router(*, get_db, authenticate, admin_create, admin_update, process_content, analyze_content, log_upload, ensure_mall_access, user_mall_ids, list_auth_users):
     router = APIRouter(tags=['Portal de clientes'])
 
     def db():
@@ -47,6 +47,28 @@ def create_client_portal_router(*, get_db, authenticate, admin_create, admin_upd
         if not rows or rows[0].get('activo') is False:
             raise HTTPException(404, 'Local no disponible.')
         return rows[0]
+
+    def user_field(user, key, default=None):
+        return user.get(key, default) if isinstance(user, dict) else getattr(user, key, default)
+
+    def account_mall(client, user_id, metadata):
+        if metadata.get('portal_mall_id'):
+            return str(metadata['portal_mall_id'])
+        # Older accounts predate the creation-mall marker; use their existing link.
+        links = client.table('client_portal_grants').select('local_id').eq('user_id', str(user_id)).execute().data or []
+        if len(links) != 1:
+            return None
+        locals_ = client.table('locales').select('mall_id').eq('id', links[0]['local_id']).execute().data or []
+        return str(locals_[0]['mall_id']) if locals_ else None
+
+    def require_client_mall(client, user_id, mall_id):
+        user = client.auth.admin.get_user_by_id(str(user_id)).user
+        metadata = user_field(user, 'app_metadata', {}) or {}
+        if not metadata.get('portal_client'):
+            raise HTTPException(400, 'Sólo se pueden gestionar cuentas exclusivas del portal.')
+        if account_mall(client, user_id, metadata) != str(mall_id):
+            raise HTTPException(403, 'La cuenta de cliente no pertenece a este mall.')
+        return metadata
 
     async def read_file(file, table_index, has_header):
         raw = await file.read(MAX_BYTES + 1)
@@ -154,18 +176,38 @@ def create_client_portal_router(*, get_db, authenticate, admin_create, admin_upd
         ensure_mall_access(ctx, str(mall_id))
         return client.table('locales').select('id,nombre,codigo_interno,mall_id').eq('activo', True).eq('mall_id', str(mall_id)).execute().data or []
 
+    @router.get('/api/v1/admin/portal/clients')
+    def clients(mall_id: UUID, ctx=Depends(admin_update)):
+        client = db()
+        mall_id = str(mall_id)
+        ensure_mall_access(ctx, mall_id)
+        locals_ = client.table('locales').select('id').eq('mall_id', mall_id).execute().data or []
+        links = client.table('client_portal_grants').select('user_id').in_('local_id', [row['id'] for row in locals_]).execute().data if locals_ else []
+        linked_users = {row['user_id'] for row in (links or [])}
+        result = []
+        for user in list_auth_users():
+            metadata = user_field(user, 'app_metadata', {}) or {}
+            if not metadata.get('portal_client'):
+                continue
+            uid = user_field(user, 'id')
+            origin = metadata.get('portal_mall_id')
+            if str(origin) == mall_id or (not origin and uid in linked_users):
+                result.append({'id': uid, 'email': user_field(user, 'email'), 'portal_client': True, 'mall_id': mall_id})
+        return result
+
     @router.get('/api/v1/admin/portal/grants')
-    def grants(user_id: UUID, ctx=Depends(admin_update)):
-        return db().table('client_portal_grants').select('local_id').eq('user_id', str(user_id)).execute().data or []
+    def grants(user_id: UUID, mall_id: UUID, ctx=Depends(admin_update)):
+        client = db()
+        ensure_mall_access(ctx, str(mall_id))
+        require_client_mall(client, user_id, mall_id)
+        return client.table('client_portal_grants').select('local_id').eq('user_id', str(user_id)).execute().data or []
 
     @router.post('/api/v1/admin/portal/grants')
     def grant(payload: Grant, ctx=Depends(admin_update)):
         client = db()
         local = load_local(client, payload.local_id)
         ensure_mall_access(ctx, local['mall_id'])
-        target = client.auth.admin.get_user_by_id(str(payload.user_id)).user
-        if not (getattr(target, 'app_metadata', None) or {}).get('portal_client'):
-            raise HTTPException(400, 'Sólo se pueden vincular cuentas exclusivas del portal.')
+        require_client_mall(client, payload.user_id, local['mall_id'])
         existing = client.table('client_portal_grants').select('local_id').eq('user_id', str(payload.user_id)).execute().data or []
         if existing:
             raise HTTPException(409, 'La cuenta ya tiene un local. Retira su vínculo actual antes de cambiarlo.')
@@ -180,6 +222,15 @@ def create_client_portal_router(*, get_db, authenticate, admin_create, admin_upd
         client = db()
         local = load_local(client, payload.local_id)
         ensure_mall_access(ctx, local['mall_id'])
+        metadata = require_client_mall(client, payload.user_id, local['mall_id'])
+        if not metadata.get('portal_mall_id'):
+            # Persist legacy ownership before deleting the only evidence of its mall.
+            try:
+                client.auth.admin.update_user_by_id(str(payload.user_id), {
+                    'app_metadata': {**metadata, 'portal_mall_id': local['mall_id']}
+                })
+            except Exception as exc:
+                raise HTTPException(503, 'No se pudo conservar el mall de la cuenta; el vínculo sigue vigente.') from exc
         client.table('client_portal_grants').delete().eq('user_id', str(payload.user_id)).eq('local_id', str(payload.local_id)).execute()
         return {'status': 'success'}
 
@@ -190,7 +241,7 @@ def create_client_portal_router(*, get_db, authenticate, admin_create, admin_upd
         ensure_mall_access(ctx, local['mall_id'])
         try:
             user = client.auth.admin.create_user({'email': payload.email.strip().lower(), 'password': payload.password,
-                    'email_confirm': True, 'app_metadata': {'portal_client': True}}).user
+                    'email_confirm': True, 'app_metadata': {'portal_client': True, 'portal_mall_id': local['mall_id']}}).user
         except Exception as exc:
             raise HTTPException(400, 'No se pudo crear la cuenta. Verifica el correo o si ya existe.') from exc
         try:

@@ -19,7 +19,7 @@ from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 
 from services.database_backup_service import (
-    DatabaseBackupService, DatabaseBackupUnavailable, configuration,
+    DatabaseBackupService, DatabaseBackupUnavailable, Table, configuration,
     connection_error_message, scope_predicates, table_order,
 )
 from services.import_backup_service import BackupSizeExceeded, GeneratedBackup
@@ -40,6 +40,57 @@ class DifferentialSelectionError(ValueError):
 
 
 class DifferentialBackupService(DatabaseBackupService):
+    def _snapshot_scope(self,conn,tables,mall):
+        # Reuse the existing direct Mall/local roots, then resolve all FK columns.
+        roots=scope_predicates({name:Table(name,table.columns,[]) for name,table in tables.items()},mall)
+        relations={name:[] for name in tables}
+        for row in conn.execute("""
+            SELECT child.relname AS child, parent.relname AS parent,
+              array_agg(ca.attname ORDER BY k.seq) AS child_columns,
+              array_agg(pa.attname ORDER BY k.seq) AS parent_columns
+            FROM pg_constraint f
+            JOIN pg_class child ON child.oid=f.conrelid JOIN pg_namespace cn ON cn.oid=child.relnamespace
+            JOIN pg_class parent ON parent.oid=f.confrelid JOIN pg_namespace pn ON pn.oid=parent.relnamespace
+            CROSS JOIN LATERAL unnest(f.conkey,f.confkey) WITH ORDINALITY k(child_num,parent_num,seq)
+            JOIN pg_attribute ca ON ca.attrelid=child.oid AND ca.attnum=k.child_num
+            JOIN pg_attribute pa ON pa.attrelid=parent.oid AND pa.attnum=k.parent_num
+            WHERE f.contype='f' AND cn.nspname='public' AND pn.nspname='public'
+            GROUP BY f.oid,child.relname,parent.relname
+        """):
+            if row['child'] in relations and row['parent'] in tables:
+                relations[row['child']].append(row)
+        selected=set(roots)
+        while True:
+            added={name for name,parents in relations.items() if name not in selected
+                   and any(rel['parent'] in selected for rel in parents)}
+            if not added: break
+            selected.update(added)
+        # table_order only needs table dependencies; actual ownership checks below
+        # use EVERY pair of columns, not the representative pair used in this graph.
+        graph={name:Table(name,table.columns,[(rel['child_columns'][0],rel['parent'],rel['parent_columns'][0])
+               for rel in relations[name]]) for name,table in tables.items()}
+        order=table_order(graph,selected)
+        predicates={}
+        for name in order:
+            checks,nonnull=[],[]
+            for rel in relations[name]:
+                parent=rel['parent']
+                if parent not in predicates: continue
+                child_cols,parent_cols=rel['child_columns'],rel['parent_columns']
+                missing=sql.SQL(' OR ').join(sql.SQL('t.{} IS NULL').format(sql.Identifier(col)) for col in child_cols)
+                populated=sql.SQL(' AND ').join(sql.SQL('t.{} IS NOT NULL').format(sql.Identifier(col)) for col in child_cols)
+                match=sql.SQL(' AND ').join(sql.SQL('p.{}=t.{}').format(sql.Identifier(key),sql.Identifier(col)) for col,key in zip(child_cols,parent_cols))
+                parent_keys=sql.SQL(', ').join(sql.SQL('t.{}').format(sql.Identifier(key)) for key in parent_cols)
+                checks.append(sql.SQL('(({}) OR EXISTS (SELECT 1 FROM (SELECT {} FROM public.{} t WHERE {}) p WHERE {}))').format(
+                    missing,parent_keys,sql.Identifier(parent),predicates[parent],match))
+                nonnull.append(sql.SQL('({})').format(populated))
+            checks_sql=sql.SQL(' AND ').join(checks) if checks else sql.SQL('true')
+            if name in roots:
+                predicates[name]=sql.SQL('({}) AND ({})').format(roots[name],checks_sql)
+            else:
+                predicates[name]=sql.SQL('({}) AND ({})').format(checks_sql,sql.SQL(' OR ').join(nonnull))
+        return predicates,order
+
     def _ready(self):
         if not enabled():
             raise DatabaseBackupUnavailable('La opción diferencial no está habilitada en este servidor.')
@@ -111,8 +162,7 @@ class DifferentialBackupService(DatabaseBackupService):
                 tables = self._catalog(conn)
                 if not {'malls', 'locales'}.issubset(tables) or not conn.execute('SELECT id FROM public.malls WHERE id = %s', (mall,)).fetchone():
                     raise DatabaseBackupUnavailable('El Mall no existe en la base de backups configurada.')
-                predicates = scope_predicates(tables, mall)
-                order = table_order(tables, predicates)
+                predicates,order = self._snapshot_scope(conn,tables,mall)
                 # Keep DDL stable across catalog discovery, hashing and COPY.
                 conn.execute(sql.SQL('LOCK TABLE {} IN ACCESS SHARE MODE').format(
                     sql.SQL(', ').join(sql.Identifier('public', table) for table in order)))
@@ -129,11 +179,6 @@ class DifferentialBackupService(DatabaseBackupService):
                     keys[row['name']] = row['keys']
                 if any(not keys.get(table) or not set(keys[table]).issubset(tables[table].columns) for table in order):
                     raise DatabaseBackupUnavailable('Todas las tablas del respaldo diferencial requieren una clave primaria exportable. Usa el backup por período.')
-                if conn.execute("""SELECT 1 FROM pg_constraint f
-                    JOIN pg_class c ON c.oid = f.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-                    WHERE n.nspname = 'public' AND c.relname = ANY(%s)
-                    AND f.contype = 'f' AND cardinality(f.conkey) > 1 LIMIT 1""", (order,)).fetchone():
-                    raise DatabaseBackupUnavailable('Las relaciones compuestas requieren revisión antes de habilitar diferenciales para este Mall.')
 
                 snapshot = conn.execute('SELECT pg_export_snapshot() AS id').fetchone()['id']
                 params = conninfo_to_dict(os.environ['BACKUP_DATABASE_URL'])
@@ -144,7 +189,7 @@ class DifferentialBackupService(DatabaseBackupService):
                         env['PGDATABASE' if key == 'dbname' else 'PG' + key.upper().replace('_', '')] = value
                 env.update(PGCONNECT_TIMEOUT='10', PGOPTIONS='-c default_transaction_read_only=on', PGAPPNAME='msmall-differential-backup')
                 self._command(['pg_dump', '--no-password', '--no-owner', '--no-privileges', '--schema-only', '--schema=public', f'--snapshot={snapshot}'], root / 'schema.sql', env, check, deadline)
-                schema_hash = normalized_schema_hash((root / 'schema.sql').read_bytes())
+                schema_hash = hashlib.sha256(('composite-scope-v2:' + normalized_schema_hash((root / 'schema.sql').read_bytes())).encode()).hexdigest()
                 if mode == 'differential':
                     baseline = conn.execute('SELECT id, schema_hash, created_at FROM msmall_backup.baselines WHERE id = %s AND mall_id = %s', (base_id, mall)).fetchone()
                     if not baseline:

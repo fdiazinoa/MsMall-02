@@ -97,14 +97,21 @@ Cada diferencial utiliza otro snapshot coherente y solo lee. Un advisory lock
 exclusivo por Mall evita generar/reemplazar bases y diferenciales simultáneamente,
 sin bloquear las escrituras ordinarias de importación. Los locks de lectura del
 catálogo sí pueden bloquear DDL; hay timeout. Las tablas del alcance necesitan una
-clave primaria exportable. Se admiten claves primarias compuestas, pero se rechazan
-relaciones foráneas compuestas y ciclos que no se pueden ordenar con seguridad.
-El alcance conserva las exclusiones y limitaciones del backup por Mall existente.
+clave primaria exportable. Se admiten claves primarias y foráneas compuestas;
+se rechazan ciclos que no se pueden ordenar con seguridad. Para relaciones
+compuestas se comparan todas las parejas de columnas al validar pertenencia y se
+ordenan los padres antes de los hijos. Una FK con columnas nulas no demuestra
+pertenencia para una tabla sin raíz Mall/local propia. Esto amplía el alcance de
+completos base y diferenciales a descendientes por claves compuestas; el SQL por
+período conserva su comportamiento anterior. Se mantienen las exclusiones de Auth,
+Storage físico y catálogos globales.
 
 La huella del esquema normaliza los tokens aleatorios de `pg_dump` y compara la
 estructura de `public` antes de exportar. Si el esquema cambia, falta la base, fue
 reemplazada o corresponde a otro Mall, se exige crear un completo nuevo. Cambiar la
-versión de `pg_dump` también puede requerir una base nueva. No hay migración
+versión de `pg_dump` también puede requerir una base nueva. El alcance compuesto
+usa una nueva versión de huella: cualquier base anterior requiere regenerarse.
+No hay migración
 automática de esquemas durante una recuperación diferencial.
 
 ### Recuperación y conservación

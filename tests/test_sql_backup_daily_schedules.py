@@ -106,6 +106,7 @@ def test_weekly_exhaustion_blocks_generation_and_download_without_charges(servic
     full=service.state(MALL)['artifacts'][0]
     service.query("UPDATE msmall_backup.traffic_usage SET used_bytes=100000000 RETURNING plan_id")
     assert service.run_due()['reason']=='quota_weekly_bytes'
+    assert service.state(MALL)['schedule']['next_run_at'].astimezone(schedules.TZ).hour==2
     with pytest.raises(TrafficQuotaError,match='sin cargos|No se generarán cargos'):
         service.download(MALL,str(uuid4()),full['id'])
     assert service.query('SELECT sum(used_bytes) AS used FROM msmall_backup.traffic_usage')[0]['used']==100000000

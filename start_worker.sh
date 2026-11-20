@@ -26,7 +26,6 @@ if [ "$WORKER_POLL_SECONDS" -lt 60 ]; then
 fi
 
 shutdown_requested=0
-SQL_BACKUP_PID=""
 trap 'shutdown_requested=1; echo "[$(date -Is)] Señal recibida; el worker se detendrá al terminar el ciclo actual."' TERM INT
 
 echo "[$(date -Is)] Worker de importacion iniciado. Intervalo=${WORKER_POLL_SECONDS}s TZ=${TZ} WORKER_TIMEZONE=${WORKER_TIMEZONE}"
@@ -46,23 +45,9 @@ while [ "$shutdown_requested" -eq 0 ]; do
         break
     fi
 
-    # SQL snapshots run in a separate process, so they cannot delay import cycles.
-    case "${ENABLE_SCHEDULED_SQL_BACKUPS:-false}" in
-        true|1|yes)
-            if [ -z "$SQL_BACKUP_PID" ] || ! kill -0 "$SQL_BACKUP_PID" 2>/dev/null; then
-                python3 -u -m services.sql_backup_schedule_service < /dev/null &
-                SQL_BACKUP_PID=$!
-            fi
-            ;;
-    esac
-
     echo "[$(date -Is)] Esperando ${WORKER_POLL_SECONDS}s para el próximo ciclo."
     sleep "$WORKER_POLL_SECONDS" &
     wait $!
 done
 
-if [ -n "$SQL_BACKUP_PID" ] && kill -0 "$SQL_BACKUP_PID" 2>/dev/null; then
-    kill "$SQL_BACKUP_PID" 2>/dev/null
-    wait "$SQL_BACKUP_PID" 2>/dev/null
-fi
 echo "[$(date -Is)] Worker de importacion detenido."

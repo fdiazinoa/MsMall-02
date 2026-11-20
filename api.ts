@@ -13,13 +13,6 @@ if (!supabase) {
 }
 
 const BASE_URL = '/api/v1';
-export interface SQLBackupScheduleState {
-  schedule: { enabled: boolean; run_hour: number; next_run_at: string; last_error: string | null } | null;
-  artifacts: { id: string; mode: 'base' | 'differential'; base_id: string | null; scheduled_day: string; bytes: number; status: string; error: string | null; created_at: string; expires_at: string }[];
-  automation_enabled: boolean;
-  timezone: string;
-  retention_days: number;
-}
 const DIRECT_BACKEND_BASE_URL = import.meta.env.VITE_DIRECT_BACKEND_BASE_URL || '';
 const STORES_STORAGE_KEY = 'msmall_mock_stores';
 const USERS_STORAGE_KEY = 'msmall_mock_users';
@@ -861,7 +854,7 @@ export const ApiService = {
     );
   },
 
-  async getDatabaseBackupCapabilities(mallId: string, token: string, signal: AbortSignal): Promise<{ enabled: boolean; mall: boolean; platform: boolean; differential?: boolean; weekly_quota?: boolean }> {
+  async getDatabaseBackupCapabilities(mallId: string, token: string, signal: AbortSignal): Promise<{ enabled: boolean; mall: boolean; platform: boolean; differential?: boolean }> {
     return fetchJsonWithBaseFallback('/export/import-backup/database/capabilities', {
       headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
     }, 'No se pudieron consultar los permisos de backup SQL.');
@@ -871,35 +864,6 @@ export const ApiService = {
     return fetchJsonWithBaseFallback('/export/import-backup/database/baseline', {
       headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
     }, 'No se pudo consultar la base del diferencial.');
-  },
-
-  async getSQLBackupTraffic(mallId: string, token: string, signal: AbortSignal): Promise<{ configured: boolean; quota?: { weekly_bytes: number; used_bytes: number; reserved_bytes: number; remaining_bytes: number; resets_at: string; max_file_bytes: number; enabled: boolean; price: number } }> {
-    return fetchJsonWithBaseFallback('/export/import-backup/database/traffic', {
-      headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
-    }, 'No se pudo consultar la cuota semanal SQL.');
-  },
-
-  async getSQLBackupSchedule(mallId: string, token: string, signal: AbortSignal): Promise<SQLBackupScheduleState> {
-    return fetchJsonWithBaseFallback('/export/import-backup/database/schedule', {
-      headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
-    }, 'No se pudo consultar la programación SQL.');
-  },
-
-  async saveSQLBackupSchedule(mallId: string, token: string, config: { enabled: boolean; run_hour: number }, signal: AbortSignal): Promise<SQLBackupScheduleState> {
-    return fetchJsonWithBaseFallback('/export/import-backup/database/schedule', {
-      method: 'PUT', headers: withAuthHeaders(token, { 'X-Mall-Id': mallId, 'Content-Type': 'application/json' }),
-      body: JSON.stringify(config), signal,
-    }, 'No se pudo guardar la programación SQL.');
-  },
-
-  async downloadSQLBackupArtifact(mallId: string, token: string, id: string, signal: AbortSignal): Promise<Blob> {
-    const base = getApiBaseUrls()[0];
-    const response = await fetch(`${base}/export/import-backup/database/artifacts/${encodeURIComponent(id)}`, {
-      headers: withAuthHeaders(token, { 'X-Mall-Id': mallId }), signal,
-    });
-    if (!response.ok) throw new Error(await parseErrorDetail(response, 'No se pudo descargar el respaldo SQL.'));
-    if (!response.headers.get('Content-Type')?.toLowerCase().startsWith('application/zip')) throw new Error('El servidor no devolvió un ZIP válido.');
-    return response.blob();
   },
 
   async downloadDatabaseBackup(mallId: string, token: string, scope: 'mall', signal: AbortSignal, start: string, end: string, mode: 'period' | 'base' | 'differential' = 'period', baseId?: string): Promise<Blob> {

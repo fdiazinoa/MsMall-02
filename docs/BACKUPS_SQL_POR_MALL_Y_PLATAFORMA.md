@@ -166,3 +166,78 @@ disco temporal, memoria del navegador (la descarga usa Blob) ni restauración de
 los respaldos multi-GB de Agora/Santiago. Validar esa capacidad antes de habilitar
 la opción o comprometer una oferta comercial. No se aplican estas migraciones ni
 se activa la opción en producción como parte de la creación del PR.
+
+## Plan SQL gratuito compartido y programación diaria
+
+La ampliación opcional agrupa Malls en una bolsa privada de tráfico, independiente
+de los CSV y sus cuotas anteriores. Para Ágora y Santiago Center se configura una
+bolsa conjunta de **40.000.000.000 bytes semanales** (40 GB decimales), con máximo
+de **5.000.000.000 bytes por archivo**, precio cero y sin mecanismo de sobrecargo.
+La semana comienza los lunes a las 00:00 de `America/Santo_Domingo`, sin acumulación.
+Cuando no hay presupuesto suficiente, se bloquea la generación o descarga.
+
+Las tablas `msmall_backup.traffic_*` y la función `traffic_control` son privadas,
+con RLS y sin acceso para roles API. Las reservas se serializan por grupo: usuarios,
+Malls y procesos simultáneos compiten por la misma bolsa sin excederla. Hay un solo
+trabajo activo por Mall. Las generaciones manuales mantienen el intervalo mínimo y
+límite diario de solicitudes de la política existente, por Mall, para impedir
+comparaciones costosas ilimitadas que produzcan diferenciales vacíos.
+
+Se contabilizan el SQL generado sin comprimir y el ZIP transferido; cada descarga
+posterior descuenta otra vez el ZIP. Es una medida conservadora del tráfico de
+archivos, no el medidor general de los proveedores. Se reserva hasta dos veces el
+máximo del archivo para generación y una vez para descarga almacenada. Los intentos
+fallidos consumen presupuesto; los procesos interrumpidos conservan la reserva al
+vencer su lease. No se factura un excedente. Esta política interna no cancela los
+costos de infraestructura de la cuenta.
+
+### Automáticos configurables
+
+En **Backups → Backup SQL**, un administrador asignado al Mall puede activar o
+pausar la generación diaria y elegir una hora entre 00:00 y 23:00, en Santo Domingo.
+Se crea un completo inicial, se renueva al cambiar de mes y se genera un diferencial
+por día. El primer día se crea el completo y luego el diferencial. Si no existe una
+copia almacenada de la base vigente, el programador crea un completo recuperable
+nuevo antes de generar más diferenciales.
+
+Se conservan siete días de diferenciales y sus completos necesarios. La base vigente
+se conserva mientras siga vigente; las anteriores, mientras tengan diferenciales
+retenidos. La tabla de archivos muestra el ID de referencia para emparejarlos.
+La recuperación sigue necesitando el completo original más **un** diferencial y las
+dependencias globales descritas arriba, en un entorno de recuperación compatible.
+
+El bucket dedicado `sql-backups` es privado y no tiene políticas para clientes. Los
+ZIP se almacenan en fragmentos de 8 MB, dentro del límite por objeto del bucket,
+sin cargar un archivo multi-GB en RAM ni modificar el bucket CSV. El backend
+reconstruye el flujo con autenticación y reserva semanal. No se emiten URLs públicas
+ni firmadas que permitan evadir la cuota. Se comprueban tamaños de fragmentos y el
+total del archivo. El navegador mantiene el mecanismo Blob existente, que requiere
+memoria suficiente para descargar archivos grandes.
+
+El worker ejecuta el programador SQL en un proceso hijo separado del ciclo de
+importación. Hay una instancia local y claims PostgreSQL de quince minutos para
+evitar duplicaciones entre réplicas. Cada ejecución procesa hasta cuatro trabajos;
+cada generación conserva el timeout de diez minutos. Las importaciones no esperan
+al backup. Una pausa/cambio de hora durante la subida aborta la nueva base antes
+del commit. Una subida completa puede recuperarse de los metadatos tras un fallo de
+proceso; los fragmentos incompletos se eliminan al caducar.
+
+### Activación
+
+1. Aplicar `sql_backup_weekly_traffic` y `sql_backup_daily_schedules` después de las
+   migraciones diferenciales. No incluyen IDs de clientes ni activan planes.
+2. Crear el grupo en `traffic_plans`, asignar solo los Malls autorizados mediante
+   `traffic_malls` y configurar sus horarios en `sql_schedules`.
+3. API y worker: `ENABLE_SQL_BACKUP_WEEKLY_QUOTA=true`,
+   `ENABLE_SCHEDULED_SQL_BACKUPS=true` y las variables existentes para backups SQL y
+   diferenciales. El worker necesita el mismo `BACKUP_DATABASE_URL` (referencia de
+   Railway al servicio API) y sus credenciales de Supabase. `Dockerfile.worker`
+   incorpora el cliente PostgreSQL.
+4. Habilitar el grupo y las programaciones. `next_run_at=now()` permite crear las
+   bases iniciales en el siguiente ciclo. Luego se usa la hora elegida. Guardar el
+   formulario programa la siguiente ocurrencia futura de esa hora.
+
+Los Malls no asignados conservan la política anterior. La API exige permiso SQL y
+pertenencia al Mall para consultar, configurar y descargar. Las cuotas se comprueban
+en el servidor; los valores del navegador no pueden ampliarlas. La programación no
+crea cobros, suscripciones ni enlaces de descarga fuera del control de tráfico.

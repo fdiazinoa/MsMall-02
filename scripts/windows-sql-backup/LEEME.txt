@@ -1,0 +1,52 @@
+MSMALL - RESPALDOS SQL EN WINDOWS
+
+1. Instala Python 3.11 o superior desde https://www.python.org/downloads/windows/.
+   Incluye Python Launcher (comando py). No se requieren paquetes adicionales.
+2. Extrae TODO este ZIP. No ejecutes scripts dentro del ZIP.
+3. Abre PowerShell en la carpeta extraída y ejecuta:
+   .\Instalar.ps1 -Destino 'C:\Respaldos\MsMall' -Hora '02:00'
+   Si Windows bloquea el script descargado, revisa sus archivos y sigue la
+   política de ejecución aprobada por el administrador del cliente.
+4. Inicia sesión con tu usuario de MsMall administrador del Mall seleccionado.
+   La contraseña no se guarda. La sesión se protege con Windows DPAPI para
+   esta cuenta y equipo; si vence o se revoca, ejecuta Instalar.ps1 -LoginOnly.
+5. Para que se ejecute con la sesión Windows cerrada:
+   .\Instalar.ps1 -Destino 'D:\Respaldos\MsMall' -Hora '02:00' -SinSesionAbierta
+   Pedirá la contraseña Windows de la MISMA cuenta. Puede requerir permisos
+   del administrador para registrar la tarea y el inicio de sesión por lotes.
+   La modalidad predeterminada requiere sesión Windows abierta.
+
+La hora utiliza el reloj/zona de Windows. Configura Santo Domingo si deseas
+02:00 de República Dominicana. El equipo debe estar encendido y con Internet.
+Si estaba apagado, la tarea se ejecuta cuando vuelva a estar disponible.
+Puedes modificar hora en el Programador de tareas; para cambiar destino,
+vuelve a ejecutar el instalador con -Destino y -Hora. Registra una sola tarea
+activa por Mall; descarga el paquete de cada Mall por separado.
+
+Los ZIP se escriben directamente en una subcarpeta con el ID del Mall.
+No se suben a Supabase Storage. El servidor conserva metadatos y huellas de
+filas necesarios para calcular diferenciales: eso también ocupa espacio de
+base de datos. Durante generación se utiliza disco temporal del servidor.
+Se mantiene la cuota gratuita compartida de 40 GB semanales y bloqueo sin
+cargos al agotarse. SQL generado, ZIP transferido e intentos fallidos cuentan.
+
+Se descarga un completo inicial, se renueva mensualmente y se descargan
+los diferenciales los días siguientes. Si falta/cambia la base local válida,
+se genera un completo nuevo. Un completo del día cubre esa ejecución.
+ZIP parcial o corrupto no se publica como válido. Los completos previos no
+se sobrescriben. No se borran respaldos locales automáticamente: configura
+la retención con el administrador considerando crecimiento y espacio local.
+Para restaurar: completo ORIGINAL + UN diferencial compatible de ese completo.
+Nunca aplicar diferenciales uno encima de otro. No incluye usuarios Auth,
+archivos Storage ni todos los catálogos globales; recuperación en entorno
+compatible dedicado. Nunca ejecutar la restauración sobre producción.
+
+PRUEBA Y DIAGNÓSTICO
+- El instalador descarga y valida el primer completo (CRC y manifiesto).
+- Programador de tareas: busca 'MsMall SQL <ID del Mall>'; resultado 0 = éxito.
+- Prueba manual: ejecuta backup_client.py con --config y --destination, o usa
+  'Ejecutar' en el Programador de tareas. El mismo día no descarga otra vez.
+- Una sesión revocada, falta de permiso, cuota agotada o falta de disco hace
+  fallar la tarea. No garantiza respaldo si Windows está apagado/sin Internet.
+- Para detenerlo: deshabilita la tarea en el Programador de tareas.
+- Los respaldos existentes en la nube NO se borran con este instalador.

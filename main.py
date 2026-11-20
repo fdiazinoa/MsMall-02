@@ -10038,7 +10038,7 @@ app.include_router(create_client_portal_router(
     admin_update=require_module_permission("users", "update"),
     process_content=process_file_content, analyze_content=_perform_mapping_analysis,
     log_upload=insert_load_log, ensure_mall_access=_ensure_operator_can_access_mall,
-    user_mall_ids=_get_user_mall_ids,
+    user_mall_ids=_get_user_mall_ids, list_auth_users=lambda: _list_all_auth_users(),
 ))
 
 if __name__ == "__main__":

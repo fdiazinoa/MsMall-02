@@ -21,7 +21,6 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends, Query, Request, status, Body
 from fastapi.responses import StreamingResponse, JSONResponse
-from fastapi.encoders import jsonable_encoder
 from starlette.concurrency import run_in_threadpool
 import anyio
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -101,8 +100,6 @@ from services.configuration_backup_service import ConfigurationBackupService
 from services.backup_restore_service import BackupRestoreService, MAX_BYTES as RESTORE_MAX_BYTES
 from services.database_backup_service import DatabaseBackupService, DatabaseBackupUnavailable, configuration as database_backup_ready
 from services.differential_backup_service import DifferentialBackupService, DifferentialSelectionError, enabled as differential_backup_ready
-from services.sql_backup_traffic_service import SQLBackupTrafficService, enabled as sql_weekly_quota_ready
-from services.sql_backup_schedule_service import SQLBackupScheduleService, SQLBackupSchedule
 from services.import_backup_schedule_service import ImportBackupScheduleService, BackupSchedule
 from services.import_backup_quota_service import ImportBackupQuotaService, BackupPolicy, BackupQuotaError
 from services.sales_cube_query_service import fetch_sales_cube_daily_aggregates
@@ -8285,8 +8282,6 @@ def database_backup_capabilities(
     result = {"enabled": database_backup_ready(), **permissions}
     if differential_backup_ready():
         result["differential"] = True
-    if sql_weekly_quota_ready():
-        result["weekly_quota"] = True
     return result
 
 
@@ -8301,83 +8296,6 @@ def database_backup_baseline(
         return JSONResponse({"baseline": DifferentialBackupService().baseline(current_mall)}, headers={"Cache-Control": "no-store"})
     except DatabaseBackupUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
-
-
-@router_export.get("/import-backup/database/traffic")
-def database_backup_traffic(
-    current_mall: str = Depends(get_current_mall),
-    operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
-):
-    if not _database_backup_permissions(operator_ctx, current_mall)["mall"]:
-        raise HTTPException(403, "El backup por Mall requiere un administrador asignado al Mall.")
-    result = _backup_quota_result(lambda: SQLBackupTrafficService(current_mall, operator_ctx['user_id']).status()) if sql_weekly_quota_ready() else {'configured': False}
-    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
-
-
-def _reserve_sql_backup_quota(mall, user, mode, days):
-    if sql_weekly_quota_ready():
-        service = SQLBackupTrafficService(mall, user, mode)
-        if service.status().get('configured'):
-            return service.reserve(days)
-    return ImportBackupQuotaService(supabase, user, mall).reserve(days)
-
-
-def _require_sql_admin(operator_ctx,mall):
-    if not _database_backup_permissions(operator_ctx,mall)['mall']:
-        raise HTTPException(403,'El backup SQL requiere un administrador asignado al Mall.')
-    if not sql_weekly_quota_ready():
-        raise HTTPException(503,'El plan gratuito de backups SQL no está habilitado.')
-
-
-@router_export.get('/import-backup/database/schedule')
-def sql_backup_schedule_state(current_mall: str=Depends(get_current_mall),
-    operator_ctx: Dict[str,Any]=Depends(require_module_permission('import_backup','view'))):
-    _require_sql_admin(operator_ctx,current_mall)
-    try:
-        return JSONResponse(jsonable_encoder(SQLBackupScheduleService(supabase).state(current_mall)),headers={'Cache-Control':'no-store'})
-    except Exception as exc:
-        raise HTTPException(503,'No se pudo consultar la programación SQL.') from exc
-
-
-@router_export.put('/import-backup/database/schedule')
-def sql_backup_schedule_save(payload: SQLBackupSchedule,current_mall: str=Depends(get_current_mall),
-    operator_ctx: Dict[str,Any]=Depends(require_module_permission('import_backup','view'))):
-    _require_sql_admin(operator_ctx,current_mall)
-    try:
-        return JSONResponse(jsonable_encoder(SQLBackupScheduleService(supabase).save(current_mall,payload)),headers={'Cache-Control':'no-store'})
-    except BackupQuotaError as exc:
-        raise _backup_quota_http_error(exc) from exc
-    except Exception as exc:
-        raise HTTPException(503,'No se pudo guardar la programación SQL.') from exc
-
-
-@router_export.get('/import-backup/database/artifacts/{artifact_id}')
-def sql_backup_artifact_download(artifact_id: UUID,current_mall: str=Depends(get_current_mall),
-    operator_ctx: Dict[str,Any]=Depends(require_module_permission('import_backup','view'))):
-    _require_sql_admin(operator_ctx,current_mall)
-    try:
-        chunks,lease,row=SQLBackupScheduleService(supabase).download(current_mall,operator_ctx['user_id'],artifact_id)
-    except BackupQuotaError as exc:
-        raise _backup_quota_http_error(exc) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(404,'Archivo SQL no disponible o vencido.') from exc
-    except Exception as exc:
-        raise HTTPException(503,'No se pudo iniciar la descarga SQL.') from exc
-    class ArtifactResponse(StreamingResponse):
-        async def __call__(self,scope,receive,send):
-            failed=True
-            try:
-                await super().__call__(scope,receive,send)
-                failed=False
-            finally:
-                try:
-                    chunks.close()
-                finally:
-                    with anyio.CancelScope(shield=True):
-                        await run_in_threadpool(lease.close,failed)
-    return ArtifactResponse(chunks,media_type='application/zip',headers={
-        'Content-Disposition':f'attachment; filename="backup_{row["mode"]}_{current_mall}_{artifact_id}.zip"',
-        'Content-Length':str(row['bytes']),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
 
 
 @router_export.post("/import-backup/database/mall")
@@ -8406,7 +8324,7 @@ def download_database_backup(
     if mode == 'period' and (fecha_fin < fecha_inicio or fecha_fin == date.max):
         raise HTTPException(400, "La fecha final debe ser igual o posterior a la inicial y anterior al año 10000.")
     days = (fecha_fin - fecha_inicio).days + 1 if mode == 'period' else 1
-    lease = _backup_quota_result(lambda: _reserve_sql_backup_quota(current_mall, operator_ctx['user_id'], mode, days))
+    lease = _backup_quota_result(lambda: ImportBackupQuotaService(supabase, operator_ctx["user_id"], current_mall).reserve(days))
     backup = None
     try:
         lease.start()

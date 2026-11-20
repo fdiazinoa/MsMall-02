@@ -52,6 +52,37 @@ test('a differential without a base does not generate a request', async () => {
   await assert.rejects(api.downloadDatabaseBackup('mall-a', 'token-a', 'mall', new AbortController().signal, '', '', 'differential'), /completo base/);
 });
 
+test('SQL weekly quota and configurable daily schedule preserve authenticated Mall context', async () => {
+  const calls = [];
+  const api = harness(async (url, init) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify(url.endsWith('/traffic') ? { configured: true, quota: { weekly_bytes: 40000000000, price: 0 } } : { schedule: { enabled: true, run_hour: 3 }, artifacts: [] }), { headers: { 'Content-Type': 'application/json' } });
+  });
+  const signal = new AbortController().signal;
+  assert.equal((await api.getSQLBackupTraffic('mall-a', 'token-a', signal)).quota.price, 0);
+  await api.getSQLBackupSchedule('mall-a', 'token-a', signal);
+  await api.saveSQLBackupSchedule('mall-a', 'token-a', { enabled: true, run_hour: 3 }, signal);
+  assert.equal(calls[0].url, '/api/v1/export/import-backup/database/traffic');
+  assert.equal(calls[1].url, '/api/v1/export/import-backup/database/schedule');
+  assert.equal(calls[2].init.method, 'PUT');
+  assert.deepEqual(JSON.parse(calls[2].init.body), { enabled: true, run_hour: 3 });
+  for (const call of calls) {
+    assert.equal(call.init.headers.Authorization, 'Bearer token-a');
+    assert.equal(call.init.headers['X-Mall-Id'], 'mall-a');
+    assert.equal(call.init.signal, signal);
+  }
+});
+
+test('stored SQL downloads cannot bypass a weekly rejection with fallback URLs', async () => {
+  let calls = 0;
+  const api = harness(async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ detail: 'No hay cuota semanal suficiente' }), { status: 429, headers: { 'Content-Type': 'application/json' } });
+  });
+  await assert.rejects(api.downloadSQLBackupArtifact('mall-a', 'token-a', 'artifact-a', new AbortController().signal), /cuota semanal/);
+  assert.equal(calls, 1);
+});
+
 test('CSV request carries session, Mall, sale dates and selected store IDs', async () => {
   let request;
   const api = harness(async (url, init) => { request = { url, ...init }; return csvResponse(); });

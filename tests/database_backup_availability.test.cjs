@@ -17,6 +17,7 @@ async function harness(load) {
     AbortController, Error,
     require(id) {
       if (id === '../api') return { ApiService: { getDatabaseBackupCapabilities: load } };
+      if (id === './SQLBackupAutomationPanel') return { SQLBackupAutomationPanel: () => null };
       if (id === 'react') return { ...React,
         useState(initial) { const index = hook++; state[index] = initial; return [initial, value => { state[index] = value; }]; },
         useRef(initial) { return { current: initial }; },

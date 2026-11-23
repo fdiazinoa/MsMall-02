@@ -7,7 +7,7 @@ MSMALL - RESPALDOS SQL EN WINDOWS
    .\Instalar.ps1 -Destino 'C:\Respaldos\MsMall' -Hora '02:00'
    Si Windows bloquea el script descargado, revisa sus archivos y sigue la
    política de ejecución aprobada por el administrador del cliente.
-4. Inicia sesión con tu usuario de MsMall administrador del Mall seleccionado.
+4. Inicia sesión con tu usuario de MsMall administrador o IT del Mall seleccionado.
    La contraseña no se guarda. La sesión se protege con Windows DPAPI para
    esta cuenta y equipo; si vence o se revoca, ejecuta Instalar.ps1 -LoginOnly.
 5. Para que se ejecute con la sesión Windows cerrada:

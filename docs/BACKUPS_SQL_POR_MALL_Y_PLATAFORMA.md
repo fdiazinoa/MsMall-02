@@ -7,7 +7,7 @@ En **Backups → Backup SQL**, la sección **Backup del Mall y de la plataforma*
 ## Permisos
 
 - Se requiere sesión válida y permiso de lectura de `import_backup`.
-- **Por Mall:** administrador verificado y asignado al Mall seleccionado, o administrador global. La asignación se verifica en el servidor; un administrador local no obtiene acceso a otro Mall por cambiar `X-Mall-Id`.
+- **Por Mall:** administrador o IT verificado y asignado al Mall seleccionado, o administrador global. La asignación se verifica en el servidor; un administrador local no obtiene acceso a otro Mall por cambiar `X-Mall-Id`.
 - **Plataforma:** exclusivamente la identidad global cuyo correo autenticado coincide con `SYSTEM_ADMIN_EMAILS`, obtenido del servidor de Auth. Un rol llamado `admin`, `superadmin` o metadatos editables no habilitan esta opción.
 - La API de capacidades devuelve solo permisos y disponibilidad, nunca credenciales ni la cadena de conexión. El frontend muestra botones según esa respuesta; el POST vuelve a comprobarlos.
 
@@ -207,7 +207,7 @@ En **Backups → Backup SQL**, **Descargar instalador para Windows** entrega un 
 para el Mall seleccionado. Incluye Python sin dependencias externas, instalador
 PowerShell, instrucciones y configuración pública. No contiene contraseña,
 conexión PostgreSQL, service-role ni sesión del navegador. Se requieren Windows,
-Python 3.11+ y un usuario MsMall administrador asignado al Mall. Cada instalación
+Python 3.11+ y un usuario MsMall administrador o IT asignado al Mall. Cada instalación
 atiende un Mall; instalar una sola tarea por Mall.
 
 El instalador permite cambiar carpeta y hora:

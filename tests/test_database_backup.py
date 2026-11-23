@@ -300,3 +300,36 @@ def test_connect_failure_returns_safe_diagnostic_without_dump(monkeypatch):
     with pytest.raises(DatabaseBackupUnavailable, match='autenticar') as caught:
         DatabaseBackupService(connect=fail).generate('mall', MALL, start='2026-01-01', end='2026-01-31', max_bytes=1000, on_progress=lambda _: None, check_active=lambda: None)
     assert 'fake-secret' not in str(caught.value)
+
+@pytest.mark.parametrize('role', ['it', 'tic'])
+@pytest.mark.parametrize('assigned', [False, True])
+def test_verified_it_can_download_sql_only_for_assigned_mall(api, monkeypatch, role, assigned):
+    api.access.update(role=role, has_role_assignment=assigned)
+    api.db.rows['profiles'] = [{'id': 'user-1', 'role': role}]
+    monkeypatch.setattr(api.main, 'database_backup_ready', lambda: True)
+    monkeypatch.setattr(api.main, 'sql_weekly_quota_ready', lambda: False)
+    response = api.client.get('/api/v1/export/import-backup/database/capabilities', headers={'X-Mall-Id': MALL})
+    assert response.status_code == 200 and response.json()['mall'] is True
+    assert not api.main._backup_can_configure(api.access)
+    assert not api.main._backup_is_admin(api.access)
+    calls = []
+    def generate(_self, scope, mall, **kwargs):
+        calls.append(mall)
+        return GeneratedBackup(io.BytesIO(b'zip-content'), 0, [])
+    monkeypatch.setattr(api.main.DatabaseBackupService, 'generate', generate)
+    endpoint = '/api/v1/export/import-backup/database/mall?fecha_inicio=2026-01-01&fecha_fin=2026-01-01'
+    assert api.client.post(endpoint, headers={'X-Mall-Id': MALL}).status_code == 200
+    assert api.client.post(endpoint, headers={'X-Mall-Id': OTHER_MALL}).status_code == 403
+    assert calls == [MALL]
+    # Existing admin-only restore/global-settings rights must not expand.
+    assert not api.main._backup_has_settings_permission(api.access, 'update')
+
+
+def test_unverified_it_hint_and_revoked_backup_permission_cannot_download(api, monkeypatch):
+    api.access.update(role='it', has_role_assignment=False)
+    api.db.rows['profiles'] = [{'id': 'user-1', 'role': 'auditor'}]
+    monkeypatch.setattr(api.main, 'database_backup_ready', lambda: True)
+    endpoint = '/api/v1/export/import-backup/database/capabilities'
+    assert api.client.get(endpoint, headers={'X-Mall-Id': MALL}).json()['mall'] is False
+    api.access.update(has_role_assignment=True, permissions={})
+    assert api.client.get(endpoint, headers={'X-Mall-Id': MALL}).status_code == 403

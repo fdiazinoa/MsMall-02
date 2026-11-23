@@ -83,7 +83,7 @@ export const DatabaseBackupPanel: React.FC<{ mallId: string; mallName: string; t
     <h2 className="text-lg font-bold text-slate-800">Backup del Mall seleccionado</h2>
     {!capabilities && !error && <p role="status" className="text-sm">Verificando disponibilidad…</p>}
     {capabilities && !capabilities.enabled && <p className="text-sm text-amber-800">Backups SQL no habilitados. El administrador debe configurar la conexión de backups en el servidor.</p>}
-    {capabilities && !capabilities.mall && <p className="text-sm text-slate-600">Se requiere un administrador asignado a este Mall.</p>}
+    {capabilities && !capabilities.mall && <p className="text-sm text-slate-600">Se requiere un administrador o IT asignado a este Mall.</p>}
     {capabilities?.mall && capabilities.weekly_quota && <SQLBackupAutomationPanel mallId={mallId} token={token} refresh={trafficRefresh} onBaseDownloaded={() => setRetry(value => value + 1)} />}
     {capabilities?.differential && <label className="block text-sm font-medium">Tipo de respaldo
       <select disabled={busy} value={mode} onChange={event => { setMode(event.target.value as typeof mode); setHasBaseFile(false); setSuccess(''); setError(''); }} className="mt-1 block rounded-lg border p-2">

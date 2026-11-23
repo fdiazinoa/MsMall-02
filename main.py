@@ -8270,9 +8270,22 @@ class ConfigurationBackupRequest(BaseModel):
     local_ids: Optional[List[UUID]] = None
 
 
+def _backup_is_it(operator_ctx):
+    if _normalize_role(operator_ctx.get("role")) not in IT_ROLES:
+        return False
+    if operator_ctx.get("has_role_assignment"):
+        return True  # Role assignment was loaded from server-owned RBAC tables.
+    try:
+        profiles = (supabase.table("profiles").select("role")
+                    .eq("id", operator_ctx["user_id"]).limit(1).execute().data or [])
+        return bool(profiles and _normalize_role(profiles[0].get("role")) in IT_ROLES)
+    except Exception:
+        return False
+
+
 def _database_backup_permissions(operator_ctx, mall_id):
     global_admin = _is_system_admin_email(operator_ctx.get("email"))
-    can_mall = global_admin or (_backup_is_admin(operator_ctx)
+    can_mall = global_admin or ((_backup_is_admin(operator_ctx) or _backup_is_it(operator_ctx))
                                and mall_id in _get_user_mall_ids(operator_ctx.get("user_id")))
     return {"mall": bool(can_mall), "platform": False}
 
@@ -8297,7 +8310,7 @@ def database_backup_baseline(
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
     if not _database_backup_permissions(operator_ctx, current_mall)["mall"]:
-        raise HTTPException(403, "El backup por Mall requiere un administrador asignado al Mall.")
+        raise HTTPException(403, "El backup por Mall requiere un administrador o IT asignado al Mall.")
     try:
         return JSONResponse({"baseline": DifferentialBackupService().baseline(current_mall)}, headers={"Cache-Control": "no-store"})
     except DatabaseBackupUnavailable as exc:
@@ -8310,7 +8323,7 @@ def database_backup_traffic(
     operator_ctx: Dict[str, Any] = Depends(require_module_permission("import_backup", "view")),
 ):
     if not _database_backup_permissions(operator_ctx, current_mall)["mall"]:
-        raise HTTPException(403, "El backup por Mall requiere un administrador asignado al Mall.")
+        raise HTTPException(403, "El backup por Mall requiere un administrador o IT asignado al Mall.")
     result = _backup_quota_result(lambda: SQLBackupTrafficService(current_mall, operator_ctx['user_id']).status()) if sql_weekly_quota_ready() else {'configured': False}
     return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
@@ -8325,7 +8338,7 @@ def _reserve_sql_backup_quota(mall, user, mode, days):
 
 def _require_sql_admin(operator_ctx,mall):
     if not _database_backup_permissions(operator_ctx,mall)['mall']:
-        raise HTTPException(403,'El backup SQL requiere un administrador asignado al Mall.')
+        raise HTTPException(403,'El backup SQL requiere un administrador o IT asignado al Mall.')
     if not sql_weekly_quota_ready():
         raise HTTPException(503,'El plan gratuito de backups SQL no está habilitado.')
 
@@ -8408,7 +8421,7 @@ def download_database_backup(
 ):
     backup_scope = "mall"
     if not _database_backup_permissions(operator_ctx, current_mall)[backup_scope]:
-        raise HTTPException(403, "El backup por Mall requiere un administrador asignado al Mall.")
+        raise HTTPException(403, "El backup por Mall requiere un administrador o IT asignado al Mall.")
     if mode == 'period' and (fecha_inicio is None or fecha_fin is None):
         raise HTTPException(409, "Actualiza la página para cargar la pestaña Backup SQL y selecciona fecha inicial y final antes de descargar.")
     if not database_backup_ready():

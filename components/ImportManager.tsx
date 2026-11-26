@@ -12,6 +12,7 @@ import {
 } from '../utils/loadLogMessages';
 import { SmartMappingModal } from './SmartMappingModal';
 import MappingModal from './MappingModal';
+import { CALCULATED_FIELDS, calcKey } from '../utils/calculatedFields';
 import {
   Server, Plus, Play, Trash2, Settings2,
   ArrowRightLeft, CheckCircle2, XCircle, Clock,
@@ -164,6 +165,7 @@ const webserviceDateModes = [
 
 const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
   const mode = config.constants?.[fieldModeKey(fieldKey)];
+  if (mode === 'calculated' && CALCULATED_FIELDS.includes(fieldKey)) return 'CALCULATED';
   if (mode === TRANSFORM_MODES.CONCAT) return 'CONCAT';
   if (mode === TRANSFORM_MODES.GENERATED_SEQUENCE) return 'GENERATED_SEQUENCE';
   if ((config.constants || {}) && fieldKey in (config.constants || {})) return 'CONSTANT';
@@ -172,6 +174,9 @@ const getFieldMappingMode = (config: ImportConfig, fieldKey: string) => {
 
 const hasFieldMappingValue = (config: ImportConfig, fieldKey: string) => {
   const mode = getFieldMappingMode(config, fieldKey);
+  if (mode === 'CALCULATED') {
+    return Boolean(config.constants?.[calcKey(fieldKey, 'left')] && config.constants?.[calcKey(fieldKey, 'right')] && ['+', '-', '*', '/'].includes(config.constants?.[calcKey(fieldKey, 'operator')] || ''));
+  }
   if (mode === 'CONCAT') {
     return splitTransformFields(config.constants?.[concatFieldsKey(fieldKey)]).length > 0;
   }
@@ -187,6 +192,7 @@ const cleanFieldMappingConfig = (config: ImportConfig, fieldKey: string) => {
   delete constants[fieldModeKey(fieldKey)];
   delete constants[concatFieldsKey(fieldKey)];
   delete constants[concatSeparatorKey(fieldKey)];
+  for (const part of ['left', 'operator', 'right'] as const) delete constants[calcKey(fieldKey, part)];
   return { mapping, constants };
 };
 
@@ -1058,6 +1064,11 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
       : STANDARD_FIELDS.filter(f => f.required && !hasFieldMappingValue(editingConfig, f.key));
     if (missing.length > 0) {
       alert(`Faltan campos obligatorios en el mapeo: ${missing.map(m => m.label).join(', ')}`);
+      return;
+    }
+
+    if (editingConfig.protocolo !== 'API' && CALCULATED_FIELDS.some(field => getFieldMappingMode(editingConfig, field) === 'CALCULATED' && !hasFieldMappingValue(editingConfig, field))) {
+      alert('Completa las dos columnas y la operación de cada campo calculado.');
       return;
     }
 
@@ -2917,6 +2928,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                 <div className="grid grid-cols-1 gap-y-6 pt-4">
                   {(STANDARD_FIELDS || []).map(field => {
                     const fieldMode = getFieldMappingMode(editingConfig, field.key);
+                    const isCalculated = fieldMode === 'CALCULATED';
                     const isConstant = fieldMode === 'CONSTANT';
                     const isConcat = fieldMode === 'CONCAT';
                     const isGeneratedSequence = fieldMode === 'GENERATED_SEQUENCE';
@@ -2957,6 +2969,8 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                                     mapping,
                                     constants: { ...constants, [field.key]: '' }
                                   });
+                                } else if (value === 'CALCULATED') {
+                                  setEditingConfig({ ...editingConfig, mapping, constants: { ...constants, [fieldModeKey(field.key)]: 'calculated', [calcKey(field.key, 'operator')]: '+' } });
                                 } else if (value === 'CONCAT') {
                                   setEditingConfig({
                                     ...editingConfig,
@@ -2989,6 +3003,7 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                               <option value="VARIABLE">Columna CSV</option>
                               <option value="CONSTANT">Valor Constante</option>
                               <option value="CONCAT">Concatenar Campos</option>
+                              {CALCULATED_FIELDS.includes(field.key) && <option value="CALCULATED">Campo calculado</option>}
                               {field.key === 'factura_numero' && (
                                 <option value="GENERATED_SEQUENCE">Consecutivo Local + Fecha</option>
                               )}
@@ -2996,7 +3011,25 @@ export const ImportManager: React.FC<ImportManagerProps> = ({ initialSection = '
                           </div>
 
                           <div className="flex-1 relative">
-                            {isConstant ? (
+                            {isCalculated ? (
+                              <div className="space-y-2">
+                                <div className="grid grid-cols-[1fr_auto_1fr] gap-2">
+                                  {(['left', 'operator', 'right'] as const).map(part => (
+                                    <select
+                                      key={part}
+                                      aria-label={`${part === 'left' ? 'Primera columna' : part === 'right' ? 'Segunda columna' : 'Operación'} para ${field.label}`}
+                                      className="min-w-0 px-3 py-2.5 rounded-xl border border-indigo-200 bg-white text-sm"
+                                      value={editingConfig.constants?.[calcKey(field.key, part)] || ''}
+                                      onChange={e => setEditingConfig({ ...editingConfig, constants: { ...editingConfig.constants, [calcKey(field.key, part)]: e.target.value } })}
+                                    >
+                                      {part !== 'operator' && <option value="">Selecciona columna...</option>}
+                                      {(part === 'operator' ? ['+', '-', '*', '/'] : Array.from(new Set([...remoteHeaders, editingConfig.constants?.[calcKey(field.key, part)]]))).filter(Boolean).map(header => <option key={header} value={header}>{header}</option>)}
+                                    </select>
+                                  ))}
+                                </div>
+                                <p className="text-xs text-slate-500">Calcula entre dos columnas numéricas del archivo. Prueba el archivo remoto para detectar sus columnas.</p>
+                              </div>
+                            ) : isConstant ? (
                               <div className="relative group/input">
                                 <input
                                   type="text"

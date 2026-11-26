@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Check, AlertCircle } from 'lucide-react';
 import PreviewCard from './PreviewCard';
+import { CALCULATED_FIELDS, calcKey, calculatedPreview } from '../utils/calculatedFields';
 
 interface MappingModalProps {
     isOpen: boolean;
@@ -26,6 +27,7 @@ const SYSTEM_FIELDS: { key: string; label: string; required: boolean }[] = [
 ];
 
 const TRANSFORM_MODES = {
+    CALCULATED: 'calculated',
     CONCAT: 'concat',
     GENERATED_SEQUENCE: 'generated_sequence'
 } as const;
@@ -77,7 +79,9 @@ export default function MappingModal({
         const initialModes: Record<string, string> = {};
         SYSTEM_FIELDS.forEach(field => {
             const configuredMode = initialConstants[fieldModeKey(field.key)];
-            if (configuredMode === TRANSFORM_MODES.CONCAT) {
+            if (configuredMode === TRANSFORM_MODES.CALCULATED) {
+                initialModes[field.key] = 'CALCULATED';
+            } else if (configuredMode === TRANSFORM_MODES.CONCAT) {
                 initialModes[field.key] = 'CONCAT';
             } else if (configuredMode === TRANSFORM_MODES.GENERATED_SEQUENCE) {
                 initialModes[field.key] = 'GENERATED_SEQUENCE';
@@ -107,6 +111,7 @@ export default function MappingModal({
         delete nextConstants[fieldModeKey(systemField)];
         delete nextConstants[concatFieldsKey(systemField)];
         delete nextConstants[concatSeparatorKey(systemField)];
+        (['left', 'operator', 'right'] as const).forEach(part => delete nextConstants[calcKey(systemField, part)]);
         return { nextMapping, nextConstants };
     };
 
@@ -116,6 +121,9 @@ export default function MappingModal({
         const { nextMapping, nextConstants } = clearFieldConfig(systemField);
         if (mode === 'CONSTANT') {
             nextConstants[systemField] = '';
+        } else if (mode === 'CALCULATED') {
+            nextConstants[fieldModeKey(systemField)] = TRANSFORM_MODES.CALCULATED;
+            nextConstants[calcKey(systemField, 'operator')] = '+';
         } else if (mode === 'CONCAT') {
             nextConstants[fieldModeKey(systemField)] = TRANSFORM_MODES.CONCAT;
             nextConstants[concatFieldsKey(systemField)] = systemField === 'factura_numero' ? 'local_codigo,fecha_venta,numero_registro' : '';
@@ -134,15 +142,19 @@ export default function MappingModal({
             if (!f.required) return false;
             const mode = getMode(f.key);
             if (mode === 'CONCAT') return splitTransformFields(constants[concatFieldsKey(f.key)]).length === 0;
-            if (mode === 'GENERATED_SEQUENCE') return false;
+            if (mode === 'GENERATED_SEQUENCE' || mode === 'CALCULATED') return false;
             return !mapping[f.key] && !constants[f.key];
         });
-        return missing.length === 0;
+        const invalidCalculations = SYSTEM_FIELDS.some(f => getMode(f.key) === 'CALCULATED' && (
+            !fileHeaders.includes(constants[calcKey(f.key, 'left')]) || !fileHeaders.includes(constants[calcKey(f.key, 'right')]) ||
+            !['+', '-', '*', '/'].includes(constants[calcKey(f.key, 'operator')])
+        ));
+        return missing.length === 0 && !invalidCalculations;
     };
 
     const handleConfirm = () => {
         if (!validate()) {
-            alert('Faltan campos obligatorios por mapear');
+            alert('Completa los campos obligatorios y las dos columnas de cada cálculo.');
             return;
         }
 
@@ -210,6 +222,7 @@ export default function MappingModal({
                             const isConfident = suggestion?.is_confident;
                             const mode = getMode(field.key);
                             const isUsingConstant = mode === 'CONSTANT';
+                            const isCalculated = mode === 'CALCULATED';
                             const isConcat = mode === 'CONCAT';
                             const isGeneratedSequence = mode === 'GENERATED_SEQUENCE';
                             const concatFields = splitTransformFields(constants[concatFieldsKey(field.key)]);
@@ -245,6 +258,7 @@ export default function MappingModal({
                                             <option value="VARIABLE">Columna CSV</option>
                                             <option value="CONSTANT">Valor constante</option>
                                             <option value="CONCAT">Concatenar campos</option>
+                                            {CALCULATED_FIELDS.includes(field.key) && <option value="CALCULATED">Campo calculado</option>}
                                             {field.key === 'factura_numero' && (
                                                 <option value="GENERATED_SEQUENCE">Consecutivo Local + Fecha</option>
                                             )}
@@ -259,6 +273,22 @@ export default function MappingModal({
                                             placeholder="Ingrese valor constante..."
                                             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                                         />
+                                    ) : isCalculated ? (
+                                        <div className="space-y-2">
+                                            <div className="grid grid-cols-[1fr_auto_1fr] gap-2">
+                                                <select aria-label={`Primera columna para ${field.label}`} value={constants[calcKey(field.key, 'left')] || ''} onChange={e => setConstants({ ...constants, [calcKey(field.key, 'left')]: e.target.value })} className="min-w-0 rounded-lg border border-indigo-300 px-3 py-2 bg-white">
+                                                    <option value="">Primera columna</option>{fileHeaders.map(header => <option key={header} value={header}>{header}</option>)}
+                                                </select>
+                                                <select aria-label={`Operación para ${field.label}`} value={constants[calcKey(field.key, 'operator')] || '+'} onChange={e => setConstants({ ...constants, [calcKey(field.key, 'operator')]: e.target.value })} className="rounded-lg border border-indigo-300 px-3 py-2 bg-white">
+                                                    {['+', '-', '*', '/'].map(operator => <option key={operator} value={operator}>{operator}</option>)}
+                                                </select>
+                                                <select aria-label={`Segunda columna para ${field.label}`} value={constants[calcKey(field.key, 'right')] || ''} onChange={e => setConstants({ ...constants, [calcKey(field.key, 'right')]: e.target.value })} className="min-w-0 rounded-lg border border-indigo-300 px-3 py-2 bg-white">
+                                                    <option value="">Segunda columna</option>{fileHeaders.map(header => <option key={header} value={header}>{header}</option>)}
+                                                </select>
+                                            </div>
+                                            <p className="text-xs text-indigo-700">Ejemplo de resultado: {calculatedPreview(field.key, sampleRow, constants)}</p>
+                                            <p className="text-xs text-slate-500">Se calcula con las dos columnas originales de cada fila y el separador decimal configurado.</p>
+                                        </div>
                                     ) : isConcat ? (
                                         <div className="space-y-3">
                                             <div className="flex flex-col sm:flex-row gap-2">

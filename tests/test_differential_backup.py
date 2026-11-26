@@ -274,3 +274,37 @@ def test_api_routes_snapshots_through_existing_quota_and_masks_unexpected_errors
     response = api.client.post('/api/v1/export/import-backup/database/mall?mode=differential&base_id='+str(uuid4()), headers={'X-Mall-Id': MALL})
     assert response.status_code == 503
     assert 'secret' not in response.text and 'private-host' not in response.text
+
+
+def test_existing_archives_restore_after_source_fingerprints_are_purged(service, local_postgres):
+    with psycopg.connect(local_postgres) as conn:
+        original_notes = conn.execute('SELECT id,nota FROM ventas WHERE local_id=%s', (LOCAL,)).fetchall()
+    complete = archive(service)
+    base_id = json.loads(complete['manifest.json'])['base_id']
+    with psycopg.connect(local_postgres) as conn:
+        conn.execute("UPDATE ventas SET nota='AFTER_COMPLETE' WHERE local_id=%s", (LOCAL,))
+    diff = archive(service, 'differential', base_id=base_id)
+    with psycopg.connect(local_postgres) as conn:
+        before = conn.execute('SELECT count(*) FROM ventas').fetchone()[0]
+        assert conn.execute('SELECT count(*) FROM msmall_backup.row_fingerprints').fetchone()[0] > 0
+        conn.execute('TRUNCATE TABLE msmall_backup.row_fingerprints')
+        assert conn.execute('SELECT count(*) FROM msmall_backup.row_fingerprints').fetchone()[0] == 0
+        assert conn.execute('SELECT count(*) FROM ventas').fetchone()[0] == before
+    database = 'recovery_purged_' + uuid4().hex
+    with psycopg.connect(local_postgres, autocommit=True) as conn:
+        conn.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(database)))
+    target = make_conninfo(local_postgres, dbname=database)
+    try:
+        with psycopg.connect(target) as conn:
+            conn.execute('DROP SCHEMA public CASCADE')
+        restore(target, complete['schema.sql'])
+        restore(target, complete['data.sql'])
+        restore(target, diff['data.sql'])
+        with psycopg.connect(target) as conn:
+            assert conn.execute('SELECT nota FROM ventas WHERE local_id=%s', (LOCAL,)).fetchone()[0] == 'AFTER_COMPLETE'
+            assert conn.execute("SELECT state FROM msmall_restore.baselines WHERE mall_id=%s", (MALL,)).fetchone()[0].startswith('differential:')
+    finally:
+        with psycopg.connect(local_postgres, autocommit=True) as conn:
+            conn.execute(sql.SQL('DROP DATABASE {} WITH (FORCE)').format(sql.Identifier(database)))
+            for sale_id, note in original_notes:
+                conn.execute('UPDATE ventas SET nota=%s WHERE id=%s', (note, sale_id))

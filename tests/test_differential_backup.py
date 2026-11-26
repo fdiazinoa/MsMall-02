@@ -277,6 +277,8 @@ def test_api_routes_snapshots_through_existing_quota_and_masks_unexpected_errors
 
 
 def test_existing_archives_restore_after_source_fingerprints_are_purged(service, local_postgres):
+    with psycopg.connect(local_postgres) as conn:
+        original_notes = conn.execute('SELECT id,nota FROM ventas WHERE local_id=%s', (LOCAL,)).fetchall()
     complete = archive(service)
     base_id = json.loads(complete['manifest.json'])['base_id']
     with psycopg.connect(local_postgres) as conn:
@@ -304,3 +306,5 @@ def test_existing_archives_restore_after_source_fingerprints_are_purged(service,
     finally:
         with psycopg.connect(local_postgres, autocommit=True) as conn:
             conn.execute(sql.SQL('DROP DATABASE {} WITH (FORCE)').format(sql.Identifier(database)))
+            for sale_id, note in original_notes:
+                conn.execute('UPDATE ventas SET nota=%s WHERE id=%s', (note, sale_id))

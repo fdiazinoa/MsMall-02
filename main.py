@@ -1,6 +1,7 @@
 
 # Backend: FastAPI API para MSMALL Audit
 import asyncio
+from services.calculated_fields_service import CALCULATED_FIELDS, calculated_fields
 from zoneinfo import ZoneInfo
 import base64
 import csv
@@ -2131,7 +2132,9 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
         for field in req_sys_fields:
             has_mapping = field in effective_mapping and effective_mapping[field]
             has_constant = field in constants and constants[field]
-            has_transform = constants.get(f"_{field}_mode") in ("generated_sequence", "concat")
+            has_transform = constants.get(f"_{field}_mode") in ("generated_sequence", "concat") or (
+                field in CALCULATED_FIELDS and constants.get(f"_{field}_mode") == "calculated"
+            )
             if not (has_mapping or has_constant or has_transform):
                 missing_mapping.append(field)
         
@@ -2182,6 +2185,8 @@ def process_file_content(content: str, filename: str, config: Dict[str, Any], ba
                     if not str(k).startswith("_"):
                         record[k] = v
                 
+                record.update(calculated_fields(normalized_row, constants))
+
                 if i == 0:
                     logger.info(f"Muestra mapeo primer registro: {record}")
                 

@@ -1,4 +1,5 @@
 import os
+from services.calculated_fields_service import calculated_fields
 import socket
 import stat
 import logging
@@ -969,6 +970,7 @@ def process_file_logic(config, filename, content):
             try:
                 normalized_row = _normalize_csv_row_keys(row)
                 lowered_row = {k.lower(): v for k, v in normalized_row.items()}
+                calculated = calculated_fields(normalized_row, constants)
 
                 def pick_value(mapped_header, fallback_header=""):
                     key = _clean_csv_header_name(mapped_header)
@@ -1042,9 +1044,9 @@ def process_file_logic(config, filename, content):
                 def clean_float(val):
                     return _parse_mapped_decimal(val, decimal_separator)
 
-                total_bruto = clean_float(pick_value(mapping.get('total_bruto', 'total_bruto')))
-                total_impuestos = clean_float(pick_value(mapping.get('total_impuestos', 'total_impuestos')))
-                total_neto = clean_float(pick_value(mapping.get('total_neto', 'total_neto')))
+                total_bruto = clean_float(calculated['total_bruto'] if 'total_bruto' in calculated else pick_value(mapping.get('total_bruto', 'total_bruto')))
+                total_impuestos = clean_float(calculated['total_impuestos'] if 'total_impuestos' in calculated else pick_value(mapping.get('total_impuestos', 'total_impuestos')))
+                total_neto = clean_float(calculated['total_neto'] if 'total_neto' in calculated else pick_value(mapping.get('total_neto', 'total_neto')))
                 
                 if not fecha_venta:
                     detalles.append({"linea": line_no, "error": "Datos incompletos (Fecha faltante)"})

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Eye } from 'lucide-react';
+import { calculatedPreview } from '../utils/calculatedFields';
 
 interface PreviewCardProps {
     mapping: Record<string, string>;
@@ -10,6 +11,7 @@ interface PreviewCardProps {
 
 const PreviewCard: React.FC<PreviewCardProps> = ({ mapping, constants = {}, sampleRow, systemFields }) => {
     const getValue = (key: string) => {
+        if (constants[`_${key}_mode`] === 'calculated') return calculatedPreview(key, sampleRow, constants);
         // 1. Check if using constant
         if (constants[key]) return constants[key];
 
